@@ -1,0 +1,2 @@
+"""WIDESWE benchmark package."""
+

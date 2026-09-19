@@ -1,0 +1,99 @@
+# Copy this file to benchmark/agents/agent_configs.local.yaml and edit model
+# and endpoint values for the experiment. Never commit API-key values.
+
+profiles:
+  noop-linux-docker:
+    agent: noop
+    agent_id: noop
+    model_id: no-model
+    timeout: 60
+    profile_set: linux-docker
+
+  claude-code-host:
+    agent: claude-code
+    agent_id: claude-code
+    model_id: replace-with-model
+    agent_environment: host
+    sandbox: none
+    timeout: 18000
+    max_api_requests: 0
+    profile_set: linux-docker
+    command: >-
+      bash -lc 'set -o pipefail;
+      unset CLAUDE_CODE_SIMPLE;
+      claude -p --tools default --disallowedTools WebFetch,WebSearch
+      --permission-mode bypassPermissions --verbose --output-format stream-json
+      --include-hook-events < "$ECOSYNC_PROMPT_FILE"
+      | tee "$ECOSYNC_TRACE_DIR/claude.stream.jsonl"'
+
+  codex-host:
+    agent: codex
+    agent_id: codex
+    model_id: replace-with-model
+    agent_environment: host
+    sandbox: none
+    timeout: 18000
+    max_api_requests: 0
+    profile_set: linux-docker
+    command: >-
+      bash -lc 'set -o pipefail;
+      codex exec --cd "$ECOSYNC_WORKSPACE" --model "$ECOSYNC_MODEL_ID"
+      --sandbox workspace-write --skip-git-repo-check
+      --ephemeral --color never --json - < "$ECOSYNC_PROMPT_FILE"
+      | tee "$ECOSYNC_TRACE_DIR/codex.events.jsonl"'
+
+  # Recommended RQ1 mode: use the task's case-base image and mount a reusable
+  # agent runtime built with prepare_agent_runtime.py.
+  claude-code-case-env:
+    agent: claude-code
+    agent_id: claude-code
+    model_id: replace-with-model
+    agent_environment: case-env
+    sandbox: docker
+    sandbox_network: llm-api-only
+    llm_api_allowed_hosts:
+      - api.anthropic.com
+    timeout: 18000
+    max_api_requests: 0
+    profile_set: linux-docker
+    agent_runtime_mounts:
+      - /opt/wideswe/agent-runtimes/claude-code-2.1.139:/opt/ecosync/agent-runtime:ro
+    pass_env:
+      - ANTHROPIC_AUTH_TOKEN
+    sandbox_env:
+      - ANTHROPIC_BASE_URL=https://api.anthropic.com
+      - ANTHROPIC_MODEL=replace-with-model
+    command: >-
+      bash -lc 'set -o pipefail;
+      source /opt/ecosync/agent-runtime/env.sh;
+      unset CLAUDE_CODE_SIMPLE;
+      claude -p --tools default --disallowedTools WebFetch,WebSearch
+      --permission-mode bypassPermissions --verbose --output-format stream-json
+      --include-hook-events < "$ECOSYNC_PROMPT_FILE"
+      | tee "$ECOSYNC_TRACE_DIR/claude.stream.jsonl"'
+
+  codex-case-env:
+    agent: codex
+    agent_id: codex
+    model_id: replace-with-model
+    agent_environment: case-env
+    sandbox: docker
+    sandbox_network: llm-api-only
+    llm_api_allowed_hosts:
+      - api.openai.com
+    timeout: 18000
+    max_api_requests: 0
+    profile_set: linux-docker
+    agent_runtime_mounts:
+      - /opt/wideswe/agent-runtimes/codex-0.147.0:/opt/ecosync/agent-runtime:ro
+    pass_env:
+      - OPENAI_API_KEY
+    sandbox_env:
+      - OPENAI_BASE_URL=https://api.openai.com/v1
+    command: >-
+      bash -lc 'set -o pipefail;
+      source /opt/ecosync/agent-runtime/env.sh;
+      codex exec --cd "$ECOSYNC_WORKSPACE" --model "$ECOSYNC_MODEL_ID"
+      --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check
+      --ephemeral --color never --json - < "$ECOSYNC_PROMPT_FILE"
+      | tee "$ECOSYNC_TRACE_DIR/codex.events.jsonl"'

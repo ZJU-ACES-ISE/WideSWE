@@ -1,17 +1,20 @@
 # WIDESWE
 
-WIDESWE is a benchmark for software-engineering tasks whose implementation may
-span multiple repositories in the same ecosystem. Release120 contains 120
-tasks. Each RQ1 run gives the agent one shared request and an ecosystem
-workspace, then evaluates the resulting cross-repository patch with hidden
-tests.
+WIDESWE is a benchmark of 120 real-world software-engineering tasks requiring
+coordinated changes across multiple repositories in the same
+ecosystem. It contains 60 bug fixes and 60 features. Each run gives the agent
+one shared request and a historical ecosystem workspace containing the target
+repositories and, where available, additional context repositories. Hidden
+tests evaluate the resulting changes; a task succeeds only when every target
+repository passes all required checks.
+
+![Task success on 120 WIDESWE tasks: GPT-5.6-sol with Codex CLI 42.50%; Qwen 3.8 Max with Claude Code 37.50%; Claude Opus 5 with Claude Code 35.00%; GPT-5.6-sol with Claude Code 32.50%; DeepSeek V4 Pro with Claude Code 26.67%; GLM 5.3 with Claude Code 20.00%; Gemini 3.8 Flash with Claude Code 10.83%.](assets/task_success.png)
 
 The task definitions are published in the
 [WIDESWE Hugging Face dataset](https://huggingface.co/datasets/wwww369/WIDESWE).
-This repository contains the RQ1 harness, Claude Code and Codex adapters,
+This repository contains the evaluation harness, Claude Code and Codex adapters,
 container definitions, and the reusable portion of the data-construction
-pipeline. It does not contain model credentials, agent trajectories,
-experimental outputs, raw pull-request text, or manual-review records.
+pipeline.
 
 ## Requirements
 
@@ -72,9 +75,20 @@ python benchmark/harness/pull_images.py --task CASE_ID
 
 ## Configure An Agent
 
-Copy `benchmark/agents/agent_configs.example.yaml` to an ignored local file and
-set the model and endpoint fields. Credential values must remain in environment
-variables and must never be added to YAML.
+Copy `benchmark/agents/agent_configs.example.yaml` to
+`benchmark/agents/agent_configs.local.yaml` (ignored by Git), then configure the
+profile for the agent you want to run:
+
+| Agent profile | Model | API endpoint (`sandbox_env`) | Credential environment variable |
+| --- | --- | --- | --- |
+| `claude-code-case-env` | Set `model_id` and `ANTHROPIC_MODEL` in `sandbox_env` to the same model identifier. | `ANTHROPIC_BASE_URL` | `ANTHROPIC_AUTH_TOKEN` |
+| `codex-case-env` | Set `model_id`; the command passes it to Codex. | `OPENAI_BASE_URL` | `OPENAI_API_KEY` |
+
+When changing the API endpoint, also update `llm_api_allowed_hosts` to its
+hostname (without the scheme or path). Keep `sandbox_network: llm-api-only`.
+Provide the credential through the environment variable listed above; the
+profile's `pass_env` forwards it into the container. Never add credential
+values to YAML.
 
 Claude Code and Codex credentials are not part of WIDESWE. Keep API keys and
 local authentication files outside this checkout, expose only the required
@@ -91,7 +105,7 @@ python benchmark/agents/prepare_agent_runtime.py \
   --output-root /opt/wideswe/agent-runtimes
 ```
 
-## Run RQ1
+## Run Evaluation
 
 Run one case through agent execution and hidden-test evaluation:
 
@@ -105,7 +119,7 @@ python benchmark/harness/run_user_flow.py \
   --run-id seed001
 ```
 
-Run a list of cases serially with the same RQ1 configuration:
+Run a list of cases serially with the same configuration:
 
 ```bash
 python benchmark/harness/run_agent_matrix.py \
@@ -122,7 +136,7 @@ workspaces are removed by default after their durable artifacts are saved.
 
 ## Repository Layout
 
-- `benchmark/harness/`: RQ1 workspace preparation, agent orchestration, and evaluation.
+- `benchmark/harness/`: workspace preparation, agent orchestration, and evaluation.
 - `benchmark/agents/`: Claude Code and Codex adapters and pinned runtime builders.
 - `benchmark/images/`: base and dependency image definitions.
 - `data_mining/`: reusable case-discovery and construction scripts.

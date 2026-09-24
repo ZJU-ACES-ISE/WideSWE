@@ -1,0 +1,137 @@
+diff --git a/packages/react/src/field/control/FieldControl.test.tsx b/packages/react/src/field/control/FieldControl.test.tsx
+index 30bdd153..3ff4a1c3 100644
+--- a/packages/react/src/field/control/FieldControl.test.tsx
++++ b/packages/react/src/field/control/FieldControl.test.tsx
+@@ -1,10 +1,10 @@
+ import { createRenderer, fireEvent, screen } from '@mui/internal-test-utils';
+ import { Field } from '@base-ui/react/field';
+ import { expect } from 'chai';
+-import { describeConformance } from '../../../test/describeConformance';
++import { describeConformance, isJSDOM } from '#test-utils';
+ 
+ describe('<Field.Control />', () => {
+-  const { render } = createRenderer();
++  const { render, renderToString } = createRenderer();
+   const { render: renderNonStrict } = createRenderer({ strict: false });
+ 
+   describeConformance(<Field.Control />, () => ({
+@@ -40,4 +40,34 @@ describe('<Field.Control />', () => {
+     expect(renderCountRef.current).to.equal(afterFirstChange);
+     expect(afterFirstChange).to.be.at.most(initialRenderCount + 1);
+   });
++
++  it.skipIf(isJSDOM)('should sync focused state when autoFocus is used with SSR', async () => {
++    vi.spyOn(console, 'error')
++      .mockName('console.error')
++      .mockImplementation(() => {});
++
++    function App() {
++      return (
++        <Field.Root data-testid="root">
++          <Field.Label data-testid="label">Name</Field.Label>
++          <Field.Control autoFocus />
++        </Field.Root>
++      );
++    }
++
++    const { hydrate } = renderToString(<App />);
++
++    const control = screen.getByRole('textbox');
++    expect(control).to.have.attribute('autofocus');
++
++    // Simulate focused by browser before hydration
++    control.focus();
++    expect(control).to.equal(document.activeElement);
++
++    hydrate();
++
++    expect(screen.getByTestId('root')).to.have.attribute('data-focused', '');
++    expect(control).to.have.attribute('data-focused', '');
++    expect(screen.getByText('Name')).to.have.attribute('data-focused', '');
++  });
+ });
+diff --git a/packages/react/src/field/control/FieldControl.tsx b/packages/react/src/field/control/FieldControl.tsx
+index 401fe960..cd186c8e 100644
+--- a/packages/react/src/field/control/FieldControl.tsx
++++ b/packages/react/src/field/control/FieldControl.tsx
+@@ -2,6 +2,7 @@
+ import * as React from 'react';
+ import { useControlled } from '@base-ui/utils/useControlled';
+ import { useIsoLayoutEffect } from '@base-ui/utils/useIsoLayoutEffect';
++import { ownerDocument } from '@base-ui/utils/owner';
+ import { FieldRoot } from '../root/FieldRoot';
+ import { useFieldRootContext } from '../root/FieldRootContext';
+ import { useLabelableContext } from '../../labelable-provider/LabelableContext';
+@@ -13,6 +14,7 @@ import { useField } from '../useField';
+ import { createChangeEventDetails } from '../../utils/createBaseUIEventDetails';
+ import { REASONS } from '../../utils/reasons';
+ import type { BaseUIChangeEventDetails } from '../../utils/createBaseUIEventDetails';
++import { activeElement } from '../../floating-ui-react/utils';
+ 
+ /**
+  * The form control to label and validate.
+@@ -37,10 +39,22 @@ export const FieldControl = React.forwardRef(function FieldControl(
+     disabled: disabledProp = false,
+     onValueChange,
+     defaultValue,
++    autoFocus = false,
+     ...elementProps
+   } = componentProps;
+ 
+-  const { state: fieldState, name: fieldName, disabled: fieldDisabled } = useFieldRootContext();
++  const {
++    state: fieldState,
++    name: fieldName,
++    disabled: fieldDisabled,
++    setTouched,
++    setDirty,
++    validityData,
++    setFocused,
++    setFilled,
++    validationMode,
++    validation,
++  } = useFieldRootContext();
+ 
+   const disabled = fieldDisabled || disabledProp;
+   const name = fieldName ?? nameProp;
+@@ -50,8 +64,6 @@ export const FieldControl = React.forwardRef(function FieldControl(
+     disabled,
+   };
+ 
+-  const { setTouched, setDirty, validityData, setFocused, setFilled, validationMode, validation } =
+-    useFieldRootContext();
+   const { labelId } = useLabelableContext();
+ 
+   const id = useLabelableId({ id: idProp });
+@@ -65,6 +77,14 @@ export const FieldControl = React.forwardRef(function FieldControl(
+     }
+   }, [validation.inputRef, setFilled, valueProp]);
+ 
++  const inputRef = React.useRef<HTMLElement>(null);
++
++  useIsoLayoutEffect(() => {
++    if (autoFocus && inputRef.current === activeElement(ownerDocument(inputRef.current))) {
++      setFocused(true);
++    }
++  }, [autoFocus, setFocused]);
++
+   const [valueUnwrapped] = useControlled({
+     controlled: valueProp,
+     default: defaultValue,
+@@ -85,7 +105,7 @@ export const FieldControl = React.forwardRef(function FieldControl(
+   });
+ 
+   const element = useRenderElement('input', componentProps, {
+-    ref: forwardedRef,
++    ref: [forwardedRef, inputRef],
+     state,
+     props: [
+       {
+@@ -94,6 +114,7 @@ export const FieldControl = React.forwardRef(function FieldControl(
+         name,
+         ref: validation.inputRef,
+         'aria-labelledby': labelId,
++        autoFocus,
+         ...(isControlled ? { value } : { defaultValue }),
+         onChange(event) {
+           const inputValue = event.currentTarget.value;

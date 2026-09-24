@@ -1,0 +1,87 @@
+diff --git a/sentry_sdk/integrations/celery.py b/sentry_sdk/integrations/celery.py
+index 741a2c8b..443fcdad 100644
+--- a/sentry_sdk/integrations/celery.py
++++ b/sentry_sdk/integrations/celery.py
+@@ -11,7 +11,7 @@ from sentry_sdk.crons import capture_checkin, MonitorStatus
+ from sentry_sdk.hub import Hub
+ from sentry_sdk.integrations import Integration, DidNotEnable
+ from sentry_sdk.integrations.logging import ignore_logger
+-from sentry_sdk.tracing import TRANSACTION_SOURCE_TASK
++from sentry_sdk.tracing import BAGGAGE_HEADER_NAME, TRANSACTION_SOURCE_TASK
+ from sentry_sdk._types import TYPE_CHECKING
+ from sentry_sdk.utils import (
+     capture_internal_exceptions,
+@@ -158,7 +158,20 @@ def _wrap_apply_async(f):
+                         # Note: kwargs can contain headers=None, so no setdefault!
+                         # Unsure which backend though.
+                         kwarg_headers = kwargs.get("headers") or {}
++
++                        existing_baggage = kwarg_headers.get(BAGGAGE_HEADER_NAME)
++                        sentry_baggage = headers.get(BAGGAGE_HEADER_NAME)
++
++                        combined_baggage = sentry_baggage or existing_baggage
++                        if sentry_baggage and existing_baggage:
++                            combined_baggage = "{},{}".format(
++                                existing_baggage,
++                                sentry_baggage,
++                            )
++
+                         kwarg_headers.update(headers)
++                        if combined_baggage:
++                            kwarg_headers[BAGGAGE_HEADER_NAME] = combined_baggage
+ 
+                         # https://github.com/celery/celery/issues/4875
+                         #
+@@ -166,6 +179,10 @@ def _wrap_apply_async(f):
+                         # tracing tools (dd-trace-py) also employ this exact
+                         # workaround and we don't want to break them.
+                         kwarg_headers.setdefault("headers", {}).update(headers)
++                        if combined_baggage:
++                            kwarg_headers["headers"][
++                                BAGGAGE_HEADER_NAME
++                            ] = combined_baggage
+ 
+                         # Add the Sentry options potentially added in `sentry_apply_entry`
+                         # to the headers (done when auto-instrumenting Celery Beat tasks)
+diff --git a/sentry_sdk/integrations/httpx.py b/sentry_sdk/integrations/httpx.py
+index e84a28d1..04db5047 100644
+--- a/sentry_sdk/integrations/httpx.py
++++ b/sentry_sdk/integrations/httpx.py
+@@ -1,6 +1,7 @@
+ from sentry_sdk import Hub
+ from sentry_sdk.consts import OP, SPANDATA
+ from sentry_sdk.integrations import Integration, DidNotEnable
++from sentry_sdk.tracing import BAGGAGE_HEADER_NAME
+ from sentry_sdk.tracing_utils import should_propagate_trace
+ from sentry_sdk.utils import (
+     SENSITIVE_DATA_SUBSTITUTE,
+@@ -72,7 +73,13 @@ def _install_httpx_client():
+                             key=key, value=value, url=request.url
+                         )
+                     )
+-                    request.headers[key] = value
++                    if key == BAGGAGE_HEADER_NAME and request.headers.get(
++                        BAGGAGE_HEADER_NAME
++                    ):
++                        # do not overwrite any existing baggage, just append to it
++                        request.headers[key] += "," + value
++                    else:
++                        request.headers[key] = value
+ 
+             rv = real_send(self, request, **kwargs)
+ 
+@@ -119,7 +126,13 @@ def _install_httpx_async_client():
+                             key=key, value=value, url=request.url
+                         )
+                     )
+-                    request.headers[key] = value
++                    if key == BAGGAGE_HEADER_NAME and request.headers.get(
++                        BAGGAGE_HEADER_NAME
++                    ):
++                        # do not overwrite any existing baggage, just append to it
++                        request.headers[key] += "," + value
++                    else:
++                        request.headers[key] = value
+ 
+             rv = await real_send(self, request, **kwargs)
+ 

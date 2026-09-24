@@ -1,0 +1,447 @@
+diff --git a/dev-packages/e2e-tests/test-applications/hydrogen-react-router-7/app/entry.client.tsx b/dev-packages/e2e-tests/test-applications/hydrogen-react-router-7/app/entry.client.tsx
+index 9c48e56bef..bd606bbe7c 100644
+--- a/dev-packages/e2e-tests/test-applications/hydrogen-react-router-7/app/entry.client.tsx
++++ b/dev-packages/e2e-tests/test-applications/hydrogen-react-router-7/app/entry.client.tsx
+@@ -16,7 +16,7 @@ startTransition(() => {
+   hydrateRoot(
+     document,
+     <StrictMode>
+-      <HydratedRouter />
++      <HydratedRouter onError={Sentry.sentryOnError} />
+     </StrictMode>,
+   );
+ });
+diff --git a/dev-packages/e2e-tests/test-applications/hydrogen-react-router-7/app/root.tsx b/dev-packages/e2e-tests/test-applications/hydrogen-react-router-7/app/root.tsx
+index afa85270e0..e45feb5dd5 100644
+--- a/dev-packages/e2e-tests/test-applications/hydrogen-react-router-7/app/root.tsx
++++ b/dev-packages/e2e-tests/test-applications/hydrogen-react-router-7/app/root.tsx
+@@ -1,4 +1,3 @@
+-import * as Sentry from '@sentry/react-router/cloudflare';
+ import { type LoaderFunctionArgs } from '@shopify/remix-oxygen';
+ import {
+   Outlet,
+@@ -160,8 +159,6 @@ export function ErrorBoundary({ error }: { error: unknown }) {
+   let errorMessage = 'Unknown error';
+   let errorStatus = 500;
+ 
+-  const eventId = Sentry.captureException(error);
+-
+   if (isRouteErrorResponse(error)) {
+     errorMessage = error?.data?.message ?? error.data;
+     errorStatus = error.status;
+@@ -178,11 +175,6 @@ export function ErrorBoundary({ error }: { error: unknown }) {
+           <pre>{errorMessage}</pre>
+         </fieldset>
+       )}
+-      {eventId && (
+-        <h2>
+-          Sentry Event ID: <code>{eventId}</code>
+-        </h2>
+-      )}
+     </div>
+   );
+ }
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/app/entry.client.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/app/entry.client.tsx
+index 925c1e6ab1..005268b40a 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/app/entry.client.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/app/entry.client.tsx
+@@ -17,7 +17,7 @@ startTransition(() => {
+   hydrateRoot(
+     document,
+     <StrictMode>
+-      <HydratedRouter />
++      <HydratedRouter onError={Sentry.sentryOnError} />
+     </StrictMode>,
+   );
+ });
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/app/root.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/app/root.tsx
+index 227c08f773..bc1b8f1236 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/app/root.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/app/root.tsx
+@@ -1,4 +1,3 @@
+-import * as Sentry from '@sentry/react-router';
+ import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse } from 'react-router';
+ import type { Route } from './+types/root';
+ import stylesheet from './app.css?url';
+@@ -48,7 +47,6 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+     message = error.status === 404 ? '404' : 'Error';
+     details = error.status === 404 ? 'The requested page could not be found.' : error.statusText || details;
+   } else if (error && error instanceof Error) {
+-    Sentry.captureException(error);
+     if (import.meta.env.DEV) {
+       details = error.message;
+       stack = error.stack;
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-instrumentation/app/entry.client.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-instrumentation/app/entry.client.tsx
+index c8bd9df2ba..9c9ccd812e 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-instrumentation/app/entry.client.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-instrumentation/app/entry.client.tsx
+@@ -27,7 +27,7 @@ startTransition(() => {
+     document,
+     <StrictMode>
+       {/* unstable_instrumentations is React Router 7.x's prop name (will become `instrumentations` in v8) */}
+-      <HydratedRouter unstable_instrumentations={sentryClientInstrumentation} />
++      <HydratedRouter unstable_instrumentations={sentryClientInstrumentation} onError={Sentry.sentryOnError} />
+     </StrictMode>,
+   );
+ });
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-instrumentation/app/root.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-instrumentation/app/root.tsx
+index 227c08f773..bc1b8f1236 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-instrumentation/app/root.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-instrumentation/app/root.tsx
+@@ -1,4 +1,3 @@
+-import * as Sentry from '@sentry/react-router';
+ import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse } from 'react-router';
+ import type { Route } from './+types/root';
+ import stylesheet from './app.css?url';
+@@ -48,7 +47,6 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+     message = error.status === 404 ? '404' : 'Error';
+     details = error.status === 404 ? 'The requested page could not be found.' : error.statusText || details;
+   } else if (error && error instanceof Error) {
+-    Sentry.captureException(error);
+     if (import.meta.env.DEV) {
+       details = error.message;
+       stack = error.stack;
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/app/entry.client.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/app/entry.client.tsx
+index 925c1e6ab1..005268b40a 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/app/entry.client.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/app/entry.client.tsx
+@@ -17,7 +17,7 @@ startTransition(() => {
+   hydrateRoot(
+     document,
+     <StrictMode>
+-      <HydratedRouter />
++      <HydratedRouter onError={Sentry.sentryOnError} />
+     </StrictMode>,
+   );
+ });
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/app/root.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/app/root.tsx
+index 227c08f773..bc1b8f1236 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/app/root.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/app/root.tsx
+@@ -1,4 +1,3 @@
+-import * as Sentry from '@sentry/react-router';
+ import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse } from 'react-router';
+ import type { Route } from './+types/root';
+ import stylesheet from './app.css?url';
+@@ -48,7 +47,6 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+     message = error.status === 404 ? '404' : 'Error';
+     details = error.status === 404 ? 'The requested page could not be found.' : error.statusText || details;
+   } else if (error && error instanceof Error) {
+-    Sentry.captureException(error);
+     if (import.meta.env.DEV) {
+       details = error.message;
+       stack = error.stack;
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/app/entry.client.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/app/entry.client.tsx
+index 223c8e6129..f9e8c5139d 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/app/entry.client.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/app/entry.client.tsx
+@@ -17,7 +17,7 @@ startTransition(() => {
+   hydrateRoot(
+     document,
+     <StrictMode>
+-      <HydratedRouter />
++      <HydratedRouter onError={Sentry.sentryOnError} />
+     </StrictMode>,
+   );
+ });
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/app/root.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/app/root.tsx
+index 194d91eea4..2a3279aed3 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/app/root.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/app/root.tsx
+@@ -2,7 +2,6 @@ import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration }
+ 
+ import type { Route } from './+types/root';
+ import './app.css';
+-import * as Sentry from '@sentry/react-router';
+ 
+ export function Layout({ children }: { children: React.ReactNode }) {
+   return (
+@@ -35,8 +34,6 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+     message = error.status === 404 ? '404' : 'Error';
+     details = error.status === 404 ? 'The requested page could not be found.' : error.statusText || details;
+   } else if (error && error instanceof Error) {
+-    Sentry.captureException(error);
+-
+     details = error.message;
+     stack = error.stack;
+   }
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/app/entry.client.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/app/entry.client.tsx
+index 7448ebe7bf..249e18d27c 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/app/entry.client.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/app/entry.client.tsx
+@@ -17,7 +17,7 @@ startTransition(() => {
+   hydrateRoot(
+     document,
+     <StrictMode>
+-      <HydratedRouter />
++      <HydratedRouter onError={Sentry.sentryOnError} />
+     </StrictMode>,
+   );
+ });
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/app/root.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/app/root.tsx
+index 194d91eea4..2a3279aed3 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/app/root.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/app/root.tsx
+@@ -2,7 +2,6 @@ import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration }
+ 
+ import type { Route } from './+types/root';
+ import './app.css';
+-import * as Sentry from '@sentry/react-router';
+ 
+ export function Layout({ children }: { children: React.ReactNode }) {
+   return (
+@@ -35,8 +34,6 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+     message = error.status === 404 ? '404' : 'Error';
+     details = error.status === 404 ? 'The requested page could not be found.' : error.statusText || details;
+   } else if (error && error instanceof Error) {
+-    Sentry.captureException(error);
+-
+     details = error.message;
+     stack = error.stack;
+   }
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework/app/entry.client.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework/app/entry.client.tsx
+index 925c1e6ab1..005268b40a 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework/app/entry.client.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework/app/entry.client.tsx
+@@ -17,7 +17,7 @@ startTransition(() => {
+   hydrateRoot(
+     document,
+     <StrictMode>
+-      <HydratedRouter />
++      <HydratedRouter onError={Sentry.sentryOnError} />
+     </StrictMode>,
+   );
+ });
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework/app/root.tsx b/dev-packages/e2e-tests/test-applications/react-router-7-framework/app/root.tsx
+index 227c08f773..bc1b8f1236 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework/app/root.tsx
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework/app/root.tsx
+@@ -1,4 +1,3 @@
+-import * as Sentry from '@sentry/react-router';
+ import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse } from 'react-router';
+ import type { Route } from './+types/root';
+ import stylesheet from './app.css?url';
+@@ -48,7 +47,6 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+     message = error.status === 404 ? '404' : 'Error';
+     details = error.status === 404 ? 'The requested page could not be found.' : error.statusText || details;
+   } else if (error && error instanceof Error) {
+-    Sentry.captureException(error);
+     if (import.meta.env.DEV) {
+       details = error.message;
+       stack = error.stack;
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/packages/react-router/src/client/index.ts b/packages/react-router/src/client/index.ts
+index 6734b21c85..2443184371 100644
+--- a/packages/react-router/src/client/index.ts
++++ b/packages/react-router/src/client/index.ts
+@@ -31,3 +31,5 @@ export {
+   isNavigateHookInvoked,
+   type CreateSentryClientInstrumentationOptions,
+ } from './createClientInstrumentation';
++
++export { sentryOnError } from './sentryOnError';
+diff --git a/packages/react-router/src/client/sentryOnError.ts b/packages/react-router/src/client/sentryOnError.ts
+new file mode 100644
+index 0000000000..bf6d810856
+--- /dev/null
++++ b/packages/react-router/src/client/sentryOnError.ts
+@@ -0,0 +1,36 @@
++import { captureException } from '@sentry/core';
++import { captureReactException } from '@sentry/react';
++
++/**
++ * A handler function for React Router's `onError` prop on `HydratedRouter`.
++ *
++ * Reports errors to Sentry.
++ *
++ * @example (entry.client.tsx)
++ * ```tsx
++ * import { sentryOnError } from '@sentry/react-router';
++ *
++ * startTransition(() => {
++ *   hydrateRoot(
++ *     document,
++ *     <HydratedRouter onError={sentryOnError} />
++ *   );
++ * });
++ * ```
++ */
++export function sentryOnError(
++  error: unknown,
++  {
++    errorInfo,
++  }: {
++    errorInfo?: React.ErrorInfo;
++  },
++): void {
++  const mechanism = { handled: false, type: 'auto.function.react_router.on_error' };
++
++  if (errorInfo) {
++    captureReactException(error, errorInfo, { mechanism });
++  } else {
++    captureException(error, { mechanism });
++  }
++}
+diff --git a/packages/react-router/test/client/sentryOnError.test.ts b/packages/react-router/test/client/sentryOnError.test.ts
+new file mode 100644
+index 0000000000..33df018582
+--- /dev/null
++++ b/packages/react-router/test/client/sentryOnError.test.ts
+@@ -0,0 +1,38 @@
++import * as SentryCore from '@sentry/core';
++import * as SentryReact from '@sentry/react';
++import { afterEach, describe, expect, it, vi } from 'vitest';
++import { sentryOnError } from '../../src/client/sentryOnError';
++
++const captureReactExceptionSpy = vi.spyOn(SentryReact, 'captureReactException').mockReturnValue('mock-event-id');
++const captureExceptionSpy = vi.spyOn(SentryCore, 'captureException').mockReturnValue('mock-event-id');
++
++describe('sentryOnError', () => {
++  afterEach(() => {
++    vi.clearAllMocks();
++  });
++
++  it('calls captureReactException when errorInfo is provided', () => {
++    const error = new Error('test error');
++    const errorInfo = { componentStack: '<TestComponent>\n<App>' };
++
++    sentryOnError(error, {
++      errorInfo,
++    });
++
++    expect(captureReactExceptionSpy).toHaveBeenCalledWith(error, errorInfo, {
++      mechanism: { handled: false, type: 'auto.function.react_router.on_error' },
++    });
++    expect(captureExceptionSpy).not.toHaveBeenCalled();
++  });
++
++  it('calls captureException when errorInfo is undefined', () => {
++    const error = new Error('loader error');
++
++    sentryOnError(error, {});
++
++    expect(captureExceptionSpy).toHaveBeenCalledWith(error, {
++      mechanism: { handled: false, type: 'auto.function.react_router.on_error' },
++    });
++    expect(captureReactExceptionSpy).not.toHaveBeenCalled();
++  });
++});

@@ -1,0 +1,1140 @@
+diff --git a/packages/svelte/tests/parser-modern/test.ts b/packages/svelte/tests/parser-modern/test.ts
+index 279ba7bc0..e38bfc752 100644
+--- a/packages/svelte/tests/parser-modern/test.ts
++++ b/packages/svelte/tests/parser-modern/test.ts
+@@ -1,12 +1,16 @@
+ import * as fs from 'node:fs';
+ import { assert, it } from 'vitest';
+-import { parse } from 'svelte/compiler';
++import { parse, print } from 'svelte/compiler';
+ import { try_load_json } from '../helpers.js';
+ import { suite, type BaseTest } from '../suite.js';
++import { walk } from 'zimmerframe';
++import type { AST } from 'svelte/compiler';
+ 
+ interface ParserTest extends BaseTest {}
+ 
+ const { test, run } = suite<ParserTest>(async (config, cwd) => {
++	const loose = cwd.split('/').pop()!.startsWith('loose-');
++
+ 	const input = fs
+ 		.readFileSync(`${cwd}/input.svelte`, 'utf-8')
+ 		.replace(/\s+$/, '')
+@@ -32,8 +36,85 @@ const { test, run } = suite<ParserTest>(async (config, cwd) => {
+ 		const expected = try_load_json(`${cwd}/output.json`);
+ 		assert.deepEqual(actual, expected);
+ 	}
++
++	if (!loose) {
++		const printed = print(actual);
++		const reparsed = JSON.parse(
++			JSON.stringify(
++				parse(printed.code, {
++					modern: true,
++					loose
++				})
++			)
++		);
++
++		fs.writeFileSync(`${cwd}/_actual.svelte`, printed.code);
++
++		delete reparsed.comments;
++
++		assert.deepEqual(clean(actual), clean(reparsed));
++	}
+ });
+ 
++function clean(ast: AST.SvelteNode) {
++	return walk(ast, null, {
++		_(node, context) {
++			// @ts-ignore
++			delete node.start;
++			// @ts-ignore
++			delete node.end;
++			// @ts-ignore
++			delete node.loc;
++			// @ts-ignore
++			delete node.leadingComments;
++			// @ts-ignore
++			delete node.trailingComments;
++
++			context.next();
++		},
++		StyleSheet(node, context) {
++			return {
++				type: node.type,
++				attributes: node.attributes.map((attribute) => context.visit(attribute)),
++				children: node.children.map((child) => context.visit(child)),
++				content: {}
++			} as AST.SvelteNode;
++		},
++		Fragment(node, context) {
++			const nodes: AST.SvelteNode[] = [];
++
++			for (let i = 0; i < node.nodes.length; i += 1) {
++				let child = node.nodes[i];
++
++				if (child.type === 'Text') {
++					child = {
++						...child,
++						// trim multiple whitespace to single space
++						data: child.data.replace(/[^\S]+/g, ' '),
++						raw: child.raw.replace(/[^\S]+/g, ' ')
++					};
++
++					if (i === 0) {
++						child.data = child.data.trimStart();
++						child.raw = child.raw.trimStart();
++					}
++
++					if (i === node.nodes.length - 1) {
++						child.data = child.data.trimEnd();
++						child.raw = child.raw.trimEnd();
++					}
++
++					if (child.data === '') continue;
++				}
++
++				nodes.push(context.visit(child));
++			}
++
++			return { ...node, nodes } as AST.Fragment;
++		}
++	});
++}
++
+ export { test };
+ 
+ await run(__dirname);
+diff --git a/packages/svelte/tests/print/samples/animate-directive/input.svelte b/packages/svelte/tests/print/samples/animate-directive/input.svelte
+new file mode 100644
+index 000000000..7cd314f71
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/animate-directive/input.svelte
+@@ -0,0 +1 @@
++<div animate:flip>{item}</div>
+diff --git a/packages/svelte/tests/print/samples/animate-directive/output.svelte b/packages/svelte/tests/print/samples/animate-directive/output.svelte
+new file mode 100644
+index 000000000..7cd314f71
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/animate-directive/output.svelte
+@@ -0,0 +1 @@
++<div animate:flip>{item}</div>
+diff --git a/packages/svelte/tests/print/samples/attach-tag/input.svelte b/packages/svelte/tests/print/samples/attach-tag/input.svelte
+new file mode 100644
+index 000000000..e92604b92
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/attach-tag/input.svelte
+@@ -0,0 +1,13 @@
++<script lang="ts">
++	import type { Attachment } from 'svelte/attachments';
++
++	const myAttachment: Attachment = (element) => {
++		console.log(element.nodeName);
++
++		return () => {
++			console.log('cleaning up');
++		};
++	};
++</script>
++
++<div {@attach myAttachment}>...</div>
+diff --git a/packages/svelte/tests/print/samples/attach-tag/output.svelte b/packages/svelte/tests/print/samples/attach-tag/output.svelte
+new file mode 100644
+index 000000000..e92604b92
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/attach-tag/output.svelte
+@@ -0,0 +1,13 @@
++<script lang="ts">
++	import type { Attachment } from 'svelte/attachments';
++
++	const myAttachment: Attachment = (element) => {
++		console.log(element.nodeName);
++
++		return () => {
++			console.log('cleaning up');
++		};
++	};
++</script>
++
++<div {@attach myAttachment}>...</div>
+diff --git a/packages/svelte/tests/print/samples/attribute/input.svelte b/packages/svelte/tests/print/samples/attribute/input.svelte
+new file mode 100644
+index 000000000..4da846f8e
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/attribute/input.svelte
+@@ -0,0 +1 @@
++<div class="foo" data-foo="bar"></div>
+diff --git a/packages/svelte/tests/print/samples/attribute/output.svelte b/packages/svelte/tests/print/samples/attribute/output.svelte
+new file mode 100644
+index 000000000..4da846f8e
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/attribute/output.svelte
+@@ -0,0 +1 @@
++<div class="foo" data-foo="bar"></div>
+diff --git a/packages/svelte/tests/print/samples/await-block/input.svelte b/packages/svelte/tests/print/samples/await-block/input.svelte
+new file mode 100644
+index 000000000..10f0b3fb9
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/await-block/input.svelte
+@@ -0,0 +1,10 @@
++{#await promise}
++	<!-- promise is pending -->
++	<p>waiting for the promise to resolve...</p>
++{:then value}
++	<!-- promise was fulfilled or not a Promise -->
++	<p>The value is {value}</p>
++{:catch error}
++	<!-- promise was rejected -->
++	<p>Something went wrong: {error.message}</p>
++{/await}
+diff --git a/packages/svelte/tests/print/samples/await-block/output.svelte b/packages/svelte/tests/print/samples/await-block/output.svelte
+new file mode 100644
+index 000000000..10f0b3fb9
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/await-block/output.svelte
+@@ -0,0 +1,10 @@
++{#await promise}
++	<!-- promise is pending -->
++	<p>waiting for the promise to resolve...</p>
++{:then value}
++	<!-- promise was fulfilled or not a Promise -->
++	<p>The value is {value}</p>
++{:catch error}
++	<!-- promise was rejected -->
++	<p>Something went wrong: {error.message}</p>
++{/await}
+diff --git a/packages/svelte/tests/print/samples/bind-directive/input.svelte b/packages/svelte/tests/print/samples/bind-directive/input.svelte
+new file mode 100644
+index 000000000..3b7e08921
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/bind-directive/input.svelte
+@@ -0,0 +1 @@
++<input bind:value={name} />
+diff --git a/packages/svelte/tests/print/samples/bind-directive/output.svelte b/packages/svelte/tests/print/samples/bind-directive/output.svelte
+new file mode 100644
+index 000000000..3b7e08921
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/bind-directive/output.svelte
+@@ -0,0 +1 @@
++<input bind:value={name} />
+diff --git a/packages/svelte/tests/print/samples/block/input.svelte b/packages/svelte/tests/print/samples/block/input.svelte
+new file mode 100644
+index 000000000..84140c5c0
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/block/input.svelte
+@@ -0,0 +1,9 @@
++{#if   condition} yes {:else} no {/if}
++
++{#each items as item, i}
++  <p>{i}: {item}</p>
++{/each}
++
++{#if condition}yes{:else}no{/if}
++
++{#each items as item, i}<p>{i}: {item}</p>{/each}
+diff --git a/packages/svelte/tests/print/samples/block/output.svelte b/packages/svelte/tests/print/samples/block/output.svelte
+new file mode 100644
+index 000000000..e5d859087
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/block/output.svelte
+@@ -0,0 +1,19 @@
++{#if condition}
++	yes
++{:else}
++	no
++{/if}
++
++{#each items as item, i}
++	<p>{i}: {item}</p>
++{/each}
++
++{#if condition}
++	yes
++{:else}
++	no
++{/if}
++
++{#each items as item, i}
++	<p>{i}: {item}</p>
++{/each}
+diff --git a/packages/svelte/tests/print/samples/class-directive/input.svelte b/packages/svelte/tests/print/samples/class-directive/input.svelte
+new file mode 100644
+index 000000000..5e6311193
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/class-directive/input.svelte
+@@ -0,0 +1,8 @@
++<script>
++    let active = true;
++    let foo = false;
++</script>
++
++<div class:active class:bar={foo}>
++    Hello world!
++</div>
+diff --git a/packages/svelte/tests/print/samples/class-directive/output.svelte b/packages/svelte/tests/print/samples/class-directive/output.svelte
+new file mode 100644
+index 000000000..14e561133
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/class-directive/output.svelte
+@@ -0,0 +1,6 @@
++<script>
++	let active = true;
++	let foo = false;
++</script>
++
++<div class:active class:bar={foo}>Hello world!</div>
+diff --git a/packages/svelte/tests/print/samples/comment/input.svelte b/packages/svelte/tests/print/samples/comment/input.svelte
+new file mode 100644
+index 000000000..d144ced1b
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/comment/input.svelte
+@@ -0,0 +1,5 @@
++<!-- inline -->
++
++<!-- 
++    multiline
++-->
+diff --git a/packages/svelte/tests/print/samples/comment/output.svelte b/packages/svelte/tests/print/samples/comment/output.svelte
+new file mode 100644
+index 000000000..f2f97b65b
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/comment/output.svelte
+@@ -0,0 +1,3 @@
++<!-- inline --><!-- 
++    multiline
++-->
+diff --git a/packages/svelte/tests/print/samples/component/input.svelte b/packages/svelte/tests/print/samples/component/input.svelte
+new file mode 100644
+index 000000000..c258d7d60
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/component/input.svelte
+@@ -0,0 +1,8 @@
++<script>
++    import C from './C.svelte';
++</script>
++
++<C foo="bar" />
++<C foo="bar">
++    <span>Hello World</span>
++</C>
+diff --git a/packages/svelte/tests/print/samples/component/output.svelte b/packages/svelte/tests/print/samples/component/output.svelte
+new file mode 100644
+index 000000000..ec8b82788
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/component/output.svelte
+@@ -0,0 +1,6 @@
++<script>
++	import C from './C.svelte';
++</script>
++
++<C foo="bar" />
++<C foo="bar"><span>Hello World</span></C>
+diff --git a/packages/svelte/tests/print/samples/const-tag/input.svelte b/packages/svelte/tests/print/samples/const-tag/input.svelte
+new file mode 100644
+index 000000000..50ada2dd6
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/const-tag/input.svelte
+@@ -0,0 +1,8 @@
++<script>
++    const boxes = [];
++</script>
++
++{#each boxes as box}
++	{@const area = box.width * box.height}
++	{box.width} * {box.height} = {area}
++{/each}
+diff --git a/packages/svelte/tests/print/samples/const-tag/output.svelte b/packages/svelte/tests/print/samples/const-tag/output.svelte
+new file mode 100644
+index 000000000..d9d8addcb
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/const-tag/output.svelte
+@@ -0,0 +1,8 @@
++<script>
++	const boxes = [];
++</script>
++
++{#each boxes as box}
++	{@const area = box.width * box.height;}
++	{box.width} * {box.height} = {area}
++{/each}
+diff --git a/packages/svelte/tests/print/samples/each-block/input.svelte b/packages/svelte/tests/print/samples/each-block/input.svelte
+new file mode 100644
+index 000000000..a859705fe
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/each-block/input.svelte
+@@ -0,0 +1,15 @@
++{#each items as { id, name, qty }, i (id)}
++	<li>{i + 1}: {name} x {qty}</li>
++{/each}
++
++{#each objects as { id, ...rest }}
++	<li><span>{id}</span><MyComponent {...rest} /></li>
++{/each}
++
++{#each expression}...{/each}
++
++{#each todos as todo}
++	<p>{todo.text}</p>
++{:else}
++	<p>No tasks today!</p>
++{/each}
+diff --git a/packages/svelte/tests/print/samples/each-block/output.svelte b/packages/svelte/tests/print/samples/each-block/output.svelte
+new file mode 100644
+index 000000000..b19925a69
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/each-block/output.svelte
+@@ -0,0 +1,17 @@
++{#each items as { id, name, qty }, i (id)}
++	<li>{i + 1}: {name} x {qty}</li>
++{/each}
++
++{#each objects as { id, ...rest }}
++	<li><span>{id}</span><MyComponent {...rest} /></li>
++{/each}
++
++{#each expression}
++	...
++{/each}
++
++{#each todos as todo}
++	<p>{todo.text}</p>
++{:else}
++	<p>No tasks today!</p>
++{/each}
+diff --git a/packages/svelte/tests/print/samples/expression-tag/input.svelte b/packages/svelte/tests/print/samples/expression-tag/input.svelte
+new file mode 100644
+index 000000000..3920c3b40
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/expression-tag/input.svelte
+@@ -0,0 +1,2 @@
++<span>{name}</span>
++<span>{count + 1}</span>
+diff --git a/packages/svelte/tests/print/samples/expression-tag/output.svelte b/packages/svelte/tests/print/samples/expression-tag/output.svelte
+new file mode 100644
+index 000000000..9142a5963
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/expression-tag/output.svelte
+@@ -0,0 +1 @@
++<span>{name}</span><span>{count + 1}</span>
+diff --git a/packages/svelte/tests/print/samples/formatting/input.svelte b/packages/svelte/tests/print/samples/formatting/input.svelte
+new file mode 100644
+index 000000000..9b1898e9c
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/formatting/input.svelte
+@@ -0,0 +1 @@
++<script>import { setLocale } from '$lib/paraglide/runtime';import { m } from '$lib/paraglide/messages.js';</script><h1>{m.hello_world({ name: 'SvelteKit User' })}</h1><div><button onclick={() => setLocale('en')}>en</button><button	onclick={() => setLocale('es')}>es</button></div><p>If you use VSCode, install the <a href="https://marketplace.visualstudio.com/items?itemName=inlang.vs-code-extension" target="_blank">Sherlock i18n extension</a>for a better i18n experience.</p>
+diff --git a/packages/svelte/tests/print/samples/formatting/output.svelte b/packages/svelte/tests/print/samples/formatting/output.svelte
+new file mode 100644
+index 000000000..7b4064258
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/formatting/output.svelte
+@@ -0,0 +1,21 @@
++<script>
++	import { setLocale } from '$lib/paraglide/runtime';
++	import { m } from '$lib/paraglide/messages.js';
++</script>
++
++<h1>{m.hello_world({ name: 'SvelteKit User' })}</h1>
++<div>
++	<button onclick={() => setLocale('en')}>en</button>
++	<button onclick={() => setLocale('es')}>es</button>
++</div>
++<p>
++	If you use VSCode, install the 
++
++	<a
++		href="https://marketplace.visualstudio.com/items?itemName=inlang.vs-code-extension"
++		target="_blank"
++	>
++		Sherlock i18n extension
++	</a>
++	for a better i18n experience.
++</p>
+diff --git a/packages/svelte/tests/print/samples/html-tag/input.svelte b/packages/svelte/tests/print/samples/html-tag/input.svelte
+new file mode 100644
+index 000000000..d021ee8fa
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/html-tag/input.svelte
+@@ -0,0 +1,3 @@
++<article>
++	{@html content}
++</article>
+diff --git a/packages/svelte/tests/print/samples/html-tag/output.svelte b/packages/svelte/tests/print/samples/html-tag/output.svelte
+new file mode 100644
+index 000000000..84777d9b6
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/html-tag/output.svelte
+@@ -0,0 +1 @@
++<article>{@html content}</article>
+diff --git a/packages/svelte/tests/print/samples/if-block/input.svelte b/packages/svelte/tests/print/samples/if-block/input.svelte
+new file mode 100644
+index 000000000..0a444a125
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/if-block/input.svelte
+@@ -0,0 +1,7 @@
++{#if porridge.temperature > 100}
++	<p>too hot!</p>
++{:else if 80 > porridge.temperature}
++	<p>too cold!</p>
++{:else}
++	<p>just right!</p>
++{/if}
+diff --git a/packages/svelte/tests/print/samples/if-block/output.svelte b/packages/svelte/tests/print/samples/if-block/output.svelte
+new file mode 100644
+index 000000000..0a444a125
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/if-block/output.svelte
+@@ -0,0 +1,7 @@
++{#if porridge.temperature > 100}
++	<p>too hot!</p>
++{:else if 80 > porridge.temperature}
++	<p>too cold!</p>
++{:else}
++	<p>just right!</p>
++{/if}
+diff --git a/packages/svelte/tests/print/samples/key-block/input.svelte b/packages/svelte/tests/print/samples/key-block/input.svelte
+new file mode 100644
+index 000000000..9d09f8f00
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/key-block/input.svelte
+@@ -0,0 +1,3 @@
++{#key value}
++	<Component />
++{/key}
+diff --git a/packages/svelte/tests/print/samples/key-block/output.svelte b/packages/svelte/tests/print/samples/key-block/output.svelte
+new file mode 100644
+index 000000000..9d09f8f00
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/key-block/output.svelte
+@@ -0,0 +1,3 @@
++{#key value}
++	<Component />
++{/key}
+diff --git a/packages/svelte/tests/print/samples/let-directive/input.svelte b/packages/svelte/tests/print/samples/let-directive/input.svelte
+new file mode 100644
+index 000000000..c6b49c156
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/let-directive/input.svelte
+@@ -0,0 +1,3 @@
++<FancyList {items} let:item={processed}>
++	<div>{processed.text}</div>
++</FancyList>
+diff --git a/packages/svelte/tests/print/samples/let-directive/output.svelte b/packages/svelte/tests/print/samples/let-directive/output.svelte
+new file mode 100644
+index 000000000..c7254150e
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/let-directive/output.svelte
+@@ -0,0 +1 @@
++<FancyList items={items} let:item={processed}><div>{processed.text}</div></FancyList>
+diff --git a/packages/svelte/tests/print/samples/on-directive/input.svelte b/packages/svelte/tests/print/samples/on-directive/input.svelte
+new file mode 100644
+index 000000000..976749696
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/on-directive/input.svelte
+@@ -0,0 +1,11 @@
++<script lang="ts">
++	let count = 0;
++
++	function handleClick(event: MouseEvent) {
++		count += 1;
++	}
++</script>
++
++<button on:click|preventDefault={handleClick}>
++	count: {count}
++</button>
+diff --git a/packages/svelte/tests/print/samples/on-directive/output.svelte b/packages/svelte/tests/print/samples/on-directive/output.svelte
+new file mode 100644
+index 000000000..da0945678
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/on-directive/output.svelte
+@@ -0,0 +1,9 @@
++<script lang="ts">
++	let count = 0;
++
++	function handleClick(event: MouseEvent) {
++		count += 1;
++	}
++</script>
++
++<button on:click|preventDefault={handleClick}>count: {count}</button>
+diff --git a/packages/svelte/tests/print/samples/regular-element/input.svelte b/packages/svelte/tests/print/samples/regular-element/input.svelte
+new file mode 100644
+index 000000000..c39f4f487
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/regular-element/input.svelte
+@@ -0,0 +1,2 @@
++<div><a href="/foo">bar</a></div>
++<br />
+diff --git a/packages/svelte/tests/print/samples/regular-element/output.svelte b/packages/svelte/tests/print/samples/regular-element/output.svelte
+new file mode 100644
+index 000000000..0cf7c2472
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/regular-element/output.svelte
+@@ -0,0 +1 @@
++<div><a href="/foo">bar</a></div><br />
+diff --git a/packages/svelte/tests/print/samples/render-tag/input.svelte b/packages/svelte/tests/print/samples/render-tag/input.svelte
+new file mode 100644
+index 000000000..b301e4b0d
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/render-tag/input.svelte
+@@ -0,0 +1,7 @@
++{#snippet sum(a, b)}
++	<p>{a} + {b} = {a + b}</p>
++{/snippet}
++
++{@render sum(1, 2)}
++{@render sum(3, 4)}
++{@render sum(5, 6)}
+diff --git a/packages/svelte/tests/print/samples/render-tag/output.svelte b/packages/svelte/tests/print/samples/render-tag/output.svelte
+new file mode 100644
+index 000000000..b301e4b0d
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/render-tag/output.svelte
+@@ -0,0 +1,7 @@
++{#snippet sum(a, b)}
++	<p>{a} + {b} = {a + b}</p>
++{/snippet}
++
++{@render sum(1, 2)}
++{@render sum(3, 4)}
++{@render sum(5, 6)}
+diff --git a/packages/svelte/tests/print/samples/script/input.svelte b/packages/svelte/tests/print/samples/script/input.svelte
+new file mode 100644
+index 000000000..f094ccf55
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/script/input.svelte
+@@ -0,0 +1,3 @@
++<script lang="ts" module>
++    console.log('hello world');
++</script>
+diff --git a/packages/svelte/tests/print/samples/script/output.svelte b/packages/svelte/tests/print/samples/script/output.svelte
+new file mode 100644
+index 000000000..da5f5725b
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/script/output.svelte
+@@ -0,0 +1,3 @@
++<script lang="ts" module>
++	console.log('hello world');
++</script>
+diff --git a/packages/svelte/tests/print/samples/slot-element/input.svelte b/packages/svelte/tests/print/samples/slot-element/input.svelte
+new file mode 100644
+index 000000000..b92372f98
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/slot-element/input.svelte
+@@ -0,0 +1,3 @@
++<div class="modal">
++	<slot></slot>
++</div>
+diff --git a/packages/svelte/tests/print/samples/slot-element/output.svelte b/packages/svelte/tests/print/samples/slot-element/output.svelte
+new file mode 100644
+index 000000000..4d5999407
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/slot-element/output.svelte
+@@ -0,0 +1 @@
++<div class="modal"><slot></slot></div>
+diff --git a/packages/svelte/tests/print/samples/snippet-block/input.svelte b/packages/svelte/tests/print/samples/snippet-block/input.svelte
+new file mode 100644
+index 000000000..47f8efd9e
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/snippet-block/input.svelte
+@@ -0,0 +1,3 @@
++{#snippet name(param1, param2, paramN)}
++    Foo
++{/snippet}
+diff --git a/packages/svelte/tests/print/samples/snippet-block/output.svelte b/packages/svelte/tests/print/samples/snippet-block/output.svelte
+new file mode 100644
+index 000000000..bb172f1db
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/snippet-block/output.svelte
+@@ -0,0 +1,3 @@
++{#snippet name(param1, param2, paramN)}
++	Foo
++{/snippet}
+diff --git a/packages/svelte/tests/print/samples/spread-attribute/input.svelte b/packages/svelte/tests/print/samples/spread-attribute/input.svelte
+new file mode 100644
+index 000000000..836425cae
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/spread-attribute/input.svelte
+@@ -0,0 +1 @@
++<div {...props}></div>
+diff --git a/packages/svelte/tests/print/samples/spread-attribute/output.svelte b/packages/svelte/tests/print/samples/spread-attribute/output.svelte
+new file mode 100644
+index 000000000..836425cae
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/spread-attribute/output.svelte
+@@ -0,0 +1 @@
++<div {...props}></div>
+diff --git a/packages/svelte/tests/print/samples/style-directive/input.svelte b/packages/svelte/tests/print/samples/style-directive/input.svelte
+new file mode 100644
+index 000000000..2951fc9da
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/style-directive/input.svelte
+@@ -0,0 +1,2 @@
++<div style:color="red">...</div>
++<div style:color style:width="12rem" style:background-color={darkMode ? 'black' : 'white'}>...</div>
+diff --git a/packages/svelte/tests/print/samples/style-directive/output.svelte b/packages/svelte/tests/print/samples/style-directive/output.svelte
+new file mode 100644
+index 000000000..5aa3a6dcd
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/style-directive/output.svelte
+@@ -0,0 +1,8 @@
++<div style:color="red">...</div>
++<div
++	style:color
++	style:width="12rem"
++	style:background-color={darkMode ? 'black' : 'white'}
++>
++	...
++</div>
+diff --git a/packages/svelte/tests/print/samples/style/input.svelte b/packages/svelte/tests/print/samples/style/input.svelte
+new file mode 100644
+index 000000000..94312774e
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/style/input.svelte
+@@ -0,0 +1,43 @@
++<style>
++  .foo {
++    color: red;
++  }
++
++  .foo.bar {
++    color: blue;
++  }
++
++  @media (max-width: 600px) {
++    .box {
++      display: none;
++    }
++  }
++
++
++  @keyframes fade {
++    from { opacity: 0; }
++    to   { opacity: 1; }
++  }
++
++
++  @font-face {
++    font-family: "MyFont";
++    src: url("/fonts/MyFont.woff2") format("woff2");
++  }
++
++  .container .item { color: red; }
++  nav > ul.menu { display: flex; }
++  h2 + p.note { margin-top: 0; }
++  li:nth-child(2n + 1) { color: red; }
++  .button:hover { opacity: 0.5; }
++  .card::before {
++    content: "";
++    display: block;
++  }
++  .container > .item { color: red; }
++  h1 + p { margin-top: 0; }
++
++  .container .item, nav > ul.menu {
++    color: red;
++  }
++</style>
+diff --git a/packages/svelte/tests/print/samples/style/output.svelte b/packages/svelte/tests/print/samples/style/output.svelte
+new file mode 100644
+index 000000000..0f87f1094
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/style/output.svelte
+@@ -0,0 +1,69 @@
++
++
++<style>
++	.foo {
++		color: red;
++	}
++
++	.foo.bar {
++		color: blue;
++	}
++
++	@media (max-width: 600px) {
++		.box {
++			display: none;
++		}
++	}
++
++	@keyframes fade {
++		from {
++			opacity: 0;
++		}
++		to {
++			opacity: 1;
++		}
++	}
++
++	@font-face {
++		font-family: "MyFont";
++		src: url("/fonts/MyFont.woff2") format("woff2");
++	}
++
++	.container .item {
++		color: red;
++	}
++
++	nav > ul.menu {
++		display: flex;
++	}
++
++	h2 + p.note {
++		margin-top: 0;
++	}
++
++	li:nth-child(2n + 1) {
++		color: red;
++	}
++
++	.button:hover {
++		opacity: 0.5;
++	}
++
++	.card::before {
++		content: "";
++		display: block;
++	}
++
++	.container > .item {
++		color: red;
++	}
++
++	h1 + p {
++		margin-top: 0;
++	}
++
++	.container .item,
++	nav > ul.menu {
++		color: red;
++	}
++</style>
+diff --git a/packages/svelte/tests/print/samples/svelte-boundary/input.svelte b/packages/svelte/tests/print/samples/svelte-boundary/input.svelte
+new file mode 100644
+index 000000000..2cbd32daf
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-boundary/input.svelte
+@@ -0,0 +1,7 @@
++<svelte:boundary>
++	<p>{await delayed('hello!')}</p>
++
++	{#snippet pending()}
++		<p>loading...</p>
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/svelte/tests/print/samples/svelte-boundary/output.svelte b/packages/svelte/tests/print/samples/svelte-boundary/output.svelte
+new file mode 100644
+index 000000000..2cbd32daf
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-boundary/output.svelte
+@@ -0,0 +1,7 @@
++<svelte:boundary>
++	<p>{await delayed('hello!')}</p>
++
++	{#snippet pending()}
++		<p>loading...</p>
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/svelte/tests/print/samples/svelte-component/input.svelte b/packages/svelte/tests/print/samples/svelte-component/input.svelte
+new file mode 100644
+index 000000000..046ee0f89
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-component/input.svelte
+@@ -0,0 +1 @@
++<svelte:component this={MyComponent} />
+diff --git a/packages/svelte/tests/print/samples/svelte-component/output.svelte b/packages/svelte/tests/print/samples/svelte-component/output.svelte
+new file mode 100644
+index 000000000..046ee0f89
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-component/output.svelte
+@@ -0,0 +1 @@
++<svelte:component this={MyComponent} />
+diff --git a/packages/svelte/tests/print/samples/svelte-document/input.svelte b/packages/svelte/tests/print/samples/svelte-document/input.svelte
+new file mode 100644
+index 000000000..b99b973e0
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-document/input.svelte
+@@ -0,0 +1 @@
++<svelte:document onvisibilitychange={handleVisibilityChange} use:someAction />
+diff --git a/packages/svelte/tests/print/samples/svelte-document/output.svelte b/packages/svelte/tests/print/samples/svelte-document/output.svelte
+new file mode 100644
+index 000000000..418ae4e00
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-document/output.svelte
+@@ -0,0 +1,4 @@
++<svelte:document
++	onvisibilitychange={handleVisibilityChange}
++	use:someAction
++></svelte:document>
+diff --git a/packages/svelte/tests/print/samples/svelte-element/input.svelte b/packages/svelte/tests/print/samples/svelte-element/input.svelte
+new file mode 100644
+index 000000000..388c5a609
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-element/input.svelte
+@@ -0,0 +1,7 @@
++<script>
++	let tag = $state('hr');
++</script>
++
++<svelte:element this={tag}>
++	This text cannot appear inside an hr element
++</svelte:element>
+diff --git a/packages/svelte/tests/print/samples/svelte-element/output.svelte b/packages/svelte/tests/print/samples/svelte-element/output.svelte
+new file mode 100644
+index 000000000..388c5a609
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-element/output.svelte
+@@ -0,0 +1,7 @@
++<script>
++	let tag = $state('hr');
++</script>
++
++<svelte:element this={tag}>
++	This text cannot appear inside an hr element
++</svelte:element>
+diff --git a/packages/svelte/tests/print/samples/svelte-fragment/input.svelte b/packages/svelte/tests/print/samples/svelte-fragment/input.svelte
+new file mode 100644
+index 000000000..eb8002362
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-fragment/input.svelte
+@@ -0,0 +1,11 @@
++<script lang="ts">
++	import Widget from './Widget.svelte';
++</script>
++
++<Widget>
++	<h1 slot="header">Hello</h1>
++	<svelte:fragment slot="footer">
++		<p>All rights reserved.</p>
++		<p>Copyright (c) 2019 Svelte Industries</p>
++	</svelte:fragment>
++</Widget>
+diff --git a/packages/svelte/tests/print/samples/svelte-fragment/output.svelte b/packages/svelte/tests/print/samples/svelte-fragment/output.svelte
+new file mode 100644
+index 000000000..eb8002362
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-fragment/output.svelte
+@@ -0,0 +1,11 @@
++<script lang="ts">
++	import Widget from './Widget.svelte';
++</script>
++
++<Widget>
++	<h1 slot="header">Hello</h1>
++	<svelte:fragment slot="footer">
++		<p>All rights reserved.</p>
++		<p>Copyright (c) 2019 Svelte Industries</p>
++	</svelte:fragment>
++</Widget>
+diff --git a/packages/svelte/tests/print/samples/svelte-head/input.svelte b/packages/svelte/tests/print/samples/svelte-head/input.svelte
+new file mode 100644
+index 000000000..0a08871ab
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-head/input.svelte
+@@ -0,0 +1,4 @@
++<svelte:head>
++	<title>Hello world!</title>
++	<meta name="description" content="This is where the description goes for SEO" />
++</svelte:head>
+diff --git a/packages/svelte/tests/print/samples/svelte-head/output.svelte b/packages/svelte/tests/print/samples/svelte-head/output.svelte
+new file mode 100644
+index 000000000..68d352260
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-head/output.svelte
+@@ -0,0 +1,7 @@
++<svelte:head>
++	<title>Hello world!</title>
++	<meta
++		name="description"
++		content="This is where the description goes for SEO"
++	/>
++</svelte:head>
+diff --git a/packages/svelte/tests/print/samples/svelte-options/input.svelte b/packages/svelte/tests/print/samples/svelte-options/input.svelte
+new file mode 100644
+index 000000000..70e2dda5c
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-options/input.svelte
+@@ -0,0 +1 @@
++<svelte:options runes={true} namespace="html" css="injected" customElement="my-custom-element" />
+diff --git a/packages/svelte/tests/print/samples/svelte-options/output.svelte b/packages/svelte/tests/print/samples/svelte-options/output.svelte
+new file mode 100644
+index 000000000..70e2dda5c
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-options/output.svelte
+@@ -0,0 +1 @@
++<svelte:options runes={true} namespace="html" css="injected" customElement="my-custom-element" />
+diff --git a/packages/svelte/tests/print/samples/svelte-self/input.svelte b/packages/svelte/tests/print/samples/svelte-self/input.svelte
+new file mode 100644
+index 000000000..7711defef
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-self/input.svelte
+@@ -0,0 +1,10 @@
++<script>
++	export let count;
++</script>
++
++{#if count > 0}
++	<p>counting down... {count}</p>
++	<svelte:self count={count - 1} />
++{:else}
++	<p>lift-off!</p>
++{/if}
+diff --git a/packages/svelte/tests/print/samples/svelte-self/output.svelte b/packages/svelte/tests/print/samples/svelte-self/output.svelte
+new file mode 100644
+index 000000000..15031a39f
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-self/output.svelte
+@@ -0,0 +1,10 @@
++<script>
++	export let count;
++</script>
++
++{#if count > 0}
++	<p>counting down... {count}</p>
++	<svelte:self count={count - 1}></svelte:self>
++{:else}
++	<p>lift-off!</p>
++{/if}
+diff --git a/packages/svelte/tests/print/samples/svelte-window/input.svelte b/packages/svelte/tests/print/samples/svelte-window/input.svelte
+new file mode 100644
+index 000000000..054e584e1
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-window/input.svelte
+@@ -0,0 +1,7 @@
++<script>
++	function handleKeydown(event) {
++		alert(`pressed the ${event.key} key`);
++	}
++</script>
++
++<svelte:window onkeydown={handleKeydown} />
+diff --git a/packages/svelte/tests/print/samples/svelte-window/output.svelte b/packages/svelte/tests/print/samples/svelte-window/output.svelte
+new file mode 100644
+index 000000000..03997acab
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/svelte-window/output.svelte
+@@ -0,0 +1,7 @@
++<script>
++	function handleKeydown(event) {
++		alert(`pressed the ${event.key} key`);
++	}
++</script>
++
++<svelte:window onkeydown={handleKeydown}></svelte:window>
+diff --git a/packages/svelte/tests/print/samples/text/input.svelte b/packages/svelte/tests/print/samples/text/input.svelte
+new file mode 100644
+index 000000000..a04fa3c48
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/text/input.svelte
+@@ -0,0 +1 @@
++<p>Hello world</p>
+diff --git a/packages/svelte/tests/print/samples/text/output.svelte b/packages/svelte/tests/print/samples/text/output.svelte
+new file mode 100644
+index 000000000..a04fa3c48
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/text/output.svelte
+@@ -0,0 +1 @@
++<p>Hello world</p>
+diff --git a/packages/svelte/tests/print/samples/transition-directive/input.svelte b/packages/svelte/tests/print/samples/transition-directive/input.svelte
+new file mode 100644
+index 000000000..7fd08df6e
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/transition-directive/input.svelte
+@@ -0,0 +1,11 @@
++<script>
++	import { fade } from 'svelte/transition';
++
++	let visible = $state(false);
++</script>
++
++<button onclick={() => visible = !visible}>toggle</button>
++
++{#if visible}
++	<div transition:fade>fades in and out</div>
++{/if}
+diff --git a/packages/svelte/tests/print/samples/transition-directive/output.svelte b/packages/svelte/tests/print/samples/transition-directive/output.svelte
+new file mode 100644
+index 000000000..7fd08df6e
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/transition-directive/output.svelte
+@@ -0,0 +1,11 @@
++<script>
++	import { fade } from 'svelte/transition';
++
++	let visible = $state(false);
++</script>
++
++<button onclick={() => visible = !visible}>toggle</button>
++
++{#if visible}
++	<div transition:fade>fades in and out</div>
++{/if}
+diff --git a/packages/svelte/tests/print/samples/use-directive/input.svelte b/packages/svelte/tests/print/samples/use-directive/input.svelte
+new file mode 100644
+index 000000000..3b9f5562f
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/use-directive/input.svelte
+@@ -0,0 +1,9 @@
++<script lang="ts">
++	import type { Action } from 'svelte/action';
++
++	const myaction: Action = (node, data) => {
++		// ...
++	};
++</script>
++
++<div use:myaction={data}>...</div>
+diff --git a/packages/svelte/tests/print/samples/use-directive/output.svelte b/packages/svelte/tests/print/samples/use-directive/output.svelte
+new file mode 100644
+index 000000000..3b9f5562f
+--- /dev/null
++++ b/packages/svelte/tests/print/samples/use-directive/output.svelte
+@@ -0,0 +1,9 @@
++<script lang="ts">
++	import type { Action } from 'svelte/action';
++
++	const myaction: Action = (node, data) => {
++		// ...
++	};
++</script>
++
++<div use:myaction={data}>...</div>
+diff --git a/packages/svelte/tests/print/test.ts b/packages/svelte/tests/print/test.ts
+new file mode 100644
+index 000000000..aa007a7a5
+--- /dev/null
++++ b/packages/svelte/tests/print/test.ts
+@@ -0,0 +1,30 @@
++import * as fs from 'node:fs';
++import { assert } from 'vitest';
++import { parse, print } from 'svelte/compiler';
++import { suite, type BaseTest } from '../suite.js';
++
++interface PrintTest extends BaseTest {}
++
++const { test, run } = suite<PrintTest>(async (config, cwd) => {
++	const input = fs.readFileSync(`${cwd}/input.svelte`, 'utf-8');
++
++	const ast = parse(input, { modern: true });
++	const output = print(ast);
++	const outputCode = output.code.endsWith('\n') ? output.code : output.code + '\n';
++
++	// run `UPDATE_SNAPSHOTS=true pnpm test print` to update print tests
++	if (process.env.UPDATE_SNAPSHOTS) {
++		fs.writeFileSync(`${cwd}/output.svelte`, outputCode);
++	} else {
++		fs.writeFileSync(`${cwd}/_actual.svelte`, outputCode);
++
++		const file = `${cwd}/output.svelte`;
++
++		const expected = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '';
++		assert.deepEqual(outputCode.trim().replaceAll('\r', ''), expected.trim().replaceAll('\r', ''));
++	}
++});
++
++export { test };
++
++await run(__dirname);

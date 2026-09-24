@@ -1,0 +1,39 @@
+task_id: expo_eas_cli_expo_73ff1270a757
+hidden_test_patches:
+- repo: eas-cli
+  patch: hidden/patches/eas-cli-hidden-tests.patch
+  test_profile: eas_cli-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - packages/eas-cli/src/user/__tests__/SessionManager-test.ts
+  hidden_file: *id001
+  semantic_changes: >-
+    Replaced Gold-specific helper and private-method assertions with browser-login behavior
+    observed through the existing public session-manager entrypoint, including SSO selection,
+    session persistence, and success/error redirects.
+  source: upstream test changes from expo/eas-cli PR(s) 3312
+- repo: expo
+  patch: hidden/patches/expo-hidden-tests.patch
+  test_profile: expo-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - packages/@expo/cli/e2e/__tests__/login-test.ts
+  - packages/@expo/cli/src/api/user/__tests__/actions-test.ts
+  - packages/@expo/cli/src/api/user/__tests__/user-test.ts
+  hidden_file: *id002
+  semantic_changes: >-
+    Replaced exact help text and Gold-specific browser-login export assertions with public CLI
+    output, login-routing behavior, saved-session, and callback-redirect assertions that do not
+    prescribe a helper name or source-file layout.
+  source: upstream test changes from expo/expo PR(s) 42614
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - eas_cli-hidden
+    - expo-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

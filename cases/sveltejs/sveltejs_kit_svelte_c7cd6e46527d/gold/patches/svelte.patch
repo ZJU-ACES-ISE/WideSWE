@@ -1,0 +1,830 @@
+diff --git a/.changeset/pink-dogs-like.md b/.changeset/pink-dogs-like.md
+new file mode 100644
+index 000000000..f2980979c
+--- /dev/null
++++ b/.changeset/pink-dogs-like.md
+@@ -0,0 +1,5 @@
++---
++'svelte': minor
++---
++
++feat: allow error boundaries to work on the server
+diff --git a/documentation/docs/05-special-elements/01-svelte-boundary.md b/documentation/docs/05-special-elements/01-svelte-boundary.md
+index 40e8d144e..e1ad00a50 100644
+--- a/documentation/docs/05-special-elements/01-svelte-boundary.md
++++ b/documentation/docs/05-special-elements/01-svelte-boundary.md
+@@ -102,3 +102,40 @@ If an `onerror` function is provided, it will be called with the same two `error
+ ```
+ 
+ If an error occurs inside the `onerror` function (or if you rethrow the error), it will be handled by a parent boundary if such exists.
++
++## Using `transformError`
++
++By default, error boundaries have no effect on the server — if an error occurs during rendering, the render as a whole will fail.
++
++Since 5.51 you can control this behaviour for boundaries with a `failed` snippet, by calling [`render(...)`](imperative-component-api#render) with a `transformError` function.
++
++> [!NOTE] If you're using Svelte via a framework such as SvelteKit, you most likely don't have direct access to the `render(...)` call — the framework must configure `transformError` on your behalf. SvelteKit will add support for this in the near future, via the [`handleError`](../kit/hooks#Shared-hooks-handleError) hook.
++
++The `transformError` function must return a JSON-stringifiable object which will be used to render the `failed` snippet. This object will be serialized and used to hydrate the snippet in the browser:
++
++```js
++// @errors: 1005
++import { render } from 'svelte/server';
++import App from './App.svelte';
++
++const { head, body } = await render(App, {
++	transformError: (error) => {
++		// log the original error, with the stack trace...
++		console.error(error);
++
++		// ...and return a sanitized user-friendly error
++		// to display in the `failed` snippet
++		return {
++			message: 'An error occurred!'
++		};
++	};
++});
++```
++
++If `transformError` throws (or rethrows) an error, `render(...)` as a whole will fail with that error.
++
++> [!NOTE] Errors that occur during server-side rendering can contain sensitive information in the `message` and `stack`. It's recommended to redact these rather than sending them unaltered to the browser.
++
++If the boundary has an `onerror` handler, it will be called upon hydration with the deserialized error object.
++
++The [`mount`](imperative-component-api#mount) and [`hydrate`](imperative-component-api#hydrate) functions also accept a `transformError` option, which defaults to the identity function. As with `render`, this function transforms a render-time error before it is passed to a `failed` snippet or `onerror` handler.
+diff --git a/packages/svelte/src/compiler/phases/3-transform/server/visitors/SvelteBoundary.js b/packages/svelte/src/compiler/phases/3-transform/server/visitors/SvelteBoundary.js
+index 8a30e765c..47a07a131 100644
+--- a/packages/svelte/src/compiler/phases/3-transform/server/visitors/SvelteBoundary.js
++++ b/packages/svelte/src/compiler/phases/3-transform/server/visitors/SvelteBoundary.js
+@@ -15,7 +15,17 @@ import {
+  * @param {ComponentContext} context
+  */
+ export function SvelteBoundary(node, context) {
+-	// if this has a `pending` snippet, render it
++	// Extract the `failed` snippet/attribute
++	const failed_snippet = /** @type {AST.SnippetBlock | undefined} */ (
++		node.fragment.nodes.find(
++			(node) => node.type === 'SnippetBlock' && node.expression.name === 'failed'
++		)
++	);
++	const failed_attribute = /** @type {AST.Attribute} */ (
++		node.attributes.find((node) => node.type === 'Attribute' && node.name === 'failed')
++	);
++
++	// Extract the `pending` snippet/attribute
+ 	const pending_attribute = /** @type {AST.Attribute} */ (
+ 		node.attributes.find((node) => node.type === 'Attribute' && node.name === 'pending')
+ 	);
+@@ -24,48 +34,106 @@ export function SvelteBoundary(node, context) {
+ 		typeof pending_attribute.value === 'object' &&
+ 		!Array.isArray(pending_attribute.value) &&
+ 		!context.state.scope.evaluate(pending_attribute.value.expression).is_defined;
+-
+-	const pending_snippet = /** @type {AST.SnippetBlock} */ (
++	const pending_snippet = /** @type {AST.SnippetBlock | undefined} */ (
+ 		node.fragment.nodes.find(
+ 			(node) => node.type === 'SnippetBlock' && node.expression.name === 'pending'
+ 		)
+ 	);
+ 
++	const children_nodes = node.fragment.nodes.filter(
++		(child) =>
++			!(child.type === 'SnippetBlock' && ['failed', 'pending'].includes(child.expression.name))
++	);
++
++	const children_fragment = { ...node.fragment, nodes: children_nodes };
++	const children_block = /** @type {BlockStatement} */ (
++		context.visit(children_fragment, {
++			...context.state,
++			scope: context.state.scopes.get(node.fragment) ?? context.state.scope
++		})
++	);
++
++	/** @type {BlockStatement} */
++	let children_body;
++
+ 	if (pending_attribute || pending_snippet) {
+ 		if (pending_attribute && is_pending_attr_nullish && !pending_snippet) {
+-			const callee = build_attribute_value(
+-				pending_attribute.value,
+-				context,
+-				(expression) => expression,
+-				false,
+-				true
+-			);
+-			const pending = b.call(callee, b.id('$$renderer'));
+-			const block = /** @type {BlockStatement} */ (context.visit(node.fragment));
+-			context.state.template.push(
++			const { callee, pending_block } = build_pending_attribute_block(pending_attribute, context);
++
++			children_body = b.block([
+ 				b.if(
+ 					callee,
+-					b.block(build_template([block_open_else, b.stmt(pending), block_close])),
+-					b.block(build_template([block_open, block, block_close]))
++					pending_block,
++					b.block(build_template([block_open, children_block, block_close]))
+ 				)
+-			);
++			]);
+ 		} else {
+-			const pending = pending_attribute
+-				? b.call(
+-						build_attribute_value(
+-							pending_attribute.value,
+-							context,
+-							(expression) => expression,
+-							false,
+-							true
+-						),
+-						b.id('$$renderer')
+-					)
+-				: /** @type {BlockStatement} */ (context.visit(pending_snippet.body));
+-			context.state.template.push(block_open_else, pending, block_close);
++			children_body = pending_attribute
++				? build_pending_attribute_block(pending_attribute, context).pending_block
++				: build_pending_snippet_block(/** @type {AST.SnippetBlock} */ (pending_snippet), context);
+ 		}
+ 	} else {
+-		const block = /** @type {BlockStatement} */ (context.visit(node.fragment));
+-		context.state.template.push(block_open, block, block_close);
++		children_body = b.block(build_template([block_open, children_block, block_close]));
++	}
++
++	// When there's no `failed` snippet/attribute, skip the boundary wrapper entirely
++	// (saves bytes / more performant at runtime)
++	if (!failed_snippet && !failed_attribute) {
++		context.state.template.push(...children_body.body);
++		return;
++	}
++
++	const props = b.object([]);
++	if (failed_attribute && !failed_snippet) {
++		const failed_callee = build_attribute_value(
++			failed_attribute.value,
++			context,
++			(expression) => expression,
++			false,
++			true
++		);
++
++		props.properties.push(b.init('failed', failed_callee));
++	} else if (failed_snippet) {
++		context.visit(failed_snippet, context.state);
++		props.properties.push(b.init('failed', failed_snippet.expression));
+ 	}
++
++	context.state.template.push(
++		b.stmt(b.call('$$renderer.boundary', props, b.arrow([b.id('$$renderer')], children_body)))
++	);
++}
++
++/**
++ * @param {AST.Attribute} attribute
++ * @param {ComponentContext} context
++ */
++function build_pending_attribute_block(attribute, context) {
++	const callee = build_attribute_value(
++		attribute.value,
++		context,
++		(expression) => expression,
++		false,
++		true
++	);
++	const pending = b.call(callee, b.id('$$renderer'));
++
++	return {
++		callee,
++		pending_block: b.block(build_template([block_open_else, b.stmt(pending), block_close]))
++	};
++}
++
++/**
++ * @param {AST.SnippetBlock} snippet
++ * @param {ComponentContext} context
++ */
++function build_pending_snippet_block(snippet, context) {
++	return b.block(
++		build_template([
++			block_open_else,
++			/** @type {BlockStatement} */ (context.visit(snippet.body)),
++			block_close
++		])
++	);
+ }
+diff --git a/packages/svelte/src/constants.js b/packages/svelte/src/constants.js
+index 63324c860..a3a109b94 100644
+--- a/packages/svelte/src/constants.js
++++ b/packages/svelte/src/constants.js
+@@ -23,6 +23,8 @@ export const TEMPLATE_USE_MATHML = 1 << 3;
+ export const HYDRATION_START = '[';
+ /** used to indicate that an `{:else}...` block was rendered */
+ export const HYDRATION_START_ELSE = '[!';
++/** used to indicate that a boundary's `failed` snippet was rendered on the server */
++export const HYDRATION_START_FAILED = '[?';
+ export const HYDRATION_END = ']';
+ export const HYDRATION_ERROR = {};
+ 
+diff --git a/packages/svelte/src/index.d.ts b/packages/svelte/src/index.d.ts
+index a1782f5b6..7823c8e33 100644
+--- a/packages/svelte/src/index.d.ts
++++ b/packages/svelte/src/index.d.ts
+@@ -21,6 +21,7 @@ export interface ComponentConstructorOptions<
+ 	sync?: boolean;
+ 	idPrefix?: string;
+ 	$$inline?: boolean;
++	transformError?: (error: unknown) => unknown;
+ }
+ 
+ /**
+@@ -338,6 +339,11 @@ export type MountOptions<Props extends Record<string, any> = Record<string, any>
+ 	 * @default true
+ 	 */
+ 	intro?: boolean;
++	/**
++	 * A function that transforms errors caught by error boundaries before they are passed to the `failed` snippet.
++	 * Defaults to the identity function.
++	 */
++	transformError?: (error: unknown) => unknown | Promise<unknown>;
+ } & ({} extends Props
+ 	? {
+ 			/**
+diff --git a/packages/svelte/src/internal/client/dom/blocks/boundary.js b/packages/svelte/src/internal/client/dom/blocks/boundary.js
+index 8f23fb1a2..429a2eb29 100644
+--- a/packages/svelte/src/internal/client/dom/blocks/boundary.js
++++ b/packages/svelte/src/internal/client/dom/blocks/boundary.js
+@@ -6,7 +6,7 @@ import {
+ 	EFFECT_TRANSPARENT,
+ 	MAYBE_DIRTY
+ } from '#client/constants';
+-import { HYDRATION_START_ELSE } from '../../../../constants.js';
++import { HYDRATION_START_ELSE, HYDRATION_START_FAILED } from '../../../../constants.js';
+ import { component_context, set_component_context } from '../../context.js';
+ import { handle_error, invoke_error_boundary } from '../../error-handling.js';
+ import {
+@@ -57,10 +57,11 @@ var flags = EFFECT_TRANSPARENT | EFFECT_PRESERVED;
+  * @param {TemplateNode} node
+  * @param {BoundaryProps} props
+  * @param {((anchor: Node) => void)} children
++ * @param {((error: unknown) => unknown) | undefined} [transform_error]
+  * @returns {void}
+  */
+-export function boundary(node, props, children) {
+-	new Boundary(node, props, children);
++export function boundary(node, props, children, transform_error) {
++	new Boundary(node, props, children, transform_error);
+ }
+ 
+ export class Boundary {
+@@ -69,6 +70,13 @@ export class Boundary {
+ 
+ 	is_pending = false;
+ 
++	/**
++	 * API-level transformError transform function. Transforms errors before they reach the `failed` snippet.
++	 * Inherited from parent boundary, or defaults to identity.
++	 * @type {(error: unknown) => unknown}
++	 */
++	transform_error;
++
+ 	/** @type {TemplateNode} */
+ 	#anchor;
+ 
+@@ -131,8 +139,9 @@ export class Boundary {
+ 	 * @param {TemplateNode} node
+ 	 * @param {BoundaryProps} props
+ 	 * @param {((anchor: Node) => void)} children
++	 * @param {((error: unknown) => unknown) | undefined} [transform_error]
+ 	 */
+-	constructor(node, props, children) {
++	constructor(node, props, children, transform_error) {
+ 		this.#anchor = node;
+ 		this.#props = props;
+ 
+@@ -147,12 +156,23 @@ export class Boundary {
+ 
+ 		this.parent = /** @type {Effect} */ (active_effect).b;
+ 
++		// Inherit transform_error from parent boundary, or use the provided one, or default to identity
++		this.transform_error = transform_error ?? this.parent?.transform_error ?? ((e) => e);
++
+ 		this.#effect = block(() => {
+ 			if (hydrating) {
+ 				const comment = /** @type {Comment} */ (this.#hydrate_open);
+ 				hydrate_next();
+ 
+-				if (comment.data === HYDRATION_START_ELSE) {
++				const server_rendered_pending = comment.data === HYDRATION_START_ELSE;
++				const server_rendered_failed = comment.data.startsWith(HYDRATION_START_FAILED);
++
++				if (server_rendered_failed) {
++					// Server rendered the failed snippet - hydrate it.
++					// The serialized error is embedded in the comment: <!--[?<json>-->
++					const serialized_error = JSON.parse(comment.data.slice(HYDRATION_START_FAILED.length));
++					this.#hydrate_failed_content(serialized_error);
++				} else if (server_rendered_pending) {
+ 					this.#hydrate_pending_content();
+ 				} else {
+ 					this.#hydrate_resolved_content();
+@@ -175,6 +195,22 @@ export class Boundary {
+ 		}
+ 	}
+ 
++	/**
++	 * @param {unknown} error The deserialized error from the server's hydration comment
++	 */
++	#hydrate_failed_content(error) {
++		const failed = this.#props.failed;
++		if (!failed) return;
++
++		this.#failed_effect = branch(() => {
++			failed(
++				this.#anchor,
++				() => error,
++				() => () => {}
++			);
++		});
++	}
++
+ 	#hydrate_pending_content() {
+ 		const pending = this.#props.pending;
+ 		if (!pending) return;
+@@ -416,10 +452,11 @@ export class Boundary {
+ 			});
+ 		};
+ 
+-		queue_micro_task(() => {
++		/** @param {unknown} transformed_error */
++		const handle_error_result = (transformed_error) => {
+ 			try {
+ 				calling_on_error = true;
+-				onerror?.(error, reset);
++				onerror?.(transformed_error, reset);
+ 				calling_on_error = false;
+ 			} catch (error) {
+ 				invoke_error_boundary(error, this.#effect && this.#effect.parent);
+@@ -440,7 +477,7 @@ export class Boundary {
+ 
+ 							failed(
+ 								this.#anchor,
+-								() => error,
++								() => transformed_error,
+ 								() => reset
+ 							);
+ 						});
+@@ -450,6 +487,34 @@ export class Boundary {
+ 					}
+ 				});
+ 			}
++		};
++
++		queue_micro_task(() => {
++			// Run the error through the API-level transformError transform (e.g. SvelteKit's handleError)
++			/** @type {unknown} */
++			var result;
++			try {
++				result = this.transform_error(error);
++			} catch (e) {
++				invoke_error_boundary(e, this.#effect && this.#effect.parent);
++				return;
++			}
++
++			if (
++				result !== null &&
++				typeof result === 'object' &&
++				typeof (/** @type {any} */ (result).then) === 'function'
++			) {
++				// transformError returned a Promise — wait for it
++				/** @type {any} */ (result).then(
++					handle_error_result,
++					/** @param {unknown} e */
++					(e) => invoke_error_boundary(e, this.#effect && this.#effect.parent)
++				);
++			} else {
++				// Synchronous result — handle immediately
++				handle_error_result(result);
++			}
+ 		});
+ 	}
+ }
+diff --git a/packages/svelte/src/internal/client/render.js b/packages/svelte/src/internal/client/render.js
+index 76a73852d..4316403ba 100644
+--- a/packages/svelte/src/internal/client/render.js
++++ b/packages/svelte/src/internal/client/render.js
+@@ -81,6 +81,7 @@ export function mount(component, options) {
+  *  	context?: Map<any, any>;
+  * 		intro?: boolean;
+  * 		recover?: boolean;
++ *		transformError?: (error: unknown) => unknown;
+  * 	} : {
+  * 		target: Document | Element | ShadowRoot;
+  * 		props: Props;
+@@ -88,6 +89,7 @@ export function mount(component, options) {
+  *  	context?: Map<any, any>;
+  * 		intro?: boolean;
+  * 		recover?: boolean;
++ *		transformError?: (error: unknown) => unknown;
+  * 	}} options
+  * @returns {Exports}
+  */
+@@ -158,7 +160,10 @@ const listeners = new Map();
+  * @param {MountOptions} options
+  * @returns {Exports}
+  */
+-function _mount(Component, { target, anchor, props = {}, events, context, intro = true }) {
++function _mount(
++	Component,
++	{ target, anchor, props = {}, events, context, intro = true, transformError }
++) {
+ 	init_operations();
+ 
+ 	/** @type {Exports} */
+@@ -206,7 +211,8 @@ function _mount(Component, { target, anchor, props = {}, events, context, intro
+ 				}
+ 
+ 				pop();
+-			}
++			},
++			transformError
+ 		);
+ 
+ 		// Setup event delegation _after_ component is mounted - if an error would happen during mount, it would otherwise not be cleaned up
+diff --git a/packages/svelte/src/internal/server/index.js b/packages/svelte/src/internal/server/index.js
+index 2f7ef13c0..f725a9c29 100644
+--- a/packages/svelte/src/internal/server/index.js
++++ b/packages/svelte/src/internal/server/index.js
+@@ -65,7 +65,7 @@ export function element(renderer, tag, attributes_fn = noop, children_fn = noop)
+  * Takes a component and returns an object with `body` and `head` properties on it, which you can use to populate the HTML when server-rendering your app.
+  * @template {Record<string, any>} Props
+  * @param {Component<Props> | ComponentType<SvelteComponent<Props>>} component
+- * @param {{ props?: Omit<Props, '$$slots' | '$$events'>; context?: Map<any, any>; idPrefix?: string; csp?: Csp }} [options]
++ * @param {{ props?: Omit<Props, '$$slots' | '$$events'>; context?: Map<any, any>; idPrefix?: string; csp?: Csp; transformError?: (error: unknown) => unknown }} [options]
+  * @returns {RenderOutput}
+  */
+ export function render(component, options = {}) {
+diff --git a/packages/svelte/src/internal/server/renderer.js b/packages/svelte/src/internal/server/renderer.js
+index cb0c6d584..9f71d53f6 100644
+--- a/packages/svelte/src/internal/server/renderer.js
++++ b/packages/svelte/src/internal/server/renderer.js
+@@ -3,10 +3,11 @@
+ /** @import { MaybePromise } from '#shared' */
+ import { async_mode_flag } from '../flags/index.js';
+ import { abort } from './abort-signal.js';
+-import { pop, push, set_ssr_context, ssr_context, save } from './context.js';
++import { pop, push, set_ssr_context, ssr_context } from './context.js';
+ import * as e from './errors.js';
+ import * as w from './warnings.js';
+ import { BLOCK_CLOSE, BLOCK_OPEN } from './hydration.js';
++import { HYDRATION_START_FAILED } from '../../constants.js';
+ import { attributes } from './index.js';
+ import { get_render_context, with_render_context, init_render_context } from './render-context.js';
+ import { sha256 } from './crypto.js';
+@@ -49,6 +50,17 @@ export class Renderer {
+ 	 */
+ 	#is_component_body = false;
+ 
++	/**
++	 * If set, this renderer is an error boundary. When async collection
++	 * of the children fails, the failed snippet is rendered instead.
++	 * @type {{
++	 * 	failed: (renderer: Renderer, error: unknown, reset: () => void) => void;
++	 * 	transformError: (error: unknown) => unknown;
++	 * 	context: SSRContext | null;
++	 * } | null}
++	 */
++	#boundary = null;
++
+ 	/**
+ 	 * The type of string content that this renderer is accumulating.
+ 	 * @type {RendererType}
+@@ -204,22 +216,96 @@ export class Renderer {
+ 		set_ssr_context(parent);
+ 
+ 		if (result instanceof Promise) {
+-			result.finally(() => {
+-				set_ssr_context(null);
+-			});
++			// catch to avoid unhandled promise rejections - we'll end up throwing in `collect_async` if something fails
++			result.catch(noop);
++			result.finally(() => set_ssr_context(null)).catch(noop);
+ 
+ 			if (child.global.mode === 'sync') {
+ 				e.await_invalid();
+ 			}
+ 
+-			// just to avoid unhandled promise rejections -- we'll end up throwing in `collect_async` if something fails
+-			result.catch(() => {});
+ 			child.promise = result;
+ 		}
+ 
+ 		return child;
+ 	}
+ 
++	/**
++	 * Render children inside an error boundary. If the children throw and the API-level
++	 * `transformError` transform handles the error (doesn't re-throw), the `failed` snippet is
++	 * rendered instead. Otherwise the error propagates.
++	 *
++	 * @param {{ failed?: (renderer: Renderer, error: unknown, reset: () => void) => void }} props
++	 * @param {(renderer: Renderer) => MaybePromise<void>} children_fn
++	 */
++	boundary(props, children_fn) {
++		// Create a child renderer for the boundary content.
++		// Mark it as a boundary so that #collect_content_async can catch
++		// errors from nested async children and render the failed snippet.
++		const child = new Renderer(this.global, this);
++		this.#out.push(child);
++
++		const parent_context = ssr_context;
++
++		if (props.failed) {
++			child.#boundary = {
++				failed: props.failed,
++				transformError: this.global.transformError,
++				context: parent_context
++			};
++		}
++
++		set_ssr_context({
++			...ssr_context,
++			p: parent_context,
++			c: null,
++			r: child
++		});
++
++		try {
++			const result = children_fn(child);
++
++			set_ssr_context(parent_context);
++
++			if (result instanceof Promise) {
++				if (child.global.mode === 'sync') {
++					e.await_invalid();
++				}
++				result.catch(noop);
++				child.promise = result;
++			}
++		} catch (error) {
++			// synchronous errors are handled here, async errors will be handled in #collect_content_async
++			set_ssr_context(parent_context);
++
++			const failed_snippet = props.failed;
++
++			if (!failed_snippet) throw error;
++
++			const result = this.global.transformError(error);
++
++			child.#out.length = 0;
++			child.#boundary = null;
++
++			if (result instanceof Promise) {
++				if (this.global.mode === 'sync') {
++					e.await_invalid();
++				}
++
++				child.promise = /** @type {Promise<unknown>} */ (result).then((transformed) => {
++					child.#out.push(`<!--${HYDRATION_START_FAILED}${JSON.stringify(transformed)}-->`);
++					failed_snippet(child, transformed, noop);
++					child.#out.push(BLOCK_CLOSE);
++				});
++				child.promise.catch(noop);
++			} else {
++				child.#out.push(`<!--${HYDRATION_START_FAILED}${JSON.stringify(result)}-->`);
++				failed_snippet(child, result, noop);
++				child.#out.push(BLOCK_CLOSE);
++			}
++		}
++	}
++
+ 	/**
+ 	 * Create a component renderer. The component renderer inherits the state from the parent,
+ 	 * but has its own content. It is treated as an ordering boundary for ondestroy callbacks.
+@@ -594,7 +680,36 @@ export class Renderer {
+ 			if (typeof item === 'string') {
+ 				content[this.type] += item;
+ 			} else if (item instanceof Renderer) {
+-				await item.#collect_content_async(content);
++				if (item.#boundary) {
++					// This renderer is an error boundary - collect into a separate
++					// accumulator so we can discard partial content on error
++					/** @type {AccumulatedContent} */
++					const boundary_content = { head: '', body: '' };
++
++					try {
++						await item.#collect_content_async(boundary_content);
++						// Success - merge into the main content
++						content.head += boundary_content.head;
++						content.body += boundary_content.body;
++					} catch (error) {
++						const { context, failed, transformError } = item.#boundary;
++
++						set_ssr_context(context);
++						let transformed = await transformError(error);
++
++						// Render the failed snippet instead of the partial children content
++						const failed_renderer = new Renderer(item.global, item);
++						failed_renderer.type = item.type;
++						failed_renderer.#out.push(
++							`<!--${HYDRATION_START_FAILED}${JSON.stringify(transformed)}-->`
++						);
++						failed(failed_renderer, transformed, noop);
++						failed_renderer.#out.push(BLOCK_CLOSE);
++						await failed_renderer.#collect_content_async(content);
++					}
++				} else {
++					await item.#collect_content_async(content);
++				}
+ 			}
+ 		}
+ 
+@@ -622,7 +737,7 @@ export class Renderer {
+ 	 * @template {Record<string, any>} Props
+ 	 * @param {'sync' | 'async'} mode
+ 	 * @param {import('svelte').Component<Props>} component
+-	 * @param {{ props?: Omit<Props, '$$slots' | '$$events'>; context?: Map<any, any>; idPrefix?: string; csp?: Csp }} options
++	 * @param {{ props?: Omit<Props, '$$slots' | '$$events'>; context?: Map<any, any>; idPrefix?: string; csp?: Csp; transformError?: (error: unknown) => unknown }} options
+ 	 * @returns {Renderer}
+ 	 */
+ 	static #open_render(mode, component, options) {
+@@ -630,7 +745,12 @@ export class Renderer {
+ 
+ 		try {
+ 			const renderer = new Renderer(
+-				new SSRState(mode, options.idPrefix ? options.idPrefix + '-' : '', options.csp)
++				new SSRState(
++					mode,
++					options.idPrefix ? options.idPrefix + '-' : '',
++					options.csp,
++					options.transformError
++				)
+ 			);
+ 
+ 			/** @type {SSRContext} */
+@@ -741,6 +861,13 @@ export class SSRState {
+ 	/** @readonly @type {Set<{ hash: string; code: string }>} */
+ 	css = new Set();
+ 
++	/**
++	 * `transformError` passed to `render`. Called when an error boundary catches an error.
++	 * Throws by default if unset in `render`.
++	 * @type {(error: unknown) => unknown}
++	 */
++	transformError;
++
+ 	/** @type {{ path: number[], value: string }} */
+ 	#title = { path: [], value: '' };
+ 
+@@ -748,11 +875,18 @@ export class SSRState {
+ 	 * @param {'sync' | 'async'} mode
+ 	 * @param {string} id_prefix
+ 	 * @param {Csp} csp
++	 * @param {((error: unknown) => unknown) | undefined} [transformError]
+ 	 */
+-	constructor(mode, id_prefix = '', csp = { hash: false }) {
++	constructor(mode, id_prefix = '', csp = { hash: false }, transformError) {
+ 		this.mode = mode;
+ 		this.csp = { ...csp, script_hashes: [] };
+ 
++		this.transformError =
++			transformError ??
++			((error) => {
++				throw error;
++			});
++
+ 		let uid = 1;
+ 		this.uid = () => `${id_prefix}s${uid++}`;
+ 	}
+diff --git a/packages/svelte/src/legacy/legacy-client.js b/packages/svelte/src/legacy/legacy-client.js
+index ec90d2312..801c126b2 100644
+--- a/packages/svelte/src/legacy/legacy-client.js
++++ b/packages/svelte/src/legacy/legacy-client.js
+@@ -119,7 +119,8 @@ class Svelte4Component {
+ 			props,
+ 			context: options.context,
+ 			intro: options.intro ?? false,
+-			recover: options.recover
++			recover: options.recover,
++			transformError: options.transformError
+ 		});
+ 
+ 		// We don't flushSync for custom element wrappers or if the user doesn't want it,
+diff --git a/packages/svelte/src/legacy/legacy-server.js b/packages/svelte/src/legacy/legacy-server.js
+index 05b329bea..2c43aab6a 100644
+--- a/packages/svelte/src/legacy/legacy-server.js
++++ b/packages/svelte/src/legacy/legacy-server.js
+@@ -25,10 +25,10 @@ export { createClassComponent };
+  */
+ export function asClassComponent(component) {
+ 	const component_constructor = as_class_component(component);
+-	/** @type {(props?: {}, opts?: { $$slots?: {}; context?: Map<any, any>; csp?: Csp }) => LegacyRenderResult & PromiseLike<LegacyRenderResult> } */
+-	const _render = (props, { context, csp } = {}) => {
++	/** @type {(props?: {}, opts?: { $$slots?: {}; context?: Map<any, any>; csp?: Csp; transformError?: (error: unknown) => unknown }) => LegacyRenderResult & PromiseLike<LegacyRenderResult> } */
++	const _render = (props, { context, csp, transformError } = {}) => {
+ 		// @ts-expect-error the typings are off, but this will work if the component is compiled in SSR mode
+-		const result = render(component, { props, context, csp });
++		const result = render(component, { props, context, csp, transformError });
+ 
+ 		const munged = Object.defineProperties(
+ 			/** @type {LegacyRenderResult & PromiseLike<LegacyRenderResult>} */ ({}),
+diff --git a/packages/svelte/src/server/index.d.ts b/packages/svelte/src/server/index.d.ts
+index f54bd5a5c..db75afb9e 100644
+--- a/packages/svelte/src/server/index.d.ts
++++ b/packages/svelte/src/server/index.d.ts
+@@ -17,6 +17,7 @@ export function render<
+ 					context?: Map<any, any>;
+ 					idPrefix?: string;
+ 					csp?: Csp;
++					transformError?: (error: unknown) => unknown | Promise<unknown>;
+ 				}
+ 			]
+ 		: [
+@@ -26,6 +27,7 @@ export function render<
+ 					context?: Map<any, any>;
+ 					idPrefix?: string;
+ 					csp?: Csp;
++					transformError?: (error: unknown) => unknown | Promise<unknown>;
+ 				}
+ 			]
+ ): RenderOutput;
+diff --git a/packages/svelte/types/index.d.ts b/packages/svelte/types/index.d.ts
+index e7aa5395b..31ef9110d 100644
+--- a/packages/svelte/types/index.d.ts
++++ b/packages/svelte/types/index.d.ts
+@@ -20,6 +20,7 @@ declare module 'svelte' {
+ 		sync?: boolean;
+ 		idPrefix?: string;
+ 		$$inline?: boolean;
++		transformError?: (error: unknown) => unknown;
+ 	}
+ 
+ 	/**
+@@ -337,6 +338,11 @@ declare module 'svelte' {
+ 		 * @default true
+ 		 */
+ 		intro?: boolean;
++		/**
++		 * A function that transforms errors caught by error boundaries before they are passed to the `failed` snippet.
++		 * Defaults to the identity function.
++		 */
++		transformError?: (error: unknown) => unknown | Promise<unknown>;
+ 	} & ({} extends Props
+ 		? {
+ 				/**
+@@ -542,6 +548,7 @@ declare module 'svelte' {
+ 		context?: Map<any, any>;
+ 		intro?: boolean;
+ 		recover?: boolean;
++		transformError?: (error: unknown) => unknown;
+ 	} : {
+ 		target: Document | Element | ShadowRoot;
+ 		props: Props;
+@@ -549,6 +556,7 @@ declare module 'svelte' {
+ 		context?: Map<any, any>;
+ 		intro?: boolean;
+ 		recover?: boolean;
++		transformError?: (error: unknown) => unknown;
+ 	}): Exports;
+ 	/**
+ 	 * Unmounts a component that was previously mounted using `mount` or `hydrate`.
+@@ -2567,6 +2575,7 @@ declare module 'svelte/server' {
+ 						context?: Map<any, any>;
+ 						idPrefix?: string;
+ 						csp?: Csp;
++						transformError?: (error: unknown) => unknown | Promise<unknown>;
+ 					}
+ 				]
+ 			: [
+@@ -2576,6 +2585,7 @@ declare module 'svelte/server' {
+ 						context?: Map<any, any>;
+ 						idPrefix?: string;
+ 						csp?: Csp;
++						transformError?: (error: unknown) => unknown | Promise<unknown>;
+ 					}
+ 				]
+ 	): RenderOutput;
+
+diff --git a/.changeset/gentle-emus-walk.md b/.changeset/gentle-emus-walk.md
+new file mode 100644
+index 000000000..760b95285
+--- /dev/null
++++ b/.changeset/gentle-emus-walk.md
+@@ -0,0 +1,5 @@
++---
++'svelte': patch
++---
++
++fix: set server context after async transformError
+diff --git a/packages/svelte/src/internal/server/renderer.js b/packages/svelte/src/internal/server/renderer.js
+index 9f71d53f6..c6966090d 100644
+--- a/packages/svelte/src/internal/server/renderer.js
++++ b/packages/svelte/src/internal/server/renderer.js
+@@ -293,6 +293,7 @@ export class Renderer {
+ 				}
+ 
+ 				child.promise = /** @type {Promise<unknown>} */ (result).then((transformed) => {
++					set_ssr_context(parent_context);
+ 					child.#out.push(`<!--${HYDRATION_START_FAILED}${JSON.stringify(transformed)}-->`);
+ 					failed_snippet(child, transformed, noop);
+ 					child.#out.push(BLOCK_CLOSE);

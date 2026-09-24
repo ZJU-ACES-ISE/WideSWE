@@ -1,0 +1,85 @@
+diff --git a/tests/ManagerRegistryTest.php b/tests/ManagerRegistryTest.php
+index a32dcc4..c796d65 100644
+--- a/tests/ManagerRegistryTest.php
++++ b/tests/ManagerRegistryTest.php
+@@ -45,6 +45,22 @@ class ManagerRegistryTest extends TestCase
+         );
+     }
+ 
++    public function testGetManagerForClassAnonymous(): void
++    {
++        $anonymousClass = new class extends TestObject implements Proxy {
++            public function __isInitialized(): bool
++            {
++                return true;
++            }
++
++            public function __load(): void
++            {
++            }
++        };
++
++        self::assertNull($this->mr->getManagerForClass($anonymousClass::class));
++    }
++
+     public function testGetManagerForProxiedClass(): void
+     {
+         self::assertInstanceOf(
+@@ -64,6 +80,39 @@ class ManagerRegistryTest extends TestCase
+         })::class));
+     }
+ 
++    public function testGetManagerForWithoutProxyInterface(): void
++    {
++        $mr = new TestManagerRegistry(
++            'ORM',
++            ['default' => 'default_connection'],
++            ['default' => 'default_manager'],
++            'default',
++            'default',
++            null,
++            $this->getManagerFactory(),
++        );
++
++        self::assertInstanceOf(
++            ObjectManager::class,
++            $mr->getManagerForClass(TestObject::class),
++        );
++
++        self::assertNull($mr->getManagerForClass(TestObjectProxy::class));
++
++        $anonymousClass = new class extends TestObject implements Proxy {
++            public function __isInitialized(): bool
++            {
++                return true;
++            }
++
++            public function __load(): void
++            {
++            }
++        };
++
++        self::assertNull($mr->getManagerForClass($anonymousClass::class));
++    }
++
+     public function testResetManager(): void
+     {
+         $manager    = $this->mr->getManager();
+@@ -179,7 +228,7 @@ class TestManagerRegistry extends AbstractManagerRegistry
+     /**
+      * {@inheritDoc}
+      *
+-     * @phpstan-param class-string $proxyInterfaceName
++     * @phpstan-param class-string|null $proxyInterfaceName
+      */
+     public function __construct(
+         string $name,
+@@ -187,7 +236,7 @@ class TestManagerRegistry extends AbstractManagerRegistry
+         array $managers,
+         string $defaultConnection,
+         string $defaultManager,
+-        string $proxyInterfaceName,
++        string|null $proxyInterfaceName,
+         callable $managerFactory,
+     ) {
+         $this->managerFactory = $managerFactory;

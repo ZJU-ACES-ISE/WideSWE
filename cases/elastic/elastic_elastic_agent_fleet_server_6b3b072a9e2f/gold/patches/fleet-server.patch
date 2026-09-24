@@ -1,0 +1,301 @@
+diff --git a/changelog/fragments/1772577135-Fix-checkin-compression-support.yaml b/changelog/fragments/1772577135-Fix-checkin-compression-support.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..cff7a912a7bd9a949b031b1297296617c1006c71
+--- /dev/null
++++ b/changelog/fragments/1772577135-Fix-checkin-compression-support.yaml
+@@ -0,0 +1,33 @@
++# Kind can be one of:
++# - breaking-change: a change to previously-documented behavior
++# - deprecation: functionality that is being removed in a later release
++# - bug-fix: fixes a problem in a previous version
++# - enhancement: extends functionality but does not break or fix existing behavior
++# - feature: new functionality
++# - known-issue: problems that we are aware of in a given version
++# - security: impacts on the security of a product or a user’s deployment.
++# - upgrade: important information for someone upgrading from a prior version
++# - other: does not fit into any of the other categories
++kind: bug-fix
++
++# Change summary; a 80ish characters long description of the change.
++summary: Fix checkin endpoint compression support
++
++# Long description; in case the summary is not enough to describe the change
++# this field accommodate a description without length limits.
++# NOTE: This field will be rendered only for breaking-change and known-issue kinds at the moment.
++description: |
++  Adds support for gzip compressed requests to the checkin endpoint.
++
++# Affected component; usually one of "elastic-agent", "fleet-server", "filebeat", "metricbeat", "auditbeat", "all", etc.
++component: fleet-server
++
++# PR URL; optional; the PR number that added the changeset.
++# If not present is automatically filled by the tooling finding the PR where this changelog fragment has been added.
++# NOTE: the tooling supports backports, so it's able to fill the original PR number instead of the backport PR number.
++# Please provide it if you are adding a fragment for a different PR.
++pr: https://github.com/elastic/fleet-server/pull/6491
++
++# Issue URL; optional; the GitHub issue related to this changeset (either closes or is part of).
++# If not present is automatically filled by the tooling with the issue linked to the PR number.
++#issue: https://github.com/owner/repo/1234
+diff --git a/internal/pkg/api/handleCheckin.go b/internal/pkg/api/handleCheckin.go
+index eeda1ca1acf9ddee149092d380af840a198d056d..222ddbbb385a81d6ac6830602063e39b034a4ef9 100644
+--- a/internal/pkg/api/handleCheckin.go
++++ b/internal/pkg/api/handleCheckin.go
+@@ -188,9 +188,20 @@ func (ct *CheckinT) validateRequest(zlog zerolog.Logger, w http.ResponseWriter,
+ 	}
+ 	readCounter := datacounter.NewReaderCounter(body)
+ 
++	// Decompress the body when the client signals Content-Encoding: gzip.
++	var bodyReader io.Reader = readCounter
++	if r.Header.Get("Content-Encoding") == kEncodingGzip {
++		gr, err := gzip.NewReader(readCounter)
++		if err != nil {
++			return validatedCheckin{}, &BadRequestErr{msg: "unable to create gzip reader for request body", nextErr: err}
++		}
++		defer gr.Close()
++		bodyReader = gr
++	}
++
+ 	var val validatedCheckin
+ 	var req CheckinRequest
+-	decoder := json.NewDecoder(readCounter)
++	decoder := json.NewDecoder(bodyReader)
+ 	if err := decoder.Decode(&req); err != nil {
+ 		return val, &BadRequestErr{msg: "unable to decode checkin request", nextErr: err}
+ 	}
+@@ -677,6 +688,8 @@ func (ct *CheckinT) writeResponse(zlog zerolog.Logger, w http.ResponseWriter, r
+ 	return err
+ }
+ 
++// acceptsEncoding reports whether the request includes the passed encoding.
++// Only an exact match is checked as that is all the agent will send.
+ func acceptsEncoding(r *http.Request, encoding string) bool {
+ 	for _, v := range r.Header.Values("Accept-Encoding") {
+ 		if v == encoding {
+diff --git a/internal/pkg/api/openapi.gen.go b/internal/pkg/api/openapi.gen.go
+index bd1b73088df1f285e6b89d56238a479bc2aca603..a7268647ee1b8133ee44ca25c7a02808b6e27f7b 100644
+--- a/internal/pkg/api/openapi.gen.go
++++ b/internal/pkg/api/openapi.gen.go
+@@ -137,6 +137,11 @@ const (
+ 	Endpoint UploadBeginRequestSrc = "endpoint"
+ )
+ 
++// Defines values for AgentCheckinParamsContentEncoding.
++const (
++	Gzip AgentCheckinParamsContentEncoding = "gzip"
++)
++
+ // AckRequest The request an elastic-agent sends to fleet-serve to acknowledge the execution of one or more actions.
+ type AckRequest struct {
+ 	Events []AckRequest_Events_Item `json:"events"`
+@@ -1017,11 +1022,13 @@ type AuditUnenrollParams struct {
+ 
+ // AgentCheckinParams defines parameters for AgentCheckin.
+ type AgentCheckinParams struct {
+-	// AcceptEncoding If the agent is able to accept encoded responses.
+-	// Used to indicate if GZIP compression may be used by the server.
+-	// The elastic-agent does not use the accept-encoding header.
++	// AcceptEncoding Indicates encodings the agent can accept. The only encoding supported by the server currently is gzip.
++	// Comma-separated directive lists and RFC 7231 quality values (e.g. "gzip;q=1.0, deflate;q=0.5") are both accepted.
+ 	AcceptEncoding *string `json:"Accept-Encoding,omitempty"`
+ 
++	// ContentEncoding Signals that the request body has been compressed. Server currently only supports gzip compression.
++	ContentEncoding *AgentCheckinParamsContentEncoding `json:"Content-Encoding,omitempty"`
++
+ 	// UserAgent The user-agent header that is sent.
+ 	// Must have the format "elastic agent X.Y.Z" where "X.Y.Z" indicates the agent version.
+ 	// The agent version must not be greater than the version of the fleet-server.
+@@ -1034,6 +1041,9 @@ type AgentCheckinParams struct {
+ 	ElasticApiVersion *ApiVersion `json:"elastic-api-version,omitempty"`
+ }
+ 
++// AgentCheckinParamsContentEncoding defines parameters for AgentCheckin.
++type AgentCheckinParamsContentEncoding string
++
+ // ArtifactParams defines parameters for Artifact.
+ type ArtifactParams struct {
+ 	// XRequestId The request tracking ID for APM.
+@@ -2285,6 +2295,25 @@ func (siw *ServerInterfaceWrapper) AgentCheckin(w http.ResponseWriter, r *http.R
+ 
+ 	}
+ 
++	// ------------- Optional header parameter "Content-Encoding" -------------
++	if valueList, found := headers[http.CanonicalHeaderKey("Content-Encoding")]; found {
++		var ContentEncoding AgentCheckinParamsContentEncoding
++		n := len(valueList)
++		if n != 1 {
++			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Content-Encoding", Count: n})
++			return
++		}
++
++		err = runtime.BindStyledParameterWithOptions("simple", "Content-Encoding", valueList[0], &ContentEncoding, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
++		if err != nil {
++			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Content-Encoding", Err: err})
++			return
++		}
++
++		params.ContentEncoding = &ContentEncoding
++
++	}
++
+ 	// ------------- Required header parameter "User-Agent" -------------
+ 	if valueList, found := headers[http.CanonicalHeaderKey("User-Agent")]; found {
+ 		var UserAgent UserAgent
+diff --git a/model/openapi.yml b/model/openapi.yml
+index 6db051d012614699b1225487790a4f201cf36dc4..bae43fe5d2741c1f034feb25395667e1e9334ba9 100644
+--- a/model/openapi.yml
++++ b/model/openapi.yml
+@@ -1522,11 +1522,18 @@ paths:
+         - name: Accept-Encoding
+           in: header
+           description: |
+-            If the agent is able to accept encoded responses.
+-            Used to indicate if GZIP compression may be used by the server.
+-            The elastic-agent does not use the accept-encoding header.
++            Indicates encodings the agent can accept. The only encoding supported by the server currently is gzip.
++            Comma-separated directive lists and RFC 7231 quality values (e.g. "gzip;q=1.0, deflate;q=0.5") are both accepted.
+           schema:
+             type: string
++        - name: Content-Encoding
++          in: header
++          description: |
++            Signals that the request body has been compressed. Server currently only supports gzip compression.
++          schema:
++            type: string
++            enum:
++              - gzip
+         - $ref: "#/components/parameters/userAgent"
+         - $ref: "#/components/parameters/requestId"
+         - $ref: "#/components/parameters/apiVersion"
+@@ -1562,12 +1569,19 @@ paths:
+           description: Agent checkin successful. May include actions.
+           headers:
+             Content-Encoding:
+-              description: Responses may be compressed if the accept encoding indicates it. Currently not used by the agent.
++              description: |
++                Present when fleet-server has gzip-compressed the response body.
++                Compression is applied when all three conditions are met: the serialised
++                response exceeds the configured compression threshold, the server compression
++                level is not NoCompression, and the request's Accept-Encoding header
++                advertises gzip support.
+               schema:
+                 type: string
++                enum:
++                  - gzip
+               examples:
+                 gzip:
+-                  description: Response is gzip encoded as the request headers allowed it.
++                  description: Response body is gzip-compressed.
+                   value: gzip
+             Elastic-Api-Version:
+               $ref: "#/components/headers/apiVersion"
+@@ -2053,4 +2067,4 @@ paths:
+         "500":
+           $ref: "#/components/responses/internalServerError"
+         "503":
+-          $ref: "#/components/responses/unavailable"
+\ No newline at end of file
++          $ref: "#/components/responses/unavailable"
+diff --git a/pkg/api/client.gen.go b/pkg/api/client.gen.go
+index d0c44e036ddf23ade74bf90e19d953749d05e38e..d8498ef55cecdb90d198cd7b9447e910b28d544f 100644
+--- a/pkg/api/client.gen.go
++++ b/pkg/api/client.gen.go
+@@ -695,35 +695,46 @@ func NewAgentCheckinRequestWithBody(server string, id string, params *AgentCheck
+ 			req.Header.Set("Accept-Encoding", headerParam0)
+ 		}
+ 
+-		var headerParam1 string
++		if params.ContentEncoding != nil {
++			var headerParam1 string
++
++			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "Content-Encoding", runtime.ParamLocationHeader, *params.ContentEncoding)
++			if err != nil {
++				return nil, err
++			}
+ 
+-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "User-Agent", runtime.ParamLocationHeader, params.UserAgent)
++			req.Header.Set("Content-Encoding", headerParam1)
++		}
++
++		var headerParam2 string
++
++		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "User-Agent", runtime.ParamLocationHeader, params.UserAgent)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+ 
+-		req.Header.Set("User-Agent", headerParam1)
++		req.Header.Set("User-Agent", headerParam2)
+ 
+ 		if params.XRequestId != nil {
+-			var headerParam2 string
++			var headerParam3 string
+ 
+-			headerParam2, err = runtime.StyleParamWithLocation("simple", false, "X-Request-Id", runtime.ParamLocationHeader, *params.XRequestId)
++			headerParam3, err = runtime.StyleParamWithLocation("simple", false, "X-Request-Id", runtime.ParamLocationHeader, *params.XRequestId)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+ 
+-			req.Header.Set("X-Request-Id", headerParam2)
++			req.Header.Set("X-Request-Id", headerParam3)
+ 		}
+ 
+ 		if params.ElasticApiVersion != nil {
+-			var headerParam3 string
++			var headerParam4 string
+ 
+-			headerParam3, err = runtime.StyleParamWithLocation("simple", false, "elastic-api-version", runtime.ParamLocationHeader, *params.ElasticApiVersion)
++			headerParam4, err = runtime.StyleParamWithLocation("simple", false, "elastic-api-version", runtime.ParamLocationHeader, *params.ElasticApiVersion)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+ 
+-			req.Header.Set("elastic-api-version", headerParam3)
++			req.Header.Set("elastic-api-version", headerParam4)
+ 		}
+ 
+ 	}
+diff --git a/pkg/api/types.gen.go b/pkg/api/types.gen.go
+index 89eadaa055e14222457844f7f966ed43ffbce989..15e621147ef202e904d3eb48faf2533b1e884f8a 100644
+--- a/pkg/api/types.gen.go
++++ b/pkg/api/types.gen.go
+@@ -134,6 +134,11 @@ const (
+ 	Endpoint UploadBeginRequestSrc = "endpoint"
+ )
+ 
++// Defines values for AgentCheckinParamsContentEncoding.
++const (
++	Gzip AgentCheckinParamsContentEncoding = "gzip"
++)
++
+ // AckRequest The request an elastic-agent sends to fleet-serve to acknowledge the execution of one or more actions.
+ type AckRequest struct {
+ 	Events []AckRequest_Events_Item `json:"events"`
+@@ -1014,11 +1019,13 @@ type AuditUnenrollParams struct {
+ 
+ // AgentCheckinParams defines parameters for AgentCheckin.
+ type AgentCheckinParams struct {
+-	// AcceptEncoding If the agent is able to accept encoded responses.
+-	// Used to indicate if GZIP compression may be used by the server.
+-	// The elastic-agent does not use the accept-encoding header.
++	// AcceptEncoding Indicates encodings the agent can accept. The only encoding supported by the server currently is gzip.
++	// Comma-separated directive lists and RFC 7231 quality values (e.g. "gzip;q=1.0, deflate;q=0.5") are both accepted.
+ 	AcceptEncoding *string `json:"Accept-Encoding,omitempty"`
+ 
++	// ContentEncoding Signals that the request body has been compressed. Server currently only supports gzip compression.
++	ContentEncoding *AgentCheckinParamsContentEncoding `json:"Content-Encoding,omitempty"`
++
+ 	// UserAgent The user-agent header that is sent.
+ 	// Must have the format "elastic agent X.Y.Z" where "X.Y.Z" indicates the agent version.
+ 	// The agent version must not be greater than the version of the fleet-server.
+@@ -1031,6 +1038,9 @@ type AgentCheckinParams struct {
+ 	ElasticApiVersion *ApiVersion `json:"elastic-api-version,omitempty"`
+ }
+ 
++// AgentCheckinParamsContentEncoding defines parameters for AgentCheckin.
++type AgentCheckinParamsContentEncoding string
++
+ // ArtifactParams defines parameters for Artifact.
+ type ArtifactParams struct {
+ 	// XRequestId The request tracking ID for APM.

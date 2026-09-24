@@ -1,0 +1,387 @@
+diff --git a/staging/src/k8s.io/api/openapi_models_test.go b/staging/src/k8s.io/api/openapi_models_test.go
+new file mode 100644
+index 00000000000..aeeae938927
+--- /dev/null
++++ b/staging/src/k8s.io/api/openapi_models_test.go
+@@ -0,0 +1,77 @@
++/*
++Copyright 2025 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package api
++
++import (
++	"reflect"
++	"strings"
++	"testing"
++
++	"k8s.io/apimachinery/pkg/runtime"
++)
++
++func TestOpenAPIDefinitionNames(t *testing.T) {
++	scheme := runtime.NewScheme()
++	for _, builder := range groups {
++		if err := builder.AddToScheme(scheme); err != nil {
++			t.Fatalf("unexpected error adding to scheme: %v", err)
++		}
++	}
++
++	kinds := scheme.AllKnownTypes()
++	for gvk := range kinds {
++		if gvk.Version == runtime.APIVersionInternal {
++			continue
++		}
++		t.Run(gvk.String(), func(t *testing.T) {
++			example, err := scheme.New(gvk)
++			if err != nil {
++				t.Fatalf("unexpected error creating example: %v", err)
++			}
++
++			namer, ok := example.(OpenAPIModelNamer)
++			if !ok {
++				t.Fatalf("type %v does not implement OpenAPICanonicalTypeName\n", gvk)
++			}
++			lookupName := namer.OpenAPIModelName()
++
++			rtype := reflect.TypeOf(example).Elem()
++			reflectName := ToRESTFriendlyName(rtype.PkgPath() + "." + rtype.Name())
++
++			if lookupName != reflectName {
++				t.Errorf("expected %v, got %v", reflectName, lookupName)
++			}
++		})
++	}
++}
++
++type OpenAPIModelNamer interface {
++	OpenAPIModelName() string
++}
++
++func ToRESTFriendlyName(name string) string {
++	nameParts := strings.Split(name, "/")
++	// Reverse first part. e.g., io.k8s... instead of k8s.io...
++	if len(nameParts) > 0 && strings.Contains(nameParts[0], ".") {
++		parts := strings.Split(nameParts[0], ".")
++		for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
++			parts[i], parts[j] = parts[j], parts[i]
++		}
++		nameParts[0] = strings.Join(parts, ".")
++	}
++	return strings.Join(nameParts, ".")
++}
+diff --git a/staging/src/k8s.io/apiextensions-apiserver/pkg/apis/openapi_models_test.go b/staging/src/k8s.io/apiextensions-apiserver/pkg/apis/openapi_models_test.go
+new file mode 100644
+index 00000000000..d30671b1195
+--- /dev/null
++++ b/staging/src/k8s.io/apiextensions-apiserver/pkg/apis/openapi_models_test.go
+@@ -0,0 +1,60 @@
++/*
++Copyright 2025 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package api
++
++import (
++	"reflect"
++	"testing"
++
++	"k8s.io/apimachinery/pkg/runtime"
++	"k8s.io/kube-openapi/pkg/util"
++)
++
++func TestOpenAPIDefinitionNames(t *testing.T) {
++	scheme := runtime.NewScheme()
++	for _, builder := range groups {
++		if err := builder.AddToScheme(scheme); err != nil {
++			t.Fatalf("unexpected error adding to scheme: %v", err)
++		}
++	}
++
++	kinds := scheme.AllKnownTypes()
++	for gvk := range kinds {
++		if gvk.Version == runtime.APIVersionInternal {
++			continue
++		}
++		t.Run(gvk.String(), func(t *testing.T) {
++			example, err := scheme.New(gvk)
++			if err != nil {
++				t.Fatalf("unexpected error creating example: %v", err)
++			}
++
++			namer, ok := example.(interface{ OpenAPIModelName() string })
++			if !ok {
++				t.Fatalf("type %v does not implement OpenAPICanonicalTypeName\n", gvk)
++			}
++			lookupName := namer.OpenAPIModelName()
++
++			rtype := reflect.TypeOf(example).Elem()
++			reflectName := util.ToRESTFriendlyName(rtype.PkgPath() + "." + rtype.Name())
++
++			if lookupName != reflectName {
++				t.Errorf("expected %v, got %v", reflectName, lookupName)
++			}
++		})
++	}
++}
+diff --git a/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/builder/builder_test.go b/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/builder/builder_test.go
+index 5dbc35b0c6d..d662600a5cd 100644
+--- a/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/builder/builder_test.go
++++ b/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/builder/builder_test.go
+@@ -656,7 +656,7 @@ func TestGetDefinitionRefPrefix(t *testing.T) {
+ 	// the first call to getDefinition
+ 
+ 	// ManagedFieldsEntry's Time field is known to use arefs
+-	managedFieldsTypePath := "k8s.io/apimachinery/pkg/apis/meta/v1.ManagedFieldsEntry"
++	managedFieldsTypePath := "io.k8s.apimachinery.pkg.apis.meta.v1.ManagedFieldsEntry"
+ 
+ 	v2Ref := getDefinition(managedFieldsTypePath, true).SchemaProps.Properties["time"].SchemaProps.Ref
+ 	v3Ref := getDefinition(managedFieldsTypePath, false).SchemaProps.Properties["time"].SchemaProps.Ref
+diff --git a/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/controller_test.go b/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/controller_test.go
+index e3204c76697..76f288ace8b 100644
+--- a/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/controller_test.go
++++ b/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/controller_test.go
+@@ -414,12 +414,14 @@ func (t *testEnv) fetchOpenAPIOrDie() *spec.Swagger {
+ }
+ 
+ func (t *testEnv) expectPath(swagger *spec.Swagger, path string) {
++	t.t.Helper()
+ 	if _, ok := swagger.Paths.Paths[path]; !ok {
+ 		t.t.Errorf("Expected path %s to exist in OpenAPI", path)
+ 	}
+ }
+ 
+ func (t *testEnv) expectNoPath(swagger *spec.Swagger, path string) {
++	t.t.Helper()
+ 	if _, ok := swagger.Paths.Paths[path]; ok {
+ 		t.t.Errorf("Expected path %s to not exist in OpenAPI", path)
+ 	}
+diff --git a/staging/src/k8s.io/apiserver/pkg/endpoints/openapi/openapi_test.go b/staging/src/k8s.io/apiserver/pkg/endpoints/openapi/openapi_test.go
+index 6e6c4387cbe..ca9a6a4c2cd 100644
+--- a/staging/src/k8s.io/apiserver/pkg/endpoints/openapi/openapi_test.go
++++ b/staging/src/k8s.io/apiserver/pkg/endpoints/openapi/openapi_test.go
+@@ -42,12 +42,11 @@ func TestGetDefinitionName(t *testing.T) {
+ 	// in production, the name is stripped of ".*vendor/" prefix before passed
+ 	// to GetDefinitionName, so here typePkgName does not have the
+ 	// "k8s.io/kubernetes/vendor" prefix.
+-	typePkgName := "k8s.io/apiserver/pkg/endpoints/openapi/testing.TestType"
+ 	typeFriendlyName := "io.k8s.apiserver.pkg.endpoints.openapi.testing.TestType"
+ 	s := runtime.NewScheme()
+ 	s.AddKnownTypeWithName(testType.GroupVersionKind(), &testType)
+ 	namer := NewDefinitionNamer(s)
+-	n, e := namer.GetDefinitionName(typePkgName)
++	n, e := namer.GetDefinitionName(typeFriendlyName)
+ 	assertEqual(t, typeFriendlyName, n)
+ 	assertEqual(t, []interface{}{
+ 		map[string]interface{}{
+@@ -56,7 +55,7 @@ func TestGetDefinitionName(t *testing.T) {
+ 			"kind":    "TestType",
+ 		},
+ 	}, e["x-kubernetes-group-version-kind"])
+-	n, e2 := namer.GetDefinitionName("test.com/another.Type")
++	n, e2 := namer.GetDefinitionName("com.test.another.Type")
+ 	assertEqual(t, "com.test.another.Type", n)
+ 	assertEqual(t, e2, spec.Extensions(nil))
+ }
+diff --git a/staging/src/k8s.io/apiserver/pkg/server/genericapiserver_graceful_termination_test.go b/staging/src/k8s.io/apiserver/pkg/server/genericapiserver_graceful_termination_test.go
+index 39079c616a6..24d918ebf97 100644
+--- a/staging/src/k8s.io/apiserver/pkg/server/genericapiserver_graceful_termination_test.go
++++ b/staging/src/k8s.io/apiserver/pkg/server/genericapiserver_graceful_termination_test.go
+@@ -39,10 +39,13 @@ import (
+ 	auditinternal "k8s.io/apiserver/pkg/apis/audit"
+ 	"k8s.io/apiserver/pkg/audit"
+ 	"k8s.io/apiserver/pkg/authorization/authorizer"
++	"k8s.io/apiserver/pkg/endpoints/openapi"
+ 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
+ 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
++	clientscheme "k8s.io/client-go/kubernetes/scheme"
+ 	"k8s.io/klog/v2"
+ 	"k8s.io/klog/v2/ktesting"
++	kubeopenapi "k8s.io/kube-openapi/pkg/common"
+ 
+ 	"github.com/google/go-cmp/cmp"
+ 	"golang.org/x/net/http2"
+@@ -1024,6 +1027,12 @@ func newClient(useNewConnection bool) *http.Client {
+ 	}
+ }
+ 
++func getOpenAPIDefinitionsForTest(_ kubeopenapi.ReferenceCallback) map[string]kubeopenapi.OpenAPIDefinition {
++	return map[string]kubeopenapi.OpenAPIDefinition{
++		"io.k8s.apimachinery.pkg.apis.meta.v1.APIGroupList": {},
++	}
++}
++
+ func newGenericAPIServer(t *testing.T, fAudit *fakeAudit, keepListening bool) *GenericAPIServer {
+ 	config, _ := setUp(t)
+ 	config.ShutdownDelayDuration = 100 * time.Millisecond
+@@ -1032,6 +1041,9 @@ func newGenericAPIServer(t *testing.T, fAudit *fakeAudit, keepListening bool) *G
+ 	config.ShutdownWatchTerminationGracePeriod = 2 * time.Second
+ 	config.AuditPolicyRuleEvaluator = fAudit
+ 	config.AuditBackend = fAudit
++	namer := openapi.NewDefinitionNamer(clientscheme.Scheme)
++	config.OpenAPIConfig = DefaultOpenAPIConfig(getOpenAPIDefinitionsForTest, namer)
++	config.OpenAPIV3Config = DefaultOpenAPIV3Config(getOpenAPIDefinitionsForTest, namer)
+ 
+ 	s, err := config.Complete(nil).New("test", NewEmptyDelegate())
+ 	if err != nil {
+diff --git a/staging/src/k8s.io/apiserver/pkg/server/genericapiserver_test.go b/staging/src/k8s.io/apiserver/pkg/server/genericapiserver_test.go
+index d3457cf34a1..7c60c7d8b18 100644
+--- a/staging/src/k8s.io/apiserver/pkg/server/genericapiserver_test.go
++++ b/staging/src/k8s.io/apiserver/pkg/server/genericapiserver_test.go
+@@ -119,11 +119,11 @@ func buildTestOpenAPIDefinition() kubeopenapi.OpenAPIDefinition {
+ 
+ func testGetOpenAPIDefinitions(_ kubeopenapi.ReferenceCallback) map[string]kubeopenapi.OpenAPIDefinition {
+ 	return map[string]kubeopenapi.OpenAPIDefinition{
+-		"k8s.io/apimachinery/pkg/apis/meta/v1.Status":          {},
+-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIVersions":     {},
+-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroupList":    {},
+-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup":        buildTestOpenAPIDefinition(),
+-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResourceList": {},
++		"io.k8s.apimachinery.pkg.apis.meta.v1.Status":          {},
++		"io.k8s.apimachinery.pkg.apis.meta.v1.APIVersions":     {},
++		"io.k8s.apimachinery.pkg.apis.meta.v1.APIGroupList":    {},
++		"io.k8s.apimachinery.pkg.apis.meta.v1.APIGroup":        buildTestOpenAPIDefinition(),
++		"io.k8s.apimachinery.pkg.apis.meta.v1.APIResourceList": {},
+ 	}
+ }
+ 
+diff --git a/staging/src/k8s.io/kube-aggregator/pkg/apis/openapi_models_test.go b/staging/src/k8s.io/kube-aggregator/pkg/apis/openapi_models_test.go
+new file mode 100644
+index 00000000000..bad90b73dc7
+--- /dev/null
++++ b/staging/src/k8s.io/kube-aggregator/pkg/apis/openapi_models_test.go
+@@ -0,0 +1,68 @@
++/*
++Copyright 2025 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package apis
++
++import (
++	"reflect"
++	"testing"
++
++	"k8s.io/apimachinery/pkg/runtime"
++	"k8s.io/kube-openapi/pkg/util"
++
++	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
++	apiregistrationv1beta1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1beta1"
++)
++
++var groups = []runtime.SchemeBuilder{
++	apiregistrationv1.SchemeBuilder,
++	apiregistrationv1beta1.SchemeBuilder,
++}
++
++func TestOpenAPIDefinitionNames(t *testing.T) {
++	scheme := runtime.NewScheme()
++	for _, builder := range groups {
++		if err := builder.AddToScheme(scheme); err != nil {
++			t.Fatalf("unexpected error adding to scheme: %v", err)
++		}
++	}
++
++	kinds := scheme.AllKnownTypes()
++	for gvk := range kinds {
++		if gvk.Version == runtime.APIVersionInternal {
++			continue
++		}
++		t.Run(gvk.String(), func(t *testing.T) {
++			example, err := scheme.New(gvk)
++			if err != nil {
++				t.Fatalf("unexpected error creating example: %v", err)
++			}
++
++			namer, ok := example.(interface{ OpenAPIModelName() string })
++			if !ok {
++				t.Fatalf("type %v does not implement OpenAPICanonicalTypeName\n", gvk)
++			}
++			lookupName := namer.OpenAPIModelName()
++
++			rtype := reflect.TypeOf(example).Elem()
++			reflectName := util.ToRESTFriendlyName(rtype.PkgPath() + "." + rtype.Name())
++
++			if lookupName != reflectName {
++				t.Errorf("expected %v, got %v", reflectName, lookupName)
++			}
++		})
++	}
++}
+diff --git a/staging/src/k8s.io/kube-aggregator/pkg/controllers/openapiv3/aggregator/aggregator_test.go b/staging/src/k8s.io/kube-aggregator/pkg/controllers/openapiv3/aggregator/aggregator_test.go
+index fdd250dd6a7..66bc063210c 100644
+--- a/staging/src/k8s.io/kube-aggregator/pkg/controllers/openapiv3/aggregator/aggregator_test.go
++++ b/staging/src/k8s.io/kube-aggregator/pkg/controllers/openapiv3/aggregator/aggregator_test.go
+@@ -309,7 +309,7 @@ func sendReq(t *testing.T, handler http.Handler, path string) []byte {
+ 
+ func getTestAPIServiceOpenAPIDefinitions(_ openapicommon.ReferenceCallback) map[string]openapicommon.OpenAPIDefinition {
+ 	return map[string]openapicommon.OpenAPIDefinition{
+-		"k8s.io/kube-aggregator/pkg/apis/apiregistration/v1.APIService": buildTestAPIServiceOpenAPIDefinition(),
++		"io.k8s.kube-aggregator.pkg.apis.apiregistration.v1.APIService": buildTestAPIServiceOpenAPIDefinition(),
+ 	}
+ }
+ 
+diff --git a/test/integration/apiserver/openapi/openapi_enum_test.go b/test/integration/apiserver/openapi/openapi_enum_test.go
+index 931e9f02325..8b9b1c3e02c 100644
+--- a/test/integration/apiserver/openapi/openapi_enum_test.go
++++ b/test/integration/apiserver/openapi/openapi_enum_test.go
+@@ -35,7 +35,6 @@ import (
+ )
+ 
+ func TestEnablingOpenAPIEnumTypes(t *testing.T) {
+-	const typeToAddEnum = "k8s.io/api/core/v1.ContainerPort"
+ 	const typeToCheckEnum = "io.k8s.api.core.v1.ContainerPort"
+ 
+ 	for _, tc := range []struct {
+@@ -60,7 +59,7 @@ func TestEnablingOpenAPIEnumTypes(t *testing.T) {
+ 
+ 			getDefinitionsFn := openapi.GetOpenAPIDefinitionsWithoutDisabledFeatures(func(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
+ 				defs := generated.GetOpenAPIDefinitions(ref)
+-				def := defs[typeToAddEnum]
++				def := defs[typeToCheckEnum]
+ 				// replace protocol to add the would-be enum field.
+ 				def.Schema.Properties["protocol"] = spec.Schema{
+ 					SchemaProps: spec.SchemaProps{
+@@ -71,7 +70,7 @@ func TestEnablingOpenAPIEnumTypes(t *testing.T) {
+ 						Enum:        []interface{}{"SCTP", "TCP", "UDP"},
+ 					},
+ 				}
+-				defs[typeToAddEnum] = def
++				defs[typeToCheckEnum] = def
+ 				return defs
+ 			})
+ 

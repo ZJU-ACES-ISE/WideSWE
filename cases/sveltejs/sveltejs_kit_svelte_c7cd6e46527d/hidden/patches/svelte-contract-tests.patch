@@ -1,0 +1,464 @@
+diff --git a/packages/svelte/tests/runtime-legacy/shared.ts b/packages/svelte/tests/runtime-legacy/shared.ts
+index 94f09c9e8..454ae2f76 100644
+--- a/packages/svelte/tests/runtime-legacy/shared.ts
++++ b/packages/svelte/tests/runtime-legacy/shared.ts
+@@ -102,6 +102,7 @@ export interface RuntimeTest<Props extends Record<string, any> = Record<string,
+ 	expect_unhandled_rejections?: boolean;
+ 	withoutNormalizeHtml?: boolean | 'only-strip-comments';
+ 	recover?: boolean;
++	transformError?: (error: unknown) => unknown;
+ }
+ 
+ declare global {
+@@ -368,7 +369,8 @@ async function run_test_variant(
+ 			const SsrSvelteComponent = (await import(`${cwd}/_output/server/main.svelte.js`)).default;
+ 			const render_result = render(SsrSvelteComponent, {
+ 				props: config.server_props ?? config.props ?? {},
+-				idPrefix: config.id_prefix
++				idPrefix: config.id_prefix,
++				transformError: config.transformError
+ 			});
+ 			const rendered =
+ 				variant === 'async-ssr' || (variant === 'hydrate' && compileOptions.experimental?.async)
+@@ -471,7 +473,8 @@ async function run_test_variant(
+ 						target,
+ 						props,
+ 						intro: config.intro,
+-						recover: config.recover ?? false
++						recover: config.recover ?? false,
++						transformError: config.transformError
+ 					});
+ 				}
+ 			} else {
+diff --git a/packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/_config.js b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/_config.js
+new file mode 100644
+index 000000000..202036421
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/_config.js
+@@ -0,0 +1,15 @@
++import { tick } from 'svelte';
++import { test } from '../../test';
++
++export default test({
++	mode: ['hydrate', 'async-server', 'client'],
++	ssrHtml: '<p>caught: error (hello)</p>',
++	transformError: () => {
++		return 'error';
++	},
++
++	async test({ assert, target }) {
++		await tick();
++		assert.htmlEqual(target.innerHTML, '<p>caught: error (hello)</p>');
++	}
++});
+diff --git a/packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/child.svelte b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/child.svelte
+new file mode 100644
+index 000000000..c6323d292
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/child.svelte
+@@ -0,0 +1,12 @@
++<script>
++	import { get } from "./main.svelte";
++
++    let { error } = $props();
++    const context = get()
++</script>
++
++{#if error}
++    <p>caught: {await error} ({context})</p>
++{:else}
++	{await Promise.reject('catch me')}
++{/if}
+diff --git a/packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/main.svelte b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/main.svelte
+new file mode 100644
+index 000000000..a467f7500
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/main.svelte
+@@ -0,0 +1,19 @@
++<script module>
++	import { createContext } from "svelte";
++	import Child from "./child.svelte";
++
++	const [ get, set ] = createContext();
++	export {get};
++</script>
++
++<script>
++	set('hello');
++</script>
++
++<svelte:boundary>
++	{#snippet failed(error)}
++		<Child {error} />
++	{/snippet}
++
++	<Child />
++</svelte:boundary>
+diff --git a/packages/svelte/tests/runtime-runes/samples/async-error-boundary/_config.js b/packages/svelte/tests/runtime-runes/samples/async-error-boundary/_config.js
+new file mode 100644
+index 000000000..231a8c9d6
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/async-error-boundary/_config.js
+@@ -0,0 +1,16 @@
++import { tick } from 'svelte';
++import { test } from '../../test';
++
++export default test({
++	mode: ['hydrate', 'async-server', 'client'],
++	ssrHtml: '<p>caught: error</p>',
++	transformError: (error) => {
++		if (error !== 'catch me') throw 'wrong error object';
++		return 'error';
++	},
++
++	async test({ assert, target }) {
++		await tick();
++		assert.htmlEqual(target.innerHTML, '<p>caught: error</p>');
++	}
++});
+diff --git a/packages/svelte/tests/runtime-runes/samples/async-error-boundary/main.svelte b/packages/svelte/tests/runtime-runes/samples/async-error-boundary/main.svelte
+new file mode 100644
+index 000000000..375ae273a
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/async-error-boundary/main.svelte
+@@ -0,0 +1,7 @@
++<svelte:boundary>
++	{#snippet failed(error)}
++		<p>caught: {error}</p>
++	{/snippet}
++
++	{await Promise.reject('catch me')}
++</svelte:boundary>
+diff --git a/packages/svelte/tests/runtime-runes/samples/error-boundary-26/_config.js b/packages/svelte/tests/runtime-runes/samples/error-boundary-26/_config.js
+new file mode 100644
+index 000000000..3e9f30872
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/error-boundary-26/_config.js
+@@ -0,0 +1,15 @@
++import { tick } from 'svelte';
++import { test } from '../../test';
++
++export default test({
++	html: '<p>caught: error</p>',
++	transformError: (error) => {
++		if (error !== 'catch me') throw 'wrong error object';
++		return 'error';
++	},
++
++	async test({ assert, target }) {
++		await tick();
++		assert.htmlEqual(target.innerHTML, '<p>caught: error</p>');
++	}
++});
+diff --git a/packages/svelte/tests/runtime-runes/samples/error-boundary-26/main.svelte b/packages/svelte/tests/runtime-runes/samples/error-boundary-26/main.svelte
+new file mode 100644
+index 000000000..88d549f6d
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/error-boundary-26/main.svelte
+@@ -0,0 +1,7 @@
++<svelte:boundary>
++	{#snippet failed(error)}
++		<p>caught: {error}</p>
++	{/snippet}
++
++	{(() => {throw 'catch me'})()}
++</svelte:boundary>
+diff --git a/packages/svelte/tests/runtime-runes/samples/error-boundary-27/_config.js b/packages/svelte/tests/runtime-runes/samples/error-boundary-27/_config.js
+new file mode 100644
+index 000000000..df0d48b76
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/error-boundary-27/_config.js
+@@ -0,0 +1,14 @@
++import { tick } from 'svelte';
++import { test } from '../../test';
++
++export default test({
++	html: '<p>caught: error (hello)</p>',
++	transformError: () => {
++		return 'error';
++	},
++
++	async test({ assert, target }) {
++		await tick();
++		assert.htmlEqual(target.innerHTML, '<p>caught: error (hello)</p>');
++	}
++});
+diff --git a/packages/svelte/tests/runtime-runes/samples/error-boundary-27/child.svelte b/packages/svelte/tests/runtime-runes/samples/error-boundary-27/child.svelte
+new file mode 100644
+index 000000000..5b680f1d0
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/error-boundary-27/child.svelte
+@@ -0,0 +1,12 @@
++<script>
++	import { get } from "./main.svelte";
++
++    let { error } = $props();
++    const context = get()
++</script>
++
++{#if error}
++    <p>caught: {error} ({context})</p>
++{:else}
++	{(() => {throw 'catch me'})()}
++{/if}
+\ No newline at end of file
+diff --git a/packages/svelte/tests/runtime-runes/samples/error-boundary-27/main.svelte b/packages/svelte/tests/runtime-runes/samples/error-boundary-27/main.svelte
+new file mode 100644
+index 000000000..a467f7500
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/error-boundary-27/main.svelte
+@@ -0,0 +1,19 @@
++<script module>
++	import { createContext } from "svelte";
++	import Child from "./child.svelte";
++
++	const [ get, set ] = createContext();
++	export {get};
++</script>
++
++<script>
++	set('hello');
++</script>
++
++<svelte:boundary>
++	{#snippet failed(error)}
++		<Child {error} />
++	{/snippet}
++
++	<Child />
++</svelte:boundary>
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/_config.js b/packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/_config.js
+new file mode 100644
+index 000000000..6989172de
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/_config.js
+@@ -0,0 +1,10 @@
++import { test } from '../../test';
++
++export default test({
++	transformError: (error) => {
++		if (/** @type {Error} */ (error).message !== 'you are not supposed to see this message') {
++			return 'wrong object passed to transformError';
++		}
++		return 'component error';
++	}
++});
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/_expected.html b/packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/_expected.html
+new file mode 100644
+index 000000000..da06ee2b3
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/_expected.html
+@@ -0,0 +1 @@
++<p>caught: component error</p>
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/main.svelte b/packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/main.svelte
+new file mode 100644
+index 000000000..29086b359
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/main.svelte
+@@ -0,0 +1,13 @@
++<script>
++	function throws() {
++		throw new Error('you are not supposed to see this message');
++	}
++</script>
++
++{#snippet failed(error)}
++	<p>caught: {error}</p>
++{/snippet}
++
++<svelte:boundary {failed}>
++	<p>{throws()}</p>
++</svelte:boundary>
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-failed-snippet/_config.js b/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-failed-snippet/_config.js
+new file mode 100644
+index 000000000..ae78cb482
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-failed-snippet/_config.js
+@@ -0,0 +1,8 @@
++import { test } from '../../test';
++
++export default test({
++	// transformError transforms the error, but there's no failed snippet.
++	// The error should still propagate because there's nothing to render instead.
++	transformError: () => 'you will not see me',
++	error: 'component error'
++});
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-failed-snippet/main.svelte b/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-failed-snippet/main.svelte
+new file mode 100644
+index 000000000..98275badb
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-failed-snippet/main.svelte
+@@ -0,0 +1,9 @@
++<script>
++	function throws() {
++		throw new Error('component error');
++	}
++</script>
++
++<svelte:boundary onerror={() => {}}>
++	<p>{throws()}</p>
++</svelte:boundary>
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-onerror/_config.js b/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-onerror/_config.js
+new file mode 100644
+index 000000000..ecc506203
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-onerror/_config.js
+@@ -0,0 +1,6 @@
++import { test } from '../../test';
++
++export default test({
++	// No transformError - by default the server throws, so the error should propagate.
++	error: 'component error'
++});
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-onerror/main.svelte b/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-onerror/main.svelte
+new file mode 100644
+index 000000000..7dd2cf310
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-no-onerror/main.svelte
+@@ -0,0 +1,13 @@
++<script>
++	function throws() {
++		throw new Error('component error');
++	}
++</script>
++
++<svelte:boundary>
++	<p>{throws()}</p>
++
++	{#snippet failed(error)}
++		<p>caught: {error}</p>
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/_config.js b/packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/_config.js
+new file mode 100644
+index 000000000..e1cb96759
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/_config.js
+@@ -0,0 +1,11 @@
++import { test } from '../../test';
++
++export default test({
++	// boundary with failed snippet exists, so transformError should transform the error
++	transformError: (error) => {
++		if (/** @type {Error} */ (error).message !== 'you are not supposed to see this message') {
++			return 'wrong object passed to transformError';
++		}
++		return 'component error';
++	}
++});
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/_expected.html b/packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/_expected.html
+new file mode 100644
+index 000000000..293de4761
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/_expected.html
+@@ -0,0 +1 @@
++<p>caught: component error</p>
+\ No newline at end of file
+diff --git a/packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/main.svelte b/packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/main.svelte
+new file mode 100644
+index 000000000..a2d1435e7
+--- /dev/null
++++ b/packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/main.svelte
+@@ -0,0 +1,13 @@
++<script>
++	function throws() {
++		throw new Error('you are not supposed to see this message');
++	}
++</script>
++
++<svelte:boundary>
++	<p>{throws()}</p>
++
++	{#snippet failed(error)}
++		<p>caught: {error}</p>
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/svelte/tests/server-side-rendering/test.ts b/packages/svelte/tests/server-side-rendering/test.ts
+index ca98fdd9a..2dcaa8570 100644
+--- a/packages/svelte/tests/server-side-rendering/test.ts
++++ b/packages/svelte/tests/server-side-rendering/test.ts
+@@ -24,6 +24,7 @@ interface SSRTest extends BaseTest {
+ 	error?: string;
+ 	csp?: { nonce: string } | { hash: true };
+ 	script_hashes?: string[];
++	transformError?: (error: unknown) => unknown;
+ }
+ 
+ // TODO remove this shim when we can
+@@ -84,7 +85,8 @@ const { test, run } = suite_with_variants<SSRTest, 'sync' | 'async', CompileOpti
+ 			const render_result = render(Component, {
+ 				props: config.props || {},
+ 				idPrefix: config.id_prefix,
+-				csp: config.csp
++				csp: config.csp,
++				transformError: config.transformError
+ 			});
+ 			rendered = is_async ? await render_result : render_result;
+ 			// we need to access these inside the try-catch otherwise errors in the script tag are not caught
+diff --git a/packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/_config.js b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/_config.js
+new file mode 100644
+index 000000000..641bbccd8
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/_config.js
+@@ -0,0 +1,15 @@
++import { tick } from 'svelte';
++import { test } from '../../test';
++
++export default test({
++	mode: ['hydrate', 'async-server', 'client'],
++	ssrHtml: '<p>caught: error (hello)</p>',
++	transformError: () => {
++		return Promise.resolve('error');
++	},
++
++	async test({ assert, target }) {
++		await tick();
++		assert.htmlEqual(target.innerHTML, '<p>caught: error (hello)</p>');
++	}
++});
+diff --git a/packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/child.svelte b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/child.svelte
+new file mode 100644
+index 000000000..90d4c14cf
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/child.svelte
+@@ -0,0 +1,14 @@
++<script>
++	import { get } from "./main.svelte";
++
++    let { error } = $props();
++    const context = get()
++</script>
++
++{#if error}
++    <p>caught: {await error} ({context})</p>
++{:else}
++	{(() => {
++        throw 'catch me';
++    })()}
++{/if}
+diff --git a/packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/main.svelte b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/main.svelte
+new file mode 100644
+index 000000000..a467f7500
+--- /dev/null
++++ b/packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/main.svelte
+@@ -0,0 +1,19 @@
++<script module>
++	import { createContext } from "svelte";
++	import Child from "./child.svelte";
++
++	const [ get, set ] = createContext();
++	export {get};
++</script>
++
++<script>
++	set('hello');
++</script>
++
++<svelte:boundary>
++	{#snippet failed(error)}
++		<Child {error} />
++	{/snippet}
++
++	<Child />
++</svelte:boundary>
+

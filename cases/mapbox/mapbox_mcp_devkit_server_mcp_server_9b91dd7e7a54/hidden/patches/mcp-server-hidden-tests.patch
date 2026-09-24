@@ -1,0 +1,99 @@
+diff --git a/test/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.test.ts b/test/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.test.ts
+index 83b050f..555473f 100644
+--- a/test/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.test.ts
++++ b/test/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.test.ts
+@@ -315,4 +315,62 @@ describe('SearchAndGeocodeTool output schema registration', () => {
+       }
+     }).toThrow();
+   });
++
++  it('should validate brand_id as a string', () => {
++    const responseWithStringBrandId = {
++      type: 'FeatureCollection',
++      features: [
++        {
++          type: 'Feature',
++          geometry: {
++            type: 'Point',
++            coordinates: [-122.4194, 37.7749]
++          },
++          properties: {
++            name: 'Starbucks',
++            brand: ['Starbucks'],
++            brand_id: 'starbucks-123'
++          }
++        }
++      ]
++    };
++
++    const { httpRequest } = setupHttpRequest();
++    const tool = new SearchAndGeocodeTool({ httpRequest });
++
++    expect(() => {
++      if (tool.outputSchema) {
++        tool.outputSchema.parse(responseWithStringBrandId);
++      }
++    }).not.toThrow();
++  });
++
++  it('should validate brand_id as an array of strings', () => {
++    const responseWithArrayBrandId = {
++      type: 'FeatureCollection',
++      features: [
++        {
++          type: 'Feature',
++          geometry: {
++            type: 'Point',
++            coordinates: [-122.4194, 37.7749]
++          },
++          properties: {
++            name: 'Multi-Brand Store',
++            brand: ['Brand A', 'Brand B'],
++            brand_id: ['brand-a-123', 'brand-b-456']
++          }
++        }
++      ]
++    };
++
++    const { httpRequest } = setupHttpRequest();
++    const tool = new SearchAndGeocodeTool({ httpRequest });
++
++    expect(() => {
++      if (tool.outputSchema) {
++        tool.outputSchema.parse(responseWithArrayBrandId);
++      }
++    }).not.toThrow();
++  });
+ });
+diff --git a/test/tools/version-tool/VersionTool.test.ts b/test/tools/version-tool/VersionTool.test.ts
+index 45cf689..e8e21a2 100644
+--- a/test/tools/version-tool/VersionTool.test.ts
++++ b/test/tools/version-tool/VersionTool.test.ts
+@@ -86,6 +86,27 @@ describe('VersionTool', () => {
+         branch: 'unknown'
+       });
+     });
++
++    it('should return raw version info when output validation fails', async () => {
++      const rawVersionInfo = {
++        name: 'Mapbox MCP server',
++        version: ['unexpected', 'schema'],
++        sha: 'abc123',
++        tag: 'v1.0.0',
++        branch: 'main'
++      };
++      mockGetVersionInfo.mockReturnValueOnce(rawVersionInfo as never);
++      const logSpy = vi.spyOn(tool as any, 'log');
++
++      const result = await tool.run({});
++
++      expect(result.isError).toBe(false);
++      expect(result.structuredContent).toEqual(rawVersionInfo);
++      expect(logSpy).toHaveBeenCalledWith(
++        'warning',
++        expect.stringContaining('Output schema validation failed')
++      );
++    });
+   });
+ 
+   describe('properties', () => {

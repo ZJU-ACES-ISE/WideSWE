@@ -1,0 +1,71 @@
+task_id: elastic_kibana_package_spec_264fe9f9020d
+hidden_test_patches:
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - x-pack/platform/plugins/shared/fleet/common/services/simplified_package_policy_helper.test.ts
+  - x-pack/platform/plugins/shared/fleet/common/services/validate_package_policy.test.ts
+  - x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.test.tsx
+  - x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_configure_package.test.tsx
+  - x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_define_package_policy.test.tsx
+  - x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/edit_package_policy_page/index.test.tsx
+  - x-pack/platform/plugins/shared/fleet/server/routes/package_policy/handlers.test.ts
+  - x-pack/platform/plugins/shared/fleet/server/services/epm/archive/parse.test.ts
+  hidden_file: *id001
+  semantic_changes: Removed undefined-field and Gold-private API requirements; the profile runs behavior-level common, public, and server tests with matching Jest configs and uses one JSON result source per Jest case.
+  source: upstream test changes from elastic/kibana PR(s) 249449
+- repo: package-spec
+  patch: hidden/patches/package-spec-hidden-tests.patch
+  test_profile: package_spec-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - code/go/pkg/validator/validator_test.go
+  - test/packages/bad_var_groups_duplicate_name/LICENSE.txt
+  - test/packages/bad_var_groups_duplicate_name/changelog.yml
+  - test/packages/bad_var_groups_duplicate_name/docs/README.md
+  - test/packages/bad_var_groups_duplicate_name/img/sample-logo.svg
+  - test/packages/bad_var_groups_duplicate_name/img/sample-screenshot.png
+  - test/packages/bad_var_groups_duplicate_name/manifest.yml
+  - test/packages/bad_var_groups_missing_var/LICENSE.txt
+  - test/packages/bad_var_groups_missing_var/changelog.yml
+  - test/packages/bad_var_groups_missing_var/docs/README.md
+  - test/packages/bad_var_groups_missing_var/img/sample-logo.svg
+  - test/packages/bad_var_groups_missing_var/img/sample-screenshot.png
+  - test/packages/bad_var_groups_missing_var/manifest.yml
+  - test/packages/bad_var_groups_required_var_in_optional_group/LICENSE.txt
+  - test/packages/bad_var_groups_required_var_in_optional_group/changelog.yml
+  - test/packages/bad_var_groups_required_var_in_optional_group/docs/README.md
+  - test/packages/bad_var_groups_required_var_in_optional_group/img/sample-logo.svg
+  - test/packages/bad_var_groups_required_var_in_optional_group/img/sample-screenshot.png
+  - test/packages/bad_var_groups_required_var_in_optional_group/manifest.yml
+  - test/packages/bad_var_groups_required_var_in_required_group/LICENSE.txt
+  - test/packages/bad_var_groups_required_var_in_required_group/changelog.yml
+  - test/packages/bad_var_groups_required_var_in_required_group/docs/README.md
+  - test/packages/bad_var_groups_required_var_in_required_group/img/sample-logo.svg
+  - test/packages/bad_var_groups_required_var_in_required_group/img/sample-screenshot.png
+  - test/packages/bad_var_groups_required_var_in_required_group/manifest.yml
+  - test/packages/good_var_groups/LICENSE.txt
+  - test/packages/good_var_groups/changelog.yml
+  - test/packages/good_var_groups/data_stream/findings/agent/stream/aws-s3.yml.hbs
+  - test/packages/good_var_groups/data_stream/findings/fields/base-fields.yml
+  - test/packages/good_var_groups/data_stream/findings/manifest.yml
+  - test/packages/good_var_groups/docs/README.md
+  - test/packages/good_var_groups/img/sample-logo.svg
+  - test/packages/good_var_groups/img/sample-screenshot.png
+  - test/packages/good_var_groups/manifest.yml
+  hidden_file: *id002
+  semantic_changes: Excluded the Gold-private semantic unit test; public fixtures validate acceptance/rejection and the affected manifest object without requiring Gold's exact error wording.
+  source: upstream test changes from elastic/package-spec PR(s) 1059
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - kibana-hidden
+    - package_spec-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

@@ -1,0 +1,40 @@
+task_id: symfony_php_ext_deepclone_polyfill_6761dd5e6786
+hidden_test_patches:
+- repo: php-ext-deepclone
+  patch: hidden/patches/php-ext-deepclone-hidden-tests.patch
+  test_profile: php_ext_deepclone-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/deepclone_hydrate.phpt
+  - tests/deepclone_hydrate_dtor_reentrance.phpt
+  - tests/deepclone_hydrate_enum_cast.phpt
+  - tests/deepclone_hydrate_flags.phpt
+  - tests/deepclone_hydrate_mangled_validation.phpt
+  - tests/deepclone_hydrate_null_unset.phpt
+  - tests/deepclone_hydrate_readonly_idempotent.phpt
+  - tests/deepclone_hydrate_typed_props.phpt
+  - tests/deepclone_private_shadowing.phpt
+  hidden_file: *id001
+  semantic_changes: unknown flag validation checks ValueError behavior without fixing an undisclosed message phrase
+  source: upstream test changes from symfony/php-ext-deepclone PR(s) 9
+- repo: polyfill
+  patch: hidden/patches/polyfill-hidden-tests.patch
+  test_profile: polyfill-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/DeepClone/DeepCloneTest.php
+  - tests/DeepClone/fixtures.php
+  hidden_file: *id002
+  semantic_changes: omits default-mode virtual hook invocation not exposed by the prompt and avoids fixing the unknown-flag error wording
+  source: upstream test changes from symfony/polyfill PR(s) 573
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - php_ext_deepclone-hidden
+    - polyfill-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

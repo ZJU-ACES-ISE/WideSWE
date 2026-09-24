@@ -1,0 +1,1057 @@
+diff --git a/.changeset/cyan-walls-leave.md b/.changeset/cyan-walls-leave.md
+new file mode 100644
+index 000000000..dc0103522
+--- /dev/null
++++ b/.changeset/cyan-walls-leave.md
+@@ -0,0 +1,5 @@
++---
++'@sveltejs/kit': minor
++---
++
++feat: allow error boundaries to catch errors on the server
+diff --git a/documentation/docs/30-advanced/25-errors.md b/documentation/docs/30-advanced/25-errors.md
+index 53d86b1ef..95538d279 100644
+--- a/documentation/docs/30-advanced/25-errors.md
++++ b/documentation/docs/30-advanced/25-errors.md
+@@ -100,6 +100,54 @@ By default, unexpected errors are printed to the console (or, in production, you
+ 
+ Unexpected errors will go through the [`handleError`](hooks#Shared-hooks-handleError) hook, where you can add your own error handling — for example, sending errors to a reporting service, or returning a custom error object which becomes `page.error`.
+ 
++## Rendering errors
++
++Ordinarily, if an error happens during server-side rendering (for example inside a component's `<script>` block or template), SvelteKit will return a 500 error page.
++
++Since SvelteKit 2.54 and Svelte 5.53, you can change this by enabling the experimental `handleRenderingErrors` option in your config:
++
++```js
++/// file: svelte.config.js
++/** @type {import('@sveltejs/kit').Config} */
++const config = {
++	kit: {
++		experimental: {
++			handleRenderingErrors: true
++		}
++	}
++};
++
++export default config;
++```
++
++When this is enabled, SvelteKit will wrap your route components in an error boundary. If an error occurs during rendering, the nearest [`+error.svelte`](routing#error) page will be shown, just as if the error had occurred in a `load` function.
++
++The error is first passed to [`handleError`](hooks#Shared-hooks-handleError), allowing you to report it and transform it, before the resulting object is passed to the `+error.svelte` component.
++
++> [!NOTE]
++> Since rendering errors occur after the page has started rendering, and multiple boundaries could in parallel catch distinct errors, the [`page`]($app-state#page) object (and its `error` property) will not be updated. Instead, the error is passed directly to the `+error.svelte` component as a prop.
++
++```svelte
++<!--- file: +error.svelte --->
++<script>
++	let { error } = $props();
++</script>
++
++<h1>{error.message}</h1>
++```
++
++The same applies for other error boundaries you define in your code:
++
++```svelte
++<svelte:boundary>
++	...
++	{#snippet failed(error: App.Error)}
++		<!-- error went through handleError and is of type App.Error -->
++		{error.message}
++	{/snippet}
++</svelte:boundary>
++```
++
+ ## Responses
+ 
+ If an error occurs inside `handle` or inside a [`+server.js`](routing#server) request handler, SvelteKit will respond with either a fallback error page or a JSON representation of the error object, depending on the request's `Accept` headers.
+diff --git a/packages/kit/src/core/config/options.js b/packages/kit/src/core/config/options.js
+index 97ded87f0..b7140aefb 100644
+--- a/packages/kit/src/core/config/options.js
++++ b/packages/kit/src/core/config/options.js
+@@ -133,7 +133,8 @@ const options = object(
+ 					server: boolean(false)
+ 				}),
+ 				remoteFunctions: boolean(false),
+-				forkPreloads: boolean(false)
++				forkPreloads: boolean(false),
++				handleRenderingErrors: boolean(false)
+ 			}),
+ 
+ 			files: object({
+diff --git a/packages/kit/src/core/sync/sync.js b/packages/kit/src/core/sync/sync.js
+index d8643e989..d9680e8ab 100644
+--- a/packages/kit/src/core/sync/sync.js
++++ b/packages/kit/src/core/sync/sync.js
+@@ -33,7 +33,7 @@ export function create(config) {
+ 
+ 	write_client_manifest(config.kit, manifest_data, `${output}/client`);
+ 	write_server(config, output);
+-	write_root(manifest_data, output);
++	write_root(manifest_data, config, output);
+ 	write_all_types(config, manifest_data);
+ 	write_non_ambient(config.kit, manifest_data);
+ 
+diff --git a/packages/kit/src/core/sync/write_root.js b/packages/kit/src/core/sync/write_root.js
+index 5866b3d8e..445c17e45 100644
+--- a/packages/kit/src/core/sync/write_root.js
++++ b/packages/kit/src/core/sync/write_root.js
+@@ -2,11 +2,14 @@ import { dedent, isSvelte5Plus, write_if_changed } from './utils.js';
+ 
+ /**
+  * @param {import('types').ManifestData} manifest_data
++ * @param {import('types').ValidatedConfig} config
+  * @param {string} output
+  */
+-export function write_root(manifest_data, output) {
++export function write_root(manifest_data, config, output) {
+ 	// TODO remove default layout altogether
+ 
++	const use_boundaries = config.kit.experimental.handleRenderingErrors && isSvelte5Plus();
++
+ 	const max_depth = Math.max(
+ 		...manifest_data.routes.map((route) =>
+ 			route.page ? route.page.layouts.filter(Boolean).length + 1 : 0
+@@ -20,8 +23,38 @@ export function write_root(manifest_data, output) {
+ 	}
+ 
+ 	let l = max_depth;
++	/** @type {string} */
++	let pyramid;
+ 
+-	let pyramid = dedent`
++	if (isSvelte5Plus() && use_boundaries) {
++		// with the @const we force the data[depth] access to be derived, which is important to not fire updates needlessly
++		// TODO in Svelte 5 we should rethink the client.js side, we can likely make data a $state and only update indexes that changed there, simplifying this a lot
++		pyramid = dedent`
++			{#snippet pyramid(depth)}
++				{@const Pyramid = constructors[depth]}
++				{#snippet failed(error)}
++					{@const ErrorPage = errors[depth]}
++					<ErrorPage {error} />
++				{/snippet}
++				<svelte:boundary failed={errors[depth] ? failed : undefined}>
++					{#if constructors[depth + 1]}
++						{@const d = data[depth]}
++						<!-- svelte-ignore binding_property_non_reactive -->
++						<Pyramid bind:this={components[depth]} data={d} {form} params={page.params}>
++							{@render pyramid(depth + 1)}
++						</Pyramid>
++					{:else}
++						{@const d = data[depth]}
++						<!-- svelte-ignore binding_property_non_reactive -->
++						<Pyramid bind:this={components[depth]} data={d} {form} params={page.params} {error} />
++					{/if}
++				</svelte:boundary>
++			{/snippet}
++
++			{@render pyramid(0)}
++		`;
++	} else {
++		pyramid = dedent`
+ 	${
+ 		isSvelte5Plus()
+ 			? `<!-- svelte-ignore binding_property_non_reactive -->
+@@ -29,8 +62,8 @@ export function write_root(manifest_data, output) {
+ 			: `<svelte:component this={constructors[${l}]} bind:this={components[${l}]} data={data_${l}} {form} params={page.params} />`
+ 	}`;
+ 
+-	while (l--) {
+-		pyramid = dedent`
++		while (l--) {
++			pyramid = dedent`
+ 			{#if constructors[${l + 1}]}
+ 				${
+ 					isSvelte5Plus()
+@@ -57,6 +90,7 @@ export function write_root(manifest_data, output) {
+ 
+ 			{/if}
+ 		`;
++		}
+ 	}
+ 
+ 	write_if_changed(
+@@ -72,9 +106,10 @@ export function write_root(manifest_data, output) {
+ 				${
+ 					isSvelte5Plus()
+ 						? dedent`
+-							let { stores, page, constructors, components = [], form, ${levels
++							let { stores, page, constructors, components = [], form, ${use_boundaries ? 'errors = [], error, ' : ''}${levels
+ 								.map((l) => `data_${l} = null`)
+ 								.join(', ')} } = $props();
++							${use_boundaries ? `let data = $derived({${levels.map((l) => `'${l}': data_${l}`).join(', ')}})` : ''}
+ 						`
+ 						: dedent`
+ 							export let stores;
+@@ -108,7 +143,7 @@ export function write_root(manifest_data, output) {
+ 					isSvelte5Plus()
+ 						? dedent`
+ 							$effect(() => {
+-								stores;page;constructors;components;form;${levels.map((l) => `data_${l}`).join(';')};
++								stores;page;constructors;components;form;${use_boundaries ? 'errors;error;' : ''}${levels.map((l) => `data_${l}`).join(';')};
+ 								stores.page.notify();
+ 							});
+ 						`
+diff --git a/packages/kit/src/core/sync/write_server.js b/packages/kit/src/core/sync/write_server.js
+index ea7d9dfe0..711a00734 100644
+--- a/packages/kit/src/core/sync/write_server.js
++++ b/packages/kit/src/core/sync/write_server.js
+@@ -50,6 +50,7 @@ export const options = {
+ 	root,
+ 	service_worker: ${has_service_worker},
+ 	service_worker_options: ${config.kit.serviceWorker.register ? s(config.kit.serviceWorker.options) : 'null'},
++	server_error_boundaries: ${s(!!config.kit.experimental.handleRenderingErrors)},
+ 	templates: {
+ 		app: ({ head, body, assets, nonce, env }) => ${s(template)
+ 			.replace('%sveltekit.head%', '" + head + "')
+diff --git a/packages/kit/src/exports/public.d.ts b/packages/kit/src/exports/public.d.ts
+index 1c827d03c..c67fbfe61 100644
+--- a/packages/kit/src/exports/public.d.ts
++++ b/packages/kit/src/exports/public.d.ts
+@@ -513,6 +513,15 @@ export interface KitConfig {
+ 		 * @default false
+ 		 */
+ 		forkPreloads?: boolean;
++
++		/**
++		 * Whether to enable the experimental handling of rendering errors.
++		 * When enabled, `<svelte:boundary>` is used to wrap components at each level
++		 * where there's an `+error.svelte`, rendering the error page if the component fails.
++		 * In addition, error boundaries also work on the server and the error object goes through `handleError`.
++		 * @default false
++		 */
++		handleRenderingErrors?: boolean;
+ 	};
+ 	/**
+ 	 * Where to find various files within your project.
+diff --git a/packages/kit/src/exports/vite/index.js b/packages/kit/src/exports/vite/index.js
+index 5b7361714..7e22d5e85 100644
+--- a/packages/kit/src/exports/vite/index.js
++++ b/packages/kit/src/exports/vite/index.js
+@@ -367,7 +367,8 @@ async function kit({ svelte_config }) {
+ 				__SVELTEKIT_PATHS_RELATIVE__: s(kit.paths.relative),
+ 				__SVELTEKIT_CLIENT_ROUTING__: s(kit.router.resolution === 'client'),
+ 				__SVELTEKIT_HASH_ROUTING__: s(kit.router.type === 'hash'),
+-				__SVELTEKIT_SERVER_TRACING_ENABLED__: s(kit.experimental.tracing.server)
++				__SVELTEKIT_SERVER_TRACING_ENABLED__: s(kit.experimental.tracing.server),
++				__SVELTEKIT_EXPERIMENTAL_USE_TRANSFORM_ERROR__: s(kit.experimental.handleRenderingErrors)
+ 			};
+ 
+ 			if (is_build) {
+diff --git a/packages/kit/src/runtime/client/client.js b/packages/kit/src/runtime/client/client.js
+index 0faada3d4..d6ece5753 100644
+--- a/packages/kit/src/runtime/client/client.js
++++ b/packages/kit/src/runtime/client/client.js
+@@ -56,6 +56,14 @@ export { load_css };
+ const ICON_REL_ATTRIBUTES = new Set(['icon', 'shortcut icon', 'apple-touch-icon']);
+ 
+ let errored = false;
++/**
++ * Set via transformError, reset and read at the end of navigate.
++ * Necessary because a navigation might succeed loading but during rendering
++ * an error occurs, at which point the navigation result needs to be overridden with the error result.
++ * TODO this is all very hacky, rethink for SvelteKit 3 where we can assume Svelte 5 and do an overhaul of client.js
++ * @type {{ error: App.Error, status: number } | null}
++ */
++let rendering_error = null;
+ 
+ // We track the scroll position associated with each history entry in sessionStorage,
+ // rather than on history.state itself, because when navigation is driven by
+@@ -238,12 +246,14 @@ const on_navigate_callbacks = new Set();
+ /** @type {Set<(navigation: import('@sveltejs/kit').AfterNavigate) => void>} */
+ const after_navigate_callbacks = new Set();
+ 
+-/** @type {import('./types.js').NavigationState} */
++/** @type {import('./types.js').NavigationState & { nav: import('@sveltejs/kit').NavigationEvent }} */
+ let current = {
+ 	branch: [],
+ 	error: null,
+ 	// @ts-ignore - we need the initial value to be null
+-	url: null
++	url: null,
++	// @ts-ignore - we need the initial value to be null
++	nav: null
+ };
+ 
+ /** this being true means we SSR'd */
+@@ -415,7 +425,7 @@ async function _invalidate(include_load_functions = true, reset_page_state = tru
+ 			navigation_result.props.page.state = prev_state;
+ 		}
+ 		update(navigation_result.props.page);
+-		current = navigation_result.state;
++		current = { ...navigation_result.state, nav: current.nav };
+ 		reset_invalidation();
+ 		root.$set(navigation_result.props);
+ 	} else {
+@@ -581,7 +591,17 @@ async function _preload_code(url) {
+ async function initialize(result, target, hydrate) {
+ 	if (DEV && result.state.error && document.querySelector('vite-error-overlay')) return;
+ 
+-	current = result.state;
++	/** @type {import('@sveltejs/kit').NavigationEvent} */
++	const nav = {
++		params: current.params,
++		route: { id: current.route?.id ?? null },
++		url: new URL(location.href)
++	};
++
++	current = {
++		...result.state,
++		nav
++	};
+ 
+ 	const style = document.querySelector('style[data-sveltekit]');
+ 	if (style) style.remove();
+@@ -593,7 +613,17 @@ async function initialize(result, target, hydrate) {
+ 		props: { ...result.props, stores, components },
+ 		hydrate,
+ 		// @ts-ignore Svelte 5 specific: asynchronously instantiate the component, i.e. don't call flushSync
+-		sync: false
++		sync: false,
++		// @ts-ignore Svelte 5 specific: transformError allows to transform errors before they are passed to boundaries
++		transformError: __SVELTEKIT_EXPERIMENTAL_USE_TRANSFORM_ERROR__
++			? /** @param {unknown} e */ async (e) => {
++					const error = await handle_error(e, current.nav);
++					rendering_error = { error, status: get_status(e) };
++					page.error = error;
++					page.status = rendering_error.status;
++					return error;
++				}
++			: undefined
+ 	});
+ 
+ 	// Wait for a microtask in case svelte experimental async is enabled,
+@@ -607,9 +637,7 @@ async function initialize(result, target, hydrate) {
+ 		const navigation = {
+ 			from: null,
+ 			to: {
+-				params: current.params,
+-				route: { id: current.route?.id ?? null },
+-				url: new URL(location.href),
++				...nav,
+ 				scroll: scroll_positions[current_history_index] ?? scroll_state()
+ 			},
+ 			willUnload: false,
+@@ -629,13 +657,23 @@ async function initialize(result, target, hydrate) {
+  *   url: URL;
+  *   params: Record<string, string>;
+  *   branch: Array<import('./types.js').BranchNode | undefined>;
++ *   errors?: Array<import('types').CSRPageNodeLoader | undefined>;
+  *   status: number;
+  *   error: App.Error | null;
+  *   route: import('types').CSRRoute | null;
+  *   form?: Record<string, any> | null;
+  * }} opts
+  */
+-function get_navigation_result_from_branch({ url, params, branch, status, error, route, form }) {
++async function get_navigation_result_from_branch({
++	url,
++	params,
++	branch,
++	errors,
++	status,
++	error,
++	route,
++	form
++}) {
+ 	/** @type {import('types').TrailingSlash} */
+ 	let slash = 'never';
+ 
+@@ -670,6 +708,32 @@ function get_navigation_result_from_branch({ url, params, branch, status, error,
+ 		}
+ 	};
+ 
++	if (errors && __SVELTEKIT_EXPERIMENTAL_USE_TRANSFORM_ERROR__) {
++		let last_idx = -1;
++		result.props.errors = await Promise.all(
++			// eslint-disable-next-line @typescript-eslint/await-thenable
++			branch
++				.map((b, i) => {
++					if (i === 0) return undefined; // root layout wraps root error component, not the other way around
++					if (!b) return null;
++
++					i--;
++					// Find the closest error component up to the previous branch
++					while (i > last_idx + 1 && !errors[i]) i -= 1;
++					last_idx = i;
++					return errors[i]?.()
++						.then((e) => e.component)
++						.catch(() => undefined);
++				})
++				// filter out indexes where there was no branch, but keep indexes where there was a branch but no error component
++				.filter((e) => e !== null)
++		);
++	}
++
++	if (error && __SVELTEKIT_EXPERIMENTAL_USE_TRANSFORM_ERROR__) {
++		result.props.error = error;
++	}
++
+ 	if (form !== undefined) {
+ 		result.props.form = form;
+ 	}
+@@ -1201,6 +1265,7 @@ async function load_route({ id, invalidating, url, params, route, preload }) {
+ 						url,
+ 						params,
+ 						branch: branch.slice(0, error_load.idx).concat(error_load.node),
++						errors,
+ 						status,
+ 						error,
+ 						route
+@@ -1220,6 +1285,7 @@ async function load_route({ id, invalidating, url, params, route, preload }) {
+ 		url,
+ 		params,
+ 		branch,
++		errors,
+ 		status: 200,
+ 		error: null,
+ 		route,
+@@ -1325,6 +1391,7 @@ async function load_root_error_page({ status, error, url, route }) {
+ 			branch: [root_layout, root_error],
+ 			status,
+ 			error,
++			errors: [],
+ 			route: null
+ 		});
+ 	} catch (error) {
+@@ -1732,7 +1799,16 @@ async function navigate({
+ 			});
+ 		}
+ 
+-		current = navigation_result.state;
++		// Type-casts are save because we know this resolved a proper SvelteKit route
++		const target = /** @type {import('@sveltejs/kit').NavigationTarget} */ (nav.navigation.to);
++		current = {
++			...navigation_result.state,
++			nav: {
++				params: /** @type {Record<string, any>} */ (target.params),
++				route: target.route,
++				url: target.url
++			}
++		};
+ 
+ 		// reset url before updating page store
+ 		if (navigation_result.props.page) {
+@@ -1744,7 +1820,12 @@ async function navigate({
+ 		if (fork) {
+ 			commit_promise = fork.commit();
+ 		} else {
++			rendering_error = null; // TODO this can break with forks, rethink for SvelteKit 3 where we can assume Svelte 5
+ 			root.$set(navigation_result.props);
++			// Check for sync rendering error
++			if (rendering_error) {
++				Object.assign(navigation_result.props.page, rendering_error);
++			}
+ 			update(navigation_result.props.page);
+ 
+ 			commit_promise = svelte.settled?.();
+@@ -1800,6 +1881,10 @@ async function navigate({
+ 	autoscroll = true;
+ 
+ 	if (navigation_result.props.page) {
++		// Check for async rendering error
++		if (rendering_error) {
++			Object.assign(navigation_result.props.page, rendering_error);
++		}
+ 		Object.assign(page, navigation_result.props.page);
+ 	}
+ 
+@@ -2401,16 +2486,17 @@ export async function set_nearest_error_page(error, status = 500) {
+ 
+ 	const error_load = await load_nearest_error_page(current.branch.length, branch, route.errors);
+ 	if (error_load) {
+-		const navigation_result = get_navigation_result_from_branch({
++		const navigation_result = await get_navigation_result_from_branch({
+ 			url,
+ 			params: current.params,
+ 			branch: branch.slice(0, error_load.idx).concat(error_load.node),
+ 			status,
+ 			error,
++			// do not set errors, we haven't changed the page so the previous ones are still current
+ 			route
+ 		});
+ 
+-		current = navigation_result.state;
++		current = { ...navigation_result.state, nav: current.nav };
+ 
+ 		root.$set(navigation_result.props);
+ 		update(navigation_result.props.page);
+@@ -2829,12 +2915,13 @@ async function _hydrate(
+ 			}
+ 		}
+ 
+-		result = get_navigation_result_from_branch({
++		result = await get_navigation_result_from_branch({
+ 			url,
+ 			params,
+ 			branch,
+ 			status,
+ 			error,
++			errors: parsed_route?.errors, // TODO load earlier?
+ 			form,
+ 			route: parsed_route ?? null
+ 		});
+diff --git a/packages/kit/src/runtime/client/types.d.ts b/packages/kit/src/runtime/client/types.d.ts
+index 927b5b7a1..f91124f96 100644
+--- a/packages/kit/src/runtime/client/types.d.ts
++++ b/packages/kit/src/runtime/client/types.d.ts
+@@ -85,9 +85,11 @@ export type NavigationFinished = {
+ 	state: NavigationState;
+ 	props: {
+ 		constructors: Array<typeof SvelteComponent>;
++		errors?: Array<typeof SvelteComponent | undefined>;
+ 		components?: SvelteComponent[];
+ 		page: Page;
+ 		form?: Record<string, any> | null;
++		error?: App.Error;
+ 		[key: `data_${number}`]: Record<string, any>;
+ 	};
+ };
+diff --git a/packages/kit/src/runtime/server/page/index.js b/packages/kit/src/runtime/server/page/index.js
+index 33afd6ce0..f5bb852a6 100644
+--- a/packages/kit/src/runtime/server/page/index.js
++++ b/packages/kit/src/runtime/server/page/index.js
+@@ -285,6 +285,11 @@ export async function render_page(
+ 
+ 							const layouts = compact(branch.slice(0, j + 1));
+ 							const nodes = new PageNodes(layouts.map((layout) => layout.node));
++							const error_branch = layouts.concat({
++								node,
++								data: null,
++								server_data: null
++							});
+ 
+ 							return await render_response({
+ 								event,
+@@ -299,11 +304,14 @@ export async function render_page(
+ 								},
+ 								status,
+ 								error,
+-								branch: layouts.concat({
+-									node,
+-									data: null,
+-									server_data: null
+-								}),
++								error_components: await load_error_components(
++									options,
++									ssr,
++									error_branch,
++									page,
++									manifest
++								),
++								branch: error_branch,
+ 								fetched,
+ 								data_serializer
+ 							});
+@@ -350,11 +358,11 @@ export async function render_page(
+ 			},
+ 			status,
+ 			error: null,
+-			branch: ssr === false ? [] : compact(branch),
++			branch: !ssr ? [] : compact(branch),
+ 			action_result,
+ 			fetched,
+-			data_serializer:
+-				ssr === false ? server_data_serializer(event, event_state, options) : data_serializer
++			data_serializer: !ssr ? server_data_serializer(event, event_state, options) : data_serializer,
++			error_components: await load_error_components(options, ssr, branch, page, manifest)
+ 		});
+ 	} catch (e) {
+ 		// a remote function could have thrown a redirect during render
+@@ -376,3 +384,44 @@ export async function render_page(
+ 		});
+ 	}
+ }
++
++/**
++ *
++ * @param {import('types').SSROptions} options
++ * @param {boolean} ssr
++ * @param {Array<import('./types.js').Loaded | null>} branch
++ * @param {import('types').PageNodeIndexes} page
++ * @param {import('@sveltejs/kit').SSRManifest} manifest
++ */
++async function load_error_components(options, ssr, branch, page, manifest) {
++	/** @type {Array<import('types').SSRComponent | undefined> | undefined} */
++	let error_components;
++
++	if (options.server_error_boundaries && ssr) {
++		let last_idx = -1;
++		error_components = await Promise.all(
++			// eslint-disable-next-line @typescript-eslint/await-thenable
++			branch
++				.map((b, i) => {
++					if (i === 0) return undefined; // root layout wraps root error component, not the other way around
++					if (!b) return null;
++
++					i--;
++					// Find the closest error component up to the previous branch
++					while (i > last_idx + 1 && page.errors[i] === undefined) i -= 1;
++					last_idx = i;
++
++					const idx = page.errors[i];
++					if (idx == null) return undefined;
++
++					return manifest._.nodes[idx]?.()
++						.then((e) => e.component?.())
++						.catch(() => undefined);
++				})
++				// filter out indexes where there was no branch, but keep indexes where there was a branch but no error component
++				.filter((e) => e !== null)
++		);
++	}
++
++	return error_components;
++}
+diff --git a/packages/kit/src/runtime/server/page/render.js b/packages/kit/src/runtime/server/page/render.js
+index 9f90d9c35..ff11a9cc9 100644
+--- a/packages/kit/src/runtime/server/page/render.js
++++ b/packages/kit/src/runtime/server/page/render.js
+@@ -15,8 +15,9 @@ import { create_server_routing_response, generate_route_object } from './server_
+ import { add_resolution_suffix } from '../../pathname.js';
+ import { try_get_request_store, with_request_store } from '@sveltejs/kit/internal/server';
+ import { text_encoder } from '../../utils.js';
+-import { get_global_name } from '../utils.js';
++import { get_global_name, handle_error_and_jsonify } from '../utils.js';
+ import { create_remote_key } from '../../shared.js';
++import { get_status } from '../../../utils/error.js';
+ 
+ // TODO rename this function/module
+ 
+@@ -40,7 +41,8 @@ const updated = {
+  *   event_state: import('types').RequestState;
+  *   resolve_opts: import('types').RequiredResolveOptions;
+  *   action_result?: import('@sveltejs/kit').ActionResult;
+- *   data_serializer: import('./types.js').ServerDataSerializer
++ *   data_serializer: import('./types.js').ServerDataSerializer;
++ *   error_components?: Array<import('types').SSRComponent | undefined>
+  * }} opts
+  */
+ export async function render_response({
+@@ -56,7 +58,8 @@ export async function render_response({
+ 	event_state,
+ 	resolve_opts,
+ 	action_result,
+-	data_serializer
++	data_serializer,
++	error_components
+ }) {
+ 	if (state.prerendering) {
+ 		if (options.csp.mode === 'nonce') {
+@@ -147,6 +150,13 @@ export async function render_response({
+ 			form: form_value
+ 		};
+ 
++		if (error_components) {
++			if (error) {
++				props.error = error;
++			}
++			props.errors = error_components;
++		}
++
+ 		let data = {};
+ 
+ 		// props_n (instead of props[n]) makes it easy to avoid
+@@ -176,7 +186,15 @@ export async function render_response({
+ 					}
+ 				]
+ 			]),
+-			csp: csp.script_needs_nonce ? { nonce: csp.nonce } : { hash: csp.script_needs_hash }
++			csp: csp.script_needs_nonce ? { nonce: csp.nonce } : { hash: csp.script_needs_hash },
++			transformError: error_components
++				? /** @param {unknown} e */ async (e) => {
++						const transformed = await handle_error_and_jsonify(event, event_state, options, e);
++						props.page.error = props.error = error = transformed;
++						props.page.status = status = get_status(e);
++						return transformed;
++					}
++				: undefined
+ 		};
+ 
+ 		const fetch = globalThis.fetch;
+diff --git a/packages/kit/src/runtime/server/page/respond_with_error.js b/packages/kit/src/runtime/server/page/respond_with_error.js
+index 0767e177d..71717e209 100644
+--- a/packages/kit/src/runtime/server/page/respond_with_error.js
++++ b/packages/kit/src/runtime/server/page/respond_with_error.js
+@@ -101,6 +101,7 @@ export async function respond_with_error({
+ 			status,
+ 			error: await handle_error_and_jsonify(event, event_state, options, error),
+ 			branch,
++			error_components: [],
+ 			fetched,
+ 			event,
+ 			event_state,
+diff --git a/packages/kit/src/types/global-private.d.ts b/packages/kit/src/types/global-private.d.ts
+index 94a63ea2e..c08d43b3d 100644
+--- a/packages/kit/src/types/global-private.d.ts
++++ b/packages/kit/src/types/global-private.d.ts
+@@ -57,6 +57,7 @@ declare global {
+ 	 * to throw an error if the feature would fail in production.
+ 	 */
+ 	var __SVELTEKIT_TRACK__: (label: string) => void;
++	var __SVELTEKIT_EXPERIMENTAL_USE_TRANSFORM_ERROR__: boolean;
+ 	var Bun: object;
+ 	var Deno: object;
+ }
+diff --git a/packages/kit/src/types/internal.d.ts b/packages/kit/src/types/internal.d.ts
+index 0be5b25d7..e1dbedb6e 100644
+--- a/packages/kit/src/types/internal.d.ts
++++ b/packages/kit/src/types/internal.d.ts
+@@ -468,6 +468,7 @@ export interface SSROptions {
+ 	root: SSRComponent['default'];
+ 	service_worker: boolean;
+ 	service_worker_options: RegistrationOptions;
++	server_error_boundaries: boolean;
+ 	templates: {
+ 		app(values: {
+ 			head: string;
+diff --git a/packages/kit/types/index.d.ts b/packages/kit/types/index.d.ts
+index 42b58cad9..48df55023 100644
+--- a/packages/kit/types/index.d.ts
++++ b/packages/kit/types/index.d.ts
+@@ -487,6 +487,15 @@ declare module '@sveltejs/kit' {
+ 			 * @default false
+ 			 */
+ 			forkPreloads?: boolean;
++
++			/**
++			 * Whether to enable the experimental handling of rendering errors.
++			 * When enabled, `<svelte:boundary>` is used to wrap components at each level
++			 * where there's an `+error.svelte`, rendering the error page if the component fails.
++			 * In addition, error boundaries also work on the server and the error object goes through `handleError`.
++			 * @default false
++			 */
++			handleRenderingErrors?: boolean;
+ 		};
+ 		/**
+ 		 * Where to find various files within your project.
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 150c84282..7dd81e361 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -100,8 +100,8 @@ catalogs:
+       specifier: ^5.53.5
+       version: 5.53.5
+     svelte-check:
+-      specifier: ^4.3.4
+-      version: 4.3.4
++      specifier: ^4.4.1
++      version: 4.4.3
+     svelte-preprocess:
+       specifier: ^6.0.0
+       version: 6.0.0
+@@ -646,7 +646,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -667,7 +667,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -703,7 +703,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       test-redirect-importer:
+         specifier: workspace:*
+         version: link:../../../../test-redirect-importer
+@@ -763,7 +763,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -784,7 +784,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -805,7 +805,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -826,7 +826,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -850,7 +850,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -874,7 +874,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -901,7 +901,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -922,7 +922,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -943,7 +943,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -973,7 +973,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -997,7 +997,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1021,7 +1021,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1045,7 +1045,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1066,7 +1066,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1087,7 +1087,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1108,7 +1108,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1129,7 +1129,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1150,7 +1150,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1171,7 +1171,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1192,7 +1192,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1213,7 +1213,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1234,7 +1234,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1255,7 +1255,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1276,7 +1276,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1297,7 +1297,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1321,7 +1321,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1345,7 +1345,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1454,7 +1454,7 @@ importers:
+         version: 5.53.5
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.0
+         version: 5.8.3
+@@ -5530,8 +5530,8 @@ packages:
+     resolution: {integrity: sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==}
+     engines: {node: '>= 0.4'}
+ 
+-  svelte-check@4.3.4:
+-    resolution: {integrity: sha512-DVWvxhBrDsd+0hHWKfjP99lsSXASeOhHJYyuKOFYJcP7ThfSCKgjVarE8XfuMWpS5JV3AlDf+iK1YGGo2TACdw==}
++  svelte-check@4.4.3:
++    resolution: {integrity: sha512-4HtdEv2hOoLCEsSXI+RDELk9okP/4sImWa7X02OjMFFOWeSdFF3NFy3vqpw0z+eH9C88J9vxZfUXz/Uv2A1ANw==}
+     engines: {node: '>= 18.0.0'}
+     hasBin: true
+     peerDependencies:
+@@ -10253,7 +10253,7 @@ snapshots:
+ 
+   supports-preserve-symlinks-flag@1.0.0: {}
+ 
+-  svelte-check@4.3.4(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3):
++  svelte-check@4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3):
+     dependencies:
+       '@jridgewell/trace-mapping': 0.3.25
+       chokidar: 4.0.3
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index c9295af25..711be79e2 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -47,7 +47,7 @@ catalog:
+   semver: ^7.5.4
+   sirv-cli: ^3.0.0
+   svelte: ^5.53.5
+-  svelte-check: ^4.3.4
++  svelte-check: ^4.4.1
+   svelte-preprocess: ^6.0.0
+   valibot: ^1.1.0
+   vite: ^6.3.5

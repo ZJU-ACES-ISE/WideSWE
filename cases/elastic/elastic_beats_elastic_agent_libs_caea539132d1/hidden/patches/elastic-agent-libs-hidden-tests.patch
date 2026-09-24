@@ -1,0 +1,151 @@
+diff --git a/transport/tlscommon/loggercontract/logger_contract_test.go b/transport/tlscommon/loggercontract/logger_contract_test.go
+new file mode 100644
+index 0000000..5ef7fb5
+--- /dev/null
++++ b/transport/tlscommon/loggercontract/logger_contract_test.go
+@@ -0,0 +1,145 @@
++// Licensed to Elasticsearch B.V. under one or more contributor
++// license agreements. See the NOTICE file distributed with
++// this work for additional information regarding copyright
++// ownership. Elasticsearch B.V. licenses this file to you under
++// the Apache License, Version 2.0 (the "License"); you may
++// not use this file except in compliance with the License.
++
++package tlscommon_test
++
++import (
++	"crypto/tls"
++	"reflect"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++	"go.uber.org/zap"
++	"go.uber.org/zap/zapcore"
++	"go.uber.org/zap/zaptest/observer"
++
++	"github.com/elastic/elastic-agent-libs/logp"
++	"github.com/elastic/elastic-agent-libs/logp/logptest"
++	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
++)
++
++func callTLSLoader(t *testing.T, loader any, config any, logger *logp.Logger) (*tlscommon.TLSConfig, error) {
++	t.Helper()
++
++	fn := reflect.ValueOf(loader)
++	fnType := fn.Type()
++	configType := reflect.TypeOf(config)
++	loggerType := reflect.TypeOf(logger)
++	args := make([]reflect.Value, fnType.NumIn())
++	foundConfig := false
++	foundLogger := false
++
++	for i := 0; i < fnType.NumIn(); i++ {
++		parameterType := fnType.In(i)
++		switch {
++		case parameterType == configType && !foundConfig:
++			args[i] = reflect.ValueOf(config)
++			foundConfig = true
++		case parameterType == loggerType && !foundLogger:
++			args[i] = reflect.ValueOf(logger)
++			foundLogger = true
++		case fnType.IsVariadic() && i == fnType.NumIn()-1 && parameterType.Elem() == loggerType && !foundLogger:
++			loggers := reflect.MakeSlice(parameterType, 1, 1)
++			loggers.Index(0).Set(reflect.ValueOf(logger))
++			args[i] = loggers
++			foundLogger = true
++		default:
++			t.Fatalf("loader parameter %d has unsupported type %s", i, parameterType)
++		}
++	}
++
++	require.True(t, foundConfig, "loader must accept its TLS configuration")
++	require.True(t, foundLogger, "loader must accept a *logp.Logger")
++
++	var results []reflect.Value
++	if fnType.IsVariadic() {
++		results = fn.CallSlice(args)
++	} else {
++		results = fn.Call(args)
++	}
++	require.Len(t, results, 2, "loader must return (*TLSConfig, error)")
++	require.Equal(t, reflect.TypeOf((*tlscommon.TLSConfig)(nil)), results[0].Type())
++	require.True(t, results[1].Type().Implements(reflect.TypeOf((*error)(nil)).Elem()))
++
++	var loaded *tlscommon.TLSConfig
++	if !results[0].IsNil() {
++		loaded = results[0].Interface().(*tlscommon.TLSConfig)
++	}
++	var err error
++	if !results[1].IsNil() {
++		err = results[1].Interface().(error)
++	}
++	return loaded, err
++}
++
++func newObservedLogger(t *testing.T) (*logp.Logger, *observer.ObservedLogs) {
++	t.Helper()
++	core, logs := observer.New(zapcore.DebugLevel)
++	logger := logptest.NewTestingLogger(t, "contract", zap.WrapCore(func(zapcore.Core) zapcore.Core {
++		return core
++	}))
++	return logger, logs
++}
++
++func observeGlobalLogs(t *testing.T) {
++	t.Helper()
++	require.NoError(t, logp.DevelopmentSetup(logp.ToObserverOutput()))
++	logp.ObserverLogs().TakeAll()
++	t.Cleanup(func() {
++		_ = logp.DevelopmentSetup(logp.ToDiscardOutput())
++	})
++}
++
++func TestTLSLoadersAcceptCallerLogger(t *testing.T) {
++	logger := logp.NewNopLogger()
++	disabled := false
++
++	t.Run("client", func(t *testing.T) {
++		loaded, err := callTLSLoader(t, tlscommon.LoadTLSConfig, &tlscommon.Config{Enabled: &disabled}, logger)
++		require.NoError(t, err)
++		require.Nil(t, loaded)
++	})
++
++	t.Run("server", func(t *testing.T) {
++		loaded, err := callTLSLoader(t, tlscommon.LoadTLSServerConfig, &tlscommon.ServerConfig{Enabled: &disabled}, logger)
++		require.NoError(t, err)
++		require.Nil(t, loaded)
++	})
++}
++
++func TestTLSWarningsUseCallerLogger(t *testing.T) {
++	observeGlobalLogs(t)
++	logger, localLogs := newObservedLogger(t)
++
++	loaded, err := callTLSLoader(t, tlscommon.LoadTLSConfig, &tlscommon.Config{
++		VerificationMode: tlscommon.VerifyNone,
++	}, logger)
++	require.NoError(t, err)
++	require.NotNil(t, loaded)
++
++	loaded.ToConfig()
++	require.Len(t, localLogs.FilterMessageSnippet("SSL/TLS verifications disabled").TakeAll(), 1)
++	require.Empty(t, logp.ObserverLogs().FilterMessageSnippet("SSL/TLS verifications disabled").TakeAll())
++}
++
++func TestCertificateDiagnosticsUseCallerLogger(t *testing.T) {
++	observeGlobalLogs(t)
++	logger, localLogs := newObservedLogger(t)
++
++	loaded, err := callTLSLoader(t, tlscommon.LoadTLSConfig, &tlscommon.Config{
++		VerificationMode:     tlscommon.VerifyFull,
++		CATrustedFingerprint: "not-hex",
++	}, logger)
++	require.NoError(t, err)
++	require.NotNil(t, loaded)
++
++	verifier := loaded.BuildModuleClientConfig("localhost").VerifyConnection
++	require.NotNil(t, verifier)
++	require.Error(t, verifier(tls.ConnectionState{}))
++	require.Len(t, localLogs.FilterMessageSnippet("'ca_trusted_fingerprint' set").TakeAll(), 1)
++	require.Empty(t, logp.ObserverLogs().FilterMessageSnippet("'ca_trusted_fingerprint' set").TakeAll())
++}

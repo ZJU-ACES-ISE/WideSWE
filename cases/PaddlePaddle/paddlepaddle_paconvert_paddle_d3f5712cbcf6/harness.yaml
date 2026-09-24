@@ -1,0 +1,33 @@
+task_id: paddlepaddle_paconvert_paddle_d3f5712cbcf6
+hidden_test_patches:
+- repo: PaConvert
+  patch: hidden/patches/PaConvert-hidden-tests.patch
+  test_profile: paconvert-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/test_nn_functional_pad.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from PaddlePaddle/PaConvert PR(s) 697
+- repo: Paddle
+  patch: hidden/patches/Paddle-hidden-tests.patch
+  test_profile: paddle-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test/legacy_test/test_compat_pad.py
+  hidden_file: *id002
+  semantic_changes: Normalize padding examples to explicit PyTorch-style left/right
+    pairs; require invalid calls to be rejected without fixing exception classes or
+    messages; omit the prompt-absent constant-mode 6D rejection requirement.
+  source: upstream test changes from PaddlePaddle/Paddle PR(s) 75200
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - paconvert-hidden
+    - paddle-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

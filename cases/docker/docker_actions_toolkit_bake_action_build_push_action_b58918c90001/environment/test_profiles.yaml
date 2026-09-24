@@ -1,0 +1,40 @@
+profiles:
+  actions_toolkit-hidden:
+    repo: actions-toolkit
+    workdir: repos/docker/actions-toolkit
+    command: ./environment/run_profile.sh actions_toolkit-hidden
+    status: implemented
+    persist_node_modules: true
+    dependency_image: ecosyncbench/base/node:22-bookworm
+    runner_notes: Runs the full Vitest files touched by the upstream hidden test patch.
+    test_files:
+    - __tests__/buildx/build.test.ts
+    - __tests__/context.test.ts
+    - __tests__/util.test.ts
+  bake_action-hidden:
+    repo: bake-action
+    workdir: repos/docker/bake-action
+    command: ./environment/run_profile.sh bake_action-hidden
+    status: implemented
+    persist_node_modules: true
+    dependency_image: ecosyncbench/base/node:22-bookworm
+    runner_notes: Runs the full Vitest file touched by the upstream hidden test patch; fixture files are applied by the hidden patch but are not run directly.
+    test_files:
+    - __tests__/context.test.ts
+    - test/config.hcl
+  build_push_action-hidden:
+    repo: build-push-action
+    workdir: repos/docker/build-push-action
+    command: ./environment/run_profile.sh build_push_action-hidden
+    public_smoke_command: >-
+      corepack enable;
+      corepack prepare yarn@4.15.0 --activate;
+      YARN_ENABLE_HARDENED_MODE=0 YARN_ENABLE_GLOBAL_CACHE=true yarn install --immutable;
+      yarn vitest run __tests__/context.test.ts
+    status: implemented
+    persist_node_modules: true
+    dependency_image: ecosyncbench/base/node:22-bookworm
+    runner_notes: Runs the full Vitest file touched by the upstream hidden test patch; fixture files are applied by the hidden patch but are not run directly.
+    test_files:
+    - __tests__/context.test.ts
+    - test/secret.txt

@@ -1,0 +1,511 @@
+diff --git a/packages/mcp-core/src/tools/get-trace-details.test.ts b/packages/mcp-core/src/tools/get-trace-details.test.ts
+index 0f189f9..9f58dfb 100644
+--- a/packages/mcp-core/src/tools/get-trace-details.test.ts
++++ b/packages/mcp-core/src/tools/get-trace-details.test.ts
+@@ -49,6 +49,76 @@ function buildTraceSpan({
+   };
+ }
+ 
++function buildTraceSpanNode({
++  children = [],
++  data = {},
++  duration,
++  eventId,
++  name,
++  op,
++  parentSpanId,
++  spanId,
++  tags = {},
++}: {
++  children?: Array<Record<string, unknown>>;
++  data?: Record<string, unknown>;
++  duration: number;
++  eventId: string;
++  name?: string | null;
++  op: string;
++  parentSpanId: string | null;
++  spanId: string;
++  tags?: Record<string, unknown>;
++}) {
++  return {
++    additional_attributes: data,
++    children,
++    data: {},
++    description: null,
++    duration,
++    end_timestamp: 1713805460 + duration / 1000,
++    errors: [],
++    event_id: eventId,
++    hash: `hash-${spanId}`,
++    is_segment: true,
++    name,
++    occurrences: [],
++    op,
++    organization: null,
++    parent_span_id: parentSpanId,
++    profile_id: "",
++    profiler_id: "",
++    project_id: 4509109107622913,
++    project_slug: "mcp-server",
++    same_process_as_parent: true,
++    sdk_name: "sentry.javascript.node",
++    span_id: spanId,
++    start_timestamp: 1713805460,
++    status: "ok",
++    tags,
++    timestamp: 1713805460 + duration / 1000,
++    trace: "e4d1aae7216b47ff8117cf4e09ce9d0e",
++    transaction_id: eventId,
++  };
++}
++
++function expectSemanticSpanLine(
++  output: string,
++  spanId: string,
++  expectedTokens: string[],
++  excludedTokens: string[] = [],
++) {
++  const line = output.split("\n").find((candidate) => candidate.includes(spanId));
++  expect(line, `missing output line for span ${spanId}`).toBeDefined();
++  const normalized = line?.toLowerCase() ?? "";
++  for (const token of expectedTokens) {
++    expect(normalized).toContain(token.toLowerCase());
++  }
++  for (const token of excludedTokens) {
++    expect(normalized).not.toContain(token.toLowerCase());
++  }
++}
++
+ describe("get_trace_details", () => {
+   beforeEach(() => {
+     process.env.OPENAI_API_KEY = "test-key";
+@@ -518,6 +588,429 @@ describe("get_trace_details", () => {
+     `);
+   });
+ 
++  it("renders semantic labels for common OpenTelemetry span attributes", async () => {
++    const traceId = "e4d1aae7216b47ff8117cf4e09ce9d0e";
++    const processSpan = buildTraceSpanNode({
++      duration: 4050,
++      eventId: "55555555555555555555555555555555",
++      name: "process.exec",
++      op: "process.exec",
++      parentSpanId: "4444444444444444",
++      spanId: "5555555555555555",
++      data: {
++        "process.command": "git",
++        "process.exit.code": 0,
++      },
++    });
++    const toolSpan = buildTraceSpanNode({
++      children: [processSpan],
++      duration: 4107,
++      eventId: "44444444444444444444444444444444",
++      name: "execute_tool",
++      op: "gen_ai.execute_tool",
++      parentSpanId: "2222222222222222",
++      spanId: "4444444444444444",
++      data: {
++        "gen_ai.operation.name": "execute_tool",
++        "gen_ai.tool.name": "search_events",
++      },
++    });
++    const httpClientSpan = buildTraceSpanNode({
++      duration: 21455,
++      eventId: "33333333333333333333333333333333",
++      name: "POST",
++      op: "http.client",
++      parentSpanId: "2222222222222222",
++      spanId: "3333333333333333",
++      data: {
++        "http.request.method": "POST",
++        "http.response.status_code": 200,
++        "url.full": "https://api.anthropic.com/v1/messages?api_key=filtered",
++      },
++    });
++    const httpMethodOnlySpan = buildTraceSpanNode({
++      duration: 16,
++      eventId: "13131313131313131313131313131313",
++      name: "post",
++      op: "http.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1313131313131313",
++      data: {
++        "http.request.method": "post",
++        "http.response.status_code": 204,
++      },
++    });
++    const httpExtensionMethodSpan = buildTraceSpanNode({
++      duration: 15,
++      eventId: "19191919191919191919191919191919",
++      name: "propfind",
++      op: "http.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1919191919191919",
++      data: {
++        "http.request.method": "propfind",
++        "http.response.status_code": 207,
++      },
++    });
++    const httpServerTargetSpan = buildTraceSpanNode({
++      duration: 17,
++      eventId: "14141414141414141414141414141414",
++      name: "GET",
++      op: "http.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1414141414141414",
++      data: {
++        "http.request.method": "GET",
++        "server.address": "api.example.com",
++        "server.port": 443,
++      },
++    });
++    const httpVersionedPathSpan = buildTraceSpanNode({
++      duration: 18,
++      eventId: "16161616161616161616161616161616",
++      name: "GET",
++      op: "http.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1616161616161616",
++      data: {
++        "http.request.method": "GET",
++        "http.response.status_code": 200,
++        "url.path": "/api/v200/resources",
++      },
++    });
++    const genAiSpan = buildTraceSpanNode({
++      children: [httpClientSpan, toolSpan],
++      duration: 123419,
++      eventId: "22222222222222222222222222222222",
++      name: "ai.generate_assistant_reply",
++      op: "gen_ai.invoke_agent",
++      parentSpanId: "1111111111111111",
++      spanId: "2222222222222222",
++      data: {
++        "gen_ai.operation.name": "invoke_agent",
++        "gen_ai.provider.name": "anthropic",
++        "gen_ai.request.model": "claude-haiku-unused",
++      },
++      tags: {
++        "gen_ai.response.model": "claude-opus-4.6",
++      },
++    });
++    const dbSpan = buildTraceSpanNode({
++      duration: 44,
++      eventId: "66666666666666666666666666666666",
++      name: "db",
++      op: "db.query",
++      parentSpanId: "1111111111111111",
++      spanId: "6666666666666666",
++      data: {
++        "db.collection.name": "issues",
++        "db.operation.name": "SELECT",
++        "db.response.status_code": "OK",
++        "db.system.name": "postgresql",
++      },
++    });
++    const dbServerTargetSpan = buildTraceSpanNode({
++      duration: 41,
++      eventId: "15151515151515151515151515151515",
++      name: "db",
++      op: "db.query",
++      parentSpanId: "1111111111111111",
++      spanId: "1515151515151515",
++      data: {
++        "db.operation.name": "SELECT",
++        "db.system.name": "postgresql",
++        "server.address": "db.internal",
++      },
++    });
++    const rpcSpan = buildTraceSpanNode({
++      duration: 65,
++      eventId: "77777777777777777777777777777777",
++      name: "grpc",
++      op: "rpc.client",
++      parentSpanId: "1111111111111111",
++      spanId: "7777777777777777",
++      data: {
++        "rpc.method": "FetchTrace",
++        "rpc.response.status_code": "OK",
++        "rpc.service": "sentry.trace.v1.TraceService",
++        "rpc.system.name": "grpc",
++      },
++    });
++    const rpcSubstringStatusSpan = buildTraceSpanNode({
++      duration: 24,
++      eventId: "17171717171717171717171717171717",
++      name: "workflow",
++      op: "rpc.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1717171717171717",
++      data: {
++        "rpc.method": "Run",
++        "rpc.response.status_code": "OK",
++        "rpc.service": "bookings_workflow",
++        "rpc.system.name": "temporal",
++      },
++    });
++    const messagingSpan = buildTraceSpanNode({
++      duration: 37,
++      eventId: "88888888888888888888888888888888",
++      name: "publish",
++      op: "messaging.publish",
++      parentSpanId: "1111111111111111",
++      spanId: "8888888888888888",
++      data: {
++        "messaging.destination.name": "trace-events",
++        "messaging.operation.type": "publish",
++        "messaging.system": "kafka",
++      },
++    });
++    const mcpSpan = buildTraceSpanNode({
++      duration: 28,
++      eventId: "99999999999999999999999999999999",
++      name: "mcp",
++      op: "mcp.request",
++      parentSpanId: "1111111111111111",
++      spanId: "9999999999999999",
++      data: {
++        "gen_ai.tool.name": "search_events",
++        "http.request.method": "POST",
++        "http.response.status_code": 200,
++        "url.path": "/mcp",
++        "mcp.method.name": "tools/call",
++        "rpc.response.status_code": "OK",
++      },
++    });
++    const graphqlSpan = buildTraceSpanNode({
++      duration: 31,
++      eventId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
++      name: "GraphQL Operation",
++      op: "graphql.execute",
++      parentSpanId: "1111111111111111",
++      spanId: "aaaaaaaaaaaaaaaa",
++      data: {
++        "graphql.operation.name": "TraceDetails",
++        "graphql.operation.type": "query",
++      },
++    });
++    const faasSpan = buildTraceSpanNode({
++      duration: 52,
++      eventId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
++      name: "lambda",
++      op: "faas.invoke",
++      parentSpanId: "1111111111111111",
++      spanId: "bbbbbbbbbbbbbbbb",
++      data: {
++        "faas.coldstart": true,
++        "faas.invoked_name": "trace-worker",
++        "faas.invoked_provider": "aws",
++        "faas.invoked_region": "us-west-2",
++        "faas.trigger": "timer",
++      },
++    });
++    const objectStoreSpan = buildTraceSpanNode({
++      duration: 73,
++      eventId: "cccccccccccccccccccccccccccccccc",
++      name: "S3.PutObject",
++      op: "aws.s3",
++      parentSpanId: "1111111111111111",
++      spanId: "cccccccccccccccc",
++      data: {
++        "aws.s3.bucket": "trace-artifacts",
++        "aws.s3.key": "runs/abc.json",
++        "cloud.region": "us-west-2",
++        "rpc.method": "PutObject",
++      },
++    });
++    const cloudEventsSpan = buildTraceSpanNode({
++      duration: 19,
++      eventId: "dddddddddddddddddddddddddddddddd",
++      name: "event",
++      op: "event.process",
++      parentSpanId: "1111111111111111",
++      spanId: "dddddddddddddddd",
++      data: {
++        "cloudevents.event_spec_version": "1.0",
++        "cloudevents.event_subject": "trace/e4d1",
++        "cloudevents.event_type": "com.sentry.trace.created",
++      },
++    });
++    const cicdSpan = buildTraceSpanNode({
++      duration: 88,
++      eventId: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
++      name: "ci",
++      op: "cicd.pipeline",
++      parentSpanId: "1111111111111111",
++      spanId: "eeeeeeeeeeeeeeee",
++      data: {
++        "cicd.pipeline.action.name": "BUILD",
++        "cicd.pipeline.name": "mcp-core",
++        "cicd.pipeline.result": "success",
++      },
++    });
++    const featureFlagSpan = buildTraceSpanNode({
++      duration: 12,
++      eventId: "ffffffffffffffffffffffffffffffff",
++      name: "flag",
++      op: "feature_flag.evaluate",
++      parentSpanId: "1111111111111111",
++      spanId: "ffffffffffffffff",
++      data: {
++        "feature_flag.key": "semantic-trace-rendering",
++        "feature_flag.provider.name": "flagsmith",
++        "feature_flag.result.reason": "targeting_match",
++        "feature_flag.result.variant": "on",
++      },
++    });
++    const cloudProviderSpan = buildTraceSpanNode({
++      duration: 21,
++      eventId: "abababababababababababababababab",
++      name: "AWS SDK",
++      op: "aws.sdk",
++      parentSpanId: "1111111111111111",
++      spanId: "abababababababab",
++      data: {
++        "cloud.region": "us-east-1",
++        "rpc.method": "DynamoDB.GetItem",
++        "rpc.system.name": "aws-api",
++      },
++    });
++    const exceptionSpan = buildTraceSpanNode({
++      duration: 13,
++      eventId: "acacacacacacacacacacacacacacacac",
++      name: "job failed",
++      op: "exception",
++      parentSpanId: "1111111111111111",
++      spanId: "acacacacacacacac",
++      data: {
++        "exception.type": "ValueError",
++        "faas.coldstart": false,
++      },
++    });
++    const unnamedExceptionSpan = buildTraceSpanNode({
++      duration: 14,
++      eventId: "18181818181818181818181818181818",
++      name: null,
++      op: "exception",
++      parentSpanId: "1111111111111111",
++      spanId: "1818181818181818",
++      data: {
++        "exception.type": "TypeError",
++      },
++    });
++    const errorSpan = buildTraceSpanNode({
++      duration: 11,
++      eventId: "12121212121212121212121212121212",
++      name: "background job",
++      op: "internal",
++      parentSpanId: "1111111111111111",
++      spanId: "1212121212121212",
++      data: {
++        "error.type": "timeout",
++      },
++    });
++    const rootSpan = buildTraceSpanNode({
++      children: [
++        genAiSpan,
++        httpMethodOnlySpan,
++        httpExtensionMethodSpan,
++        httpServerTargetSpan,
++        httpVersionedPathSpan,
++        dbSpan,
++        dbServerTargetSpan,
++        rpcSpan,
++        rpcSubstringStatusSpan,
++        messagingSpan,
++        mcpSpan,
++        graphqlSpan,
++        faasSpan,
++        objectStoreSpan,
++        cloudEventsSpan,
++        cicdSpan,
++        featureFlagSpan,
++        cloudProviderSpan,
++        exceptionSpan,
++        unnamedExceptionSpan,
++        errorSpan,
++      ],
++      duration: 3,
++      eventId: "11111111111111111111111111111111",
++      name: "POST",
++      op: "http.server",
++      parentSpanId: null,
++      spanId: "1111111111111111",
++      data: {
++        "http.request.method": "POST",
++        "http.response.status_code": 201,
++        "http.route": "/api/internal/turn-resume",
++      },
++    });
++
++    mswServer.use(
++      ...httpGetRegional(
++        `https://sentry.io/api/0/organizations/sentry-mcp-evals/trace-meta/${traceId}/`,
++        () =>
++          HttpResponse.json({
++            logs: 0,
++            errors: 0,
++            performance_issues: 0,
++            span_count: 25,
++            transaction_child_count_map: [],
++            span_count_map: {},
++          }),
++      ),
++      ...httpGetRegional(
++        `https://sentry.io/api/0/organizations/sentry-mcp-evals/trace/${traceId}/`,
++        () => HttpResponse.json([rootSpan]),
++      ),
++    );
++
++    const result = await getTraceDetails.handler(
++      {
++        organizationSlug: "sentry-mcp-evals",
++        traceId,
++        regionUrl: null,
++      },
++      {
++        constraints: {
++          organizationSlug: null,
++        },
++        accessToken: "access-token",
++        userId: "1",
++      },
++    );
++
++    const expectedSpans: Array<[string, string[]]> = [
++      ["11111111", ["POST", "/api/internal/turn-resume", "201"]],
++      ["22222222", ["invoke_agent", "anthropic", "claude-opus-4.6"]],
++      ["33333333", ["POST", "api.anthropic.com/v1/messages", "200"]],
++      ["13131313", ["POST", "204"]],
++      ["19191919", ["PROPFIND", "207"]],
++      ["14141414", ["GET", "api.example.com", "443"]],
++      ["16161616", ["GET", "/api/v200/resources", "200"]],
++      ["44444444", ["execute_tool", "search_events"]],
++      ["55555555", ["git", "exit:0"]],
++      ["66666666", ["SELECT", "issues", "postgresql", "OK"]],
++      ["15151515", ["SELECT", "db.internal", "postgresql"]],
++      ["77777777", ["sentry.trace.v1.TraceService", "FetchTrace", "grpc", "OK"]],
++      ["17171717", ["bookings_workflow", "Run", "temporal", "OK"]],
++      ["88888888", ["publish", "trace-events", "kafka"]],
++      ["99999999", ["tools/call", "search_events", "OK"]],
++      ["aaaaaaaa", ["query", "TraceDetails"]],
++      ["bbbbbbbb", ["timer", "trace-worker", "aws", "us-west-2", "coldstart"]],
++      ["cccccccc", ["PutObject", "trace-artifacts", "runs/abc.json", "us-west-2"]],
++      ["dddddddd", ["com.sentry.trace.created", "trace/e4d1", "1.0"]],
++      ["eeeeeeee", ["BUILD", "mcp-core", "success"]],
++      ["ffffffff", ["semantic-trace-rendering", "on", "flagsmith", "targeting_match"]],
++      ["abababab", ["DynamoDB.GetItem", "aws-api", "us-east-1"]],
++      ["acacacac", ["job failed", "ValueError"]],
++      ["18181818", ["TypeError"]],
++      ["12121212", ["background job", "timeout"]],
++    ];
++    for (const [spanId, tokens] of expectedSpans) {
++      expectSemanticSpanLine(result, spanId, tokens);
++    }
++    expectSemanticSpanLine(result, "99999999", [], ["POST /mcp"]);
++  });
++
+   it("fetches enough spans to resolve focused spans in large traces", async () => {
+     const traceId = "c4d1aae7216b47ff8117cf4e09ce9d0c";
+     const spanId = "00000000000007d0";

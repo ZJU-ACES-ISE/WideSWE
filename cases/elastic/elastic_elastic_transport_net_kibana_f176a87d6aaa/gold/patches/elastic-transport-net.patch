@@ -1,0 +1,256 @@
+diff --git a/src/Elastic.Transport/Components/NodePool/CloudNodePool.cs b/src/Elastic.Transport/Components/NodePool/CloudNodePool.cs
+index 5746098..b6dd4ec 100644
+--- a/src/Elastic.Transport/Components/NodePool/CloudNodePool.cs
++++ b/src/Elastic.Transport/Components/NodePool/CloudNodePool.cs
+@@ -7,6 +7,17 @@
+ 
+ namespace Elastic.Transport;
+ 
++/// <summary>
++/// Specifies which Elastic Cloud service to target when using a Cloud ID.
++/// </summary>
++public enum CloudService
++{
++	/// <summary> Target the Elasticsearch cluster (default). </summary>
++	Elasticsearch,
++	/// <summary> Target the Kibana instance. </summary>
++	Kibana,
++}
++
+ /// <summary>
+ /// An <see cref="NodePool"/> implementation that can be seeded with a cloud id
+ /// and will signal the right defaults for the client to use for Elastic Cloud to <see cref="ITransportConfiguration"/>.
+@@ -16,7 +27,7 @@ namespace Elastic.Transport;
+ /// </summary>
+ public sealed class CloudNodePool : SingleNodePool
+ {
+-	private readonly record struct ParsedCloudId(string ClusterName, Uri Uri);
++	private readonly record struct ParsedCloudId(string ClusterName, Uri ElasticsearchUri, Uri? KibanaUri);
+ 
+ 	/// <summary>
+ 	/// An <see cref="NodePool"/> implementation that can be seeded with a cloud id
+@@ -28,31 +39,52 @@ public sealed class CloudNodePool : SingleNodePool
+ 	/// <param name="cloudId">
+ 	/// The Cloud Id, this is available on your cluster's dashboard and is a string in the form of <code>cluster_name:base_64_encoded_string</code>
+ 	/// <para>Base64 encoded string contains the following tokens in order separated by $:</para>
+-	/// <para>* Host Name (mandatory)</para>
+-	/// <para>* Elasticsearch UUID (mandatory)</para>
+-	/// <para>* Kibana UUID</para>
++	/// <para>* Host Name (mandatory, optionally with :port, defaults to 443)</para>
++	/// <para>* Elasticsearch UUID (mandatory, optionally with :port)</para>
++	/// <para>* Kibana UUID (optionally with :port)</para>
+ 	/// <para>* APM UUID</para>
+ 	/// <para></para>
+ 	/// <para> We then use these tokens to create the URI to your Elastic Cloud cluster!</para>
+ 	/// <para></para>
+ 	/// <para> Read more here: https://www.elastic.co/guide/en/cloud/current/ec-cloud-id.html</para>
+ 	/// </param>
+-	/// <param name="credentials"></param>
+-	public CloudNodePool(string cloudId, AuthorizationHeader credentials) : this(ParseCloudId(cloudId)) =>
++	/// <param name="credentials">The credentials to use for authentication.</param>
++	public CloudNodePool(string cloudId, AuthorizationHeader credentials)
++		: this(ParseCloudId(cloudId), CloudService.Elasticsearch) =>
++		AuthenticationHeader = credentials;
++
++	/// <inheritdoc cref="CloudNodePool(string, AuthorizationHeader)"/>
++	/// <param name="cloudId"><inheritdoc cref="CloudNodePool(string, AuthorizationHeader)" path="/param[@name='cloudId']"/></param>
++	/// <param name="credentials"><inheritdoc cref="CloudNodePool(string, AuthorizationHeader)" path="/param[@name='credentials']"/></param>
++	/// <param name="service">Which cloud service to target. Defaults to <see cref="CloudService.Elasticsearch"/>.</param>
++	public CloudNodePool(string cloudId, AuthorizationHeader credentials, CloudService service)
++		: this(ParseCloudId(cloudId), service) =>
+ 		AuthenticationHeader = credentials;
+ 
+ 	/// <summary>
+-	/// An <see cref="NodePool"/> implementation that can be seeded with a cloud enpoint
++	/// An <see cref="NodePool"/> implementation that can be seeded with a cloud endpoint
+ 	/// and will signal the right defaults for the client to use for Elastic Cloud to <see cref="ITransportConfiguration"/>.
+ 	/// </summary>
+ 	/// <param name="cloudEndpoint">Elastic Cloud endpoint</param>
+ 	/// <param name="credentials">The credentials to use with cloud</param>
+-	public CloudNodePool(Uri cloudEndpoint, AuthorizationHeader credentials) : this(CreateCloudId(cloudEndpoint)) =>
++	public CloudNodePool(Uri cloudEndpoint, AuthorizationHeader credentials) : this(CreateCloudId(cloudEndpoint), CloudService.Elasticsearch) =>
+ 		AuthenticationHeader = credentials;
+ 
+-	private CloudNodePool(ParsedCloudId parsedCloudId) : base(parsedCloudId.Uri) =>
++	private CloudNodePool(ParsedCloudId parsedCloudId, CloudService service) : base(ResolveUri(parsedCloudId, service)) =>
+ 		ClusterName = parsedCloudId.ClusterName;
+ 
++	private static Uri ResolveUri(ParsedCloudId parsed, CloudService service)
++	{
++		if (service == CloudService.Kibana)
++		{
++			if (parsed.KibanaUri is null)
++				throw new ArgumentException("The cloud ID does not contain a Kibana UUID. Cannot target Kibana.");
++			return parsed.KibanaUri;
++		}
++
++		return parsed.ElasticsearchUri;
++	}
++
+ 	//TODO implement debugger display for NodePool implementations and display it there and its ToString()
+ 	// ReSharper disable once UnusedAutoPropertyAccessor.Local
+ 	private string ClusterName { get; }
+@@ -66,13 +98,20 @@ private static ParsedCloudId CreateCloudId(Uri uri)
+ 		var moniker = $"{uri.Host}${Guid.NewGuid():N}";
+ 		var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(moniker));
+ 		var cloudId = $"name:{base64}";
+-		return new ParsedCloudId(cloudId, uri);
+-
++		return new ParsedCloudId(cloudId, uri, null);
+ 	}
+ 
+ 	private static readonly char[] ColonSeparator = [':'];
+ 	private static readonly char[] DollarSeparator = ['$'];
+ 
++	private static (string Id, string Port) ExtractPortFromId(string input, string defaultPort = "443")
++	{
++		var colonIndex = input.IndexOf(':');
++		if (colonIndex < 0)
++			return (input, defaultPort);
++		return (input[..colonIndex], input[(colonIndex + 1)..]);
++	}
++
+ 	private static ParsedCloudId ParseCloudId(string cloudId)
+ 	{
+ 		const string exceptionSuffix = "should be a string in the form of cluster_name:base_64_data";
+@@ -93,14 +132,33 @@ private static ParsedCloudId ParseCloudId(string cloudId)
+ 		if (parts.Length < 2)
+ 			throw new ArgumentException($"Parameter {nameof(cloudId)} decoded base_64_data contains less then 2 tokens, {exceptionSuffix}", nameof(cloudId));
+ 
+-		var domainName = parts[0].Trim();
+-		if (string.IsNullOrWhiteSpace(domainName))
++		var (host, defaultPort) = ExtractPortFromId(parts[0].Trim());
++		if (string.IsNullOrWhiteSpace(host))
+ 			throw new ArgumentException($"Parameter {nameof(cloudId)} decoded base_64_data contains no domain name, {exceptionSuffix}", nameof(cloudId));
+ 
+-		var elasticsearchUuid = parts[1].Trim();
+-		if (string.IsNullOrWhiteSpace(elasticsearchUuid))
++		var (esId, esPort) = ExtractPortFromId(parts[1].Trim(), defaultPort);
++		if (string.IsNullOrWhiteSpace(esId))
+ 			throw new ArgumentException($"Parameter {nameof(cloudId)} decoded base_64_data contains no elasticsearch UUID, {exceptionSuffix}", nameof(cloudId));
+ 
+-		return new ParsedCloudId(clusterName, new Uri($"https://{elasticsearchUuid}.{domainName}"));
++		var esUri = BuildServiceUri(esId, host, esPort);
++
++		Uri? kibanaUri = null;
++		if (parts.Length >= 3)
++		{
++			var kibanaRaw = parts[2].Trim();
++			if (!string.IsNullOrWhiteSpace(kibanaRaw))
++			{
++				var (kbId, kbPort) = ExtractPortFromId(kibanaRaw, defaultPort);
++				if (!string.IsNullOrWhiteSpace(kbId))
++					kibanaUri = BuildServiceUri(kbId, host, kbPort);
++			}
++		}
++
++		return new ParsedCloudId(clusterName, esUri, kibanaUri);
+ 	}
++
++	private static Uri BuildServiceUri(string serviceId, string host, string port) =>
++		port == "443"
++			? new Uri($"https://{serviceId}.{host}")
++			: new Uri($"https://{serviceId}.{host}:{port}");
+ }
+diff --git a/src/Elastic.Transport/Configuration/TransportConfiguration.cs b/src/Elastic.Transport/Configuration/TransportConfiguration.cs
+index 0ff4c12..b7aba4e 100644
+--- a/src/Elastic.Transport/Configuration/TransportConfiguration.cs
++++ b/src/Elastic.Transport/Configuration/TransportConfiguration.cs
+@@ -64,6 +64,14 @@ public TransportConfiguration(Uri? uri = null, ProductRegistration? productRegis
+ 	public TransportConfiguration(string cloudId, BasicAuthentication credentials, ProductRegistration? productRegistration = null)
+ 		: this(new CloudNodePool(cloudId, credentials), productRegistration: productRegistration) { }
+ 
++	/// <summary>
++	/// Sets up the client to communicate to Elastic Cloud using <paramref name="cloudId"/>,
++	/// targeting the specified <paramref name="service"/>.
++	/// <para><see cref="CloudNodePool"/> documentation for more information on how to obtain your Cloud Id</para>
++	/// </summary>
++	public TransportConfiguration(string cloudId, BasicAuthentication credentials, CloudService service, ProductRegistration? productRegistration = null)
++		: this(new CloudNodePool(cloudId, credentials, service), productRegistration: productRegistration) { }
++
+ 	/// <summary>
+ 	/// Sets up the client to communicate to Elastic Cloud using <paramref name="cloudId"/>,
+ 	/// <para><see cref="CloudNodePool"/> documentation for more information on how to obtain your Cloud Id</para>
+@@ -71,6 +79,14 @@ public TransportConfiguration(string cloudId, BasicAuthentication credentials, P
+ 	public TransportConfiguration(string cloudId, ApiKey credentials, ProductRegistration? productRegistration = null)
+ 		: this(new CloudNodePool(cloudId, credentials), productRegistration: productRegistration) { }
+ 
++	/// <summary>
++	/// Sets up the client to communicate to Elastic Cloud using <paramref name="cloudId"/>,
++	/// targeting the specified <paramref name="service"/>.
++	/// <para><see cref="CloudNodePool"/> documentation for more information on how to obtain your Cloud Id</para>
++	/// </summary>
++	public TransportConfiguration(string cloudId, ApiKey credentials, CloudService service, ProductRegistration? productRegistration = null)
++		: this(new CloudNodePool(cloudId, credentials, service), productRegistration: productRegistration) { }
++
+ 	/// <summary> Sets up the client to communicate to Elastic Cloud.</summary>
+ 	public TransportConfiguration(Uri cloudEndpoint, BasicAuthentication credentials, ProductRegistration? productRegistration = null)
+ 		: this(new CloudNodePool(cloudEndpoint, credentials), productRegistration: productRegistration) { }
+diff --git a/src/Elastic.Transport/Configuration/TransportConfigurationDescriptor.cs b/src/Elastic.Transport/Configuration/TransportConfigurationDescriptor.cs
+index a6e2709..1902a44 100644
+--- a/src/Elastic.Transport/Configuration/TransportConfigurationDescriptor.cs
++++ b/src/Elastic.Transport/Configuration/TransportConfigurationDescriptor.cs
+@@ -48,6 +48,14 @@ public TransportConfigurationDescriptor(Uri? uri = null, ProductRegistration? pr
+ 	public TransportConfigurationDescriptor(string cloudId, BasicAuthentication credentials, ProductRegistration? productRegistration = null)
+ 		: this(new CloudNodePool(cloudId, credentials), productRegistration: productRegistration) { }
+ 
++	/// <summary>
++	/// Sets up the client to communicate to Elastic Cloud using <paramref name="cloudId"/>,
++	/// targeting the specified <paramref name="service"/>.
++	/// <para><see cref="CloudNodePool"/> documentation for more information on how to obtain your Cloud Id</para>
++	/// </summary>
++	public TransportConfigurationDescriptor(string cloudId, BasicAuthentication credentials, CloudService service, ProductRegistration? productRegistration = null)
++		: this(new CloudNodePool(cloudId, credentials, service), productRegistration: productRegistration) { }
++
+ 	/// <summary>
+ 	/// Sets up the client to communicate to Elastic Cloud using <paramref name="cloudId"/>,
+ 	/// <para><see cref="CloudNodePool"/> documentation for more information on how to obtain your Cloud Id</para>
+@@ -55,6 +63,14 @@ public TransportConfigurationDescriptor(string cloudId, BasicAuthentication cred
+ 	public TransportConfigurationDescriptor(string cloudId, ApiKey credentials, ProductRegistration? productRegistration = null)
+ 		: this(new CloudNodePool(cloudId, credentials), productRegistration: productRegistration) { }
+ 
++	/// <summary>
++	/// Sets up the client to communicate to Elastic Cloud using <paramref name="cloudId"/>,
++	/// targeting the specified <paramref name="service"/>.
++	/// <para><see cref="CloudNodePool"/> documentation for more information on how to obtain your Cloud Id</para>
++	/// </summary>
++	public TransportConfigurationDescriptor(string cloudId, ApiKey credentials, CloudService service, ProductRegistration? productRegistration = null)
++		: this(new CloudNodePool(cloudId, credentials, service), productRegistration: productRegistration) { }
++
+ 	/// <summary>
+ 	/// Creates a new instance of <see cref="TransportConfigurationDescriptor"/>
+ 	/// <para>
+diff --git a/src/Elastic.Transport/Products/Elasticsearch/ElasticsearchConfiguration.cs b/src/Elastic.Transport/Products/Elasticsearch/ElasticsearchConfiguration.cs
+index cd1ef79..9e43a17 100644
+--- a/src/Elastic.Transport/Products/Elasticsearch/ElasticsearchConfiguration.cs
++++ b/src/Elastic.Transport/Products/Elasticsearch/ElasticsearchConfiguration.cs
+@@ -25,6 +25,14 @@ public ElasticsearchConfiguration(Uri? uri = null)
+ 	public ElasticsearchConfiguration(string cloudId, BasicAuthentication credentials)
+ 		: base(new CloudNodePool(cloudId, credentials), productRegistration: ElasticsearchProductRegistration.Default) { }
+ 
++	/// <summary>
++	/// Sets up the client to communicate to Elastic Cloud using <paramref name="cloudId"/>,
++	/// targeting the specified <paramref name="service"/>.
++	/// <para><see cref="CloudNodePool"/> documentation for more information on how to get your Cloud ID</para>
++	/// </summary>
++	public ElasticsearchConfiguration(string cloudId, BasicAuthentication credentials, CloudService service)
++		: base(new CloudNodePool(cloudId, credentials, service), productRegistration: ElasticsearchProductRegistration.Default) { }
++
+ 	/// <summary>
+ 	/// Sets up the client to communicate to Elastic Cloud using <paramref name="cloudId"/>,
+ 	/// <para><see cref="CloudNodePool"/> documentation for more information on how to get your Cloud ID</para>
+@@ -32,6 +40,14 @@ public ElasticsearchConfiguration(string cloudId, BasicAuthentication credential
+ 	public ElasticsearchConfiguration(string cloudId, ApiKey credentials)
+ 		: base(new CloudNodePool(cloudId, credentials), productRegistration: ElasticsearchProductRegistration.Default) { }
+ 
++	/// <summary>
++	/// Sets up the client to communicate to Elastic Cloud using <paramref name="cloudId"/>,
++	/// targeting the specified <paramref name="service"/>.
++	/// <para><see cref="CloudNodePool"/> documentation for more information on how to get your Cloud ID</para>
++	/// </summary>
++	public ElasticsearchConfiguration(string cloudId, ApiKey credentials, CloudService service)
++		: base(new CloudNodePool(cloudId, credentials, service), productRegistration: ElasticsearchProductRegistration.Default) { }
++
+ 	/// <summary> Sets up the client to communicate to Elastic Cloud.</summary>
+ 	public ElasticsearchConfiguration(Uri cloudEndpoint, BasicAuthentication credentials)
+ 		: base(new CloudNodePool(cloudEndpoint, credentials), productRegistration: ElasticsearchProductRegistration.Default) { }

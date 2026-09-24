@@ -1,0 +1,22 @@
+diff --git a/test/unit/api.test.ts b/test/unit/api.test.ts
+index 213f87da..5aaf2e99 100644
+--- a/test/unit/api.test.ts
++++ b/test/unit/api.test.ts
+@@ -232,12 +232,11 @@ test('Api request metadata', t => {
+     class TestTransport extends Transport {
+       // @ts-expect-error
+       async request(params, options) {
+-        t.strictSame(params.meta.acceptedParams, [
+-          'set_id',
+-          'rule_id',
+-          'synonyms',
+-          'refresh',
+-        ])
++        t.strictSame(params.meta.acceptedParams, {
++          path: ['set_id', 'rule_id'],
++          body: ['synonyms'],
++          query: ['refresh'],
++        })
+         return super.request(params, options)
+       }
+     }

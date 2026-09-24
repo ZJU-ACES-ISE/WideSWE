@@ -1,0 +1,660 @@
+diff --git a/packages/eui/changelogs/upcoming/9318.md b/packages/eui/changelogs/upcoming/9318.md
+new file mode 100644
+index 0000000000..8a1e9501de
+--- /dev/null
++++ b/packages/eui/changelogs/upcoming/9318.md
+@@ -0,0 +1,3 @@
++**Bug fixes**
++
++- Fixed `EuiFlyout` to properly forward refs when `session` prop is used.
+diff --git a/packages/eui/src/components/flyout/flyout.tsx b/packages/eui/src/components/flyout/flyout.tsx
+index dd2c7408c4..e6db08c86e 100644
+--- a/packages/eui/src/components/flyout/flyout.tsx
++++ b/packages/eui/src/components/flyout/flyout.tsx
+@@ -103,6 +103,7 @@ export const EuiFlyout = forwardRef<
+           onClose={onClose}
+           onActive={onActive}
+           as="div"
++          ref={ref}
+         />
+       );
+     }
+@@ -115,6 +116,7 @@ export const EuiFlyout = forwardRef<
+           onClose={onClose}
+           onActive={onActive}
+           as="div"
++          ref={ref}
+         />
+       );
+     }
+diff --git a/packages/eui/src/components/flyout/manager/flyout_child.tsx b/packages/eui/src/components/flyout/manager/flyout_child.tsx
+index 9705d09b3c..602c1963aa 100644
+--- a/packages/eui/src/components/flyout/manager/flyout_child.tsx
++++ b/packages/eui/src/components/flyout/manager/flyout_child.tsx
+@@ -6,7 +6,7 @@
+  * Side Public License, v 1.
+  */
+ 
+-import React from 'react';
++import React, { forwardRef } from 'react';
+ import { useEuiTheme } from '../../../services';
+ import { EuiManagedFlyout, type EuiManagedFlyoutProps } from './flyout_managed';
+ import {
+@@ -40,48 +40,49 @@ export type EuiFlyoutChildProps = Omit<
+  * Managed child flyout that renders alongside or stacked over the main flyout,
+  * depending on the current layout mode. Handles required managed flyout props.
+  */
+-export function EuiFlyoutChild({
+-  css: customCss,
+-  side = DEFAULT_SIDE,
+-  ...props
+-}: EuiFlyoutChildProps) {
+-  const { euiTheme } = useEuiTheme();
+-  const mainFlyout = useCurrentMainFlyout();
+-  const mainWidth = useFlyoutWidth(mainFlyout?.flyoutId);
+-  const layoutMode = useFlyoutLayoutMode();
++export const EuiFlyoutChild = forwardRef<HTMLElement, EuiFlyoutChildProps>(
++  ({ css: customCss, side = DEFAULT_SIDE, ...props }, ref) => {
++    const { euiTheme } = useEuiTheme();
++    const mainFlyout = useCurrentMainFlyout();
++    const mainWidth = useFlyoutWidth(mainFlyout?.flyoutId);
++    const layoutMode = useFlyoutLayoutMode();
+ 
+-  // Runtime validation: prevent orphan child flyouts
+-  if (!mainFlyout) {
+-    const errorMessage =
+-      'EuiFlyoutChild must be used with an EuiFlyoutMain. ' +
+-      'This usually means the main flyout was not rendered before the child flyout.';
++    // Runtime validation: prevent orphan child flyouts
++    if (!mainFlyout) {
++      const errorMessage =
++        'EuiFlyoutChild must be used with an EuiFlyoutMain. ' +
++        'This usually means the main flyout was not rendered before the child flyout.';
+ 
+-    // In development, throw an error to catch the issue early
+-    if (process.env.NODE_ENV === 'development') {
+-      throw new Error(errorMessage);
++      // In development, throw an error to catch the issue early
++      if (process.env.NODE_ENV === 'development') {
++        throw new Error(errorMessage);
++      }
++
++      // In production, log a warning and prevent rendering
++      console.error('EuiFlyoutChild validation failed:', errorMessage);
++      return null;
+     }
+ 
+-    // In production, log a warning and prevent rendering
+-    console.error('EuiFlyoutChild validation failed:', errorMessage);
+-    return null;
+-  }
++    let style: React.CSSProperties = {};
++    if (mainWidth && layoutMode === LAYOUT_MODE_SIDE_BY_SIDE) {
++      style = { [side]: mainWidth };
++    } else if (layoutMode === LAYOUT_MODE_STACKED) {
++      style = { zIndex: Number(euiTheme.levels.flyout) + 2 };
++    }
+ 
+-  let style: React.CSSProperties = {};
+-  if (mainWidth && layoutMode === LAYOUT_MODE_SIDE_BY_SIDE) {
+-    style = { [side]: mainWidth };
+-  } else if (layoutMode === LAYOUT_MODE_STACKED) {
+-    style = { zIndex: Number(euiTheme.levels.flyout) + 2 };
++    return (
++      <EuiManagedFlyout
++        {...props}
++        ref={ref}
++        style={style}
++        level={LEVEL_CHILD}
++        type="overlay"
++        ownFocus={false}
++        side={side}
++        css={customCss}
++      />
++    );
+   }
++);
+ 
+-  return (
+-    <EuiManagedFlyout
+-      {...props}
+-      style={style}
+-      level={LEVEL_CHILD}
+-      type="overlay"
+-      ownFocus={false}
+-      side={side}
+-      css={customCss}
+-    />
+-  );
+-}
++EuiFlyoutChild.displayName = 'EuiFlyoutChild';
+diff --git a/packages/eui/src/components/flyout/manager/flyout_main.tsx b/packages/eui/src/components/flyout/manager/flyout_main.tsx
+index dfe5ab286a..5b6bc3ccde 100644
+--- a/packages/eui/src/components/flyout/manager/flyout_main.tsx
++++ b/packages/eui/src/components/flyout/manager/flyout_main.tsx
+@@ -6,7 +6,7 @@
+  * Side Public License, v 1.
+  */
+ 
+-import React from 'react';
++import React, { forwardRef } from 'react';
+ 
+ import { EuiManagedFlyout, type EuiManagedFlyoutProps } from './flyout_managed';
+ import { useHasChildFlyout, useFlyoutId } from './hooks';
+@@ -30,31 +30,39 @@ export type EuiFlyoutMainProps = Omit<EuiManagedFlyoutProps, 'level'>;
+  * Managed main flyout. Handles ID management, child-flyout styling,
+  * and push/overlay behavior based on provided props.
+  */
+-export function EuiFlyoutMain({
+-  id,
+-  pushMinBreakpoint = DEFAULT_PUSH_MIN_BREAKPOINT,
+-  type = DEFAULT_TYPE,
+-  side = DEFAULT_SIDE,
+-  ...props
+-}: EuiFlyoutMainProps) {
+-  const flyoutId = useFlyoutId(id);
+-  const hasChildFlyout = useHasChildFlyout(flyoutId);
+-  const styles = useEuiMemoizedStyles(euiMainFlyoutStyles);
+-  const isPushed = useIsPushed({ type, pushMinBreakpoint });
+-
+-  const cssStyles = [
+-    hasChildFlyout && !isPushed && styles.hasChildFlyout[side],
+-  ];
+-
+-  const style: React.CSSProperties = {};
+-
+-  return (
+-    <EuiManagedFlyout
+-      id={flyoutId}
+-      level={LEVEL_MAIN}
+-      style={style}
+-      css={cssStyles}
+-      {...{ ...props, pushMinBreakpoint, type, side }}
+-    />
+-  );
+-}
++export const EuiFlyoutMain = forwardRef<HTMLElement, EuiFlyoutMainProps>(
++  (
++    {
++      id,
++      pushMinBreakpoint = DEFAULT_PUSH_MIN_BREAKPOINT,
++      type = DEFAULT_TYPE,
++      side = DEFAULT_SIDE,
++      ...props
++    },
++    ref
++  ) => {
++    const flyoutId = useFlyoutId(id);
++    const hasChildFlyout = useHasChildFlyout(flyoutId);
++    const styles = useEuiMemoizedStyles(euiMainFlyoutStyles);
++    const isPushed = useIsPushed({ type, pushMinBreakpoint });
++
++    const cssStyles = [
++      hasChildFlyout && !isPushed && styles.hasChildFlyout[side],
++    ];
++
++    const style: React.CSSProperties = {};
++
++    return (
++      <EuiManagedFlyout
++        ref={ref}
++        id={flyoutId}
++        level={LEVEL_MAIN}
++        style={style}
++        css={cssStyles}
++        {...{ ...props, pushMinBreakpoint, type, side }}
++      />
++    );
++  }
++);
++
++EuiFlyoutMain.displayName = 'EuiFlyoutMain';
+diff --git a/packages/eui/src/components/flyout/manager/flyout_managed.tsx b/packages/eui/src/components/flyout/manager/flyout_managed.tsx
+index 090fe751e4..02d230651a 100644
+--- a/packages/eui/src/components/flyout/manager/flyout_managed.tsx
++++ b/packages/eui/src/components/flyout/manager/flyout_managed.tsx
+@@ -6,8 +6,8 @@
+  * Side Public License, v 1.
+  */
+ 
+-import React, { useEffect, useMemo, useRef } from 'react';
+-import { useEuiMemoizedStyles } from '../../../services';
++import React, { useEffect, useMemo, useRef, useState, forwardRef } from 'react';
++import { useCombinedRefs, useEuiMemoizedStyles } from '../../../services';
+ import { useEuiI18n } from '../../i18n';
+ import { useResizeObserver } from '../../observer/resize_observer';
+ import {
+@@ -70,214 +70,221 @@ const useFlyoutManager = () => {
+  * - width tracking for responsive layouts
+  * - lifecycle stage transitions and data attributes for styling
+  */
+-export const EuiManagedFlyout = ({
+-  id,
+-  onClose: onCloseProp,
+-  onActive: onActiveProp,
+-  level,
+-  size: sizeProp,
+-  css: customCss,
+-  flyoutMenuProps: _flyoutMenuProps,
+-  ...props
+-}: EuiManagedFlyoutProps) => {
+-  const flyoutId = useFlyoutId(id);
+-  const flyoutRef = useRef<HTMLDivElement>(null);
+-
+-  const {
+-    addFlyout,
+-    closeFlyout,
+-    setFlyoutWidth,
+-    goBack,
+-    historyItems: _historyItems,
+-  } = useFlyoutManager();
+-  const parentSize = useParentFlyoutSize(flyoutId);
+-  const parentFlyout = useCurrentMainFlyout();
+-  const layoutMode = useFlyoutLayoutMode();
+-  const styles = useEuiMemoizedStyles(euiManagedFlyoutStyles);
+-
+-  // Set default size based on level: main defaults to 'm', child defaults to 's'
+-  const size = sizeProp ?? (level === LEVEL_CHILD ? 's' : 'm');
+-
+-  // Validate size
+-  const sizeTypeError = validateManagedFlyoutSize(size, flyoutId, level);
+-  if (sizeTypeError) {
+-    throw new Error(createValidationErrorMessage(sizeTypeError));
+-  }
++export const EuiManagedFlyout = forwardRef<HTMLElement, EuiManagedFlyoutProps>(
++  (
++    {
++      id,
++      onClose: onCloseProp,
++      onActive: onActiveProp,
++      level,
++      size: sizeProp,
++      css: customCss,
++      flyoutMenuProps: _flyoutMenuProps,
++      ...props
++    },
++    ref
++  ) => {
++    const flyoutId = useFlyoutId(id);
++    const [flyoutRef, setFlyoutRef] = useState<HTMLElement | null>(null);
++
++    const refs = useMemo(() => [setFlyoutRef, ref], [ref]);
++    const combinedRef = useCombinedRefs(refs);
++
++    const {
++      addFlyout,
++      closeFlyout,
++      setFlyoutWidth,
++      goBack,
++      historyItems: _historyItems,
++    } = useFlyoutManager();
++    const parentSize = useParentFlyoutSize(flyoutId);
++    const parentFlyout = useCurrentMainFlyout();
++    const layoutMode = useFlyoutLayoutMode();
++    const styles = useEuiMemoizedStyles(euiManagedFlyoutStyles);
++
++    // Set default size based on level: main defaults to 'm', child defaults to 's'
++    const size = sizeProp ?? (level === LEVEL_CHILD ? 's' : 'm');
++
++    // Validate size
++    const sizeTypeError = validateManagedFlyoutSize(size, flyoutId, level);
++    if (sizeTypeError) {
++      throw new Error(createValidationErrorMessage(sizeTypeError));
++    }
+ 
+-  // For child flyouts, validate parent-child combinations
+-  if (
+-    level === LEVEL_CHILD &&
+-    parentSize &&
+-    isNamedSize(size) &&
+-    isNamedSize(parentSize)
+-  ) {
+-    const combinationError = validateSizeCombination(parentSize, size);
+-    if (combinationError) {
+-      combinationError.flyoutId = flyoutId;
+-      combinationError.parentFlyoutId = parentFlyout?.flyoutId;
+-      combinationError.level = level;
+-      throw new Error(createValidationErrorMessage(combinationError));
++    // For child flyouts, validate parent-child combinations
++    if (
++      level === LEVEL_CHILD &&
++      parentSize &&
++      isNamedSize(size) &&
++      isNamedSize(parentSize)
++    ) {
++      const combinationError = validateSizeCombination(parentSize, size);
++      if (combinationError) {
++        combinationError.flyoutId = flyoutId;
++        combinationError.parentFlyoutId = parentFlyout?.flyoutId;
++        combinationError.level = level;
++        throw new Error(createValidationErrorMessage(combinationError));
++      }
+     }
+-  }
+ 
+-  const defaultTitle = useEuiI18n(
+-    'euiFlyoutManaged.defaultTitle',
+-    'Unknown Flyout'
+-  );
+-
+-  // Set title from flyoutMenuProps or aria-label
+-  // TODO: allow aria-labelledby references to be used
+-  let title = _flyoutMenuProps?.title || props['aria-label'];
+-  if (
+-    process.env.NODE_ENV === 'development' &&
+-    level === LEVEL_MAIN &&
+-    !title
+-  ) {
+-    console.warn(
+-      `Managed flyout "${flyoutId}" requires a title, which can be provided through 'flyoutMenuProps.title' or 'aria-label'. Using default title: "${defaultTitle}"`
++    const defaultTitle = useEuiI18n(
++      'euiFlyoutManaged.defaultTitle',
++      'Unknown Flyout'
+     );
+-    title = defaultTitle;
+-  }
+ 
+-  const isActive = useIsFlyoutActive(flyoutId);
+-  const currentSession = useCurrentSession();
+-  const flyoutExistsInManager = useIsFlyoutRegistered(flyoutId);
+-
+-  // Stabilize the onClose callback
+-  const onCloseCallbackRef = useRef<
+-    ((e?: EuiFlyoutCloseEvent) => void) | undefined
+-  >();
+-  onCloseCallbackRef.current = (e) => {
+-    if (onCloseProp) {
+-      const event = e || new MouseEvent('click');
+-      onCloseProp(event);
++    // Set title from flyoutMenuProps or aria-label
++    // TODO: allow aria-labelledby references to be used
++    let title = _flyoutMenuProps?.title || props['aria-label'];
++    if (
++      process.env.NODE_ENV === 'development' &&
++      level === LEVEL_MAIN &&
++      !title
++    ) {
++      console.warn(
++        `Managed flyout "${flyoutId}" requires a title, which can be provided through 'flyoutMenuProps.title' or 'aria-label'. Using default title: "${defaultTitle}"`
++      );
++      title = defaultTitle;
+     }
+-  };
+-
+-  // Stabilize the onActive callback
+-  const onActiveCallbackRef = useRef<(() => void) | undefined>();
+-  onActiveCallbackRef.current = onActiveProp;
+-
+-  // Track if flyout was ever registered to avoid false positives on initial mount
+-  const wasRegisteredRef = useRef(false);
+ 
+-  // Register with flyout manager context when open, remove when closed
+-  useEffect(() => {
+-    addFlyout(flyoutId, title!, level, size as string);
+-
+-    return () => {
+-      closeFlyout(flyoutId);
+-
+-      // Reset navigation tracking when explicitly closed via isOpen=false
+-      wasRegisteredRef.current = false;
++    const isActive = useIsFlyoutActive(flyoutId);
++    const currentSession = useCurrentSession();
++    const flyoutExistsInManager = useIsFlyoutRegistered(flyoutId);
++
++    // Stabilize the onClose callback
++    const onCloseCallbackRef = useRef<
++      ((e?: EuiFlyoutCloseEvent) => void) | undefined
++    >();
++    onCloseCallbackRef.current = (e) => {
++      if (onCloseProp) {
++        const event = e || new MouseEvent('click');
++        onCloseProp(event);
++      }
+     };
+-  }, [flyoutId, title, level, size, addFlyout, closeFlyout]);
+ 
+-  // Detect when flyout has been removed from manager state (e.g., via Back button)
+-  // and trigger onClose callback to notify the parent component
+-  useEffect(() => {
+-    if (flyoutExistsInManager) {
+-      wasRegisteredRef.current = true;
+-    }
+-
+-    // If flyout was previously registered, is marked as open, but no longer exists in manager state,
+-    // it was removed via navigation (Back button) - trigger close callback
+-    if (wasRegisteredRef.current && !flyoutExistsInManager) {
+-      onCloseCallbackRef.current?.(new MouseEvent('navigation'));
+-      wasRegisteredRef.current = false; // Reset to avoid repeated calls
+-    }
+-  }, [flyoutExistsInManager, flyoutId]);
+-
+-  // Monitor current session changes and fire onActive callback when this flyout becomes active
+-  useEffect(() => {
+-    if (!onActiveCallbackRef.current || !currentSession) {
+-      return;
+-    }
++    // Stabilize the onActive callback
++    const onActiveCallbackRef = useRef<(() => void) | undefined>();
++    onActiveCallbackRef.current = onActiveProp;
++
++    // Track if flyout was ever registered to avoid false positives on initial mount
++    const wasRegisteredRef = useRef(false);
++
++    // Register with flyout manager context when open, remove when closed
++    useEffect(() => {
++      addFlyout(flyoutId, title!, level, size as string);
++
++      return () => {
++        closeFlyout(flyoutId);
++
++        // Reset navigation tracking when explicitly closed via isOpen=false
++        wasRegisteredRef.current = false;
++      };
++    }, [flyoutId, title, level, size, addFlyout, closeFlyout]);
++
++    // Detect when flyout has been removed from manager state (e.g., via Back button)
++    // and trigger onClose callback to notify the parent component
++    useEffect(() => {
++      if (flyoutExistsInManager) {
++        wasRegisteredRef.current = true;
++      }
++
++      // If flyout was previously registered, is marked as open, but no longer exists in manager state,
++      // it was removed via navigation (Back button) - trigger close callback
++      if (wasRegisteredRef.current && !flyoutExistsInManager) {
++        onCloseCallbackRef.current?.(new MouseEvent('navigation'));
++        wasRegisteredRef.current = false; // Reset to avoid repeated calls
++      }
++    }, [flyoutExistsInManager, flyoutId]);
++
++    // Monitor current session changes and fire onActive callback when this flyout becomes active
++    useEffect(() => {
++      if (!onActiveCallbackRef.current || !currentSession) {
++        return;
++      }
++
++      // Make sure callback is only fired for the flyout that changed
++      const mainChanged =
++        level === LEVEL_MAIN && currentSession.mainFlyoutId === flyoutId;
++      const childChanged =
++        level === LEVEL_CHILD && currentSession.childFlyoutId === flyoutId;
++
++      if (mainChanged || childChanged) {
++        onActiveCallbackRef.current();
++      }
++    }, [currentSession, flyoutId, level]);
++
++    useEffect(() => {
++      return () => {
++        // Only remove from manager on component unmount, don't trigger close callback
++        closeFlyout(flyoutId);
++      };
++    }, [closeFlyout, flyoutId]);
++
++    // Track width changes for flyouts
++    const { width } = useResizeObserver(isActive ? flyoutRef : null, 'width');
++
++    // Pass the stabilized onClose callback to the flyout menu context
++    const onClose = (e?: EuiFlyoutCloseEvent) => {
++      onCloseCallbackRef.current?.(e);
++    };
+ 
+-    // Make sure callback is only fired for the flyout that changed
+-    const mainChanged =
+-      level === LEVEL_MAIN && currentSession.mainFlyoutId === flyoutId;
+-    const childChanged =
+-      level === LEVEL_CHILD && currentSession.childFlyoutId === flyoutId;
++    // Update width in manager state when it changes
++    useEffect(() => {
++      if (isActive && width) {
++        setFlyoutWidth(flyoutId, width);
++      }
++    }, [flyoutId, level, isActive, width, setFlyoutWidth]);
++
++    const { activityStage, onAnimationEnd } = useFlyoutActivityStage({
++      flyoutId,
++      level,
++    });
++
++    // Note: history controls are only relevant for main flyouts
++    const historyItems = useMemo(() => {
++      const result = level === LEVEL_MAIN ? _historyItems : undefined;
++      return result;
++    }, [level, _historyItems]);
++
++    const backButtonProps = useMemo(() => {
++      return level === LEVEL_MAIN ? { onClick: goBack } : undefined;
++    }, [level, goBack]);
++
++    const showBackButton = historyItems ? historyItems.length > 0 : false;
++
++    const flyoutMenuProps = {
++      ..._flyoutMenuProps,
++      historyItems,
++      showBackButton,
++      backButtonProps,
++      title,
++    };
+ 
+-    if (mainChanged || childChanged) {
+-      onActiveCallbackRef.current();
+-    }
+-  }, [currentSession, flyoutId, level]);
++    return (
++      <EuiFlyoutIsManagedProvider isManaged={true}>
++        <EuiFlyoutMenuContext.Provider value={{ onClose }}>
++          <EuiFlyoutComponent
++            id={flyoutId}
++            ref={combinedRef}
++            css={[
++              styles.managedFlyout,
++              customCss,
++              styles.stage(activityStage, props.side, level),
++            ]}
++            {...{
++              ...props,
++              onClose,
++              size,
++              flyoutMenuProps,
++              onAnimationEnd,
++              [PROPERTY_FLYOUT]: true,
++              [PROPERTY_LAYOUT_MODE]: layoutMode,
++              [PROPERTY_LEVEL]: level,
++            }}
++          />
++        </EuiFlyoutMenuContext.Provider>
++      </EuiFlyoutIsManagedProvider>
++    );
++  }
++);
+ 
+-  useEffect(() => {
+-    return () => {
+-      // Only remove from manager on component unmount, don't trigger close callback
+-      closeFlyout(flyoutId);
+-    };
+-  }, [closeFlyout, flyoutId]);
+-
+-  // Track width changes for flyouts
+-  const { width } = useResizeObserver(
+-    isActive ? flyoutRef.current : null,
+-    'width'
+-  );
+-
+-  // Pass the stabilized onClose callback to the flyout menu context
+-  const onClose = (e?: EuiFlyoutCloseEvent) => {
+-    onCloseCallbackRef.current?.(e);
+-  };
+-
+-  // Update width in manager state when it changes
+-  useEffect(() => {
+-    if (isActive && width) {
+-      setFlyoutWidth(flyoutId, width);
+-    }
+-  }, [flyoutId, level, isActive, width, setFlyoutWidth]);
+-
+-  const { activityStage, onAnimationEnd } = useFlyoutActivityStage({
+-    flyoutId,
+-    level,
+-  });
+-
+-  // Note: history controls are only relevant for main flyouts
+-  const historyItems = useMemo(() => {
+-    const result = level === LEVEL_MAIN ? _historyItems : undefined;
+-    return result;
+-  }, [level, _historyItems]);
+-
+-  const backButtonProps = useMemo(() => {
+-    return level === LEVEL_MAIN ? { onClick: goBack } : undefined;
+-  }, [level, goBack]);
+-
+-  const showBackButton = historyItems ? historyItems.length > 0 : false;
+-
+-  const flyoutMenuProps = {
+-    ..._flyoutMenuProps,
+-    historyItems,
+-    showBackButton,
+-    backButtonProps,
+-    title,
+-  };
+-
+-  return (
+-    <EuiFlyoutIsManagedProvider isManaged={true}>
+-      <EuiFlyoutMenuContext.Provider value={{ onClose }}>
+-        <EuiFlyoutComponent
+-          id={flyoutId}
+-          ref={flyoutRef}
+-          css={[
+-            styles.managedFlyout,
+-            customCss,
+-            styles.stage(activityStage, props.side, level),
+-          ]}
+-          {...{
+-            ...props,
+-            onClose,
+-            size,
+-            flyoutMenuProps,
+-            onAnimationEnd,
+-            [PROPERTY_FLYOUT]: true,
+-            [PROPERTY_LAYOUT_MODE]: layoutMode,
+-            [PROPERTY_LEVEL]: level,
+-          }}
+-        />
+-      </EuiFlyoutMenuContext.Provider>
+-    </EuiFlyoutIsManagedProvider>
+-  );
+-};
++EuiManagedFlyout.displayName = 'EuiManagedFlyout';
+diff --git a/packages/eui/src/components/flyout/manager/flyout_manager.stories.tsx b/packages/eui/src/components/flyout/manager/flyout_manager.stories.tsx
+index 1e72277957..b135e748e2 100644
+--- a/packages/eui/src/components/flyout/manager/flyout_manager.stories.tsx
++++ b/packages/eui/src/components/flyout/manager/flyout_manager.stories.tsx
+@@ -52,7 +52,7 @@ interface FlyoutChildStoryArgs extends EuiFlyoutChildActualProps {
+   mainMaxWidth?: number;
+   outsideClickCloses?: boolean;
+   paddingSize?: 'none' | 's' | 'm' | 'l';
+-  pushMinBreakpoint: EuiBreakpointSize;
++  pushMinBreakpoint?: EuiBreakpointSize;
+   showFooter?: boolean;
+   mainFlyoutResizable?: boolean;
+   childFlyoutResizable?: boolean;

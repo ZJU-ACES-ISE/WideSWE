@@ -1,0 +1,149 @@
+diff --git a/code/go/internal/validator/semantic/validate_integration_input_qualifier.go b/code/go/internal/validator/semantic/validate_integration_input_qualifier.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad1bef56ec51e5c23e7419774435eabd55ff2727
+--- /dev/null
++++ b/code/go/internal/validator/semantic/validate_integration_input_qualifier.go
+@@ -0,0 +1,79 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License;
++// you may not use this file except in compliance with the Elastic License.
++
++package semantic
++
++import (
++	"fmt"
++	"io/fs"
++
++	"gopkg.in/yaml.v3"
++
++	"github.com/elastic/package-spec/v3/code/go/internal/fspath"
++	"github.com/elastic/package-spec/v3/code/go/pkg/specerrors"
++)
++
++type integrationInputQualifier struct {
++	Name string `yaml:"name"`
++	Type string `yaml:"type"`
++}
++
++type integrationPolicyTemplateQualifier struct {
++	Name   string                      `yaml:"name"`
++	Inputs []integrationInputQualifier `yaml:"inputs"`
++}
++
++type integrationPackageManifestQualifier struct {
++	Type            string                               `yaml:"type"`
++	PolicyTemplates []integrationPolicyTemplateQualifier `yaml:"policy_templates"`
++}
++
++// ValidateIntegrationInputQualifier checks that if a policy template contains
++// multiple inputs of the same type, all of them must have a name set. Without
++// names, Fleet cannot distinguish them, leading to the ambiguity this field
++// aims to solve.
++func ValidateIntegrationInputQualifier(fsys fspath.FS) specerrors.ValidationErrors {
++	manifestPath := "manifest.yml"
++	data, err := fs.ReadFile(fsys, manifestPath)
++	if err != nil {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("file \"%s\" is invalid: failed to read manifest: %w", fsys.Path(manifestPath), err)}
++	}
++
++	var manifest integrationPackageManifestQualifier
++	if err := yaml.Unmarshal(data, &manifest); err != nil {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("file \"%s\" is invalid: failed to parse manifest: %w", fsys.Path(manifestPath), err)}
++	}
++
++	if manifest.Type != integrationPackageType {
++		return nil
++	}
++
++	return validateInputQualifiers(fsys, manifest, manifestPath)
++}
++
++func validateInputQualifiers(fsys fspath.FS, manifest integrationPackageManifestQualifier, manifestPath string) specerrors.ValidationErrors {
++	var errs specerrors.ValidationErrors
++
++	for _, policyTemplate := range manifest.PolicyTemplates {
++		typeCounts := make(map[string]int)
++		for _, input := range policyTemplate.Inputs {
++			typeCounts[input.Type]++
++		}
++
++		reported := make(map[string]bool)
++		for _, input := range policyTemplate.Inputs {
++			if typeCounts[input.Type] > 1 && input.Name == "" && !reported[input.Type] {
++				reported[input.Type] = true
++				errs = append(errs, specerrors.NewStructuredError(
++					fmt.Errorf("file \"%s\" is invalid: policy template \"%s\": input with type \"%s\" must have a name when multiple inputs of the same type are present",
++						fsys.Path(manifestPath), policyTemplate.Name, input.Type),
++					specerrors.CodeIntegrationInputQualifierRequired))
++			}
++		}
++	}
++
++	return errs
++}
+diff --git a/code/go/internal/validator/spec.go b/code/go/internal/validator/spec.go
+index 3247e42eb72bf3ee5ecaf91c6d812e9a35c02ad0..44b7995f120860a446b50d624081dedadcf42e9f 100644
+--- a/code/go/internal/validator/spec.go
++++ b/code/go/internal/validator/spec.go
+@@ -237,6 +237,7 @@ func (s Spec) rules(pkgType string, rootSpec spectypes.ItemSpec) validationRules
+ 		{fn: semantic.ValidateKibanaTagDuplicates},
+ 		{fn: semantic.ValidatePipelineOnFailure, types: []string{"integration"}, since: semver.MustParse("3.6.0")},
+ 		{fn: semantic.ValidateIntegrationInputsDeprecation, types: []string{"integration"}, since: semver.MustParse("3.6.0")},
++		{fn: semantic.ValidateIntegrationInputQualifier, types: []string{"integration"}, since: semver.MustParse("3.6.0")},
+ 		{fn: semantic.ValidateDeprecatedReplacedBy, since: semver.MustParse("3.6.0")},
+ 		{fn: semantic.ValidatePackageReferences, types: []string{"integration"}, since: semver.MustParse("3.6.0")},
+ 		{fn: semantic.ValidateTestPackageRequirements, types: []string{"integration"}, since: semver.MustParse("3.6.0")},
+diff --git a/code/go/pkg/specerrors/constants.go b/code/go/pkg/specerrors/constants.go
+index 10ce295f373e6ab311c8e139e47290b8aa90bf7f..eab3b35a407576cf0d92a9c177529d48b289d7bc 100644
+--- a/code/go/pkg/specerrors/constants.go
++++ b/code/go/pkg/specerrors/constants.go
+@@ -25,4 +25,5 @@ const (
+ 	CodeKibanaTagDuplicates                 = "SVR00007"
+ 	CodePipelineOnFailureEventKind          = "SVR00008"
+ 	CodePipelineOnFailureMessage            = "SVR00009"
++	CodeIntegrationInputQualifierRequired   = "SVR00010"
+ )
+diff --git a/spec/changelog.yml b/spec/changelog.yml
+index 5209fc912fa1f0b63294bf5e6c109c16f17f87f4..b02417985ba382fd62fa63d6471b07623680ef98 100644
+--- a/spec/changelog.yml
++++ b/spec/changelog.yml
+@@ -13,6 +13,10 @@
+     - description: Add var_groups support to policy template and input levels in integration packages, and to policy template and package root levels in input packages.
+       type: enhancement
+       link: https://github.com/elastic/package-spec/pull/1120
++    # Pending on https://github.com/elastic/kibana/pull/262138
++    - description: Add support for named inputs in policy templates to disambiguate multiple inputs of the same type.
++      type: enhancement
++      link: https://github.com/elastic/package-spec/pull/1135
+ - version: 3.6.0
+   changes:
+     - description: Add pipeline tag validations.
+diff --git a/spec/integration/manifest.spec.yml b/spec/integration/manifest.spec.yml
+index 5b4589a895c5bfb7554fd701445455cc4e856bd9..279d596eac9bdbb16ae70d88f322afa3f0bc0eec 100644
+--- a/spec/integration/manifest.spec.yml
++++ b/spec/integration/manifest.spec.yml
+@@ -779,6 +779,12 @@ spec:
+               type: object
+               additionalProperties: false
+               properties:
++                name:
++                  description: >
++                    Unique name for this input within the policy template. When set, data streams
++                    reference this input by name instead of type, allowing multiple inputs of the
++                    same type to coexist in the same policy template.
++                  type: string
+                 type:
+                   description: Type of input.
+                   type: string
+@@ -933,6 +939,9 @@ spec:
+ versions:
+   - before: 3.6.0
+     patch:
++      # Input qualifier (named inputs).
++      - op: remove
++        path: "/properties/policy_templates/items/properties/inputs/items/properties/name"
+       # Support for otelcol and dynamic_signal_types in integration packages.
+       - op: add
+         path: "/properties/policy_templates/items/properties/inputs/items/properties/type"

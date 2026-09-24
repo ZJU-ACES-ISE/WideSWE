@@ -1,0 +1,366 @@
+diff --git a/lightning/pkg/importinto/importer.go b/lightning/pkg/importinto/importer.go
+index e2d6d48a80..38546bce17 100644
+--- a/lightning/pkg/importinto/importer.go
++++ b/lightning/pkg/importinto/importer.go
+@@ -163,7 +163,7 @@ func NewImporter(
+ func (i *Importer) buildOrchestrator() JobOrchestrator {
+ 	jobSubmitterOpts := make([]JobSubmitterOption, 0, 1)
+ 	if i.stripS3ExternalIDForImportSQL {
+-		jobSubmitterOpts = append(jobSubmitterOpts, WithJobSubmitterStripS3ExternalIDForImportSQL())
++		jobSubmitterOpts = append(jobSubmitterOpts, WithJobSubmitterStripS3ExternalIDForImportSQL(true))
+ 	}
+ 	submitter := NewJobSubmitter(i.sdk, i.cfg, i.groupKey, i.logger.With(zap.String("component", "submitter")), jobSubmitterOpts...)
+ 
+diff --git a/lightning/pkg/importinto/job_submitter.go b/lightning/pkg/importinto/job_submitter.go
+index d306522a91..b8a0ff93cc 100644
+--- a/lightning/pkg/importinto/job_submitter.go
++++ b/lightning/pkg/importinto/job_submitter.go
+@@ -59,9 +59,9 @@ type JobSubmitterOption func(*DefaultJobSubmitter)
+ // that need to keep compatibility with older IMPORT INTO planners that reject
+ // explicit S3 external ID; newer planners can accept an explicit external ID
+ // matching the target value.
+-func WithJobSubmitterStripS3ExternalIDForImportSQL() JobSubmitterOption {
++func WithJobSubmitterStripS3ExternalIDForImportSQL(strip bool) JobSubmitterOption {
+ 	return func(s *DefaultJobSubmitter) {
+-		s.stripS3ExternalIDForImportSQL = true
++		s.stripS3ExternalIDForImportSQL = strip
+ 	}
+ }
+ 
+@@ -73,6 +73,7 @@ func NewJobSubmitter(sdk importsdk.SDK, cfg *config.Config, groupKey string, log
+ 		groupKey: groupKey,
+ 		logger:   logger,
+ 	}
++	WithJobSubmitterStripS3ExternalIDForImportSQL(cfg.TikvImporter.StripS3ExternalIDForImportSQL)(submitter)
+ 	for _, opt := range opts {
+ 		opt(submitter)
+ 	}
+diff --git a/lightning/pkg/importinto/job_submitter_test.go b/lightning/pkg/importinto/job_submitter_test.go
+index c6a53fe9b1..7c024d31a9 100644
+--- a/lightning/pkg/importinto/job_submitter_test.go
++++ b/lightning/pkg/importinto/job_submitter_test.go
+@@ -39,6 +39,9 @@ func TestJobSubmitterSubmitTable(t *testing.T) {
+ 
+ 	s3Cfg := config.NewConfig()
+ 	s3Cfg.Mydumper.SourceDir = s3SourceDirWithExternalID
++	s3CfgWithStrip := config.NewConfig()
++	s3CfgWithStrip.Mydumper.SourceDir = s3SourceDirWithExternalID
++	s3CfgWithStrip.TikvImporter.StripS3ExternalIDForImportSQL = true
+ 	ossCfg := config.NewConfig()
+ 	ossCfg.Mydumper.SourceDir = ossSourceDirWithExternalID
+ 	gcsCfg := config.NewConfig()
+@@ -105,7 +108,7 @@ func TestJobSubmitterSubmitTable(t *testing.T) {
+ 		},
+ 		{
+ 			name:                "sanitize s3 external id when enabled for import sql resource parameters",
+-			jobSubmitterOptions: []importinto.JobSubmitterOption{importinto.WithJobSubmitterStripS3ExternalIDForImportSQL()},
++			jobSubmitterOptions: []importinto.JobSubmitterOption{importinto.WithJobSubmitterStripS3ExternalIDForImportSQL(true)},
+ 			tableMeta: &importsdk.TableMeta{
+ 				Database: "db",
+ 				Table:    "t1",
+@@ -121,9 +124,26 @@ func TestJobSubmitterSubmitTable(t *testing.T) {
+ 				mockSDK.EXPECT().SubmitJob(gomock.Any(), "IMPORT INTO ...").Return(int64(123), nil)
+ 			},
+ 		},
++		{
++			name: "sanitize s3 external id when config flag is enabled",
++			tableMeta: &importsdk.TableMeta{
++				Database: "db",
++				Table:    "t1",
++			},
++			cfg: s3CfgWithStrip,
++			setup: func(t *testing.T, mockSDK *sdkmock.MockSDK) {
++				mockSDK.EXPECT().GenerateImportSQL(gomock.Any(), gomock.Any()).DoAndReturn(
++					func(_ *importsdk.TableMeta, opts *importsdk.ImportOptions) (string, error) {
++						require.Equal(t, s3ResourceParameters, opts.ResourceParameters)
++						require.Equal(t, s3SourceDirWithExternalID, s3CfgWithStrip.Mydumper.SourceDir)
++						return "IMPORT INTO ...", nil
++					})
++				mockSDK.EXPECT().SubmitJob(gomock.Any(), "IMPORT INTO ...").Return(int64(123), nil)
++			},
++		},
+ 		{
+ 			name:                "sanitize oss external id as s3 like resource parameters",
+-			jobSubmitterOptions: []importinto.JobSubmitterOption{importinto.WithJobSubmitterStripS3ExternalIDForImportSQL()},
++			jobSubmitterOptions: []importinto.JobSubmitterOption{importinto.WithJobSubmitterStripS3ExternalIDForImportSQL(true)},
+ 			tableMeta: &importsdk.TableMeta{
+ 				Database: "db",
+ 				Table:    "t1",
+diff --git a/pkg/executor/test/loaddatatest/BUILD.bazel b/pkg/executor/test/loaddatatest/BUILD.bazel
+index ffb8fdd9d2..be73b206d7 100644
+--- a/pkg/executor/test/loaddatatest/BUILD.bazel
++++ b/pkg/executor/test/loaddatatest/BUILD.bazel
+@@ -12,20 +12,14 @@ go_test(
+     shard_count = 14,
+     deps = [
+         "//pkg/config",
+-        "//pkg/domain",
+         "//pkg/executor",
+-        "//pkg/kv",
+         "//pkg/lightning/mydump",
+         "//pkg/meta/autoid",
+-        "//pkg/resourcemanager",
+-        "//pkg/session",
+         "//pkg/sessionctx",
+-        "//pkg/sessionctx/vardef",
+         "//pkg/store/mockstore",
+         "//pkg/testkit",
+         "//pkg/util/dbterror",
+         "//pkg/util/dbterror/exeerrors",
+-        "//pkg/util/gctuner",
+         "@com_github_pingcap_errors//:errors",
+         "@com_github_pingcap_kvproto//pkg/kvrpcpb",
+         "@com_github_stretchr_testify//require",
+diff --git a/pkg/executor/test/loaddatatest/load_data_test.go b/pkg/executor/test/loaddatatest/load_data_test.go
+index a0fa99eed2..7dc4cb80cc 100644
+--- a/pkg/executor/test/loaddatatest/load_data_test.go
++++ b/pkg/executor/test/loaddatatest/load_data_test.go
+@@ -25,19 +25,13 @@ import (
+ 
+ 	"github.com/pingcap/errors"
+ 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+-	"github.com/pingcap/tidb/pkg/domain"
+ 	"github.com/pingcap/tidb/pkg/executor"
+-	"github.com/pingcap/tidb/pkg/kv"
+ 	"github.com/pingcap/tidb/pkg/lightning/mydump"
+-	"github.com/pingcap/tidb/pkg/resourcemanager"
+-	"github.com/pingcap/tidb/pkg/session"
+ 	"github.com/pingcap/tidb/pkg/sessionctx"
+-	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
+ 	"github.com/pingcap/tidb/pkg/store/mockstore"
+ 	"github.com/pingcap/tidb/pkg/testkit"
+ 	"github.com/pingcap/tidb/pkg/util/dbterror"
+ 	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
+-	"github.com/pingcap/tidb/pkg/util/gctuner"
+ 	"github.com/stretchr/testify/require"
+ 	"github.com/tikv/client-go/v2/tikv"
+ 	"github.com/tikv/client-go/v2/tikvrpc"
+@@ -492,43 +486,10 @@ func TestLoadDataFromServerFile(t *testing.T) {
+ 	require.ErrorContains(t, err, "[executor:8154]Don't support load data from tidb-server's disk.")
+ }
+ 
+-var fix56408Store kv.Storage
+-
+-func prepareFix56408Store() func() {
+-	gctuner.GlobalMemoryLimitTuner.Stop()
+-	store, err := mockstore.NewMockStore()
+-	if err != nil {
+-		panic(err)
+-	}
+-
+-	vardef.SetSchemaLease(500 * time.Millisecond)
+-	session.DisableStats4Test()
+-	domain.DisablePlanReplayerBackgroundJob4Test()
+-	domain.DisableDumpHistoricalStats4Test()
+-	dom, err := session.BootstrapSession(store)
+-	if err != nil {
+-		_ = store.Close()
+-		panic(err)
+-	}
+-	dom.SetStatsUpdating(true)
+-	sm := testkit.MockSessionManager{}
+-	dom.InfoSyncer().SetSessionManager(&sm)
+-	fix56408Store = store
+-
+-	return func() {
+-		fix56408Store = nil
+-		dom.Close()
+-		if err := store.Close(); err != nil {
+-			panic(err)
+-		}
+-		resourcemanager.InstanceResourceManager.Reset()
+-	}
+-}
+-
+ func TestFix56408(t *testing.T) {
+-	require.NotNil(t, fix56408Store)
+-	tk := testkit.NewTestKit(t, fix56408Store)
+-	tk.MustExec("USE test; DROP TABLE IF EXISTS a;")
++	store := testkit.CreateMockStore(t)
++	tk := testkit.NewTestKit(t, store)
++	tk.MustExec("USE test; DROP TABLE IF EXISTS load_data_replace;")
+ 	tk.MustExec("create table a(id int,name varchar(20),addr varchar(100),primary key (id) nonclustered);")
+ 	loadSQL := "LOAD DATA LOCAL INFILE '/tmp/nonexistence.csv' REPLACE INTO TABLE a FIELDS terminated by '|';"
+ 	ctx := tk.Session().(sessionctx.Context)
+diff --git a/pkg/executor/test/loaddatatest/main_test.go b/pkg/executor/test/loaddatatest/main_test.go
+index 42df1b2f2c..7f9bd8bbff 100644
+--- a/pkg/executor/test/loaddatatest/main_test.go
++++ b/pkg/executor/test/loaddatatest/main_test.go
+@@ -33,11 +33,9 @@ func TestMain(m *testing.M) {
+ 		conf.Experimental.AllowsExpressionIndex = true
+ 	})
+ 	tikv.EnableFailpoints()
+-	cleanupFix56408Store := prepareFix56408Store()
+ 
+ 	opts := []goleak.Option{
+ 		goleak.Cleanup(func(_ int) {
+-			cleanupFix56408Store()
+ 			view.Stop()
+ 		}),
+ 		goleak.IgnoreTopFunction("github.com/golang/glog.(*fileSink).flushDaemon"),
+diff --git a/pkg/lightning/config/config.go b/pkg/lightning/config/config.go
+index 65c5d384ea..784053c1a4 100644
+--- a/pkg/lightning/config/config.go
++++ b/pkg/lightning/config/config.go
+@@ -1118,6 +1118,15 @@ type TikvImporter struct {
+ 	KeyspaceName      string `toml:"keyspace-name" json:"keyspace-name"`
+ 	AddIndexBySQL     bool   `toml:"add-index-by-sql" json:"add-index-by-sql"`
+ 
++	// StripS3ExternalIDForImportSQL strips explicit S3 external ID from
++	// generated IMPORT INTO SQL resource parameters while keeping the original
++	// source path unchanged for Lightning storage access. This compatibility flag
++	// is only for callers that need to work with older IMPORT INTO planners that
++	// reject explicit S3 external ID.
++	// Deprecated: remove this flag after downstream callers no longer need to
++	// keep compatibility with those older planners.
++	StripS3ExternalIDForImportSQL bool `toml:"-" json:"-"`
++
+ 	EngineMemCacheSize      ByteSize `toml:"engine-mem-cache-size" json:"engine-mem-cache-size"`
+ 	LocalWriterMemCacheSize ByteSize `toml:"local-writer-mem-cache-size" json:"local-writer-mem-cache-size"`
+ 	StoreWriteBWLimit       ByteSize `toml:"store-write-bwlimit" json:"store-write-bwlimit"`
+diff --git a/pkg/session/test/clusteredindextest/clustered_index_test.go b/pkg/session/test/clusteredindextest/clustered_index_test.go
+index 960c3f6b60..48750cecd5 100644
+--- a/pkg/session/test/clusteredindextest/clustered_index_test.go
++++ b/pkg/session/test/clusteredindextest/clustered_index_test.go
+@@ -60,62 +60,67 @@ func TestClusteredWithOldRowFormat(t *testing.T) {
+ 
+ 	tk := createTestKit(t, store)
+ 	tk.Session().GetSessionVars().RowEncoder.Enable = false
+-	tk.MustExec("create table t_base(id varchar(255) primary key, a int, b int, unique index idx(b));")
+-	tk.MustExec("insert into t_base values ('b568004d-afad-11ea-8e4d-d651e3a981b7', 1, -1);")
+-	tk.MustQuery("select * from t_base use index(primary);").Check(testkit.Rows("b568004d-afad-11ea-8e4d-d651e3a981b7 1 -1"))
++	tk.MustExec("drop table if exists t;")
++	tk.MustExec("create table t(id varchar(255) primary key, a int, b int, unique index idx(b));")
++	tk.MustExec("insert into t values ('b568004d-afad-11ea-8e4d-d651e3a981b7', 1, -1);")
++	tk.MustQuery("select * from t use index(primary);").Check(testkit.Rows("b568004d-afad-11ea-8e4d-d651e3a981b7 1 -1"))
+ 
+ 	// Test for issue https://github.com/pingcap/tidb/issues/21568
+-	tk.MustExec("create table t_21568 (c_int int, c_str varchar(40), c_decimal decimal(12, 6), primary key(c_str));")
++	tk.MustExec("drop table if exists t;")
++	tk.MustExec("create table t (c_int int, c_str varchar(40), c_decimal decimal(12, 6), primary key(c_str));")
+ 	tk.MustExec("begin;")
+-	tk.MustExec("insert into t_21568 (c_int, c_str) values (13, 'dazzling torvalds'), (3, 'happy rhodes');")
+-	tk.MustExec("delete from t_21568 where c_decimal <= 3.024 or (c_int, c_str) in ((5, 'happy saha'));")
+-	tk.MustExec("commit;")
++	tk.MustExec("insert into t (c_int, c_str) values (13, 'dazzling torvalds'), (3, 'happy rhodes');")
++	tk.MustExec("delete from t where c_decimal <= 3.024 or (c_int, c_str) in ((5, 'happy saha'));")
+ 
+ 	// Test for issue https://github.com/pingcap/tidb/issues/21502.
+-	tk.MustExec("create table t_21502 (c_int int, c_double double, c_decimal decimal(12, 6), primary key(c_decimal, c_double), unique key(c_int));")
++	tk.MustExec("drop table if exists t;")
++	tk.MustExec("create table t (c_int int, c_double double, c_decimal decimal(12, 6), primary key(c_decimal, c_double), unique key(c_int));")
+ 	tk.MustExec("begin;")
+-	tk.MustExec("insert into t_21502 values (5, 55.068712, 8.256);")
+-	tk.MustExec("delete from t_21502 where c_int = 5;")
+-	tk.MustExec("commit;")
++	tk.MustExec("insert into t values (5, 55.068712, 8.256);")
++	tk.MustExec("delete from t where c_int = 5;")
+ 
+ 	// Test for issue https://github.com/pingcap/tidb/issues/21568#issuecomment-741601887
+-	tk.MustExec("create table t_21568_comment (c_int int, c_str varchar(40), c_timestamp timestamp, c_decimal decimal(12, 6), primary key(c_int, c_str), key(c_decimal));")
++	tk.MustExec("drop table if exists t;")
++	tk.MustExec("create table t (c_int int, c_str varchar(40), c_timestamp timestamp, c_decimal decimal(12, 6), primary key(c_int, c_str), key(c_decimal));")
+ 	tk.MustExec("begin;")
+-	tk.MustExec("insert into t_21568_comment values (11, 'abc', null, null);")
+-	tk.MustExec("update t_21568_comment set c_str = upper(c_str) where c_decimal is null;")
+-	tk.MustQuery("select * from t_21568_comment where c_decimal is null;").Check(testkit.Rows("11 ABC <nil> <nil>"))
+-	tk.MustExec("commit;")
++	tk.MustExec("insert into t values (11, 'abc', null, null);")
++	tk.MustExec("update t set c_str = upper(c_str) where c_decimal is null;")
++	tk.MustQuery("select * from t where c_decimal is null;").Check(testkit.Rows("11 ABC <nil> <nil>"))
+ 
+ 	// Test for issue https://github.com/pingcap/tidb/issues/22193
+-	tk.MustExec("create table t_22193 (col_0 blob(20), col_1 int, primary key(col_0(1)), unique key idx(col_0(2)));")
+-	tk.MustExec("insert into t_22193 values('aaa', 1);")
++	tk.MustExec("drop table if exists t;")
++	tk.MustExec("create table t (col_0 blob(20), col_1 int, primary key(col_0(1)), unique key idx(col_0(2)));")
++	tk.MustExec("insert into t values('aaa', 1);")
+ 	tk.MustExec("begin;")
+-	tk.MustExec("update t_22193 set col_0 = 'ccc';")
+-	tk.MustExec("update t_22193 set col_0 = 'ddd';")
++	tk.MustExec("update t set col_0 = 'ccc';")
++	tk.MustExec("update t set col_0 = 'ddd';")
+ 	tk.MustExec("commit;")
+-	tk.MustQuery("select cast(col_0 as char(20)) from t_22193 use index (`primary`);").Check(testkit.Rows("ddd"))
+-	tk.MustQuery("select cast(col_0 as char(20)) from t_22193 use index (idx);").Check(testkit.Rows("ddd"))
+-	tk.MustExec("admin check table t_22193")
++	tk.MustQuery("select cast(col_0 as char(20)) from t use index (`primary`);").Check(testkit.Rows("ddd"))
++	tk.MustQuery("select cast(col_0 as char(20)) from t use index (idx);").Check(testkit.Rows("ddd"))
++	tk.MustExec("admin check table t")
+ 
+ 	// Test for issue https://github.com/pingcap/tidb/issues/23646
+-	tk.MustExec("create table t_23646(c1 varchar(100), c2 set('dav', 'aaa'), c3 varchar(100), primary key(c1(2), c2) clustered, unique key uk1(c2), index idx1(c2, c1, c3))")
+-	tk.MustExec("insert into t_23646 select 'AarTrNoAL', 'dav', '1'")
+-	tk.MustExec("update t_23646 set c3 = '10', c1 = 'BxTXbyKRFBGbcPmPR' where c2 in ('dav', 'dav')")
+-	tk.MustExec("admin check table t_23646")
++	tk.MustExec("drop table if exists txx")
++	tk.MustExec("create table txx(c1 varchar(100), c2 set('dav', 'aaa'), c3 varchar(100), primary key(c1(2), c2) clustered, unique key uk1(c2), index idx1(c2, c1, c3))")
++	tk.MustExec("insert into txx select 'AarTrNoAL', 'dav', '1'")
++	tk.MustExec("update txx set c3 = '10', c1 = 'BxTXbyKRFBGbcPmPR' where c2 in ('dav', 'dav')")
++	tk.MustExec("admin check table txx")
+ 
+ 	// TestClusteredIndexNewCollationWithOldRowFormat
+ 	// This case maybe not useful, because newCollation isn't convenience to run on TiKV(it's required serialSuit)
+ 	// but unistore doesn't support old row format.
+-	tk.MustExec("create table t_collation(col_1 varchar(132) CHARACTER SET utf8 COLLATE utf8_unicode_ci, primary key(col_1) clustered)")
+-	tk.MustExec("insert into t_collation select 'aBc'")
+-	tk.MustQuery("select col_1 from t_collation where col_1 = 'aBc'").Check(testkit.Rows("aBc"))
++	tk.MustExec("drop table if exists t2")
++	tk.MustExec("create table t2(col_1 varchar(132) CHARACTER SET utf8 COLLATE utf8_unicode_ci, primary key(col_1) clustered)")
++	tk.MustExec("insert into t2 select 'aBc'")
++	tk.MustQuery("select col_1 from t2 where col_1 = 'aBc'").Check(testkit.Rows("aBc"))
+ 
+ 	// TestClusteredUnionScan with old row format.
+-	tk.MustExec("CREATE TABLE t_union_scan (a int,b int,c int, PRIMARY KEY (a,b))")
+-	tk.MustExec("insert t_union_scan (a, b) values (1, 1)")
++	tk.MustExec("drop table if exists t")
++	tk.MustExec("CREATE TABLE t (a int,b int,c int, PRIMARY KEY (a,b))")
++	tk.MustExec("insert t (a, b) values (1, 1)")
+ 	tk.MustExec("begin")
+-	tk.MustExec("update t_union_scan set c = 1")
+-	tk.MustQuery("select * from t_union_scan").Check(testkit.Rows("1 1 1"))
++	tk.MustExec("update t set c = 1")
++	tk.MustQuery("select * from t").Check(testkit.Rows("1 1 1"))
+ 	tk.MustExec("rollback")
+ }
+ 
+diff --git a/pkg/timer/runtime/runtime_test.go b/pkg/timer/runtime/runtime_test.go
+index 988a98dab4..6c20633962 100644
+--- a/pkg/timer/runtime/runtime_test.go
++++ b/pkg/timer/runtime/runtime_test.go
+@@ -869,6 +869,7 @@ func TestTimerFullProcess(t *testing.T) {
+ 	})
+ 	require.NoError(t, err)
+ 	timerID := timer.ID
++	close(hookStartWait)
+ 
+ 	hook.On("OnPreSchedEvent", mock.Anything, mock.Anything).
+ 		Return(api.PreSchedEventResult{EventData: []byte("eventdata1")}, nil).
+@@ -879,8 +880,6 @@ func TestTimerFullProcess(t *testing.T) {
+ 		Return(nil).
+ 		Once().
+ 		Run(checkOnSchedEventFunc([]byte("eventdata1"), *now.Load()))
+-
+-	close(hookStartWait)
+ 	waitDone(onSchedDone, 5*time.Second)
+ 	onSchedDone = make(chan struct{})
+ 	hook.AssertExpectations(t)
+@@ -913,7 +912,7 @@ func TestTimerFullProcess(t *testing.T) {
+ 	checkNotDone(onSchedDone, time.Second)
+ 
+ 	// trigger again after 1 minute
+-	nextTriggerTime := now.Load().Add(time.Minute)
++	setNow(now.Load().Add(time.Minute))
+ 	hook.On("OnPreSchedEvent", mock.Anything, mock.Anything).
+ 		Return(api.PreSchedEventResult{EventData: []byte("eventdata2")}, nil).
+ 		Once().
+@@ -922,8 +921,7 @@ func TestTimerFullProcess(t *testing.T) {
+ 	hook.On("OnSchedEvent", mock.Anything, mock.Anything).
+ 		Return(nil).
+ 		Once().
+-		Run(checkOnSchedEventFunc([]byte("eventdata2"), nextTriggerTime))
+-	setNow(nextTriggerTime)
++		Run(checkOnSchedEventFunc([]byte("eventdata2"), *now.Load()))
+ 	waitDone(onSchedDone, 5*time.Second)
+ 	onSchedDone = make(chan struct{})
+ 	hook.AssertExpectations(t)

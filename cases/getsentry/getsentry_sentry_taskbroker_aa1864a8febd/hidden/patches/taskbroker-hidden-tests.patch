@@ -1,0 +1,189 @@
+diff --git a/clients/python/tests/test_task.py b/clients/python/tests/test_task.py
+index 264f03f..5bb9c27 100644
+--- a/clients/python/tests/test_task.py
++++ b/clients/python/tests/test_task.py
+@@ -1,4 +1,6 @@
++import contextlib
+ import datetime
++from collections.abc import MutableMapping
+ from typing import Any
+ from unittest.mock import patch
+ 
+@@ -375,3 +377,87 @@ def test_create_activation_headers_monitor_config_treatment(task_namespace: Task
+     assert "sentry-monitor-config" not in result
+     assert "sentry-monitor-slug" in result
+     assert "sentry-monitor-check-in-id" in result
++
++
++class StubContextHook:
++    """Test hook that writes/reads a simple key."""
++
++    last_executed: str
++
++    def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
++        headers["x-test-context"] = "dispatched"
++
++    def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]:
++        if "x-test-context" not in headers:
++            return contextlib.nullcontext()
++        # Store the value so the test can verify it was called
++        StubContextHook.last_executed = headers["x-test-context"]
++        return contextlib.nullcontext()
++
++
++def test_context_hook_on_dispatch() -> None:
++    """Context hooks inject headers during create_activation."""
++    ns = TaskNamespace(
++        name="tests",
++        application="acme",
++        producer_factory=producer_factory,
++        router=DefaultRouter(),
++        metrics=NoOpMetricsBackend(),
++        retry=None,
++        context_hooks=[StubContextHook()],
++    )
++
++    @ns.register(name="test.hooked")
++    def hooked_task() -> None:
++        pass
++
++    activation = hooked_task.create_activation([], {})
++    assert activation.headers["x-test-context"] == "dispatched"
++
++
++def test_context_hook_not_present_without_hooks() -> None:
++    """Without hooks, no extra headers are injected."""
++    ns = TaskNamespace(
++        name="tests",
++        application="acme",
++        producer_factory=producer_factory,
++        router=DefaultRouter(),
++        metrics=NoOpMetricsBackend(),
++        retry=None,
++    )
++
++    @ns.register(name="test.no_hooks")
++    def no_hooks_task() -> None:
++        pass
++
++    activation = no_hooks_task.create_activation([], {})
++    assert "x-test-context" not in activation.headers
++
++
++def test_context_hook_multiple_hooks() -> None:
++    """Multiple hooks all get called."""
++
++    class AnotherHook:
++        def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
++            headers["x-another"] = "also-here"
++
++        def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]:
++            return contextlib.nullcontext()
++
++    ns = TaskNamespace(
++        name="tests",
++        application="acme",
++        producer_factory=producer_factory,
++        router=DefaultRouter(),
++        metrics=NoOpMetricsBackend(),
++        retry=None,
++        context_hooks=[StubContextHook(), AnotherHook()],
++    )
++
++    @ns.register(name="test.multi_hooks")
++    def multi_task() -> None:
++        pass
++
++    activation = multi_task.create_activation([], {})
++    assert activation.headers["x-test-context"] == "dispatched"
++    assert activation.headers["x-another"] == "also-here"
+diff --git a/clients/python/tests/worker/test_worker.py b/clients/python/tests/worker/test_worker.py
+index 5e41361..7b2fba2 100644
+--- a/clients/python/tests/worker/test_worker.py
++++ b/clients/python/tests/worker/test_worker.py
+@@ -1,6 +1,7 @@
+ import base64
+ import queue
+ import time
++from collections.abc import MutableMapping
+ from multiprocessing import Event
+ from typing import Any
+ from unittest import TestCase, mock
+@@ -761,3 +762,72 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
+     assert result.task_id == COMPRESSED_TASK.activation.id
+     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+     assert mock_capture_checkin.call_count == 0
++
++
++def test_child_process_context_hooks() -> None:
++    """Context hooks' on_execute is called with activation headers during task execution."""
++    executed_headers: list[dict[str, str]] = []
++
++    class HookExecution:
++        def __init__(self, headers: dict[str, str], task: Any = None) -> None:
++            self.headers = headers
++            self.task = task
++
++        def __enter__(self) -> None:
++            executed_headers.append(dict(self.headers))
++
++        def __exit__(self, *args: Any) -> None:
++            return None
++
++        def __call__(self) -> Any:
++            executed_headers.append(dict(self.headers))
++            return self.task()
++
++    class RecordingHook:
++        def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
++            pass
++
++        def on_execute(self, headers: dict[str, str], task: Any = None) -> HookExecution:
++            return HookExecution(headers, task)
++
++    from examples import app as app_module
++
++    hook = RecordingHook()
++
++    class AppWithHook:
++        def __init__(self, app: Any) -> None:
++            self._app = app
++            self.context_hooks = (*app.context_hooks, hook)
++
++        def __getattr__(self, name: str) -> Any:
++            return getattr(self._app, name)
++
++    with mock.patch.object(app_module, "app", AppWithHook(app_module.app)):
++        activation_with_headers = InflightTaskActivation(
++            host="localhost:50051",
++            receive_timestamp=0,
++            activation=TaskActivation(
++                id="hook-test",
++                taskname="examples.simple_task",
++                namespace="examples",
++                parameters='{"args": [], "kwargs": {}}',
++                headers={"x-viewer-org": "42", "x-viewer-user": "7"},
++                processing_deadline_duration=5,
++            ),
++        )
++
++        todo: queue.Queue[InflightTaskActivation] = queue.Queue()
++        processed: queue.Queue[ProcessingResult] = queue.Queue()
++        shutdown = Event()
++
++        todo.put(activation_with_headers)
++        child_process(
++            "examples.app:app",
++            todo,
++            processed,
++            shutdown,
++            max_task_count=1,
++            processing_pool_name="test",
++            process_type="fork",
++        )
++
++        result = processed.get()
++        assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
++        assert len(executed_headers) == 1
++        assert executed_headers[0]["x-viewer-org"] == "42"
++        assert executed_headers[0]["x-viewer-user"] == "7"

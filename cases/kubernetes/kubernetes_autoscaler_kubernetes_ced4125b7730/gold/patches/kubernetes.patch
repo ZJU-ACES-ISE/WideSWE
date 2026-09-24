@@ -1,0 +1,874 @@
+diff --git a/api/openapi-spec/swagger.json b/api/openapi-spec/swagger.json
+index 378333dc017..7a5a106a67a 100644
+--- a/api/openapi-spec/swagger.json
++++ b/api/openapi-spec/swagger.json
+@@ -4185,6 +4185,11 @@
+           "description": "message is a human-readable explanation containing details about the transition",
+           "type": "string"
+         },
++        "observedGeneration": {
++          "description": "observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.",
++          "format": "int64",
++          "type": "integer"
++        },
+         "reason": {
+           "description": "reason is the reason for the condition's last transition.",
+           "type": "string"
+diff --git a/api/openapi-spec/v3/apis__autoscaling__v2_openapi.json b/api/openapi-spec/v3/apis__autoscaling__v2_openapi.json
+index f1966181196..15d31106e78 100644
+--- a/api/openapi-spec/v3/apis__autoscaling__v2_openapi.json
++++ b/api/openapi-spec/v3/apis__autoscaling__v2_openapi.json
+@@ -293,6 +293,11 @@
+             "description": "message is a human-readable explanation containing details about the transition",
+             "type": "string"
+           },
++          "observedGeneration": {
++            "description": "observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.",
++            "format": "int64",
++            "type": "integer"
++          },
+           "reason": {
+             "description": "reason is the reason for the condition's last transition.",
+             "type": "string"
+diff --git a/pkg/apis/autoscaling/types.go b/pkg/apis/autoscaling/types.go
+index dfbc0474d99..b3db71d6ec6 100644
+--- a/pkg/apis/autoscaling/types.go
++++ b/pkg/apis/autoscaling/types.go
+@@ -455,6 +455,12 @@ type HorizontalPodAutoscalerCondition struct {
+ 	// the transition
+ 	// +optional
+ 	Message string
++
++	// observedGeneration represents the .metadata.generation that the condition was set based upon.
++	// For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
++	// with respect to the current state of the instance.
++	// +optional
++	ObservedGeneration *int64
+ }
+ 
+ // MetricStatus describes the last-read state of a single metric.
+diff --git a/pkg/apis/autoscaling/v1/zz_generated.conversion.go b/pkg/apis/autoscaling/v1/zz_generated.conversion.go
+index 969d2f5c7f4..9978de56d2f 100644
+--- a/pkg/apis/autoscaling/v1/zz_generated.conversion.go
++++ b/pkg/apis/autoscaling/v1/zz_generated.conversion.go
+@@ -373,6 +373,7 @@ func autoConvert_v1_HorizontalPodAutoscalerCondition_To_autoscaling_HorizontalPo
+ 	out.LastTransitionTime = in.LastTransitionTime
+ 	out.Reason = in.Reason
+ 	out.Message = in.Message
++	out.ObservedGeneration = (*int64)(unsafe.Pointer(in.ObservedGeneration))
+ 	return nil
+ }
+ 
+@@ -387,6 +388,7 @@ func autoConvert_autoscaling_HorizontalPodAutoscalerCondition_To_v1_HorizontalPo
+ 	out.LastTransitionTime = in.LastTransitionTime
+ 	out.Reason = in.Reason
+ 	out.Message = in.Message
++	out.ObservedGeneration = (*int64)(unsafe.Pointer(in.ObservedGeneration))
+ 	return nil
+ }
+ 
+diff --git a/pkg/apis/autoscaling/v2/zz_generated.conversion.go b/pkg/apis/autoscaling/v2/zz_generated.conversion.go
+index 42ffadee898..4afc350ed0d 100644
+--- a/pkg/apis/autoscaling/v2/zz_generated.conversion.go
++++ b/pkg/apis/autoscaling/v2/zz_generated.conversion.go
+@@ -524,6 +524,7 @@ func autoConvert_v2_HorizontalPodAutoscalerCondition_To_autoscaling_HorizontalPo
+ 	out.LastTransitionTime = in.LastTransitionTime
+ 	out.Reason = in.Reason
+ 	out.Message = in.Message
++	out.ObservedGeneration = (*int64)(unsafe.Pointer(in.ObservedGeneration))
+ 	return nil
+ }
+ 
+@@ -538,6 +539,7 @@ func autoConvert_autoscaling_HorizontalPodAutoscalerCondition_To_v2_HorizontalPo
+ 	out.LastTransitionTime = in.LastTransitionTime
+ 	out.Reason = in.Reason
+ 	out.Message = in.Message
++	out.ObservedGeneration = (*int64)(unsafe.Pointer(in.ObservedGeneration))
+ 	return nil
+ }
+ 
+diff --git a/pkg/apis/autoscaling/validation/validation.go b/pkg/apis/autoscaling/validation/validation.go
+index 34b7926147a..60a987c3fb4 100644
+--- a/pkg/apis/autoscaling/validation/validation.go
++++ b/pkg/apis/autoscaling/validation/validation.go
+@@ -138,6 +138,11 @@ func ValidateHorizontalPodAutoscalerUpdate(newAutoscaler, oldAutoscaler *autosca
+ func ValidateHorizontalPodAutoscalerStatusUpdate(newAutoscaler, oldAutoscaler *autoscaling.HorizontalPodAutoscaler) field.ErrorList {
+ 	allErrs := apivalidation.ValidateObjectMetaUpdate(&newAutoscaler.ObjectMeta, &oldAutoscaler.ObjectMeta, field.NewPath("metadata"))
+ 	status := newAutoscaler.Status
++	for i, condition := range status.Conditions {
++		if condition.ObservedGeneration != nil {
++			allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(*condition.ObservedGeneration, field.NewPath("status").Child("conditions").Index(i).Child("observedGeneration"))...)
++		}
++	}
+ 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.CurrentReplicas), field.NewPath("status", "currentReplicas"))...)
+ 	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(int64(status.DesiredReplicas), field.NewPath("status", "desiredReplicas"))...)
+ 	return allErrs
+diff --git a/pkg/apis/autoscaling/validation/validation_test.go b/pkg/apis/autoscaling/validation/validation_test.go
+index c50bdb3e131..a6c7a084744 100644
+--- a/pkg/apis/autoscaling/validation/validation_test.go
++++ b/pkg/apis/autoscaling/validation/validation_test.go
+@@ -2000,3 +2000,135 @@ func TestValidateHorizontalPodAutoscalerUpdateInvalidHPA(t *testing.T) {
+ 		t.Error("expected error, APIVersion should be checked")
+ 	}
+ }
++
++func TestValidateHorizontalPodAutoscalerStatusUpdate(t *testing.T) {
++	baseHPA := autoscaling.HorizontalPodAutoscaler{
++		ObjectMeta: metav1.ObjectMeta{
++			Name:            "myautoscaler",
++			Namespace:       metav1.NamespaceDefault,
++			ResourceVersion: "1",
++		},
++	}
++
++	testCases := []struct {
++		name        string
++		status      autoscaling.HorizontalPodAutoscalerStatus
++		expectError bool
++		errContains string
++	}{
++		{
++			name: "valid: no conditions",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 2,
++				DesiredReplicas: 3,
++			},
++		}, {
++			name: "valid: condition with nil observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingLimited, Status: autoscaling.ConditionFalse, ObservedGeneration: nil},
++				},
++			},
++		}, {
++			name: "valid: condition with zero observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingLimited, Status: autoscaling.ConditionFalse, ObservedGeneration: ptr.To[int64](0)},
++				},
++			},
++		}, {
++			name: "valid: condition with positive observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 2,
++				DesiredReplicas: 2,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingLimited, Status: autoscaling.ConditionFalse, ObservedGeneration: ptr.To[int64](5)},
++				},
++			},
++		}, {
++			name: "valid: multiple conditions all with non-negative observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingActive, Status: autoscaling.ConditionTrue, ObservedGeneration: ptr.To[int64](1)},
++					{Type: autoscaling.AbleToScale, Status: autoscaling.ConditionTrue, ObservedGeneration: ptr.To[int64](2)},
++				},
++			},
++		}, {
++			name: "invalid: condition with negative observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{
++						Type:               autoscaling.ScalingActive,
++						Status:             autoscaling.ConditionTrue,
++						ObservedGeneration: ptr.To[int64](-1),
++					},
++				},
++			},
++			expectError: true,
++			errContains: "status.conditions[0].observedGeneration",
++		}, {
++			name: "invalid: second condition has negative observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingActive, Status: autoscaling.ConditionTrue, ObservedGeneration: ptr.To[int64](1)},
++					{Type: autoscaling.AbleToScale, Status: autoscaling.ConditionFalse, ObservedGeneration: ptr.To[int64](-3)},
++				},
++			},
++			expectError: true,
++			errContains: "status.conditions[1].observedGeneration",
++		}, {
++			name: "invalid: negative currentReplicas",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: -1,
++				DesiredReplicas: 1,
++			},
++			expectError: true,
++			errContains: "status.currentReplicas",
++		}, {
++			name: "invalid: negative desiredReplicas",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: -1,
++			},
++			expectError: true,
++			errContains: "status.desiredReplicas",
++		},
++	}
++
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			newHPA := baseHPA.DeepCopy()
++			newHPA.Status = tc.status
++
++			errs := ValidateHorizontalPodAutoscalerStatusUpdate(newHPA, &baseHPA)
++			if tc.expectError {
++				if len(errs) == 0 {
++					t.Errorf("expected error containing %q, got none", tc.errContains)
++					return
++				}
++				found := false
++				for _, err := range errs {
++					if strings.Contains(err.Field, tc.errContains) || strings.Contains(err.Error(), tc.errContains) {
++						found = true
++						break
++					}
++				}
++				if !found {
++					t.Errorf("expected error containing %q, got: %v", tc.errContains, errs)
++				}
++			} else if len(errs) != 0 {
++				t.Errorf("expected no errors, got: %v", errs)
++			}
++		})
++	}
++}
+diff --git a/pkg/apis/autoscaling/zz_generated.deepcopy.go b/pkg/apis/autoscaling/zz_generated.deepcopy.go
+index 9e2ac0f0083..d56fc24184e 100644
+--- a/pkg/apis/autoscaling/zz_generated.deepcopy.go
++++ b/pkg/apis/autoscaling/zz_generated.deepcopy.go
+@@ -222,6 +222,11 @@ func (in *HorizontalPodAutoscalerBehavior) DeepCopy() *HorizontalPodAutoscalerBe
+ func (in *HorizontalPodAutoscalerCondition) DeepCopyInto(out *HorizontalPodAutoscalerCondition) {
+ 	*out = *in
+ 	in.LastTransitionTime.DeepCopyInto(&out.LastTransitionTime)
++	if in.ObservedGeneration != nil {
++		in, out := &in.ObservedGeneration, &out.ObservedGeneration
++		*out = new(int64)
++		**out = **in
++	}
+ 	return
+ }
+ 
+diff --git a/pkg/controller/podautoscaler/horizontal.go b/pkg/controller/podautoscaler/horizontal.go
+index e676d5d48ae..7923b861a01 100644
+--- a/pkg/controller/podautoscaler/horizontal.go
++++ b/pkg/controller/podautoscaler/horizontal.go
+@@ -1481,6 +1481,10 @@ func (a *HorizontalController) setStatus(hpa *autoscalingv2.HorizontalPodAutosca
+ 		Conditions:      hpa.Status.Conditions,
+ 	}
+ 
++	statusObservedGeneration := hpa.Generation
++	if utilfeature.DefaultFeatureGate.Enabled(features.HPAGeneration) {
++		hpa.Status.ObservedGeneration = &statusObservedGeneration
++	}
+ 	if rescale {
+ 		now := metav1.NewTime(time.Now())
+ 		hpa.Status.LastScaleTime = &now
+diff --git a/pkg/controller/podautoscaler/horizontal_test.go b/pkg/controller/podautoscaler/horizontal_test.go
+index 013969e7303..c766fa5fd59 100644
+--- a/pkg/controller/podautoscaler/horizontal_test.go
++++ b/pkg/controller/podautoscaler/horizontal_test.go
+@@ -36,6 +36,7 @@ import (
+ 	"k8s.io/apimachinery/pkg/labels"
+ 	"k8s.io/apimachinery/pkg/runtime"
+ 	"k8s.io/apimachinery/pkg/runtime/schema"
++	"k8s.io/apimachinery/pkg/util/version"
+ 	"k8s.io/apimachinery/pkg/util/wait"
+ 	"k8s.io/apimachinery/pkg/watch"
+ 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+@@ -3986,6 +3987,9 @@ func TestScaleDownRCImmediately(t *testing.T) {
+ }
+ 
+ func TestAvoidUnnecessaryUpdates(t *testing.T) {
++	featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
++	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.HPAGeneration, true)
++
+ 	now := metav1.Time{Time: time.Now().Add(-time.Hour)}
+ 	tc := testCase{
+ 		minReplicas:             2,
+@@ -4034,8 +4038,9 @@ func TestAvoidUnnecessaryUpdates(t *testing.T) {
+ 			Items: []autoscalingv2.HorizontalPodAutoscaler{
+ 				{
+ 					ObjectMeta: metav1.ObjectMeta{
+-						Name:      "test-hpa",
+-						Namespace: "test-namespace",
++						Name:       "test-hpa",
++						Namespace:  "test-namespace",
++						Generation: 1,
+ 					},
+ 					Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+ 						ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+@@ -4062,9 +4067,10 @@ func TestAvoidUnnecessaryUpdates(t *testing.T) {
+ 						MaxReplicas: tc.maxReplicas,
+ 					},
+ 					Status: autoscalingv2.HorizontalPodAutoscalerStatus{
+-						CurrentReplicas: tc.specReplicas,
+-						DesiredReplicas: tc.specReplicas,
+-						LastScaleTime:   tc.lastScaleTime,
++						ObservedGeneration: ptr.To[int64](1),
++						CurrentReplicas:    tc.specReplicas,
++						DesiredReplicas:    tc.specReplicas,
++						LastScaleTime:      tc.lastScaleTime,
+ 						CurrentMetrics: []autoscalingv2.MetricStatus{
+ 							{
+ 								Type: autoscalingv2.ResourceMetricSourceType,
+diff --git a/pkg/features/kube_features.go b/pkg/features/kube_features.go
+index c07b937a35f..9bad914836c 100644
+--- a/pkg/features/kube_features.go
++++ b/pkg/features/kube_features.go
+@@ -406,6 +406,11 @@ const (
+ 	// Enables support of configurable HPA scale-up and scale-down tolerances.
+ 	HPAConfigurableTolerance featuregate.Feature = "HPAConfigurableTolerance"
+ 
++	// owner: @adrianmoisey
++	//
++	// Enables generation tracking for HorizontalPodAutoscaler
++	HPAGeneration featuregate.Feature = "HPAGeneration"
++
+ 	// owner: @johanneswuerbach
+ 	// kep: https://kep.k8s.io/2021
+ 	//
+@@ -1474,6 +1479,10 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
+ 		{Version: version.MustParse("1.35"), Default: true, PreRelease: featuregate.Beta},
+ 	},
+ 
++	HPAGeneration: {
++		{Version: version.MustParse("1.37"), Default: true, PreRelease: featuregate.Beta},
++	},
++
+ 	HPAScaleToZero: {
+ 		{Version: version.MustParse("1.16"), Default: false, PreRelease: featuregate.Alpha},
+ 	},
+@@ -2452,6 +2461,8 @@ var defaultKubernetesFeatureGateDependencies = map[featuregate.Feature][]feature
+ 
+ 	HPAConfigurableTolerance: {},
+ 
++	HPAGeneration: {},
++
+ 	HPAScaleToZero: {},
+ 
+ 	HostnameOverride: {},
+diff --git a/pkg/generated/openapi/zz_generated.openapi.go b/pkg/generated/openapi/zz_generated.openapi.go
+index 1aea288c8f9..e61abfe8271 100644
+--- a/pkg/generated/openapi/zz_generated.openapi.go
++++ b/pkg/generated/openapi/zz_generated.openapi.go
+@@ -14874,6 +14874,13 @@ func schema_k8sio_api_autoscaling_v1_HorizontalPodAutoscalerCondition(ref common
+ 							Format:      "",
+ 						},
+ 					},
++					"observedGeneration": {
++						SchemaProps: spec.SchemaProps{
++							Description: "observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.",
++							Type:        []string{"integer"},
++							Format:      "int64",
++						},
++					},
+ 				},
+ 				Required: []string{"type", "status"},
+ 			},
+@@ -15873,6 +15880,13 @@ func schema_k8sio_api_autoscaling_v2_HorizontalPodAutoscalerCondition(ref common
+ 							Format:      "",
+ 						},
+ 					},
++					"observedGeneration": {
++						SchemaProps: spec.SchemaProps{
++							Description: "observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.",
++							Type:        []string{"integer"},
++							Format:      "int64",
++						},
++					},
+ 				},
+ 				Required: []string{"type", "status"},
+ 			},
+diff --git a/pkg/registry/autoscaling/horizontalpodautoscaler/strategy.go b/pkg/registry/autoscaling/horizontalpodautoscaler/strategy.go
+index a10f3fa49c5..ce7f8a2dd62 100644
+--- a/pkg/registry/autoscaling/horizontalpodautoscaler/strategy.go
++++ b/pkg/registry/autoscaling/horizontalpodautoscaler/strategy.go
+@@ -19,6 +19,7 @@ package horizontalpodautoscaler
+ import (
+ 	"context"
+ 
++	apiequality "k8s.io/apimachinery/pkg/api/equality"
+ 	"k8s.io/apimachinery/pkg/api/operation"
+ 	"k8s.io/apimachinery/pkg/runtime"
+ 	"k8s.io/apimachinery/pkg/util/validation/field"
+@@ -69,6 +70,11 @@ func (autoscalerStrategy) PrepareForCreate(ctx context.Context, obj runtime.Obje
+ 	// create cannot set status
+ 	newHPA.Status = autoscaling.HorizontalPodAutoscalerStatus{}
+ 
++	// Feature gated in case someone is setting the generation themselves, they can opt out of this for 1 release
++	if utilfeature.DefaultFeatureGate.Enabled(features.HPAGeneration) {
++		newHPA.Generation = 1
++	}
++
+ 	dropDisabledFields(newHPA, nil)
+ }
+ 
+@@ -106,6 +112,12 @@ func (autoscalerStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime
+ 	newHPA.Status = oldHPA.Status
+ 
+ 	dropDisabledFields(newHPA, oldHPA)
++
++	if utilfeature.DefaultFeatureGate.Enabled(features.HPAGeneration) {
++		if !apiequality.Semantic.DeepEqual(newHPA.Spec, oldHPA.Spec) {
++			newHPA.Generation = oldHPA.Generation + 1
++		}
++	}
+ }
+ 
+ // ValidateUpdate is the default update validation for an end user.
+diff --git a/pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go b/pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go
+index e10cb560639..c8c706a9026 100644
+--- a/pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go
++++ b/pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go
+@@ -22,6 +22,7 @@ import (
+ 
+ 	"k8s.io/apimachinery/pkg/api/resource"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	"k8s.io/apimachinery/pkg/util/version"
+ 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+ 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+ 	"k8s.io/kubernetes/pkg/apis/autoscaling"
+@@ -41,6 +42,51 @@ const (
+ 	oneMinReplicas                      = false
+ )
+ 
++func TestPrepareForGeneration(t *testing.T) {
++	testCases := []struct {
++		name                       string
++		featureGateEnabled         bool
++		expectedGenerationOnCreate int64
++		expectedGenerationOnUpdate int64
++	}{
++		{
++			name:                       "With HPAGeneration enabled",
++			featureGateEnabled:         true,
++			expectedGenerationOnCreate: 1,
++			expectedGenerationOnUpdate: 2,
++		},
++		{
++			name:                       "With HPAGeneration disabled",
++			featureGateEnabled:         false,
++			expectedGenerationOnCreate: 0,
++			expectedGenerationOnUpdate: 0,
++		},
++	}
++
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
++			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.HPAGeneration, tc.featureGateEnabled)
++
++			hpa := prepareHPA(oneMinReplicas, withTolerance)
++			Strategy.PrepareForCreate(context.Background(), &hpa)
++
++			if hpa.Generation != tc.expectedGenerationOnCreate {
++				t.Error("Expected generation to be ", tc.expectedGenerationOnCreate, ", got ", hpa.Generation)
++			}
++
++			// Create an updated HPA with a different spec
++			hpaUpdated := hpa.DeepCopy() // prepareHPA(zeroMinReplicas, withoutTolerance)
++			hpaUpdated.Spec.MaxReplicas = 100
++			Strategy.PrepareForUpdate(context.Background(), hpaUpdated, &hpa)
++
++			if hpaUpdated.Generation != tc.expectedGenerationOnUpdate {
++				t.Error("Expected generation to be ", tc.expectedGenerationOnUpdate, ", got ", hpaUpdated.Generation)
++			}
++		})
++	}
++}
++
+ func TestPrepareForCreateConfigurableToleranceEnabled(t *testing.T) {
+ 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.HPAConfigurableTolerance, true)
+ 	hpa := prepareHPA(oneMinReplicas, withTolerance)
+diff --git a/staging/src/k8s.io/api/autoscaling/v1/generated.pb.go b/staging/src/k8s.io/api/autoscaling/v1/generated.pb.go
+index 6028054aefd..681c0c44c74 100644
+--- a/staging/src/k8s.io/api/autoscaling/v1/generated.pb.go
++++ b/staging/src/k8s.io/api/autoscaling/v1/generated.pb.go
+@@ -410,6 +410,11 @@ func (m *HorizontalPodAutoscalerCondition) MarshalToSizedBuffer(dAtA []byte) (in
+ 	_ = i
+ 	var l int
+ 	_ = l
++	if m.ObservedGeneration != nil {
++		i = encodeVarintGenerated(dAtA, i, uint64(*m.ObservedGeneration))
++		i--
++		dAtA[i] = 0x30
++	}
+ 	i -= len(m.Message)
+ 	copy(dAtA[i:], m.Message)
+ 	i = encodeVarintGenerated(dAtA, i, uint64(len(m.Message)))
+@@ -1344,6 +1349,9 @@ func (m *HorizontalPodAutoscalerCondition) Size() (n int) {
+ 	n += 1 + l + sovGenerated(uint64(l))
+ 	l = len(m.Message)
+ 	n += 1 + l + sovGenerated(uint64(l))
++	if m.ObservedGeneration != nil {
++		n += 1 + sovGenerated(uint64(*m.ObservedGeneration))
++	}
+ 	return n
+ }
+ 
+@@ -1708,6 +1716,7 @@ func (this *HorizontalPodAutoscalerCondition) String() string {
+ 		`LastTransitionTime:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.LastTransitionTime), "Time", "v1.Time", 1), `&`, ``, 1) + `,`,
+ 		`Reason:` + fmt.Sprintf("%v", this.Reason) + `,`,
+ 		`Message:` + fmt.Sprintf("%v", this.Message) + `,`,
++		`ObservedGeneration:` + valueToStringGenerated(this.ObservedGeneration) + `,`,
+ 		`}`,
+ 	}, "")
+ 	return s
+@@ -3101,6 +3110,26 @@ func (m *HorizontalPodAutoscalerCondition) Unmarshal(dAtA []byte) error {
+ 			}
+ 			m.Message = string(dAtA[iNdEx:postIndex])
+ 			iNdEx = postIndex
++		case 6:
++			if wireType != 0 {
++				return fmt.Errorf("proto: wrong wireType = %d for field ObservedGeneration", wireType)
++			}
++			var v int64
++			for shift := uint(0); ; shift += 7 {
++				if shift >= 64 {
++					return ErrIntOverflowGenerated
++				}
++				if iNdEx >= l {
++					return io.ErrUnexpectedEOF
++				}
++				b := dAtA[iNdEx]
++				iNdEx++
++				v |= int64(b&0x7F) << shift
++				if b < 0x80 {
++					break
++				}
++			}
++			m.ObservedGeneration = &v
+ 		default:
+ 			iNdEx = preIndex
+ 			skippy, err := skipGenerated(dAtA[iNdEx:])
+diff --git a/staging/src/k8s.io/api/autoscaling/v1/generated.proto b/staging/src/k8s.io/api/autoscaling/v1/generated.proto
+index 6ef1facb6ae..a64868429fb 100644
+--- a/staging/src/k8s.io/api/autoscaling/v1/generated.proto
++++ b/staging/src/k8s.io/api/autoscaling/v1/generated.proto
+@@ -178,6 +178,12 @@ message HorizontalPodAutoscalerCondition {
+   // the transition
+   // +optional
+   optional string message = 5;
++
++  // observedGeneration represents the .metadata.generation that the condition was set based upon.
++  // For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
++  // with respect to the current state of the instance.
++  // +optional
++  optional int64 observedGeneration = 6;
+ }
+ 
+ // list of horizontal pod autoscaler objects.
+diff --git a/staging/src/k8s.io/api/autoscaling/v1/types.go b/staging/src/k8s.io/api/autoscaling/v1/types.go
+index 97222afc080..a15104674f1 100644
+--- a/staging/src/k8s.io/api/autoscaling/v1/types.go
++++ b/staging/src/k8s.io/api/autoscaling/v1/types.go
+@@ -440,6 +440,12 @@ type HorizontalPodAutoscalerCondition struct {
+ 	// the transition
+ 	// +optional
+ 	Message string `json:"message,omitempty" protobuf:"bytes,5,opt,name=message"`
++
++	// observedGeneration represents the .metadata.generation that the condition was set based upon.
++	// For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
++	// with respect to the current state of the instance.
++	// +optional
++	ObservedGeneration *int64 `json:"observedGeneration,omitempty" protobuf:"varint,6,opt,name=observedGeneration"`
+ }
+ 
+ // ObjectMetricStatus indicates the current value of a metric describing a
+diff --git a/staging/src/k8s.io/api/autoscaling/v1/types_swagger_doc_generated.go b/staging/src/k8s.io/api/autoscaling/v1/types_swagger_doc_generated.go
+index ba43d06c106..720ef7bb696 100644
+--- a/staging/src/k8s.io/api/autoscaling/v1/types_swagger_doc_generated.go
++++ b/staging/src/k8s.io/api/autoscaling/v1/types_swagger_doc_generated.go
+@@ -104,6 +104,7 @@ var map_HorizontalPodAutoscalerCondition = map[string]string{
+ 	"lastTransitionTime": "lastTransitionTime is the last time the condition transitioned from one status to another",
+ 	"reason":             "reason is the reason for the condition's last transition.",
+ 	"message":            "message is a human-readable explanation containing details about the transition",
++	"observedGeneration": "observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.",
+ }
+ 
+ func (HorizontalPodAutoscalerCondition) SwaggerDoc() map[string]string {
+diff --git a/staging/src/k8s.io/api/autoscaling/v1/zz_generated.deepcopy.go b/staging/src/k8s.io/api/autoscaling/v1/zz_generated.deepcopy.go
+index 603e6aa8cba..e0ad1668ce4 100644
+--- a/staging/src/k8s.io/api/autoscaling/v1/zz_generated.deepcopy.go
++++ b/staging/src/k8s.io/api/autoscaling/v1/zz_generated.deepcopy.go
+@@ -180,6 +180,11 @@ func (in *HorizontalPodAutoscaler) DeepCopyObject() runtime.Object {
+ func (in *HorizontalPodAutoscalerCondition) DeepCopyInto(out *HorizontalPodAutoscalerCondition) {
+ 	*out = *in
+ 	in.LastTransitionTime.DeepCopyInto(&out.LastTransitionTime)
++	if in.ObservedGeneration != nil {
++		in, out := &in.ObservedGeneration, &out.ObservedGeneration
++		*out = new(int64)
++		**out = **in
++	}
+ 	return
+ }
+ 
+diff --git a/staging/src/k8s.io/api/autoscaling/v2/generated.pb.go b/staging/src/k8s.io/api/autoscaling/v2/generated.pb.go
+index 7505c7592fc..0f663d46e3f 100644
+--- a/staging/src/k8s.io/api/autoscaling/v2/generated.pb.go
++++ b/staging/src/k8s.io/api/autoscaling/v2/generated.pb.go
+@@ -506,6 +506,11 @@ func (m *HorizontalPodAutoscalerCondition) MarshalToSizedBuffer(dAtA []byte) (in
+ 	_ = i
+ 	var l int
+ 	_ = l
++	if m.ObservedGeneration != nil {
++		i = encodeVarintGenerated(dAtA, i, uint64(*m.ObservedGeneration))
++		i--
++		dAtA[i] = 0x30
++	}
+ 	i -= len(m.Message)
+ 	copy(dAtA[i:], m.Message)
+ 	i = encodeVarintGenerated(dAtA, i, uint64(len(m.Message)))
+@@ -1489,6 +1494,9 @@ func (m *HorizontalPodAutoscalerCondition) Size() (n int) {
+ 	n += 1 + l + sovGenerated(uint64(l))
+ 	l = len(m.Message)
+ 	n += 1 + l + sovGenerated(uint64(l))
++	if m.ObservedGeneration != nil {
++		n += 1 + sovGenerated(uint64(*m.ObservedGeneration))
++	}
+ 	return n
+ }
+ 
+@@ -1892,6 +1900,7 @@ func (this *HorizontalPodAutoscalerCondition) String() string {
+ 		`LastTransitionTime:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.LastTransitionTime), "Time", "v1.Time", 1), `&`, ``, 1) + `,`,
+ 		`Reason:` + fmt.Sprintf("%v", this.Reason) + `,`,
+ 		`Message:` + fmt.Sprintf("%v", this.Message) + `,`,
++		`ObservedGeneration:` + valueToStringGenerated(this.ObservedGeneration) + `,`,
+ 		`}`,
+ 	}, "")
+ 	return s
+@@ -3524,6 +3533,26 @@ func (m *HorizontalPodAutoscalerCondition) Unmarshal(dAtA []byte) error {
+ 			}
+ 			m.Message = string(dAtA[iNdEx:postIndex])
+ 			iNdEx = postIndex
++		case 6:
++			if wireType != 0 {
++				return fmt.Errorf("proto: wrong wireType = %d for field ObservedGeneration", wireType)
++			}
++			var v int64
++			for shift := uint(0); ; shift += 7 {
++				if shift >= 64 {
++					return ErrIntOverflowGenerated
++				}
++				if iNdEx >= l {
++					return io.ErrUnexpectedEOF
++				}
++				b := dAtA[iNdEx]
++				iNdEx++
++				v |= int64(b&0x7F) << shift
++				if b < 0x80 {
++					break
++				}
++			}
++			m.ObservedGeneration = &v
+ 		default:
+ 			iNdEx = preIndex
+ 			skippy, err := skipGenerated(dAtA[iNdEx:])
+diff --git a/staging/src/k8s.io/api/autoscaling/v2/generated.proto b/staging/src/k8s.io/api/autoscaling/v2/generated.proto
+index f56b8c749d5..06aa0348349 100644
+--- a/staging/src/k8s.io/api/autoscaling/v2/generated.proto
++++ b/staging/src/k8s.io/api/autoscaling/v2/generated.proto
+@@ -224,6 +224,12 @@ message HorizontalPodAutoscalerCondition {
+   // the transition
+   // +optional
+   optional string message = 5;
++
++  // observedGeneration represents the .metadata.generation that the condition was set based upon.
++  // For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
++  // with respect to the current state of the instance.
++  // +optional
++  optional int64 observedGeneration = 6;
+ }
+ 
+ // HorizontalPodAutoscalerList is a list of horizontal pod autoscaler objects.
+diff --git a/staging/src/k8s.io/api/autoscaling/v2/types.go b/staging/src/k8s.io/api/autoscaling/v2/types.go
+index ad10169a01c..2d06dbc938d 100644
+--- a/staging/src/k8s.io/api/autoscaling/v2/types.go
++++ b/staging/src/k8s.io/api/autoscaling/v2/types.go
+@@ -476,6 +476,12 @@ type HorizontalPodAutoscalerCondition struct {
+ 	// the transition
+ 	// +optional
+ 	Message string `json:"message,omitempty" protobuf:"bytes,5,opt,name=message"`
++
++	// observedGeneration represents the .metadata.generation that the condition was set based upon.
++	// For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
++	// with respect to the current state of the instance.
++	// +optional
++	ObservedGeneration *int64 `json:"observedGeneration,omitempty" protobuf:"varint,6,opt,name=observedGeneration"`
+ }
+ 
+ // MetricStatus describes the last-read state of a single metric.
+diff --git a/staging/src/k8s.io/api/autoscaling/v2/types_swagger_doc_generated.go b/staging/src/k8s.io/api/autoscaling/v2/types_swagger_doc_generated.go
+index af3f3022dae..62f03258247 100644
+--- a/staging/src/k8s.io/api/autoscaling/v2/types_swagger_doc_generated.go
++++ b/staging/src/k8s.io/api/autoscaling/v2/types_swagger_doc_generated.go
+@@ -131,6 +131,7 @@ var map_HorizontalPodAutoscalerCondition = map[string]string{
+ 	"lastTransitionTime": "lastTransitionTime is the last time the condition transitioned from one status to another",
+ 	"reason":             "reason is the reason for the condition's last transition.",
+ 	"message":            "message is a human-readable explanation containing details about the transition",
++	"observedGeneration": "observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.",
+ }
+ 
+ func (HorizontalPodAutoscalerCondition) SwaggerDoc() map[string]string {
+diff --git a/staging/src/k8s.io/api/autoscaling/v2/zz_generated.deepcopy.go b/staging/src/k8s.io/api/autoscaling/v2/zz_generated.deepcopy.go
+index 5fbcf9f807c..ace4fa2fd36 100644
+--- a/staging/src/k8s.io/api/autoscaling/v2/zz_generated.deepcopy.go
++++ b/staging/src/k8s.io/api/autoscaling/v2/zz_generated.deepcopy.go
+@@ -222,6 +222,11 @@ func (in *HorizontalPodAutoscalerBehavior) DeepCopy() *HorizontalPodAutoscalerBe
+ func (in *HorizontalPodAutoscalerCondition) DeepCopyInto(out *HorizontalPodAutoscalerCondition) {
+ 	*out = *in
+ 	in.LastTransitionTime.DeepCopyInto(&out.LastTransitionTime)
++	if in.ObservedGeneration != nil {
++		in, out := &in.ObservedGeneration, &out.ObservedGeneration
++		*out = new(int64)
++		**out = **in
++	}
+ 	return
+ }
+ 
+diff --git a/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.json b/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.json
+index 4bc9fceaf70..a49c27c6135 100644
+--- a/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.json
++++ b/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.json
+@@ -292,7 +292,8 @@
+         "status": "statusValue",
+         "lastTransitionTime": "2003-01-01T01:01:01Z",
+         "reason": "reasonValue",
+-        "message": "messageValue"
++        "message": "messageValue",
++        "observedGeneration": 6
+       }
+     ]
+   }
+diff --git a/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.pb b/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.pb
+index 0d57f89ae3c6564f0c16a2cbaadbf3f25542218d..eb01cff4b522496f38495c02e585dcba4ee8fbc2 100644
+GIT binary patch
+delta 32
+ocmZ3(vyNwi0ppL2hR>N9Cv28vxyZ<9KlwGQEt>(G6oV220KZ2GqW}N^
+
+delta 30
+mcmZ3-vxaAa0pqughR>N9`!-9mTx4Xlo&1{BmPLv|i2(qsJqcw1
+
+diff --git a/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.yaml b/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.yaml
+index 463936eeba0..4e4226020d2 100644
+--- a/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.yaml
++++ b/staging/src/k8s.io/api/testdata/HEAD/autoscaling.v2.HorizontalPodAutoscaler.yaml
+@@ -129,6 +129,7 @@ status:
+   conditions:
+   - lastTransitionTime: "2003-01-01T01:01:01Z"
+     message: messageValue
++    observedGeneration: 6
+     reason: reasonValue
+     status: statusValue
+     type: typeValue
+diff --git a/staging/src/k8s.io/apiextensions-apiserver/pkg/generated/openapi/zz_generated.openapi.go b/staging/src/k8s.io/apiextensions-apiserver/pkg/generated/openapi/zz_generated.openapi.go
+index 224416c9226..8143e46090f 100644
+--- a/staging/src/k8s.io/apiextensions-apiserver/pkg/generated/openapi/zz_generated.openapi.go
++++ b/staging/src/k8s.io/apiextensions-apiserver/pkg/generated/openapi/zz_generated.openapi.go
+@@ -477,6 +477,13 @@ func schema_k8sio_api_autoscaling_v1_HorizontalPodAutoscalerCondition(ref common
+ 							Format:      "",
+ 						},
+ 					},
++					"observedGeneration": {
++						SchemaProps: spec.SchemaProps{
++							Description: "observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.",
++							Type:        []string{"integer"},
++							Format:      "int64",
++						},
++					},
+ 				},
+ 				Required: []string{"type", "status"},
+ 			},
+diff --git a/staging/src/k8s.io/client-go/applyconfigurations/autoscaling/v2/horizontalpodautoscalercondition.go b/staging/src/k8s.io/client-go/applyconfigurations/autoscaling/v2/horizontalpodautoscalercondition.go
+index 75bb4985246..9d43ddc1bd3 100644
+--- a/staging/src/k8s.io/client-go/applyconfigurations/autoscaling/v2/horizontalpodautoscalercondition.go
++++ b/staging/src/k8s.io/client-go/applyconfigurations/autoscaling/v2/horizontalpodautoscalercondition.go
+@@ -42,6 +42,10 @@ type HorizontalPodAutoscalerConditionApplyConfiguration struct {
+ 	// message is a human-readable explanation containing details about
+ 	// the transition
+ 	Message *string `json:"message,omitempty"`
++	// observedGeneration represents the .metadata.generation that the condition was set based upon.
++	// For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
++	// with respect to the current state of the instance.
++	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
+ }
+ 
+ // HorizontalPodAutoscalerConditionApplyConfiguration constructs a declarative configuration of the HorizontalPodAutoscalerCondition type for use with
+@@ -89,3 +93,11 @@ func (b *HorizontalPodAutoscalerConditionApplyConfiguration) WithMessage(value s
+ 	b.Message = &value
+ 	return b
+ }
++
++// WithObservedGeneration sets the ObservedGeneration field in the declarative configuration to the given value
++// and returns the receiver, so that objects can be built by chaining "With" function invocations.
++// If called multiple times, the ObservedGeneration field is set to the value of the last call.
++func (b *HorizontalPodAutoscalerConditionApplyConfiguration) WithObservedGeneration(value int64) *HorizontalPodAutoscalerConditionApplyConfiguration {
++	b.ObservedGeneration = &value
++	return b
++}
+diff --git a/staging/src/k8s.io/client-go/applyconfigurations/internal/internal.go b/staging/src/k8s.io/client-go/applyconfigurations/internal/internal.go
+index c0b255cc739..39077112816 100644
+--- a/staging/src/k8s.io/client-go/applyconfigurations/internal/internal.go
++++ b/staging/src/k8s.io/client-go/applyconfigurations/internal/internal.go
+@@ -3188,6 +3188,9 @@ var schemaYAML = typed.YAMLObject(`types:
+     - name: message
+       type:
+         scalar: string
++    - name: observedGeneration
++      type:
++        scalar: numeric
+     - name: reason
+       type:
+         scalar: string
+diff --git a/test/compatibility_lifecycle/reference/feature_list.md b/test/compatibility_lifecycle/reference/feature_list.md
+index 7fd09561790..fa64d0a973a 100644
+--- a/test/compatibility_lifecycle/reference/feature_list.md
++++ b/test/compatibility_lifecycle/reference/feature_list.md
+@@ -88,6 +88,7 @@
+ | GracefulNodeShutdown | :ballot_box_with_check:&nbsp;1.21+ |  | 1.20 | 1.21– |  |  |  | [code](https://cs.k8s.io/?q=%5CbGracefulNodeShutdown%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbGracefulNodeShutdown%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | GracefulNodeShutdownBasedOnPodPriority | :ballot_box_with_check:&nbsp;1.24+ |  | 1.23 | 1.24– |  |  | GracefulNodeShutdown | [code](https://cs.k8s.io/?q=%5CbGracefulNodeShutdownBasedOnPodPriority%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbGracefulNodeShutdownBasedOnPodPriority%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | HPAConfigurableTolerance | :ballot_box_with_check:&nbsp;1.35+ |  | 1.33–1.34 | 1.35– |  |  |  | [code](https://cs.k8s.io/?q=%5CbHPAConfigurableTolerance%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbHPAConfigurableTolerance%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
++| HPAGeneration | :ballot_box_with_check:&nbsp;1.37+ |  |  | 1.37– |  |  |  | [code](https://cs.k8s.io/?q=%5CbHPAGeneration%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbHPAGeneration%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | HPAScaleToZero |  |  | 1.16– |  |  |  |  | [code](https://cs.k8s.io/?q=%5CbHPAScaleToZero%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbHPAScaleToZero%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | HostnameOverride | :ballot_box_with_check:&nbsp;1.35+ |  | 1.34 | 1.35– |  |  |  | [code](https://cs.k8s.io/?q=%5CbHostnameOverride%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbHostnameOverride%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | ImageMaximumGCAge | :ballot_box_with_check:&nbsp;1.30+ | :closed_lock_with_key:&nbsp;1.35+ | 1.29 | 1.30–1.34 | 1.35– |  |  | [code](https://cs.k8s.io/?q=%5CbImageMaximumGCAge%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbImageMaximumGCAge%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+diff --git a/test/compatibility_lifecycle/reference/versioned_feature_list.yaml b/test/compatibility_lifecycle/reference/versioned_feature_list.yaml
+index 5dc9831304a..05dad03ce2a 100644
+--- a/test/compatibility_lifecycle/reference/versioned_feature_list.yaml
++++ b/test/compatibility_lifecycle/reference/versioned_feature_list.yaml
+@@ -779,6 +779,12 @@
+     lockToDefault: false
+     preRelease: Beta
+     version: "1.35"
++- name: HPAGeneration
++  versionedSpecs:
++  - default: true
++    lockToDefault: false
++    preRelease: Beta
++    version: "1.37"
+ - name: HPAScaleToZero
+   versionedSpecs:
+   - default: false
+diff --git a/test/integration/apiserver/apidefinitions/generation_test.go b/test/integration/apiserver/apidefinitions/generation_test.go
+index 313bfd9731e..69d962b4f82 100644
+--- a/test/integration/apiserver/apidefinitions/generation_test.go
++++ b/test/integration/apiserver/apidefinitions/generation_test.go
+@@ -38,7 +38,6 @@ func TestGenerationManagement(t *testing.T) {
+ 	generationExempt := sets.New(
+ 		"apiservices.apiregistration.k8s.io",
+ 		"certificatesigningrequests.certificates.k8s.io",
+-		"horizontalpodautoscalers.autoscaling",
+ 		"namespaces",
+ 		"nodes",
+ 		"persistentvolumeclaims",

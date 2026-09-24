@@ -1,0 +1,45 @@
+task_id: docker_actions_toolkit_bake_action_build_push_action_b58918c90001
+hidden_test_patches:
+- repo: actions-toolkit
+  patch: hidden/patches/actions-toolkit-hidden-tests.patch
+  test_profile: actions_toolkit-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - __tests__/buildx/build.test.ts
+  - __tests__/context.test.ts
+  - __tests__/util.test.ts
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from docker/actions-toolkit PR(s) 809
+- repo: bake-action
+  patch: hidden/patches/bake-action-hidden-tests.patch
+  test_profile: bake_action-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - __tests__/context.test.ts
+  - test/config.hcl
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from docker/bake-action PR(s) 416
+- repo: build-push-action
+  patch: hidden/patches/build-push-action-hidden-tests.patch
+  test_profile: build_push_action-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - __tests__/context.test.ts
+  - test/secret.txt
+  hidden_file: *id003
+  semantic_changes: none
+  source: upstream test changes from docker/build-push-action PR(s) 1505
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - actions_toolkit-hidden
+    - bake_action-hidden
+    - build_push_action-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

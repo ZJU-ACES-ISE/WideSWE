@@ -1,0 +1,253 @@
+diff --git a/vertical-pod-autoscaler/charts/vertical-pod-autoscaler/crds/vpa-v1-crd-gen.yaml b/vertical-pod-autoscaler/charts/vertical-pod-autoscaler/crds/vpa-v1-crd-gen.yaml
+index 1f995e7b3..f321827dc 100644
+--- a/vertical-pod-autoscaler/charts/vertical-pod-autoscaler/crds/vpa-v1-crd-gen.yaml
++++ b/vertical-pod-autoscaler/charts/vertical-pod-autoscaler/crds/vpa-v1-crd-gen.yaml
+@@ -625,6 +625,14 @@ spec:
+                         message is a human-readable explanation containing details about
+                         the transition
+                       type: string
++                    observedGeneration:
++                      description: |-
++                        observedGeneration represents the .metadata.generation that the condition was set based upon.
++                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
++                        with respect to the current state of the instance.
++                      format: int64
++                      minimum: 0
++                      type: integer
+                     reason:
+                       description: reason is the reason for the condition's last transition.
+                       type: string
+@@ -640,6 +648,12 @@ spec:
+                   - type
+                   type: object
+                 type: array
++              observedGeneration:
++                description: observedGeneration is the most recent generation observed
++                  by this autoscaler.
++                format: int64
++                minimum: 0
++                type: integer
+               recommendation:
+                 description: |-
+                   The most recently computed amount of resources recommended by the
+diff --git a/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml b/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml
+index 1f995e7b3..f321827dc 100644
+--- a/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml
++++ b/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml
+@@ -625,6 +625,14 @@ spec:
+                         message is a human-readable explanation containing details about
+                         the transition
+                       type: string
++                    observedGeneration:
++                      description: |-
++                        observedGeneration represents the .metadata.generation that the condition was set based upon.
++                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
++                        with respect to the current state of the instance.
++                      format: int64
++                      minimum: 0
++                      type: integer
+                     reason:
+                       description: reason is the reason for the condition's last transition.
+                       type: string
+@@ -640,6 +648,12 @@ spec:
+                   - type
+                   type: object
+                 type: array
++              observedGeneration:
++                description: observedGeneration is the most recent generation observed
++                  by this autoscaler.
++                format: int64
++                minimum: 0
++                type: integer
+               recommendation:
+                 description: |-
+                   The most recently computed amount of resources recommended by the
+diff --git a/vertical-pod-autoscaler/docs/api.md b/vertical-pod-autoscaler/docs/api.md
+index a23c84dc6..4fe489b1c 100644
+--- a/vertical-pod-autoscaler/docs/api.md
++++ b/vertical-pod-autoscaler/docs/api.md
+@@ -366,6 +366,7 @@ _Appears in:_
+ | `lastTransitionTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#time-v1-meta)_ | lastTransitionTime is the last time the condition transitioned from<br />one status to another |  | Optional: \{\} <br /> |
+ | `reason` _string_ | reason is the reason for the condition's last transition. |  | Optional: \{\} <br /> |
+ | `message` _string_ | message is a human-readable explanation containing details about<br />the transition |  | Optional: \{\} <br /> |
++| `observedGeneration` _integer_ | observedGeneration represents the .metadata.generation that the condition was set based upon.<br />For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date<br />with respect to the current state of the instance. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+ 
+ 
+ #### VerticalPodAutoscalerConditionType
+@@ -436,5 +437,6 @@ _Appears in:_
+ | --- | --- | --- | --- |
+ | `recommendation` _[RecommendedPodResources](#recommendedpodresources)_ | The most recently computed amount of resources recommended by the<br />autoscaler for the controlled pods. |  | Optional: \{\} <br /> |
+ | `conditions` _[VerticalPodAutoscalerCondition](#verticalpodautoscalercondition) array_ | Conditions is the set of conditions required for this autoscaler to scale its target,<br />and indicates whether or not those conditions are met. |  | Optional: \{\} <br /> |
++| `observedGeneration` _integer_ | observedGeneration is the most recent generation observed by this autoscaler. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+ 
+ 
+diff --git a/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/types.go b/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/types.go
+index 7742c8f7a..3b9baf5ff 100644
+--- a/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/types.go
++++ b/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/types.go
+@@ -348,6 +348,11 @@ type VerticalPodAutoscalerStatus struct {
+ 	// +patchMergeKey=type
+ 	// +patchStrategy=merge
+ 	Conditions []VerticalPodAutoscalerCondition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,2,rep,name=conditions"`
++
++	// observedGeneration is the most recent generation observed by this autoscaler.
++	// +optional
++	// +kubebuilder:validation:Minimum=0
++	ObservedGeneration *int64 `json:"observedGeneration,omitempty" protobuf:"varint,3,opt,name=observedGeneration"`
+ }
+ 
+ // RecommendedPodResources is the recommendation of resources computed by
+@@ -429,6 +434,13 @@ type VerticalPodAutoscalerCondition struct {
+ 	// the transition
+ 	// +optional
+ 	Message string `json:"message,omitempty" protobuf:"bytes,5,opt,name=message"`
++
++	// observedGeneration represents the .metadata.generation that the condition was set based upon.
++	// For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
++	// with respect to the current state of the instance.
++	// +optional
++	// +kubebuilder:validation:Minimum=0
++	ObservedGeneration int64 `json:"observedGeneration,omitempty" protobuf:"bytes,6,opt,name=observedGeneration"`
+ }
+ 
+ // +genclient
+diff --git a/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/zz_generated.deepcopy.go b/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/zz_generated.deepcopy.go
+index 4a66eab71..62aed2ef4 100644
+--- a/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/zz_generated.deepcopy.go
++++ b/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/zz_generated.deepcopy.go
+@@ -574,6 +574,11 @@ func (in *VerticalPodAutoscalerStatus) DeepCopyInto(out *VerticalPodAutoscalerSt
+ 			(*in)[i].DeepCopyInto(&(*out)[i])
+ 		}
+ 	}
++	if in.ObservedGeneration != nil {
++		in, out := &in.ObservedGeneration, &out.ObservedGeneration
++		*out = new(int64)
++		**out = **in
++	}
+ 	return
+ }
+ 
+diff --git a/vertical-pod-autoscaler/pkg/recommender/model/cluster.go b/vertical-pod-autoscaler/pkg/recommender/model/cluster.go
+index 4f7ad19d8..eba44bb8f 100644
+--- a/vertical-pod-autoscaler/pkg/recommender/model/cluster.go
++++ b/vertical-pod-autoscaler/pkg/recommender/model/cluster.go
+@@ -325,6 +325,7 @@ func (cluster *clusterState) AddOrUpdateVpa(apiObject *vpa_types.VerticalPodAuto
+ 	vpa.SetUpdateMode(apiObject.Spec.UpdatePolicy)
+ 	vpa.SetResourcePolicy(apiObject.Spec.ResourcePolicy)
+ 	vpa.SetAPIVersion(apiObject.GetObjectKind().GroupVersionKind().Version)
++	vpa.Generation = apiObject.Generation
+ 	return nil
+ }
+ 
+diff --git a/vertical-pod-autoscaler/pkg/recommender/model/vpa.go b/vertical-pod-autoscaler/pkg/recommender/model/vpa.go
+index 9a54f4fc1..f68e2993c 100644
+--- a/vertical-pod-autoscaler/pkg/recommender/model/vpa.go
++++ b/vertical-pod-autoscaler/pkg/recommender/model/vpa.go
+@@ -208,6 +208,9 @@ type Vpa struct {
+ 
+ 	// mutex protects concurrent access to conditions and recommendation fields
+ 	mutex sync.RWMutex
++
++	// Generation is the generation of the VPA object observed by the recommender.
++	Generation int64
+ }
+ 
+ // NewVpa returns a new Vpa with a given ID and pod selector. Doesn't set the
+@@ -228,6 +231,7 @@ func NewVpa(id VpaID, selector labels.Selector, created time.Time) *Vpa {
+ 		// to the version requested by the client server side.
+ 		APIVersion: vpa_types.SchemeGroupVersion.Version,
+ 		PodCount:   0,
++		Generation: 0,
+ 	}
+ 	return vpa
+ }
+@@ -378,6 +382,7 @@ func (vpa *Vpa) AsStatus() *vpa_types.VerticalPodAutoscalerStatus {
+ 	if vpa.recommendation != nil {
+ 		status.Recommendation = vpa.recommendation
+ 	}
++	status.ObservedGeneration = &vpa.Generation
+ 	return status
+ }
+ 
+diff --git a/vertical-pod-autoscaler/test/integration/recommender/recommender_test.go b/vertical-pod-autoscaler/test/integration/recommender/recommender_test.go
+index 57b36455d..4b319a167 100644
+--- a/vertical-pod-autoscaler/test/integration/recommender/recommender_test.go
++++ b/vertical-pod-autoscaler/test/integration/recommender/recommender_test.go
+@@ -28,15 +28,16 @@ import (
+ 
+ 	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+ 	recommender_config "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/config"
++	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/test"
++	"k8s.io/autoscaler/vertical-pod-autoscaler/test/e2e/utils"
+ )
+ 
+ /*
+ Tests in this file are for illustrative purposes only.
+-Once we start writing integreation tests, we can build out the nessesary scaffolding to support them, possibly even reusing the e2e scaffolding
++Once we start writing integration tests, we can build out the necessary scaffolding to support them, possibly even reusing the e2e scaffolding
+ */
+ 
+ func TestRemovingGC(t *testing.T) {
+-	t.Parallel()
+ 	recommenderConfig := recommender_config.DefaultRecommenderConfig()
+ 	recommenderConfig.CheckpointsGCInterval = 1 * time.Second // Short interval for testing
+ 
+@@ -80,7 +81,7 @@ func TestRemovingGC(t *testing.T) {
+ 	}
+ 	t.Logf("Verified VPA Checkpoint exists: %s", fetched.Name)
+ 
+-	// // Wait for deletion
++	// Wait for deletion
+ 	err = wait.PollUntilContextTimeout(tCtx, 1*time.Second, 30*time.Second, true, func(ctx context.Context) (done bool, err error) {
+ 		cp, err := vpaClient.AutoscalingV1().VerticalPodAutoscalerCheckpoints(ns.Name).Get(ctx, checkpointName, metav1.GetOptions{})
+ 		if err != nil {
+@@ -107,3 +108,49 @@ func TestRemovingGC(t *testing.T) {
+ 		t.Fatalf("Expected no remaining VPA Checkpoints, but found %d", len(list.Items))
+ 	}
+ }
++
++func TestObservedGeneration(t *testing.T) {
++	recommenderConfig := recommender_config.DefaultRecommenderConfig()
++
++	tCtx, closeFn, rm, informers, c, vpaClient := recommenderSetup(t, recommenderConfig)
++	defer closeFn()
++	ns := framework.CreateNamespaceOrDie(c, "observed-generation", t)
++	defer framework.DeleteNamespaceOrDie(c, ns, t)
++	stopControllers := runControllerAndInformers(tCtx, rm, informers)
++	defer stopControllers()
++
++	vpaCRD := test.VerticalPodAutoscaler().
++		WithName("hamster-vpa").
++		WithNamespace(ns.Name).
++		WithTargetRef(utils.HamsterTargetRef). // Fake targetRef to satisfy validation
++		WithContainer("fake-container").
++		Get()
++
++	_, err := vpaClient.AutoscalingV1().VerticalPodAutoscalers(ns.Name).Create(tCtx, vpaCRD, metav1.CreateOptions{})
++	if err != nil {
++		t.Fatalf("Failed to create VPA: %v", err)
++	}
++
++	var lastVPA *vpav1.VerticalPodAutoscaler
++	err = wait.PollUntilContextTimeout(tCtx, 1*time.Second, 30*time.Second, true, func(ctx context.Context) (done bool, err error) {
++		vpa, err := vpaClient.AutoscalingV1().VerticalPodAutoscalers(ns.Name).Get(ctx, vpaCRD.Name, metav1.GetOptions{})
++		if err != nil {
++			return false, err
++		}
++		lastVPA = vpa
++
++		if vpa.Status.ObservedGeneration == nil || *vpa.Status.ObservedGeneration != vpa.Generation {
++			return false, nil
++		}
++
++		return true, nil
++	})
++
++	if err != nil {
++		if lastVPA != nil {
++			t.Fatalf("Timed out. Last status: observedGeneration=%v, generation=%d: %v", lastVPA.Status.ObservedGeneration, lastVPA.Generation, err)
++		} else {
++			t.Fatalf("Timed out waiting for VPA status to update, but never successfully fetched the VPA: %v", err)
++		}
++	}
++}

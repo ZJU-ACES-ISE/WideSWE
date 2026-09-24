@@ -1,0 +1,23 @@
+profiles:
+  beats-hidden:
+    repo: beats
+    workdir: repos/elastic/beats
+    command: environment/run_profile.sh beats-hidden
+    status: implemented
+    dependency_image: ecosyncbench/base/go:1.26-bookworm
+    test_files:
+    - x-pack/filebeat/input/azureeventhub/auth_contract_test.go
+  integrations-hidden:
+    repo: integrations
+    workdir: repos/elastic/integrations
+    command: environment/run_profile.sh integrations-hidden
+    status: implemented
+    dependency_image: ecosyncbench/deps/elastic-integrations-policy:7d6ebc81c77c
+    public_smoke_command: "export HOME=/cache/home\nmkdir -p \"$HOME\" \"${GOBIN:-/cache/go-bin}\"\
+      \nexport PATH=\"${GOBIN:-/cache/go-bin}:$PATH\"\nif ! command -v elastic-package\
+      \ >/dev/null 2>&1; then\n  go install github.com/elastic/elastic-package@latest\n\
+      fi\ncd packages/m365_defender\nelastic-package test static -v --report-format\
+      \ xUnit\n"
+    test_files:
+    - packages/m365_defender/data_stream/event/_dev/test/policy/test-ecosync-client-secret.yml
+    - packages/m365_defender/data_stream/event/_dev/test/policy/semantic_policy_test.sh

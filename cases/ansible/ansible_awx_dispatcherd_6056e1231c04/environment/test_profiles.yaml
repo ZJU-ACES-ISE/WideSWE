@@ -1,0 +1,23 @@
+profiles:
+  awx-hidden:
+    repo: awx
+    workdir: repos/ansible/awx
+    command: python -m pytest -q -o addopts="" --reuse-db --nomigrations awx/main/tests/functional/tasks/test_tasks_system.py
+    status: implemented
+    test_files:
+    - awx/main/tests/functional/tasks/test_tasks_system.py
+    - awx/main/tests/live/tests/conftest.py
+    public_smoke_command: >-
+      d=$(mktemp -d);
+      printf '%s\n' 'class _CredentialType:' '    inputs = {}' '    injectors = {}' 'def __getattr__(name):' '    return _CredentialType()' > "$d/ecosync_awx_plugin_shim.py";
+      printf '%s\n' 'from awx.main.tests.settings_for_test import *' 'INSTALLED_APPS = [app for app in INSTALLED_APPS if app != "debug_toolbar"]' 'MIDDLEWARE = [mw for mw in MIDDLEWARE if "debug_toolbar" not in mw]' 'DEBUG = True' > "$d/ecosync_awx_test_settings.py";
+      PYTHONPATH="$d:$PWD:${PYTHONPATH:-}" DJANGO_SETTINGS_MODULE=ecosync_awx_test_settings AWX_LOGGING_MODE=stdout python -m pytest -q --noconftest -o addopts="" -o filterwarnings="ignore::DeprecationWarning" awx/main/tests/test_env.py
+  dispatcherd-hidden:
+    repo: dispatcherd
+    workdir: repos/ansible/dispatcherd
+    command: python -m pytest -q -o addopts="" tests/unit/test_cli_control_args.py tests/unit/test_control_tasks.py
+    status: implemented
+    test_files:
+    - tests/unit/test_cli_control_args.py
+    - tests/unit/test_control_tasks.py
+    public_smoke_command: python -m pytest -q -o addopts="" tests/unit/test_registry.py

@@ -1,0 +1,22 @@
+profiles:
+  php_ext_deepclone-hidden:
+    dependency_image: ecosyncbench/base/php-composer-bcmath:8.4
+    description: Build php-ext-deepclone and run the two hidden PHPT files; emits
+      JUnit from PHPT output.
+    repo: php-ext-deepclone
+    workdir: repos/symfony/php-ext-deepclone
+    command: environment/run_profile.sh php_ext_deepclone-hidden
+    patched_files: &id001
+    - tests/deepclone_from_array_refid_overflow.phpt
+    - tests/deepclone_from_array_unserialize_nonobject.phpt
+    test_files: *id001
+  polyfill-hidden:
+    dependency_image: ecosyncbench/base/php-composer-bcmath:8.4
+    description: Install Symfony polyfill dev dependencies and run DeepCloneTest with
+      PHPUnit 9.6 JUnit output.
+    repo: polyfill
+    workdir: repos/symfony/polyfill
+    command: environment/run_profile.sh polyfill-hidden
+    patched_files: &id002
+    - tests/DeepClone/DeepCloneTest.php
+    test_files: *id002

@@ -1,0 +1,129 @@
+diff --git a/x-pack/plugins/cloud/public/cloud_id_contract.hidden.test.ts b/x-pack/plugins/cloud/public/cloud_id_contract.hidden.test.ts
+new file mode 100644
+index 00000000000..f69bf3afcbc
+--- /dev/null
++++ b/x-pack/plugins/cloud/public/cloud_id_contract.hidden.test.ts
+@@ -0,0 +1,69 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import { coreMock } from '@kbn/core/public/mocks';
++import { CloudPlugin } from './plugin';
++
++const baseConfig = {
++  base_url: 'https://cloud.elastic.co',
++  deployment_url: '/deployment',
++  profile_url: '/user/settings/',
++  organization_url: '/account/',
++};
++
++const encodeCloudId = (decoded: string) =>
++  `deployment:${Buffer.from(decoded, 'utf8').toString('base64')}`;
++
++const setupCloud = (id: string) => {
++  const context = coreMock.createPluginInitializerContext({
++    ...baseConfig,
++    id,
++    cname: 'cloud.elastic.co',
++  });
++  const plugin = new CloudPlugin(context);
++
++  return plugin.setup(coreMock.createSetup()) as unknown as Record<string, unknown>;
++};
++
++describe('browser Cloud ID contract', () => {
++  it('exposes decoded URLs, host, and the default host port', () => {
++    const setup = setupCloud(encodeCloudId('example.test$es-id$kb-id'));
++
++    expect(setup).toEqual(
++      expect.objectContaining({
++        elasticsearchUrl: 'https://es-id.example.test:443',
++        kibanaUrl: 'https://kb-id.example.test:443',
++        cloudHost: 'example.test',
++        cloudDefaultPort: '443',
++      })
++    );
++  });
++
++  it('uses service ports before the host port', () => {
++    const setup = setupCloud(
++      encodeCloudId('example.test:9243$es-id:9344$kb-id:5601')
++    );
++
++    expect(setup).toEqual(
++      expect.objectContaining({
++        elasticsearchUrl: 'https://es-id.example.test:9344',
++        kibanaUrl: 'https://kb-id.example.test:5601',
++        cloudHost: 'example.test',
++        cloudDefaultPort: '9243',
++      })
++    );
++  });
++
++  it('does not expose decoded components for a malformed Cloud ID', () => {
++    const setup = setupCloud('deployment:not-valid-cloud-id');
++
++    expect(setup.elasticsearchUrl).toBeUndefined();
++    expect(setup.kibanaUrl).toBeUndefined();
++    expect(setup.cloudHost).toBeUndefined();
++    expect(setup.cloudDefaultPort).toBeUndefined();
++  });
++});
+diff --git a/x-pack/plugins/cloud/server/cloud_id_contract.hidden.test.ts b/x-pack/plugins/cloud/server/cloud_id_contract.hidden.test.ts
+new file mode 100644
+index 00000000000..0188dde67be
+--- /dev/null
++++ b/x-pack/plugins/cloud/server/cloud_id_contract.hidden.test.ts
+@@ -0,0 +1,48 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import { coreMock } from '@kbn/core/server/mocks';
++import { CloudPlugin } from './plugin';
++
++const encodeCloudId = (decoded: string) =>
++  `deployment:${Buffer.from(decoded, 'utf8').toString('base64')}`;
++
++const setupCloud = (id: string) => {
++  const context = coreMock.createPluginInitializerContext({
++    id,
++    deployment_url: '/deployment',
++  });
++  const plugin = new CloudPlugin(context);
++
++  return plugin.setup(coreMock.createSetup(), {}) as unknown as Record<string, unknown>;
++};
++
++describe('server Cloud ID contract', () => {
++  it('exposes decoded URLs, host, and service-specific ports', () => {
++    const setup = setupCloud(
++      encodeCloudId('example.test:9243$es-id:9344$kb-id:5601')
++    );
++
++    expect(setup).toEqual(
++      expect.objectContaining({
++        elasticsearchUrl: 'https://es-id.example.test:9344',
++        kibanaUrl: 'https://kb-id.example.test:5601',
++        cloudHost: 'example.test',
++        cloudDefaultPort: '9243',
++      })
++    );
++  });
++
++  it('does not expose decoded components for a malformed Cloud ID', () => {
++    const setup = setupCloud('deployment:not-valid-cloud-id');
++
++    expect(setup.elasticsearchUrl).toBeUndefined();
++    expect(setup.kibanaUrl).toBeUndefined();
++    expect(setup.cloudHost).toBeUndefined();
++    expect(setup.cloudDefaultPort).toBeUndefined();
++  });
++});

@@ -1,0 +1,835 @@
+diff --git a/.gitignore b/.gitignore
+index 469bccb4..1c84e680 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -63,6 +63,7 @@ test/bundlers/**/bundle.js
+ test/bundlers/parcel-test/.parcel-cache
+ 
+ lib
++esm
+ junit-output
+ bun.lockb
+ test-results
+diff --git a/package.json b/package.json
+index 05ed0285..8c30b058 100644
+--- a/package.json
++++ b/package.json
+@@ -3,18 +3,32 @@
+   "version": "9.2.0",
+   "versionCanary": "9.2.0-canary.0",
+   "description": "The official Elasticsearch client for Node.js",
++  "type": "commonjs",
+   "main": "./index.js",
+   "types": "index.d.ts",
+   "exports": {
+-    "require": "./index.js",
+-    "import": "./index.js",
+-    "types": "./index.d.ts"
++    ".": {
++      "import": "./esm/index.js",
++      "require": "./index.js",
++      "types": "./index.d.ts"
++    },
++    "./package.json": "./package.json",
++    "./lib/*": {
++      "import": "./esm/*.js",
++      "require": "./lib/*.js",
++      "types": "./lib/*.d.ts"
++    },
++    "./*": {
++      "import": "./esm/*.js",
++      "require": "./lib/*.js",
++      "types": "./lib/*.d.ts"
++    }
+   },
+   "scripts": {
+-    "test": "npm run build && npm run lint && tap",
++    "test": "npm run build && npm run lint && tap && cd test/esm/ && npm install && npx tap test-import.mjs",
+     "test:unit": "npm run build && tap",
+     "test:unit-bun": "bun run build && bunx tap",
+-    "test:esm": "npm run build && cd test/esm/ && npm install && node test-import.mjs",
++    "test:esm": "npm run build && cd test/esm/ && npm install && npx tap test-import.mjs",
+     "test:coverage-100": "npm run build && tap --coverage --100",
+     "test:coverage-report": "npm run build && tap --coverage && nyc report --reporter=text-lcov > coverage.lcov",
+     "test:coverage-ui": "npm run build && tap --coverage --coverage-report=html",
+@@ -25,8 +39,12 @@
+     "license-checker": "license-checker --production --onlyAllow='MIT;Apache-2.0;Apache1.1;ISC;BSD-3-Clause;BSD-2-Clause;0BSD'",
+     "license-header": "./scripts/check-spdx",
+     "prebuild": "npm run clean-build && npm run lint",
+-    "build": "tsc && rm lib/package.json && mv lib/src/* lib/ && rm -rf lib/src",
+-    "clean-build": "rimraf ./lib && mkdir lib",
++    "build": "npm run build:cjs && npm run build:esm && npm run build:esm-fix && npm run build:esm-package",
++    "build:cjs": "tsc && rm -f lib/package.json lib/index.js lib/index.d.ts",
++    "build:esm": "tsc -p tsconfig.esm.json",
++    "build:esm-fix": "tsc-esm-fix --target=esm && node scripts/fix-esm-require.js",
++    "build:esm-package": "node -e \"require('fs').writeFileSync('esm/package.json', JSON.stringify({type:'module'}, null, 2))\"",
++    "clean-build": "rimraf ./lib && mkdir lib && rimraf ./esm && mkdir esm",
+     "prepublishOnly": "npm run build"
+   },
+   "keywords": [
+@@ -84,6 +102,7 @@
+     "tap": "21.5.0",
+     "ts-node": "10.9.2",
+     "ts-standard": "12.0.2",
++    "tsc-esm-fix": "3.1.2",
+     "typescript": "5.9.3",
+     "workq": "3.0.0",
+     "xmlbuilder2": "4.0.3",
+diff --git a/scripts/check-spdx b/scripts/check-spdx
+index c60d600e..530a0ac6 100755
+--- a/scripts/check-spdx
++++ b/scripts/check-spdx
+@@ -11,7 +11,7 @@ correct='/*
+ the_exit=0
+ 
+ check_file() {
+-  if $(diff <(head -n4 "$1") <(echo "$correct") &>/dev/null); then
++  if $(diff <(grep -v '^#!' "$1" | head -n4) <(echo "$correct") &>/dev/null); then
+     echo "Correct: $1"
+   else
+     echo "Incorrect: $1"
+diff --git a/scripts/fix-esm-require.js b/scripts/fix-esm-require.js
+new file mode 100755
+index 00000000..4e9c097e
+--- /dev/null
++++ b/scripts/fix-esm-require.js
+@@ -0,0 +1,54 @@
++#!/usr/bin/env node
++/*
++ * Copyright Elasticsearch B.V. and contributors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++const fs = require('fs')
++const path = require('path')
++
++// Fix the package.json require in client.js for ESM
++const clientPath = path.join(__dirname, '..', 'esm', 'client.js')
++const helpersPath = path.join(__dirname, '..', 'esm', 'helpers.js')
++
++// Fix client.js
++if (fs.existsSync(clientPath)) {
++  let content = fs.readFileSync(clientPath, 'utf8')
++
++  // Check if we need to add createRequire
++  const hasPackageRequire = content.includes("require('../package.json')") ||
++                            content.includes("require('@elastic/transport/package.json')")
++
++  if (!content.includes('createRequire') && hasPackageRequire) {
++    // Find the last import statement
++    const lastImportIndex = content.lastIndexOf('import ')
++    const newlineAfterImport = content.indexOf('\n', lastImportIndex)
++
++    if (newlineAfterImport !== -1) {
++      const beforeImport = content.substring(0, newlineAfterImport + 1)
++      const afterImport = content.substring(newlineAfterImport + 1)
++
++      content = beforeImport + "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\n" + afterImport
++    }
++
++    fs.writeFileSync(clientPath, content, 'utf8')
++    console.log(`Fixed package.json loading in ${clientPath}`)
++  }
++} else {
++  console.log('client.js not found, skipping fix')
++}
++
++// Fix helpers.js - remove incorrect .js extension from apache-arrow import
++if (fs.existsSync(helpersPath)) {
++  let content = fs.readFileSync(helpersPath, 'utf8')
++
++  // Fix the apache-arrow import that tsc-esm-fix incorrectly modified
++  const originalApacheImport = "import { tableFromIPC, AsyncRecordBatchStreamReader } from 'apache-arrow/Arrow.node.js';"
++  const fixedApacheImport = "import { tableFromIPC, AsyncRecordBatchStreamReader } from 'apache-arrow/Arrow.node';"
++
++  if (content.includes(originalApacheImport)) {
++    content = content.replace(originalApacheImport, fixedApacheImport)
++    fs.writeFileSync(helpersPath, content, 'utf8')
++    console.log(`Fixed apache-arrow import in ${helpersPath}`)
++  }
++}
+diff --git a/src/api/api/async_search.ts b/src/api/api/async_search.ts
+index bbad12ee..846578e3 100644
+--- a/src/api/api/async_search.ts
++++ b/src/api/api/async_search.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/autoscaling.ts b/src/api/api/autoscaling.ts
+index dfbe9df2..bc9c38b9 100644
+--- a/src/api/api/autoscaling.ts
++++ b/src/api/api/autoscaling.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/cat.ts b/src/api/api/cat.ts
+index 9770ae34..edece2fc 100644
+--- a/src/api/api/cat.ts
++++ b/src/api/api/cat.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/ccr.ts b/src/api/api/ccr.ts
+index 728f0077..accb2f4a 100644
+--- a/src/api/api/ccr.ts
++++ b/src/api/api/ccr.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/cluster.ts b/src/api/api/cluster.ts
+index 27e03243..403f446b 100644
+--- a/src/api/api/cluster.ts
++++ b/src/api/api/cluster.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/connector.ts b/src/api/api/connector.ts
+index 2bf4ad66..787a6df2 100644
+--- a/src/api/api/connector.ts
++++ b/src/api/api/connector.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/dangling_indices.ts b/src/api/api/dangling_indices.ts
+index 6c914f9b..81c121b4 100644
+--- a/src/api/api/dangling_indices.ts
++++ b/src/api/api/dangling_indices.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/enrich.ts b/src/api/api/enrich.ts
+index eb224636..3c521490 100644
+--- a/src/api/api/enrich.ts
++++ b/src/api/api/enrich.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/eql.ts b/src/api/api/eql.ts
+index dae6a27c..51ec6cea 100644
+--- a/src/api/api/eql.ts
++++ b/src/api/api/eql.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/esql.ts b/src/api/api/esql.ts
+index 56b348ed..6c753e19 100644
+--- a/src/api/api/esql.ts
++++ b/src/api/api/esql.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/features.ts b/src/api/api/features.ts
+index 6e6d0dac..8693d525 100644
+--- a/src/api/api/features.ts
++++ b/src/api/api/features.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/fleet.ts b/src/api/api/fleet.ts
+index c8dd564d..74ef2323 100644
+--- a/src/api/api/fleet.ts
++++ b/src/api/api/fleet.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/graph.ts b/src/api/api/graph.ts
+index 580a73e4..9667c4ca 100644
+--- a/src/api/api/graph.ts
++++ b/src/api/api/graph.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/ilm.ts b/src/api/api/ilm.ts
+index 70c52ab8..59cf10f3 100644
+--- a/src/api/api/ilm.ts
++++ b/src/api/api/ilm.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/indices.ts b/src/api/api/indices.ts
+index 92a8bc5d..9efea6f3 100644
+--- a/src/api/api/indices.ts
++++ b/src/api/api/indices.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/inference.ts b/src/api/api/inference.ts
+index 2319305b..bc5448ca 100644
+--- a/src/api/api/inference.ts
++++ b/src/api/api/inference.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/ingest.ts b/src/api/api/ingest.ts
+index 2214ab28..48662f60 100644
+--- a/src/api/api/ingest.ts
++++ b/src/api/api/ingest.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/license.ts b/src/api/api/license.ts
+index 6b501374..8dfb00b7 100644
+--- a/src/api/api/license.ts
++++ b/src/api/api/license.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/logstash.ts b/src/api/api/logstash.ts
+index 4832165c..60a4f448 100644
+--- a/src/api/api/logstash.ts
++++ b/src/api/api/logstash.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/migration.ts b/src/api/api/migration.ts
+index dd61c399..b206c1fe 100644
+--- a/src/api/api/migration.ts
++++ b/src/api/api/migration.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/ml.ts b/src/api/api/ml.ts
+index 7cbb74ca..8e0f2930 100644
+--- a/src/api/api/ml.ts
++++ b/src/api/api/ml.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/monitoring.ts b/src/api/api/monitoring.ts
+index 313c3431..2cf96d46 100644
+--- a/src/api/api/monitoring.ts
++++ b/src/api/api/monitoring.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/nodes.ts b/src/api/api/nodes.ts
+index e285131b..abb975f8 100644
+--- a/src/api/api/nodes.ts
++++ b/src/api/api/nodes.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/profiling.ts b/src/api/api/profiling.ts
+index d89c5961..266f962e 100644
+--- a/src/api/api/profiling.ts
++++ b/src/api/api/profiling.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/project.ts b/src/api/api/project.ts
+index 32a0c022..d1c21534 100644
+--- a/src/api/api/project.ts
++++ b/src/api/api/project.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/query_rules.ts b/src/api/api/query_rules.ts
+index cbde4cf9..007ff85c 100644
+--- a/src/api/api/query_rules.ts
++++ b/src/api/api/query_rules.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/rollup.ts b/src/api/api/rollup.ts
+index 4f216dc2..ccb35175 100644
+--- a/src/api/api/rollup.ts
++++ b/src/api/api/rollup.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/search_application.ts b/src/api/api/search_application.ts
+index e15255ef..1663c1b3 100644
+--- a/src/api/api/search_application.ts
++++ b/src/api/api/search_application.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/searchable_snapshots.ts b/src/api/api/searchable_snapshots.ts
+index 0486d7ec..23d0b238 100644
+--- a/src/api/api/searchable_snapshots.ts
++++ b/src/api/api/searchable_snapshots.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/security.ts b/src/api/api/security.ts
+index bd7ee00f..3b48dc0c 100644
+--- a/src/api/api/security.ts
++++ b/src/api/api/security.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/shutdown.ts b/src/api/api/shutdown.ts
+index 2f1f9d5c..061e9798 100644
+--- a/src/api/api/shutdown.ts
++++ b/src/api/api/shutdown.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/simulate.ts b/src/api/api/simulate.ts
+index a1dff921..3d7724c4 100644
+--- a/src/api/api/simulate.ts
++++ b/src/api/api/simulate.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/slm.ts b/src/api/api/slm.ts
+index c710ce10..e1af9ce9 100644
+--- a/src/api/api/slm.ts
++++ b/src/api/api/slm.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/snapshot.ts b/src/api/api/snapshot.ts
+index 556b7a8f..85b464fe 100644
+--- a/src/api/api/snapshot.ts
++++ b/src/api/api/snapshot.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/sql.ts b/src/api/api/sql.ts
+index 3fe7bb42..0a6294b0 100644
+--- a/src/api/api/sql.ts
++++ b/src/api/api/sql.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/ssl.ts b/src/api/api/ssl.ts
+index ada1ae8d..4105fd78 100644
+--- a/src/api/api/ssl.ts
++++ b/src/api/api/ssl.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/streams.ts b/src/api/api/streams.ts
+index 97ea936a..c0f44213 100644
+--- a/src/api/api/streams.ts
++++ b/src/api/api/streams.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/synonyms.ts b/src/api/api/synonyms.ts
+index e672db93..24edef9a 100644
+--- a/src/api/api/synonyms.ts
++++ b/src/api/api/synonyms.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/tasks.ts b/src/api/api/tasks.ts
+index 48de0e23..71e744b5 100644
+--- a/src/api/api/tasks.ts
++++ b/src/api/api/tasks.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/text_structure.ts b/src/api/api/text_structure.ts
+index 318cadc0..c9d3be3b 100644
+--- a/src/api/api/text_structure.ts
++++ b/src/api/api/text_structure.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/transform.ts b/src/api/api/transform.ts
+index 7b392a54..0f3cf874 100644
+--- a/src/api/api/transform.ts
++++ b/src/api/api/transform.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/watcher.ts b/src/api/api/watcher.ts
+index dca5bb1e..10b72b0d 100644
+--- a/src/api/api/watcher.ts
++++ b/src/api/api/watcher.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/api/api/xpack.ts b/src/api/api/xpack.ts
+index 1c14a131..3a522663 100644
+--- a/src/api/api/xpack.ts
++++ b/src/api/api/xpack.ts
+@@ -21,7 +21,7 @@ import {
+   TransportResult
+ } from '@elastic/transport'
+ import * as T from '../types'
+-import { kAcceptedParams } from '../../client'
++import { kAcceptedParams } from '../../symbols'
+ 
+ interface That {
+   transport: Transport
+diff --git a/src/client.ts b/src/client.ts
+index fbe9183b..02c7355e 100644
+--- a/src/client.ts
++++ b/src/client.ts
+@@ -36,12 +36,16 @@ import BaseConnection, { prepareHeaders, ConnectionOptions } from '@elastic/tran
+ import SniffingTransport from './sniffingTransport'
+ import Helpers from './helpers'
+ import API from './api'
+-import packageJson from '../package.json'
+-import transportPackageJson from '@elastic/transport/package.json'
++import { kAcceptedParams } from './symbols'
++
++/* eslint-disable @typescript-eslint/no-var-requires */
++const packageJson = require('../package.json')
++const transportPackageJson = require('@elastic/transport/package.json')
++/* eslint-enable @typescript-eslint/no-var-requires */
+ 
+ const kChild = Symbol('elasticsearchjs-child')
+ const kInitialOptions = Symbol('elasticsearchjs-initial-options')
+-export const kAcceptedParams = Symbol('elasticsearchjs-accepted-params')
++export { kAcceptedParams }
+ 
+ let clientVersion: string = packageJson.version
+ /* istanbul ignore next */
+diff --git a/src/index.ts b/src/index.ts
+new file mode 100644
+index 00000000..d969da8e
+--- /dev/null
++++ b/src/index.ts
+@@ -0,0 +1,56 @@
++/*
++ * Copyright Elasticsearch B.V. and contributors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import Client from './client'
++import SniffingTransport from './sniffingTransport'
++
++export {
++  Client,
++  SniffingTransport
++}
++
++// Re-export everything from @elastic/transport
++export {
++  Diagnostic,
++  Transport,
++  WeightedConnectionPool,
++  ClusterConnectionPool,
++  BaseConnectionPool,
++  CloudConnectionPool,
++  BaseConnection,
++  HttpConnection,
++  UndiciConnection,
++  Serializer,
++  errors,
++  events
++} from '@elastic/transport'
++
++// Export types from @elastic/transport
++export type {
++  Connection,
++  ConnectionOptions,
++  ConnectionRequestParams,
++  ConnectionRequestOptions,
++  ConnectionRequestOptionsAsStream,
++  ConnectionRequestResponse,
++  ConnectionRequestResponseAsStream,
++  ConnectionPoolOptions,
++  GetConnectionOptions,
++  TransportOptions,
++  TransportRequestMetadata,
++  TransportRequestParams,
++  TransportRequestOptions,
++  TransportRequestOptionsWithMeta,
++  TransportRequestOptionsWithOutMeta,
++  SniffOptions,
++  RequestBody,
++  RequestNDBody,
++  DiagnosticResult,
++  TransportResult,
++  HttpAgentOptions,
++  UndiciAgentOptions,
++  ApiKeyAuth,
++  BearerAuth
++} from '@elastic/transport'
+diff --git a/src/symbols.ts b/src/symbols.ts
+new file mode 100644
+index 00000000..ac3a048a
+--- /dev/null
++++ b/src/symbols.ts
+@@ -0,0 +1,19 @@
++/*
++ * Copyright Elasticsearch B.V. and contributors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++/**
++ * This symbol is exported in a separate module to avoid circular dependency issues in ESM.
++ *
++ * Without this separation, there would be a circular dependency:
++ * - API files import kAcceptedParams from client.ts
++ * - client.ts imports from api/index.ts
++ *
++ * In ESM (unlike CommonJS), this creates a "Cannot access 'kAcceptedParams' before initialization"
++ * error because the symbol is used in class property definitions during module initialization.
++ *
++ * By placing the symbol in its own module, it can be imported by both client.ts and API files
++ * without creating a circular dependency chain.
++ */
++export const kAcceptedParams = Symbol('elasticsearchjs-accepted-params')
+diff --git a/tsconfig.esm.json b/tsconfig.esm.json
+new file mode 100644
+index 00000000..2f316ea7
+--- /dev/null
++++ b/tsconfig.esm.json
+@@ -0,0 +1,9 @@
++{
++  "extends": "./tsconfig.json",
++  "compilerOptions": {
++    "module": "es2022",
++    "outDir": "esm",
++    "declaration": true,
++    "declarationMap": true
++  }
++}

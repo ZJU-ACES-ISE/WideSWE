@@ -1,0 +1,42 @@
+task_id: elastic_elasticsearch_kibana_01310974ffe6
+hidden_test_patches:
+- repo: elasticsearch
+  patch: hidden/patches/elasticsearch-hidden-tests.patch
+  test_profile: elasticsearch-hidden
+  origin: upstream_test_diff
+  source_file:
+  - x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/authorization/AuthorizationPollerTests.java
+  - x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/authorization/ElasticInferenceServiceAuthorizationModelTests.java
+  - x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/response/ElasticInferenceServiceAuthorizationResponseEntityTests.java
+  hidden_file:
+  - x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/AuthorizationTaskExecutorIT.java
+  semantic_changes: replaced Gold collection types, constructors, and getters with
+    end-to-end authorization response and endpoint registry behavior
+  source: prompt-visible removed_endpoints behavior derived from elastic/elasticsearch
+    PR(s) 145224
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: upstream_test_diff
+  source_file:
+  - x-pack/platform/plugins/shared/actions/server/plugin.test.ts
+  - x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.test.ts
+  - x-pack/platform/plugins/shared/search_inference_endpoints/server/utils/in_memory_connectors.test.ts
+  hidden_file:
+  - x-pack/platform/plugins/shared/actions/server/plugin.test.ts
+  - x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.test.ts
+  semantic_changes: retained the public unregister contract and replaced Gold helper-name
+    and in-place mutation assertions with poller-level stale connector behavior
+  source: prompt-visible dynamic connector lifecycle behavior derived from elastic/kibana
+    PR(s) 264143
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - elasticsearch-hidden
+    - kibana-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

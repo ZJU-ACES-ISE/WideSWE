@@ -1,0 +1,128 @@
+diff --git a/ecosync_contract_test.go b/ecosync_contract_test.go
+new file mode 100644
+index 0000000..cf33c9f
+--- /dev/null
++++ b/ecosync_contract_test.go
+@@ -0,0 +1,122 @@
++// Copyright 2026 The Prometheus Authors
++// Licensed under the Apache License, Version 2.0.
++
++package prometheuscollectorbridge
++
++import (
++	"errors"
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"os"
++	"reflect"
++	"strings"
++	"testing"
++	"time"
++	"unsafe"
++)
++
++type configWithoutValidation struct {
++	Name string
++}
++
++type configWithValidation struct {
++	called bool
++	err    error
++}
++
++func (c *configWithValidation) Validate() error {
++	c.called = true
++	return c.err
++}
++
++func setInternalExporterConfig(cfg *ReceiverConfig, value any) bool {
++	rv := reflect.ValueOf(cfg).Elem()
++	valueRV := reflect.ValueOf(value)
++	for i := 0; i < rv.NumField(); i++ {
++		fieldInfo := rv.Type().Field(i)
++		if fieldInfo.IsExported() || !valueRV.Type().AssignableTo(fieldInfo.Type) {
++			continue
++		}
++		field := rv.Field(i)
++		if !field.CanAddr() {
++			continue
++		}
++		reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Set(valueRV)
++		return true
++	}
++	return false
++}
++
++func TestEcoSyncExporterValidationIsOptional(t *testing.T) {
++	cfg := &ReceiverConfig{ScrapeInterval: time.Second}
++	if !setInternalExporterConfig(cfg, configWithoutValidation{Name: "plain"}) {
++		t.Fatal("receiver cannot retain exporter configuration without a Validate method")
++	}
++	if err := cfg.Validate(); err != nil {
++		t.Fatalf("configuration without Validate should be accepted: %v", err)
++	}
++}
++
++func TestEcoSyncExporterValidationStillRuns(t *testing.T) {
++	want := errors.New("invalid exporter configuration")
++	exporterCfg := &configWithValidation{err: want}
++	cfg := &ReceiverConfig{ScrapeInterval: time.Second}
++	if !setInternalExporterConfig(cfg, exporterCfg) {
++		t.Fatal("receiver cannot retain exporter configuration")
++	}
++	if err := cfg.Validate(); !errors.Is(err, want) {
++		t.Fatalf("Validate() error = %v, want %v", err, want)
++	}
++	if !exporterCfg.called {
++		t.Fatal("exporter Validate method was not called")
++	}
++}
++
++func TestEcoSyncRemovedConfigSurface(t *testing.T) {
++	fset := token.NewFileSet()
++	entries, err := os.ReadDir(".")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	for _, entry := range entries {
++		name := entry.Name()
++		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
++			continue
++		}
++		file, err := parser.ParseFile(fset, name, nil, 0)
++		if err != nil {
++			t.Fatalf("parse %s: %v", name, err)
++		}
++		for _, decl := range file.Decls {
++			switch node := decl.(type) {
++			case *ast.GenDecl:
++				for _, spec := range node.Specs {
++					typeSpec, ok := spec.(*ast.TypeSpec)
++					if !ok {
++						continue
++					}
++					if typeSpec.Name.Name == "Config" {
++						t.Errorf("legacy exported Config type remains in %s", name)
++					}
++					interfaceType, ok := typeSpec.Type.(*ast.InterfaceType)
++					if !ok {
++						continue
++					}
++					ast.Inspect(interfaceType, func(n ast.Node) bool {
++						if ident, ok := n.(*ast.Ident); ok && ident.Name == "Config" {
++							t.Errorf("interface %s still requires the legacy Config type", typeSpec.Name.Name)
++						}
++						return true
++					})
++				}
++			case *ast.FuncDecl:
++				if node.Recv == nil || (node.Name.Name != "SetExporterConfig" && node.Name.Name != "GetExporterConfig") {
++					continue
++				}
++				t.Errorf("legacy ReceiverConfig.%s method remains in %s", node.Name.Name, name)
++			}
++		}
++	}
++}

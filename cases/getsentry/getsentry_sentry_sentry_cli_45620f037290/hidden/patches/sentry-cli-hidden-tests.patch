@@ -1,0 +1,33 @@
+diff --git a/tests/integration/build/mod.rs b/tests/integration/build/mod.rs
+index f73e2c8..930b706 100644
+--- a/tests/integration/build/mod.rs
++++ b/tests/integration/build/mod.rs
+@@ -1,8 +1,26 @@
+-use crate::integration::TestManager;
++use assert_cmd::cargo::cargo_bin;
++use std::process::Command;
+ 
+ mod upload;
+ 
++fn help_output(args: &[&str]) -> String {
++    let output = Command::new(cargo_bin!("sentry-cli"))
++        .args(args)
++        .output()
++        .expect("sentry-cli should run");
++    assert!(output.status.success());
++    String::from_utf8(output.stdout).expect("help output should be UTF-8")
++}
++
+ #[test]
+ fn command_build_help() {
+-    TestManager::new().register_trycmd_test("build/build-help.trycmd");
++    assert!(help_output(&["build", "--help"]).contains("snapshots"));
++}
++
++#[test]
++fn command_build_snapshots_help() {
++    let output = help_output(&["build", "snapshots", "--help"]).to_ascii_lowercase();
++    assert!(output.contains("experimental"));
++    assert!(output.contains("--app-id"));
++    assert!(output.contains("<path>"));
+ }

@@ -1,0 +1,243 @@
+diff --git a/x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/planner/LocalExecutionPlannerTests.java b/x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/planner/LocalExecutionPlannerTests.java
+index e27202944bc..4898fe1adda 100644
+--- a/x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/planner/LocalExecutionPlannerTests.java
++++ b/x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/planner/LocalExecutionPlannerTests.java
+@@ -17,11 +17,13 @@ import org.apache.lucene.index.NoMergePolicy;
+ import org.apache.lucene.search.IndexSearcher;
+ import org.apache.lucene.store.Directory;
+ import org.apache.lucene.tests.index.RandomIndexWriter;
++import org.apache.lucene.util.BytesRef;
+ import org.elasticsearch.cluster.ClusterName;
+ import org.elasticsearch.common.settings.Settings;
+ import org.elasticsearch.common.unit.ByteSizeValue;
+ import org.elasticsearch.common.util.BigArrays;
+ import org.elasticsearch.compute.aggregation.AggregatorMode;
++import org.elasticsearch.compute.data.BlockUtils;
+ import org.elasticsearch.compute.data.Page;
+ import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
+ import org.elasticsearch.compute.lucene.IndexedByShardIdFromList;
+@@ -29,11 +31,16 @@ import org.elasticsearch.compute.lucene.query.DataPartitioning;
+ import org.elasticsearch.compute.lucene.query.LuceneSourceOperator;
+ import org.elasticsearch.compute.lucene.query.LuceneTopNSourceOperator;
+ import org.elasticsearch.compute.lucene.read.ValuesSourceReaderOperator;
++import org.elasticsearch.compute.operator.Driver;
+ import org.elasticsearch.compute.operator.DriverContext;
+ import org.elasticsearch.compute.operator.LocalSourceOperator;
++import org.elasticsearch.compute.operator.Operator;
+ import org.elasticsearch.compute.operator.SourceOperator;
+ import org.elasticsearch.compute.test.NoOpReleasable;
+ import org.elasticsearch.compute.test.TestBlockFactory;
++import org.elasticsearch.compute.test.TestDriverFactory;
++import org.elasticsearch.compute.test.TestDriverRunner;
++import org.elasticsearch.compute.test.TestResultPageSinkOperator;
+ import org.elasticsearch.core.IOUtils;
+ import org.elasticsearch.core.Releasable;
+ import org.elasticsearch.core.Releasables;
+@@ -72,6 +79,7 @@ import org.elasticsearch.xpack.esql.datasources.spi.StoragePath;
+ import org.elasticsearch.xpack.esql.expression.Order;
+ import org.elasticsearch.xpack.esql.expression.function.aggregate.Count;
+ import org.elasticsearch.xpack.esql.index.EsIndexGenerator;
++import org.elasticsearch.xpack.esql.optimizer.TestPlannerOptimizer;
+ import org.elasticsearch.xpack.esql.plan.logical.MetricsInfo;
+ import org.elasticsearch.xpack.esql.plan.physical.EsQueryExec;
+ import org.elasticsearch.xpack.esql.plan.physical.ExternalSourceExec;
+@@ -95,6 +103,7 @@ import java.util.concurrent.Executor;
+ import java.util.concurrent.atomic.AtomicReference;
+ 
+ import static org.hamcrest.Matchers.equalTo;
++import static org.hamcrest.Matchers.hasSize;
+ import static org.hamcrest.Matchers.instanceOf;
+ import static org.hamcrest.Matchers.lessThanOrEqualTo;
+ import static org.hamcrest.Matchers.notNullValue;
+@@ -457,6 +466,108 @@ public class LocalExecutionPlannerTests extends MapperServiceTestCase {
+         assertThat(blockLoader.loader(), instanceOf(FallbackSyntheticSourceBlockLoader.class));
+     }
+ 
++    public void testEcoSyncChangePointBySingleGrouping() throws Exception {
++        assertThat(
++            executeLocalQuery("""
++                ROW k=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25], location=[12,13,14]
++                | MV_EXPAND k
++                | MV_EXPAND location
++                | EVAL value=CASE(k<location, 0, 42)
++                | CHANGE_POINT value ON k BY location
++                | WHERE type IS NOT NULL
++                | KEEP location, type
++                | SORT location
++                | LIMIT 1000
++                """),
++            equalTo(List.of(List.of(12, "step_change"), List.of(13, "step_change"), List.of(14, "step_change")))
++        );
++    }
++
++    public void testEcoSyncChangePointByMultipleGroupings() throws Exception {
++        assertThat(
++            executeLocalQuery("""
++                ROW k=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25], region=["eu","us"], service=["web","db"]
++                | MV_EXPAND k
++                | MV_EXPAND region
++                | MV_EXPAND service
++                | EVAL value=CASE(region=="eu", CASE(k<13, 0, 42), CASE(k==13, 42, 0))
++                | CHANGE_POINT value ON k BY region, service
++                | WHERE type IS NOT NULL
++                | KEEP region, service, type
++                | SORT region, service
++                | LIMIT 1000
++                """),
++            equalTo(
++                List.of(
++                    List.of("eu", "db", "step_change"),
++                    List.of("eu", "web", "step_change"),
++                    List.of("us", "db", "spike"),
++                    List.of("us", "web", "spike")
++                )
++            )
++        );
++    }
++
++    public void testEcoSyncChangePointByGroupingExpression() throws Exception {
++        assertThat(
++            executeLocalQuery("""
++                ROW k=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25], label=["aa","bb","ccc"]
++                | MV_EXPAND k
++                | MV_EXPAND label
++                | EVAL value=CASE(LENGTH(label)==3, CASE(k==13, 42, 0), CASE(k<13, 0, 42))
++                | CHANGE_POINT value ON k BY LENGTH(label)
++                | WHERE type IS NOT NULL
++                | KEEP k, type
++                | SORT type
++                | LIMIT 1000
++                """),
++            equalTo(List.of(List.of(13, "spike"), List.of(13, "step_change")))
++        );
++    }
++
++    public void testEcoSyncChangePointMinimumAppliesPerGroup() throws Exception {
++        assertThat(
++            executeLocalQuery("""
++                ROW k=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25], grp=["full","short"]
++                | MV_EXPAND k
++                | MV_EXPAND grp
++                | WHERE grp=="full" OR k<=21
++                | EVAL value=CASE(k<13, 0, 42)
++                | SORT grp, k
++                | CHANGE_POINT value ON k BY grp
++                | WHERE type IS NOT NULL
++                | KEEP grp, type
++                | LIMIT 1000
++                """),
++            equalTo(List.of(List.of("full", "step_change")))
++        );
++    }
++
++    public void testEcoSyncChangePointLimitAppliesPerGroup() throws Exception {
++        StringBuilder values = new StringBuilder();
++        for (int k = 1; k <= 1001; k++) {
++            if (k > 1) {
++                values.append(',');
++            }
++            values.append(k);
++        }
++        assertThat(
++            executeLocalQuery(("""
++                ROW k=[%s], grp=["a","b"]
++                | MV_EXPAND k
++                | MV_EXPAND grp
++                | EVAL value=CASE(k<=500, 0, 42)
++                | SORT grp, k
++                | CHANGE_POINT value ON k BY grp
++                | WHERE type IS NOT NULL
++                | KEEP grp, type
++                | SORT grp
++                | LIMIT 1000
++                """).formatted(values)),
++            equalTo(List.of(List.of("a", "step_change"), List.of("b", "step_change")))
++        );
++    }
++
+     public void testTimeSeries() throws IOException {
+         int estimatedRowSize = estimatedRowSizeIsHuge ? randomIntBetween(20000, Integer.MAX_VALUE) : randomIntBetween(1, 50);
+         EsQueryExec queryExec = new EsQueryExec(
+@@ -648,10 +759,14 @@ public class LocalExecutionPlannerTests extends MapperServiceTestCase {
+     }
+ 
+     private LocalExecutionPlanner planner() throws IOException {
+-        return planner(null);
++        return planner(config(), null);
+     }
+ 
+     private LocalExecutionPlanner planner(OperatorFactoryRegistry operatorFactoryRegistry) throws IOException {
++        return planner(config(), operatorFactoryRegistry);
++    }
++
++    private LocalExecutionPlanner planner(Configuration configuration, OperatorFactoryRegistry operatorFactoryRegistry) throws IOException {
+         List<EsPhysicalOperationProviders.ShardContext> shardContexts = createShardContexts();
+         return new LocalExecutionPlanner(
+             "test",
+@@ -663,7 +778,7 @@ public class LocalExecutionPlannerTests extends MapperServiceTestCase {
+                 .put(ClusterName.CLUSTER_NAME_SETTING.getKey(), "dev-cluster")
+                 .put(Node.NODE_NAME_SETTING.getKey(), "node-1")
+                 .build(),
+-            config(),
++            configuration,
+             null,
+             null,
+             null,
+@@ -675,6 +790,57 @@ public class LocalExecutionPlannerTests extends MapperServiceTestCase {
+         );
+     }
+ 
++    private List<List<Object>> executeLocalQuery(String query) throws Exception {
++        Configuration configuration = config();
++        var analyzer = org.elasticsearch.xpack.esql.EsqlTestUtils.analyzer().configuration(configuration).buildAnalyzer();
++        var physicalPlan = new TestPlannerOptimizer(configuration, analyzer).plan(query);
++        var executionPlan = planner(configuration, null).plan(
++            "change_point_by",
++            FoldContext.small(),
++            PlannerSettings.DEFAULTS,
++            physicalPlan,
++            EmptyIndexedByShardId.instance()
++        );
++        assertThat(executionPlan.driverFactories, hasSize(1));
++
++        var operation = executionPlan.driverFactories.get(0).driverSupplier().physicalOperation();
++        DriverContext driverContext = new DriverContext(
++            BigArrays.NON_RECYCLING_INSTANCE,
++            TestBlockFactory.getNonBreakingInstance(),
++            null
++        );
++        List<Operator> operators = new ArrayList<>();
++        operation.operators(operators, driverContext);
++        List<Page> pages = new ArrayList<>();
++        try (
++            Driver driver = TestDriverFactory.create(
++                driverContext,
++                operation.source(driverContext),
++                operators,
++                new TestResultPageSinkOperator(pages::add)
++            )
++        ) {
++            new TestDriverRunner().run(driver);
++        }
++
++        try {
++            List<List<Object>> rows = new ArrayList<>();
++            for (Page page : pages) {
++                for (int position = 0; position < page.getPositionCount(); position++) {
++                    List<Object> row = new ArrayList<>();
++                    for (int block = 0; block < page.getBlockCount(); block++) {
++                        Object value = BlockUtils.toJavaObject(page.getBlock(block), position);
++                        row.add(value instanceof BytesRef bytes ? bytes.utf8ToString() : value);
++                    }
++                    rows.add(row);
++                }
++            }
++            return rows;
++        } finally {
++            pages.forEach(Page::releaseBlocks);
++        }
++    }
++
+     private Configuration config() {
+         return new Configuration(
+             randomZone(),

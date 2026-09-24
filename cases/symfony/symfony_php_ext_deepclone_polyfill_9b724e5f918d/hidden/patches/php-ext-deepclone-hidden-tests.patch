@@ -1,0 +1,109 @@
+diff --git a/tests/deepclone_from_array_refid_overflow.phpt b/tests/deepclone_from_array_refid_overflow.phpt
+new file mode 100644
+index 0000000..ae5b5e7
+--- /dev/null
++++ b/tests/deepclone_from_array_refid_overflow.phpt
+@@ -0,0 +1,58 @@
++--TEST--
++deepclone_from_array() rejects ZEND_LONG_MIN ref ids instead of negating them (signed-overflow UB)
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++function check(string $label, array $payload): void {
++    try {
++        deepclone_from_array($payload);
++        echo "$label: NO EXCEPTION\n";
++    } catch (\ValueError $e) {
++        echo "$label: ValueError\n";
++    } catch (\Throwable $e) {
++        echo "$label: ", $e::class, ": ", $e->getMessage(), "\n";
++    }
++}
++
++// Negating PHP_INT_MIN is not representable in a signed long; each ref-id
++// resolution site must reject it before the negation rather than wrap around.
++
++// Top-level "prepared" ref id.
++check('prepared min',
++    ['classes' => '', 'objectMeta' => 0, 'prepared' => PHP_INT_MIN]);
++
++// dc_resolve() object-reference path (mask marker true, nested under a mask array).
++check('object-ref min',
++    ['classes' => '', 'objectMeta' => 0,
++     'prepared' => [0 => PHP_INT_MIN], 'mask' => [0 => true]]);
++
++// dc_resolve() named-closure path (mask marker int 0, value is [obj_id, method]).
++// The reported id is PHP_INT_MIN, whose width is word-size dependent, so the
++// --EXPECTF-- line matches it with %i.
++check('named-closure min',
++    ['classes' => '', 'objectMeta' => 0,
++     'prepared' => [PHP_INT_MIN, 'method'], 'mask' => 0]);
++
++// A non-overflowing negative id still produces the ordinary "unknown ref id"
++// error, confirming only the ZEND_LONG_MIN wraparound is special-cased.
++check('prepared -1',
++    ['classes' => '', 'objectMeta' => 0, 'prepared' => -1]);
++check('object-ref -1',
++    ['classes' => '', 'objectMeta' => 0,
++     'prepared' => [0 => -1], 'mask' => [0 => true]]);
++check('named-closure -1',
++    ['classes' => '', 'objectMeta' => 0,
++     'prepared' => [-1, 'method'], 'mask' => 0]);
++
++echo "Done\n";
++?>
++--EXPECTF--
++prepared min: ValueError
++object-ref min: ValueError
++named-closure min: ValueError
++prepared -1: ValueError
++object-ref -1: ValueError
++named-closure -1: ValueError
++Done
+diff --git a/tests/deepclone_from_array_unserialize_nonobject.phpt b/tests/deepclone_from_array_unserialize_nonobject.phpt
+new file mode 100644
+index 0000000..dd020a4
+--- /dev/null
++++ b/tests/deepclone_from_array_unserialize_nonobject.phpt
+@@ -0,0 +1,39 @@
++--TEST--
++deepclone_from_array() rejects unserialize results that are not objects (type confusion)
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++function check(string $label, array $payload): void {
++    try {
++        deepclone_from_array($payload);
++        echo "$label: NO EXCEPTION\n";
++    } catch (\ValueError $e) {
++        echo "$label: ValueError\n";
++    } catch (\Throwable $e) {
++        echo "$label: ", $e::class, ": ", $e->getMessage(), "\n";
++    }
++}
++
++// A class-name string whose second byte is ':' is replayed through
++// unserialize(). The decoder later dereferences the result as a zend_object*,
++// so a scalar/array serialize form (i:, b:, d:, s:, a:) must be rejected
++// rather than treated as an object pointer.
++check('int',    ['classes' => 'i:1234;',        'objectMeta' => 1, 'prepared' => 0]);
++// bool uses %s in --EXPECTF--: zend_zval_value_name() reports "bool" on PHP 8.2
++// but "true"/"false" on 8.3+.
++check('bool',   ['classes' => 'b:1;',           'objectMeta' => 1, 'prepared' => 0]);
++check('float',  ['classes' => 'd:1.5;',         'objectMeta' => 1, 'prepared' => 0]);
++check('string', ['classes' => 's:3:"abc";',     'objectMeta' => 1, 'prepared' => 0]);
++check('array',  ['classes' => 'a:1:{i:0;i:0;}', 'objectMeta' => 1, 'prepared' => 0]);
++
++echo "Done\n";
++?>
++--EXPECTF--
++int: ValueError
++bool: ValueError
++float: ValueError
++string: ValueError
++array: ValueError
++Done

@@ -1,0 +1,836 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c6d5605..91c4ab0 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,7 @@
+ # Unreleased
+ 
++* Added a hook API to customize Ruby compilation.
++
+ # 1.23.0
+ 
+ * Require Ruby 2.7.
+diff --git a/README.md b/README.md
+index 3ad00cd..469f1a9 100644
+--- a/README.md
++++ b/README.md
+@@ -75,6 +75,7 @@ well together.
+ `require 'bootsnap/setup'` behavior can be changed using environment variables:
+ 
+ - `BOOTSNAP_CACHE_DIR` allows to define the cache location.
++- `BOOTSNAP_CONFIG` allows to change the default config location (`config/bootsnap.rb`).
+ - `DISABLE_BOOTSNAP` allows to entirely disable bootsnap.
+ - `DISABLE_BOOTSNAP_LOAD_PATH_CACHE` allows to disable load path caching.
+ - `DISABLE_BOOTSNAP_COMPILE_CACHE` allows to disable ISeq and YAML caches.
+@@ -320,6 +321,34 @@ open    /c/nope.bundle -> -1
+ # (nothing!)
+ ```
+ 
++## Custom Compilers
++
++Bootsnap allows substituing the default Ruby compiler by another one.
++This can be configured from the bootsnap config file (defaults to `config/bootsnap.rb`).
++
++The main use case is to programmatically enable frozen string literals for your project without impacting dependencies:
++
++```ruby
++Bootsnap.enable_frozen_string_literal(app_only: true)
++```
++
++But it can also be used for more fine grained logic, or to implement all sort of Ruby code preprocessing:
++
++```ruby
++# config/bootsnap.rb
++gems_root = File.join(Bundler.bundle_path.cleanpath, "")
++app_root =  File.join(Dir.pwd, "")
++Bootsnap::CompileCache::ISeq.compiler_selector = ->(path) do
++  # Enable `frozen_string_literal: true` for app code, but not gems.
++
++  if path.start_with?(app_root) && !path.start_with?(gems_root)
++    Bootsnap::CompileCache::ISeq::FROZEN_STRING_LITERAL
++  else
++    Bootsnap::CompileCache::ISeq::DEFAULT
++  end
++end
++```
++
+ ## Precompilation
+ 
+ In development environments the bootsnap compilation cache is generated on the fly when source files are loaded.
+diff --git a/ext/bootsnap/bootsnap.c b/ext/bootsnap/bootsnap.c
+index d755ca9..f1928fc 100644
+--- a/ext/bootsnap/bootsnap.c
++++ b/ext/bootsnap/bootsnap.c
+@@ -114,8 +114,8 @@ static VALUE bs_instrumentation_enabled_set(VALUE self, VALUE enabled);
+ static VALUE bs_readonly_set(VALUE self, VALUE enabled);
+ static VALUE bs_revalidation_set(VALUE self, VALUE enabled);
+ static VALUE bs_compile_option_crc32_set(VALUE self, VALUE crc32_v);
+-static VALUE bs_rb_fetch(VALUE self, VALUE cachedir_v, VALUE path_v, VALUE handler, VALUE args);
+-static VALUE bs_rb_precompile(VALUE self, VALUE cachedir_v, VALUE path_v, VALUE handler);
++static VALUE bs_rb_fetch(VALUE self, VALUE cachedir_v, VALUE namespace_v, VALUE path_v, VALUE handler, VALUE args);
++static VALUE bs_rb_precompile(VALUE self, VALUE cachedir_v, VALUE namespace_v, VALUE path_v, VALUE handler);
+ 
+ /* Helpers */
+ enum cache_status {
+@@ -123,7 +123,7 @@ enum cache_status {
+   hit,
+   stale,
+ };
+-static void bs_cache_path(const char * cachedir, const VALUE path, char (* cache_path)[MAX_CACHEPATH_SIZE]);
++static void bs_cache_path(VALUE cachedir_v, VALUE namespace_v, VALUE path_v, char (* cache_path)[MAX_CACHEPATH_SIZE]);
+ static int bs_read_key(int fd, struct bs_cache_key * key);
+ static enum cache_status cache_key_equal_fast_path(struct bs_cache_key * k1, struct bs_cache_key * k2);
+ static int cache_key_equal_slow_path(struct bs_cache_key * current_key, struct bs_cache_key * cached_key, const VALUE input_data);
+@@ -143,7 +143,7 @@ static uint32_t get_ruby_platform(void);
+  */
+ static int bs_storage_to_output(VALUE handler, VALUE args, VALUE storage_data, VALUE * output_data);
+ static VALUE prot_input_to_output(VALUE arg);
+-static void bs_input_to_output(VALUE handler, VALUE args, VALUE input_data, VALUE * output_data, int * exception_tag);
++static void bs_input_to_output(VALUE handler, VALUE args, VALUE input_data, VALUE pathval, VALUE * output_data, int * exception_tag);
+ static int bs_input_to_storage(VALUE handler, VALUE args, VALUE input_data, VALUE pathval, VALUE * storage_data);
+ struct s2o_data;
+ struct i2o_data;
+@@ -302,8 +302,8 @@ Init_bootsnap(void)
+   rb_define_module_function(rb_mBootsnap, "instrumentation_enabled=", bs_instrumentation_enabled_set, 1);
+   rb_define_module_function(rb_mBootsnap_CompileCache_Native, "readonly=", bs_readonly_set, 1);
+   rb_define_module_function(rb_mBootsnap_CompileCache_Native, "revalidation=", bs_revalidation_set, 1);
+-  rb_define_module_function(rb_mBootsnap_CompileCache_Native, "fetch", bs_rb_fetch, 4);
+-  rb_define_module_function(rb_mBootsnap_CompileCache_Native, "precompile", bs_rb_precompile, 3);
++  rb_define_module_function(rb_mBootsnap_CompileCache_Native, "fetch", bs_rb_fetch, 5);
++  rb_define_module_function(rb_mBootsnap_CompileCache_Native, "precompile", bs_rb_precompile, 4);
+   rb_define_module_function(rb_mBootsnap_CompileCache_Native, "compile_option_crc32=", bs_compile_option_crc32_set, 1);
+ 
+   current_umask = umask(0777);
+@@ -420,13 +420,28 @@ get_ruby_platform(void)
+  * The path will look something like: <cachedir>/12/34567890abcdef
+  */
+ static void
+-bs_cache_path(const char * cachedir, const VALUE path, char (* cache_path)[MAX_CACHEPATH_SIZE])
++bs_cache_path(VALUE cachedir_v, VALUE namespace_v, VALUE path_v, char (* cache_path)[MAX_CACHEPATH_SIZE])
+ {
+-  uint64_t hash = fnv1a_64(path);
++  FilePathValue(path_v);
++
++  Check_Type(cachedir_v, T_STRING);
++  Check_Type(path_v, T_STRING);
++  if (!NIL_P(namespace_v)) {
++    Check_Type(namespace_v, T_STRING);
++  }
++
++  if (RSTRING_LEN(cachedir_v) > MAX_CACHEDIR_SIZE) {
++    rb_raise(rb_eArgError, "cachedir too long");
++  }
++
++  const char * cachedir = RSTRING_PTR(cachedir_v);
++  const char * namespace = NIL_P(namespace_v) ? "" : RSTRING_PTR(namespace_v);
++
++  uint64_t hash = fnv1a_64(path_v);
+   uint8_t first_byte = (hash >> (64 - 8));
+   uint64_t remainder = hash & 0x00ffffffffffffff;
+ 
+-  sprintf(*cache_path, "%s/%02"PRIx8"/%014"PRIx64, cachedir, first_byte, remainder);
++  sprintf(*cache_path, "%s%s/%02"PRIx8"/%014"PRIx64, cachedir, namespace, first_byte, remainder);
+ }
+ 
+ /*
+@@ -498,25 +513,14 @@ static void bs_cache_key_digest(struct bs_cache_key *key,
+  * conversions on the ruby VALUE arguments before passing them along.
+  */
+ static VALUE
+-bs_rb_fetch(VALUE self, VALUE cachedir_v, VALUE path_v, VALUE handler, VALUE args)
++bs_rb_fetch(VALUE self, VALUE cachedir_v, VALUE namespace_v, VALUE path_v, VALUE handler, VALUE args)
+ {
+-  FilePathValue(path_v);
+-
+-  Check_Type(cachedir_v, T_STRING);
+-  Check_Type(path_v, T_STRING);
+-
+-  if (RSTRING_LEN(cachedir_v) > MAX_CACHEDIR_SIZE) {
+-    rb_raise(rb_eArgError, "cachedir too long");
+-  }
+-
+-  char * cachedir = RSTRING_PTR(cachedir_v);
+-  char * path     = RSTRING_PTR(path_v);
+   char cache_path[MAX_CACHEPATH_SIZE];
+ 
+   /* generate cache path to cache_path */
+-  bs_cache_path(cachedir, path_v, &cache_path);
++  bs_cache_path(cachedir_v, namespace_v, path_v, &cache_path);
+ 
+-  return bs_fetch(path, path_v, cache_path, handler, args);
++  return bs_fetch(RSTRING_PTR(path_v), path_v, cache_path, handler, args);
+ }
+ 
+ /*
+@@ -525,25 +529,13 @@ bs_rb_fetch(VALUE self, VALUE cachedir_v, VALUE path_v, VALUE handler, VALUE arg
+  * and doesn't return the content.
+  */
+ static VALUE
+-bs_rb_precompile(VALUE self, VALUE cachedir_v, VALUE path_v, VALUE handler)
++bs_rb_precompile(VALUE self, VALUE cachedir_v, VALUE namespace_v, VALUE path_v, VALUE handler)
+ {
+-  FilePathValue(path_v);
+-
+-  Check_Type(cachedir_v, T_STRING);
+-  Check_Type(path_v, T_STRING);
+-
+-  if (RSTRING_LEN(cachedir_v) > MAX_CACHEDIR_SIZE) {
+-    rb_raise(rb_eArgError, "cachedir too long");
+-  }
+-
+-  char * cachedir = RSTRING_PTR(cachedir_v);
+-  char * path     = RSTRING_PTR(path_v);
+   char cache_path[MAX_CACHEPATH_SIZE];
+-
+   /* generate cache path to cache_path */
+-  bs_cache_path(cachedir, path_v, &cache_path);
++  bs_cache_path(cachedir_v, namespace_v, path_v, &cache_path);
+ 
+-  return bs_precompile(path, path_v, cache_path, handler);
++  return bs_precompile(RSTRING_PTR(path_v), path_v, cache_path, handler);
+ }
+ 
+ static int bs_open_noatime(const char *path, int flags) {
+@@ -963,7 +955,7 @@ bs_fetch(char * path, VALUE path_v, char * cache_path, VALUE handler, VALUE args
+         exception_message = path_v;
+         goto fail_errno;
+       }
+-      bs_input_to_output(handler, args, input_data, &output_data, &exception_tag);
++      bs_input_to_output(handler, args, input_data, path_v, &output_data, &exception_tag);
+       if (exception_tag != 0) goto raise;
+       goto succeed;
+     } else if (res == CACHE_MISS || res == CACHE_STALE) valid_cache = 0;
+@@ -989,7 +981,7 @@ bs_fetch(char * path, VALUE path_v, char * cache_path, VALUE handler, VALUE args
+   /* If input_to_storage raised Bootsnap::CompileCache::Uncompilable, don't try
+    * to cache anything; just return input_to_output(input_data) */
+   if (storage_data == rb_cBootsnap_CompileCache_UNCOMPILABLE) {
+-    bs_input_to_output(handler, args, input_data, &output_data, &exception_tag);
++    bs_input_to_output(handler, args, input_data, path_v, &output_data, &exception_tag);
+     if (exception_tag != 0) goto raise;
+     goto succeed;
+   }
+@@ -1009,7 +1001,7 @@ bs_fetch(char * path, VALUE path_v, char * cache_path, VALUE handler, VALUE args
+ 
+   if (output_data == rb_cBootsnap_CompileCache_UNCOMPILABLE) {
+     /* If storage_to_output returned `Uncompilable` we fallback to `input_to_output` */
+-    bs_input_to_output(handler, args, input_data, &output_data, &exception_tag);
++    bs_input_to_output(handler, args, input_data, path_v, &output_data, &exception_tag);
+     if (exception_tag != 0) goto raise;
+   } else if (NIL_P(output_data)) {
+     /* If output_data is nil, delete the cache entry and generate the output
+@@ -1023,7 +1015,7 @@ bs_fetch(char * path, VALUE path_v, char * cache_path, VALUE handler, VALUE args
+         goto fail_errno;
+       }
+     }
+-    bs_input_to_output(handler, args, input_data, &output_data, &exception_tag);
++    bs_input_to_output(handler, args, input_data, path_v, &output_data, &exception_tag);
+     if (exception_tag != 0) goto raise;
+   }
+ 
+@@ -1181,6 +1173,7 @@ struct i2o_data {
+   VALUE handler;
+   VALUE args;
+   VALUE input_data;
++  VALUE pathval;
+ };
+ 
+ struct i2s_data {
+@@ -1210,12 +1203,13 @@ bs_storage_to_output(VALUE handler, VALUE args, VALUE storage_data, VALUE * outp
+ }
+ 
+ static void
+-bs_input_to_output(VALUE handler, VALUE args, VALUE input_data, VALUE * output_data, int * exception_tag)
++bs_input_to_output(VALUE handler, VALUE args, VALUE input_data, VALUE path_v, VALUE * output_data, int * exception_tag)
+ {
+   struct i2o_data i2o_data = {
+     .handler    = handler,
+     .args       = args,
+     .input_data = input_data,
++    .pathval    = path_v,
+   };
+   *output_data = rb_protect(prot_input_to_output, (VALUE)&i2o_data, exception_tag);
+ }
+@@ -1224,7 +1218,7 @@ static VALUE
+ prot_input_to_output(VALUE arg)
+ {
+   struct i2o_data * data = (struct i2o_data *)arg;
+-  return rb_funcall(data->handler, rb_intern("input_to_output"), 2, data->input_data, data->args);
++  return rb_funcall(data->handler, rb_intern("input_to_output"), 3, data->input_data, data->pathval, data->args);
+ }
+ 
+ static VALUE
+diff --git a/lib/bootsnap.rb b/lib/bootsnap.rb
+index 42a4226..ddaa53d 100644
+--- a/lib/bootsnap.rb
++++ b/lib/bootsnap.rb
+@@ -43,6 +43,13 @@ module Bootsnap
+       @instrumentation.call(event, path)
+     end
+ 
++    def load_config
++      config_path = File.expand_path(ENV["BOOTSNAP_CONFIG"] || "config/bootsnap.rb")
++      if File.exist?(config_path)
++        require(config_path)
++      end
++    end
++
+     def setup(
+       cache_dir:,
+       development_mode: true,
+@@ -76,6 +83,28 @@ module Bootsnap
+         readonly: readonly,
+         revalidation: revalidation,
+       )
++
++      load_config
++    end
++
++    def enable_frozen_string_literal(app_only: false)
++      if app_only
++        gems_root = File.join(Bundler.bundle_path.cleanpath, "")
++        app_root =  File.join(Dir.pwd, "")
++        Bootsnap::CompileCache::ISeq.default_compiler = Bootsnap::CompileCache::ISeq::DEFAULT
++        Bootsnap::CompileCache::ISeq.compiler_selector = lambda { |path|
++          # Enable `frozen_string_literal: true` for app code, but not gems.
++
++          if path.start_with?(app_root) && !path.start_with?(gems_root)
++            Bootsnap::CompileCache::ISeq::FROZEN_STRING_LITERAL
++          else
++            Bootsnap::CompileCache::ISeq::DEFAULT
++          end
++        }
++      else
++        Bootsnap::CompileCache::ISeq.compiler_selector = nil
++        Bootsnap::CompileCache::ISeq.default_compiler = Bootsnap::CompileCache::ISeq::FROZEN_STRING_LITERAL
++      end
+     end
+ 
+     def unload_cache!
+diff --git a/lib/bootsnap/cli.rb b/lib/bootsnap/cli.rb
+index 5c3f306..22357f1 100644
+--- a/lib/bootsnap/cli.rb
++++ b/lib/bootsnap/cli.rb
+@@ -43,6 +43,7 @@ module Bootsnap
+           yaml: yaml,
+           revalidation: true,
+         )
++        Bootsnap.load_config
+ 
+         @work_pool = WorkerPool.create(size: jobs, jobs: {
+           ruby: method(:precompile_ruby),
+diff --git a/lib/bootsnap/compile_cache/iseq.rb b/lib/bootsnap/compile_cache/iseq.rb
+index 6aaa23b..7bcdd55 100644
+--- a/lib/bootsnap/compile_cache/iseq.rb
++++ b/lib/bootsnap/compile_cache/iseq.rb
+@@ -7,7 +7,8 @@ module Bootsnap
+   module CompileCache
+     module ISeq
+       class << self
+-        attr_reader(:cache_dir)
++        attr_reader :cache_dir
++        attr_accessor :compiler_selector, :default_compiler
+ 
+         def cache_dir=(cache_dir)
+           @cache_dir = cache_dir.end_with?("/") ? "#{cache_dir}iseq" : "#{cache_dir}-iseq"
+@@ -18,71 +19,83 @@ module Bootsnap
+         end
+       end
+ 
+-      has_ruby_bug_18250 = begin # https://bugs.ruby-lang.org/issues/18250
+-        if defined? RubyVM::InstructionSequence
+-          RubyVM::InstructionSequence.compile("def foo(*); ->{ super }; end; def foo(**); ->{ super }; end").to_binary
++      class Compiler
++        attr_reader :namespace, :compile_options
++
++        def initialize(namespace = nil, compile_options = nil)
++          @namespace = namespace
++          @compile_options = compile_options
+         end
+-        false
+-      rescue TypeError
+-        true
+-      end
+ 
+-      if has_ruby_bug_18250
+-        def self.input_to_storage(_, path)
+-          iseq = begin
+-            RubyVM::InstructionSequence.compile_file(path)
+-          rescue SyntaxError
+-            return UNCOMPILABLE # syntax error
++        has_ruby_bug_18250 = begin # https://bugs.ruby-lang.org/issues/18250
++          if defined? RubyVM::InstructionSequence
++            RubyVM::InstructionSequence.compile("def foo(*); ->{ super }; end; def foo(**); ->{ super }; end").to_binary
+           end
++          false
++        rescue TypeError
++          true
++        end
++
++        if has_ruby_bug_18250
++          def input_to_storage(_, path)
++            iseq = RubyVM::InstructionSequence.compile_file(path, @compile_options)
+ 
+-          begin
+-            iseq.to_binary
+-          rescue TypeError
+-            UNCOMPILABLE # ruby bug #18250
++            begin
++              iseq.to_binary
++            rescue TypeError
++              UNCOMPILABLE # ruby bug #18250
++            end
++          end
++        else
++          def input_to_storage(_, path)
++            RubyVM::InstructionSequence.compile_file(path, @compile_options).to_binary
+           end
+         end
+-      else
+-        def self.input_to_storage(_, path)
+-          RubyVM::InstructionSequence.compile_file(path).to_binary
+-        rescue SyntaxError
+-          UNCOMPILABLE # syntax error
++
++        def storage_to_output(binary, _args)
++          iseq = RubyVM::InstructionSequence.load_from_binary(binary)
++          binary.clear
++          iseq
++        rescue RuntimeError => error
++          if error.message == "broken binary format"
++            $stderr.puts("[Bootsnap::CompileCache] warning: rejecting broken binary")
++            nil
++          else
++            raise
++          end
+         end
+-      end
+ 
+-      def self.storage_to_output(binary, _args)
+-        iseq = RubyVM::InstructionSequence.load_from_binary(binary)
+-        binary.clear
+-        iseq
+-      rescue RuntimeError => error
+-        if error.message == "broken binary format"
+-          $stderr.puts("[Bootsnap::CompileCache] warning: rejecting broken binary")
+-          nil
+-        else
+-          raise
++        def input_to_output(source, path, _kwargs)
++          RubyVM::InstructionSequence.compile(source, path, path, nil, @compile_options)
+         end
+       end
+ 
++      DEFAULT = Compiler.new
++      FROZEN_STRING_LITERAL = Compiler.new("-fstr", {frozen_string_literal: true}.freeze)
++      MUTABLE_STRING_LITERAL = Compiler.new("-no-fstr", {frozen_string_literal: false}.freeze)
++      @default_compiler = DEFAULT
++
+       def self.fetch(path, cache_dir: ISeq.cache_dir)
++        compiler = compiler_selector&.call(path) || default_compiler
+         Bootsnap::CompileCache::Native.fetch(
+           cache_dir,
++          compiler.namespace,
+           path.to_s,
+-          Bootsnap::CompileCache::ISeq,
++          compiler,
+           nil,
+         )
+       end
+ 
+       def self.precompile(path)
++        compiler = compiler_selector&.call(path) || default_compiler
+         Bootsnap::CompileCache::Native.precompile(
+           cache_dir,
++          compiler.namespace,
+           path.to_s,
+-          Bootsnap::CompileCache::ISeq,
++          compiler,
+         )
+       end
+ 
+-      def self.input_to_output(_data, _kwargs)
+-        nil # ruby handles this
+-      end
+-
+       module InstructionSequenceMixin
+         def load_iseq(path)
+           # Having coverage enabled prevents iseq dumping/loading.
+diff --git a/lib/bootsnap/compile_cache/yaml.rb b/lib/bootsnap/compile_cache/yaml.rb
+index 946ac17..f418030 100644
+--- a/lib/bootsnap/compile_cache/yaml.rb
++++ b/lib/bootsnap/compile_cache/yaml.rb
+@@ -28,6 +28,7 @@ module Bootsnap
+ 
+           CompileCache::Native.precompile(
+             cache_dir,
++            nil,
+             path.to_s,
+             @implementation,
+           )
+@@ -175,7 +176,7 @@ module Bootsnap
+             result
+           end
+ 
+-          def input_to_output(data, kwargs)
++          def input_to_output(data, _path, kwargs)
+             ::YAML.unsafe_load(data, **(kwargs || {}))
+           end
+         end
+@@ -215,7 +216,7 @@ module Bootsnap
+             end
+           end
+ 
+-          def input_to_output(data, kwargs)
++          def input_to_output(data, _path, kwargs)
+             ::YAML.load(data, **(kwargs || {}))
+           end
+         end
+@@ -233,6 +234,7 @@ module Bootsnap
+ 
+             CompileCache::Native.fetch(
+               CompileCache::YAML.cache_dir,
++              nil,
+               File.realpath(path),
+               CompileCache::YAML::Psych4::SafeLoad,
+               kwargs,
+@@ -253,6 +255,7 @@ module Bootsnap
+ 
+             CompileCache::Native.fetch(
+               CompileCache::YAML.cache_dir,
++              nil,
+               File.realpath(path),
+               CompileCache::YAML::Psych4::UnsafeLoad,
+               kwargs,
+@@ -288,7 +291,7 @@ module Bootsnap
+           unpacker.unpack
+         end
+ 
+-        def input_to_output(data, kwargs)
++        def input_to_output(data, _path, kwargs)
+           ::YAML.load(data, **(kwargs || {}))
+         end
+ 
+@@ -305,6 +308,7 @@ module Bootsnap
+ 
+             CompileCache::Native.fetch(
+               CompileCache::YAML.cache_dir,
++              nil,
+               File.realpath(path),
+               CompileCache::YAML::Psych3,
+               kwargs,
+@@ -325,6 +329,7 @@ module Bootsnap
+ 
+             CompileCache::Native.fetch(
+               CompileCache::YAML.cache_dir,
++              nil,
+               File.realpath(path),
+               CompileCache::YAML::Psych3,
+               kwargs,
+diff --git a/lib/bootsnap/load_path_cache/loaded_features_index.rb b/lib/bootsnap/load_path_cache/loaded_features_index.rb
+index 1b213cf..c2bfbeb 100644
+--- a/lib/bootsnap/load_path_cache/loaded_features_index.rb
++++ b/lib/bootsnap/load_path_cache/loaded_features_index.rb
+@@ -59,7 +59,7 @@ module Bootsnap
+       end
+ 
+       def purge_multi(features)
+-        rejected_hashes = features.each_with_object({}) { |f, h| h[f.hash] = true }
++        rejected_hashes = features.to_h { |f| [f.hash, true] }
+         @mutex.synchronize do
+           @lfi.reject! { |_, hash| rejected_hashes.key?(hash) }
+         end
+diff --git a/test/compile_cache/iseq_cache_test.rb b/test/compile_cache/iseq_cache_test.rb
+index 99e481b..fdb038a 100644
+--- a/test/compile_cache/iseq_cache_test.rb
++++ b/test/compile_cache/iseq_cache_test.rb
+@@ -10,4 +10,36 @@ class CompileCacheISeqTest < Minitest::Test
+     Help.set_file("a.rb", "def foo(*); ->{ super }; end; def foo(**); ->{ super }; end", 100)
+     Bootsnap::CompileCache::ISeq.fetch("a.rb")
+   end
++
++  def test_compiler_selector
++    compiler_selector = Bootsnap::CompileCache::ISeq.compiler_selector
++
++    target = Help.set_file("a.rb", "p(frozen: 'test'.frozen?)")
++    out, _err = capture_io do
++      load(target)
++    end
++    assert_equal({frozen: false}.inspect, out.strip)
++
++    Bootsnap::CompileCache::ISeq.compiler_selector = lambda { |path|
++      if path.end_with?("a.rb")
++        Bootsnap::CompileCache::ISeq::FROZEN_STRING_LITERAL
++      else
++        Bootsnap::CompileCache::ISeq::MUTABLE_STRING_LITERAL
++      end
++    }
++
++    target = Help.set_file("a.rb", "p(frozen: 'test'.frozen?)")
++    out, _err = capture_io do
++      load(target)
++    end
++    assert_equal({frozen: true}.inspect, out.strip)
++
++    target = Help.set_file("b.rb", "p(frozen: 'test'.frozen?)")
++    out, _err = capture_io do
++      load(target)
++    end
++    assert_equal({frozen: false}.inspect, out.strip)
++  ensure
++    Bootsnap::CompileCache::ISeq.compiler_selector = compiler_selector
++  end
+ end
+diff --git a/test/compile_cache/yaml_test.rb b/test/compile_cache/yaml_test.rb
+index 4de86d4..324a804 100644
+--- a/test/compile_cache/yaml_test.rb
++++ b/test/compile_cache/yaml_test.rb
+@@ -128,7 +128,7 @@ class CompileCacheYAMLTest < Minitest::Test
+     end
+ 
+     def test_yaml_input_to_output_safe
+-      document = ::Bootsnap::CompileCache::YAML::Psych4::SafeLoad.input_to_output(<<~YAML, {})
++      document = ::Bootsnap::CompileCache::YAML::Psych4::SafeLoad.input_to_output(<<~YAML, "file.yml", {})
+         ---
+         :foo: 42
+         bar: [1]
+@@ -141,7 +141,7 @@ class CompileCacheYAMLTest < Minitest::Test
+     end
+ 
+     def test_yaml_input_to_output_unsafe
+-      document = ::Bootsnap::CompileCache::YAML::Psych4::UnsafeLoad.input_to_output(<<~YAML, {})
++      document = ::Bootsnap::CompileCache::YAML::Psych4::UnsafeLoad.input_to_output(<<~YAML, "file.yml", {})
+         ---
+         :foo: 42
+         bar: [1]
+@@ -154,7 +154,7 @@ class CompileCacheYAMLTest < Minitest::Test
+     end
+   else
+     def test_yaml_input_to_output
+-      document = ::Bootsnap::CompileCache::YAML::Psych3.input_to_output(<<~YAML, {})
++      document = ::Bootsnap::CompileCache::YAML::Psych3.input_to_output(<<~YAML, "file.yml", {})
+         ---
+         :foo: 42
+         bar: [1]
+diff --git a/test/compile_cache_handler_errors_test.rb b/test/compile_cache_handler_errors_test.rb
+index f17b7f8..c2040be 100644
+--- a/test/compile_cache_handler_errors_test.rb
++++ b/test/compile_cache_handler_errors_test.rb
+@@ -13,15 +13,15 @@ class CompileCacheHandlerErrorsTest < Minitest::Test
+ 
+   def test_input_to_storage_unexpected_type
+     path = Help.set_file("a.rb", "a = 3", 100)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).returns(nil)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).returns(nil)
+     # this could be made slightly more obvious though.
+     assert_raises(TypeError) { load(path) }
+   end
+ 
+   def test_input_to_storage_invalid_instance_of_expected_type
+     path = Help.set_file("a.rb", "a = 3", 100)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).returns("broken")
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_output).with("a = 3", nil).returns("whatever")
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).returns("broken")
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_output).with("a = 3", "a.rb", nil).returns("whatever")
+     _, err = capture_subprocess_io do
+       load(path)
+     end
+@@ -31,13 +31,13 @@ class CompileCacheHandlerErrorsTest < Minitest::Test
+   def test_input_to_storage_raises
+     path = Help.set_file("a.rb", "a = 3", 100)
+     klass = Class.new(StandardError)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).raises(klass, "oops")
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).raises(klass, "oops")
+     assert_raises(klass) { load(path) }
+   end
+ 
+   def test_storage_to_output_unexpected_type
+     path = Help.set_file("a.rb", "a = a = 3", 100)
+-    Bootsnap::CompileCache::ISeq.expects(:storage_to_output).returns(Object.new)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:storage_to_output).returns(Object.new)
+     # It seems like ruby doesn't really care.
+     load(path)
+   end
+@@ -49,7 +49,7 @@ class CompileCacheHandlerErrorsTest < Minitest::Test
+   def test_storage_to_output_raises
+     path = Help.set_file("a.rb", "a = a = 3", 100)
+     klass = Class.new(StandardError)
+-    Bootsnap::CompileCache::ISeq.expects(:storage_to_output).times(2).raises(klass, "oops")
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:storage_to_output).times(2).raises(klass, "oops")
+     assert_raises(klass) { load(path) }
+     # called from two paths; this tests the second.
+     assert_raises(klass) { load(path) }
+@@ -57,8 +57,8 @@ class CompileCacheHandlerErrorsTest < Minitest::Test
+ 
+   def test_input_to_output_unexpected_type
+     path = Help.set_file("a.rb", "a = a = 3", 100)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).returns(Bootsnap::CompileCache::UNCOMPILABLE)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_output).returns(Object.new)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).returns(Bootsnap::CompileCache::UNCOMPILABLE)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_output).returns(Object.new)
+     # It seems like ruby doesn't really care.
+     load(path)
+   end
+@@ -70,8 +70,8 @@ class CompileCacheHandlerErrorsTest < Minitest::Test
+   def test_input_to_output_raises
+     path = Help.set_file("a.rb", "a = 3", 100)
+     klass = Class.new(StandardError)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).returns(Bootsnap::CompileCache::UNCOMPILABLE)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_output).raises(klass, "oops")
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).returns(Bootsnap::CompileCache::UNCOMPILABLE)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_output).raises(klass, "oops")
+     assert_raises(klass) { load(path) }
+   end
+ end
+diff --git a/test/compile_cache_key_format_test.rb b/test/compile_cache_key_format_test.rb
+index 2a05c2f..dc5089c 100644
+--- a/test/compile_cache_key_format_test.rb
++++ b/test/compile_cache_key_format_test.rb
+@@ -70,7 +70,7 @@ class CompileCacheKeyFormatTest < Minitest::Test
+     target = Help.set_file("a.rb", "foo = 1")
+ 
+     cache_dir = File.join(@tmp_dir, "compile_cache")
+-    actual = Bootsnap::CompileCache::Native.fetch(cache_dir, target, TestHandler, nil)
++    actual = Bootsnap::CompileCache::Native.fetch(cache_dir, nil, target, TestHandler, nil)
+     assert_equal("NEATO #{target.upcase}", actual)
+ 
+     entries = Dir["#{cache_dir}/**/*"].select { |f| File.file?(f) }
+@@ -80,7 +80,7 @@ class CompileCacheKeyFormatTest < Minitest::Test
+     data = File.read(cache_file)
+     assert_equal("neato #{target}", data.force_encoding(Encoding::BINARY)[64..])
+ 
+-    actual = Bootsnap::CompileCache::Native.fetch(cache_dir, target, TestHandler, nil)
++    actual = Bootsnap::CompileCache::Native.fetch(cache_dir, nil, target, TestHandler, nil)
+     assert_equal("NEATO #{target.upcase}", actual)
+   end
+ 
+@@ -90,26 +90,26 @@ class CompileCacheKeyFormatTest < Minitest::Test
+ 
+     target = Help.set_file("a.rb", "foo = 1")
+ 
+-    actual = Bootsnap::CompileCache::Native.fetch(cache_dir, target, TestHandler, nil)
++    actual = Bootsnap::CompileCache::Native.fetch(cache_dir, nil, target, TestHandler, nil)
+     assert_equal("NEATO #{target.upcase}", actual)
+ 
+     10.times do
+       FileUtils.touch(target, mtime: File.mtime(target) + 42)
+-      actual = Bootsnap::CompileCache::Native.fetch(cache_dir, target, TestHandler, nil)
++      actual = Bootsnap::CompileCache::Native.fetch(cache_dir, nil, target, TestHandler, nil)
+       assert_equal("NEATO #{target.upcase}", actual)
+     end
+   end
+ 
+   def test_unexistent_fetch
+     assert_raises(Errno::ENOENT) do
+-      Bootsnap::CompileCache::Native.fetch(@tmp_dir, "123", Bootsnap::CompileCache::ISeq, nil)
++      Bootsnap::CompileCache::Native.fetch(@tmp_dir, nil, "123", Bootsnap::CompileCache::ISeq, nil)
+     end
+   end
+ 
+   private
+ 
+   def cache_key_for_file(file)
+-    Bootsnap::CompileCache::Native.fetch(@tmp_dir, file, TestHandler, nil)
++    Bootsnap::CompileCache::Native.fetch(@tmp_dir, nil, file, TestHandler, nil)
+     data = File.binread(Help.cache_path(@tmp_dir, file))
+     data.byteslice(0..31)
+   end
+diff --git a/test/compile_cache_test.rb b/test/compile_cache_test.rb
+index 7250652..1ef8ecc 100644
+--- a/test/compile_cache_test.rb
++++ b/test/compile_cache_test.rb
+@@ -83,8 +83,8 @@ class CompileCacheTest < Minitest::Test
+     output = RubyVM::InstructionSequence.load_from_binary(storage)
+     # This doesn't really *prove* the file is only read once, but
+     # it at least asserts the input is only cached once.
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).times(1).returns(storage)
+-    Bootsnap::CompileCache::ISeq.expects(:storage_to_output).times(2).returns(output)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).times(1).returns(storage)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:storage_to_output).times(2).returns(output)
+     load(path)
+     load(path)
+   end
+@@ -101,8 +101,8 @@ class CompileCacheTest < Minitest::Test
+     path = Help.set_file("a.rb", "a = a = 3", 100)
+     storage = RubyVM::InstructionSequence.compile_file(path).to_binary
+     output = RubyVM::InstructionSequence.load_from_binary(storage)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).times(1).returns(storage)
+-    Bootsnap::CompileCache::ISeq.expects(:storage_to_output).times(2).returns(output)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).times(1).returns(storage)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:storage_to_output).times(2).returns(output)
+ 
+     load(path)
+     Help.set_file(path, "a = a = 4", 100)
+@@ -114,8 +114,8 @@ class CompileCacheTest < Minitest::Test
+     storage = RubyVM::InstructionSequence.compile_file(path).to_binary
+     output = RubyVM::InstructionSequence.load_from_binary(storage)
+     # Totally lies the second time but that's not the point.
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).times(2).returns(storage)
+-    Bootsnap::CompileCache::ISeq.expects(:storage_to_output).times(2).returns(output)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).times(2).returns(storage)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:storage_to_output).times(2).returns(output)
+ 
+     load(path)
+     Help.set_file(path, "a = a = 2", 101)
+@@ -127,8 +127,8 @@ class CompileCacheTest < Minitest::Test
+     storage = RubyVM::InstructionSequence.compile_file(path).to_binary
+     output = RubyVM::InstructionSequence.load_from_binary(storage)
+     # Totally lies the second time but that's not the point.
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).times(2).returns(storage)
+-    Bootsnap::CompileCache::ISeq.expects(:storage_to_output).times(2).returns(output)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).times(2).returns(storage)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:storage_to_output).times(2).returns(output)
+ 
+     load(path)
+     Help.set_file(path, "a = 33", 100)
+@@ -140,9 +140,9 @@ class CompileCacheTest < Minitest::Test
+ 
+     path = Help.set_file("a.rb", "a = a = 3", 100)
+     output = RubyVM::InstructionSequence.compile_file(path)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).never
+-    Bootsnap::CompileCache::ISeq.expects(:storage_to_output).never
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_output).once.returns(output)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).never
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:storage_to_output).never
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_output).once.returns(output)
+ 
+     load(path)
+   end
+@@ -154,9 +154,9 @@ class CompileCacheTest < Minitest::Test
+     Bootsnap::CompileCache::Native.readonly = true
+ 
+     output = RubyVM::InstructionSequence.compile_file(path)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).never
+-    Bootsnap::CompileCache::ISeq.expects(:storage_to_output).once.returns(output)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_output).never
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).never
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:storage_to_output).once.returns(output)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_output).never
+ 
+     load(path)
+   end
+@@ -193,9 +193,9 @@ class CompileCacheTest < Minitest::Test
+     Bootsnap::CompileCache::Native.readonly = true
+ 
+     output = RubyVM::InstructionSequence.compile_file(path)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_storage).never
+-    Bootsnap::CompileCache::ISeq.expects(:storage_to_output).once.returns(output)
+-    Bootsnap::CompileCache::ISeq.expects(:input_to_output).never
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_storage).never
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:storage_to_output).once.returns(output)
++    Bootsnap::CompileCache::ISeq::DEFAULT.expects(:input_to_output).never
+ 
+     FileUtils.touch(path, mtime: File.mtime(path) + 50)
+ 
+diff --git a/test/test_helper.rb b/test/test_helper.rb
+index 8307080..bed96a7 100644
+--- a/test/test_helper.rb
++++ b/test/test_helper.rb
+@@ -38,7 +38,7 @@ module TestHandler
+     data.upcase
+   end
+ 
+-  def self.input_to_output(_data, _kwargs)
++  def self.input_to_output(_source, _path, _kwargs)
+     raise("but why tho")
+   end
+ end

@@ -1,0 +1,34 @@
+services:
+  boxo-hidden:
+    image: ecosyncbench/deps/ipfs-boxo-go:4508fc5f72a1
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/go-mod-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/go:1.26-bookworm
+        ECOSYNC_TASK_ID: ipfs_boxo_kubo_4508fc5f72a1
+        ECOSYNC_REPO: ipfs/boxo
+        ECOSYNC_REPO_PATH: repos/ipfs/boxo
+        ECOSYNC_BASE_COMMIT: 4f59c8d82bb1f3bf4b5ed3445d881744fc4a636d
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 4508fc5f72a1-boxo
+    working_dir: /workspace/repos/ipfs/boxo
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-go-test.sh boxo-hidden ./routing/http/client ./routing/http/client/providerinfofunc_test'
+
+  kubo-hidden:
+    image: ecosyncbench/deps/ipfs-kubo-go:4508fc5f72a1
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/go-mod-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/go:1.26-bookworm
+        ECOSYNC_TASK_ID: ipfs_boxo_kubo_4508fc5f72a1
+        ECOSYNC_REPO: ipfs/kubo
+        ECOSYNC_REPO_PATH: repos/ipfs/kubo
+        ECOSYNC_BASE_COMMIT: 56b22d79d29f926ca7f59493488655a7d1511cf5
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 4508fc5f72a1-kubo
+    working_dir: /workspace/repos/ipfs/kubo
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-kubo-hidden.sh'

@@ -1,0 +1,33 @@
+task_id: dotnet_android_java_interop_8f49f22b1612
+hidden_test_patches:
+- repo: android
+  patch: hidden/patches/android-hidden-tests.patch
+  test_profile: android-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests/Generator/TypeMapAssemblyGeneratorTests.cs
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from dotnet/android PR(s) 10988
+- repo: java-interop
+  patch: hidden/patches/java-interop-hidden-tests.patch
+  test_profile: java_interop-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/Java.Interop-Tests/Java.Interop-Tests.csproj
+  - tests/Java.Interop-Tests/Java.Interop/JniTypeTest.cs
+  - tests/Java.Interop-Tests/java/net/dot/jni/test/RegisterNativesTestType.java
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from dotnet/java-interop PR(s) 1391
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - android-hidden
+    - java_interop-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

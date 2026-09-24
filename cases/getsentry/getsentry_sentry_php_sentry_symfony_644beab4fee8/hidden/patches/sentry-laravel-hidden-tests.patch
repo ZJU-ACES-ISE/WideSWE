@@ -1,0 +1,95 @@
+diff --git a/test/Sentry/Features/LogLogsIntegrationTest.php b/test/Sentry/Features/LogLogsIntegrationTest.php
+index 409ea80..3085b51 100644
+--- a/test/Sentry/Features/LogLogsIntegrationTest.php
++++ b/test/Sentry/Features/LogLogsIntegrationTest.php
+@@ -6,6 +6,7 @@ use Illuminate\Config\Repository;
+ use Illuminate\Support\Facades\Log;
+ use Orchestra\Testbench\Attributes\DefineEnvironment;
+ use Sentry\Laravel\Tests\TestCase;
++use Sentry\EventType;
+ use Sentry\Logs\LogLevel;
+ use function Sentry\logger;
+ 
+@@ -96,6 +97,53 @@ class LogLogsIntegrationTest extends TestCase
+         $this->assertNull($log->attributes()->get('exception'));
+     }
+ 
++    public function testLogChannelFlushesImmediatelyWhenThresholdIsReached(): void
++    {
++        $this->resetApplicationWithConfig([
++            'sentry.log_flush_threshold' => 2,
++        ]);
++
++        $logger = Log::channel('sentry_logs');
++
++        $logger->warning('Sentry Laravel warning log message');
++        $logger->error('Sentry Laravel error log message');
++
++        $this->assertCount(0, logger()->aggregator()->all());
++
++        $logEvents = array_values(array_filter($this->getCapturedSentryEvents(), static function (array $event): bool {
++            return $event[0]->getType() === EventType::logs();
++        }));
++
++        $this->assertCount(1, $logEvents);
++        $this->assertCount(2, $logEvents[0][0]->getLogs());
++        $this->assertEquals('Sentry Laravel warning log message', $logEvents[0][0]->getLogs()[0]->getBody());
++        $this->assertEquals('Sentry Laravel error log message', $logEvents[0][0]->getLogs()[1]->getBody());
++    }
++
++    public function testLogChannelDoesNotFlushImmediatelyWhenThresholdIsNull(): void
++    {
++        $this->resetApplicationWithConfig([
++            'sentry.log_flush_threshold' => null,
++        ]);
++
++        $logger = Log::channel('sentry_logs');
++
++        $logger->warning('Sentry Laravel warning log message');
++        $logger->error('Sentry Laravel error log message');
++
++        $bufferedLogs = logger()->aggregator()->all();
++
++        $this->assertCount(2, $bufferedLogs);
++
++        $logEvents = array_values(array_filter($this->getCapturedSentryEvents(), static function (array $event): bool {
++            return $event[0]->getType() === EventType::logs();
++        }));
++
++        $this->assertCount(0, $logEvents);
++
++        logger()->aggregator()->flush();
++    }
++
+     public function testLogChannelAddsContextAsAttributes(): void
+     {
+         $logger = Log::channel('sentry_logs');
+diff --git a/test/Sentry/Laravel/LaravelContainerConfigOptionsTest.php b/test/Sentry/Laravel/LaravelContainerConfigOptionsTest.php
+index 51c9b53..f7b86f0 100644
+--- a/test/Sentry/Laravel/LaravelContainerConfigOptionsTest.php
++++ b/test/Sentry/Laravel/LaravelContainerConfigOptionsTest.php
+@@ -44,6 +44,24 @@ class LaravelContainerConfigOptionsTest extends TestCase
+         $this->assertTrue($enabled);
+     }
+ 
++    public function testLogFlushThresholdIsNullByDefault(): void
++    {
++        $logFlushThreshold = app(HubInterface::class)->getClient()->getOptions()->getLogFlushThreshold();
++
++        $this->assertNull($logFlushThreshold);
++    }
++
++    public function testLogFlushThresholdIsResolvedFromConfig(): void
++    {
++        $this->resetApplicationWithConfig([
++            'sentry.log_flush_threshold' => 2,
++        ]);
++
++        $logFlushThreshold = app(HubInterface::class)->getClient()->getOptions()->getLogFlushThreshold();
++
++        $this->assertSame(2, $logFlushThreshold);
++    }
++
+     public function testLoggerIsNullByDefault(): void
+     {
+         $logger = app(HubInterface::class)->getClient()->getOptions()->getLogger();

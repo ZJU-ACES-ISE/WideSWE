@@ -1,0 +1,41 @@
+diff --git a/packages/config/src/__tests__/fixtures/loadConfigFromFile/enums/prisma.config.ts b/packages/config/src/__tests__/fixtures/loadConfigFromFile/enums/prisma.config.ts
+new file mode 100644
+index 000000000..2ec07f24f
+--- /dev/null
++++ b/packages/config/src/__tests__/fixtures/loadConfigFromFile/enums/prisma.config.ts
+@@ -0,0 +1,11 @@
++import type { PrismaConfig } from 'src/index'
++import { mockMigrationAwareAdapterFactory } from 'test-utils/mock-adapter'
++
++export default {
++  experimental: {
++    externalTables: true,
++  },
++  enums: {
++    external: ['some_enum'],
++  },
++} satisfies PrismaConfig
+diff --git a/packages/config/src/__tests__/loadConfigFromFile.test.ts b/packages/config/src/__tests__/loadConfigFromFile.test.ts
+index be0e3369c..7c4f089b9 100644
+--- a/packages/config/src/__tests__/loadConfigFromFile.test.ts
++++ b/packages/config/src/__tests__/loadConfigFromFile.test.ts
+@@ -104,6 +104,19 @@ describe('loadConfigFromFile', () => {
+     })
+   })
+ 
++  describe('enums', () => {
++    it('loads enums config', async () => {
++      ctx.fixture('loadConfigFromFile/enums')
++      const { config, error } = await loadConfigFromFile({})
++      expect(config).toMatchObject({
++        enums: {
++          external: ['some_enum'],
++        },
++      })
++      expect(error).toBeUndefined()
++    })
++  })
++
+   describe('migrations', () => {
+     it('loads setupExternalTables', async () => {
+       ctx.fixture('loadConfigFromFile/setup-external-tables')

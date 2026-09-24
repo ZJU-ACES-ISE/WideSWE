@@ -1,0 +1,247 @@
+diff --git a/packages/@expo/cli/e2e/__tests__/login-test.ts b/packages/@expo/cli/e2e/__tests__/login-test.ts
+index d5869eb6..88bf55f1 100644
+--- a/packages/@expo/cli/e2e/__tests__/login-test.ts
++++ b/packages/@expo/cli/e2e/__tests__/login-test.ts
+@@ -28,22 +28,8 @@ it('loads expected modules by default', async () => {
+ 
+ it('runs `npx expo login --help`', async () => {
+   const results = await executeExpoAsync(projectRoot, ['login', '--help']);
+-  expect(results.stdout).toMatchInlineSnapshot(`
+-    "
+-      Info
+-        Log in to an Expo account
+-
+-      Usage
+-        $ npx expo login
+-
+-      Options
+-        -u, --username <string>  Username
+-        -p, --password <string>  Password
+-        --otp <string>           One-time password from your 2FA device
+-        -s, --sso                Log in with SSO
+-        -h, --help               Usage info
+-    "
+-  `);
++  expect(results.stdout).toMatch(/-b,\s+--browser\s+.*browser/i);
++  expect(results.stdout).toContain('-h, --help');
+ });
+ 
+ it('throws on invalid project root', async () => {
+diff --git a/packages/@expo/cli/src/api/user/__tests__/actions-test.ts b/packages/@expo/cli/src/api/user/__tests__/actions-test.ts
+index 2f4c7d25..8d4b4359 100644
+--- a/packages/@expo/cli/src/api/user/__tests__/actions-test.ts
++++ b/packages/@expo/cli/src/api/user/__tests__/actions-test.ts
+@@ -2,7 +2,8 @@ import { promptAsync } from '../../../utils/prompts';
+ import { ApiV2Error } from '../../rest/client';
+ import { showLoginPromptAsync } from '../actions';
+ import { retryUsernamePasswordAuthWithOTPAsync, UserSecondFactorDeviceMethod } from '../otp';
+-import { loginAsync, ssoLoginAsync } from '../user';
++import { loginAsync } from '../user';
++import * as userModule from '../user';
+ 
+ jest.mock('../../../log');
+ jest.mock('../../../utils/prompts');
+@@ -21,10 +22,30 @@ beforeEach(() => {
+     throw new Error('Should not be called');
+   });
+ 
+-  jest.mocked(loginAsync).mockClear();
+-  jest.mocked(ssoLoginAsync).mockClear();
++  for (const value of Object.values(userModule)) {
++    if (jest.isMockFunction(value)) {
++      value.mockClear();
++    }
++  }
+ });
+ 
++type LoginCall = {
++  implementation: unknown;
++  args: unknown[];
++};
++
++function getAlternativeLoginCalls(): LoginCall[] {
++  return Object.entries(userModule).flatMap(([name, value]) => {
++    if (name === 'loginAsync' || !jest.isMockFunction(value)) {
++      return [];
++    }
++    return value.mock.calls.map(args => ({
++      implementation: value,
++      args,
++    }));
++  });
++}
++
+ describe(showLoginPromptAsync, () => {
+   it('prompts for OTP when 2FA is enabled', async () => {
+     jest
+@@ -103,10 +124,33 @@ describe(showLoginPromptAsync, () => {
+     expect(loginAsync).toHaveBeenCalledTimes(1);
+   });
+ 
+-  it('calls SSO login if the sso flag is true', async () => {
++  it('uses a non-password login path if the sso flag is true', async () => {
+     jest.mocked(promptAsync);
+     await showLoginPromptAsync({ username: 'hello', password: 'world', sso: true });
+ 
+-    expect(ssoLoginAsync).toHaveBeenCalledTimes(1);
++    expect(loginAsync).not.toHaveBeenCalled();
++    expect(getAlternativeLoginCalls()).toHaveLength(1);
++  });
++
++  it('keeps regular browser login distinct from SSO login', async () => {
++    await showLoginPromptAsync({ username: 'hello', password: 'world', sso: true });
++    const [ssoCall] = getAlternativeLoginCalls();
++    expect(ssoCall).toBeDefined();
++
++    for (const value of Object.values(userModule)) {
++      if (jest.isMockFunction(value)) {
++        value.mockClear();
++      }
++    }
++
++    await showLoginPromptAsync({ username: 'hello', password: 'world', browser: true } as any);
++    const [browserCall] = getAlternativeLoginCalls();
++
++    expect(loginAsync).not.toHaveBeenCalled();
++    expect(browserCall).toBeDefined();
++    expect(
++      browserCall.implementation !== ssoCall.implementation ||
++        JSON.stringify(browserCall.args) !== JSON.stringify(ssoCall.args)
++    ).toBe(true);
+   });
+ });
+diff --git a/packages/@expo/cli/src/api/user/__tests__/user-test.ts b/packages/@expo/cli/src/api/user/__tests__/user-test.ts
+index 3ee86b7e..b3cc2bb9 100644
+--- a/packages/@expo/cli/src/api/user/__tests__/user-test.ts
++++ b/packages/@expo/cli/src/api/user/__tests__/user-test.ts
+@@ -1,4 +1,6 @@
++import openBrowserAsync from 'better-opn';
+ import { fs, vol } from 'memfs';
++import http from 'http';
+ import nock from 'nock';
+ 
+ import {
+@@ -6,22 +8,19 @@ import {
+   getDevelopmentCodeSigningDirectory,
+ } from '../../../utils/codesigning';
+ import { getExpoApiBaseUrl } from '../../endpoint';
++import { showLoginPromptAsync } from '../actions';
+ import { getSession, getSettingsFilePath } from '../UserSettings';
+-import { getSessionUsingBrowserAuthFlowAsync } from '../expoSsoLauncher';
+ import {
+   Actor,
+   getActorDisplayName,
+   getUserAsync,
+   loginAsync,
+   logoutAsync,
+-  ssoLoginAsync,
+ } from '../user';
+ 
+-jest.mock('../expoSsoLauncher', () => ({
+-  getSessionUsingBrowserAuthFlowAsync: jest.fn(),
+-}));
+-
++jest.mock('better-opn');
+ jest.mock('../../../log');
++jest.mock('../../../utils/prompts');
+ jest.unmock('../UserSettings');
+ jest.mock('../../graphql/client', () => ({ graphql: (x: string) => `${x}` }));
+ jest.mock('../../graphql/queries/UserQuery', () => ({
+@@ -31,8 +30,46 @@ jest.mock('../../graphql/queries/UserQuery', () => ({
+   },
+ }));
+ 
++type BrowserCallbackResult = {
++  browserUrl: URL;
++  statusCode: number | undefined;
++  location: string | undefined;
++};
++
++function mockBrowserCallback(sessionSecret?: string): Promise<BrowserCallbackResult> {
++  return new Promise<BrowserCallbackResult>((resolve, reject) => {
++    jest.mocked(openBrowserAsync).mockImplementation(async rawUrl => {
++      const browserUrl = new URL(rawUrl);
++      const callbackUrlValue = browserUrl.searchParams.get('app_redirect_uri');
++      if (!callbackUrlValue) {
++        reject(new Error('Browser login URL is missing app_redirect_uri'));
++        return;
++      }
++
++      const callbackUrl = new URL(callbackUrlValue);
++      if (sessionSecret) {
++        callbackUrl.searchParams.set('session_secret', sessionSecret);
++      }
++
++      const request = http.get(callbackUrl, response => {
++        response.resume();
++        response.on('end', () => {
++          resolve({
++            browserUrl,
++            statusCode: response.statusCode,
++            location: response.headers.location,
++          });
++        });
++      });
++      request.on('error', reject);
++      return false;
++    });
++  });
++}
++
+ beforeEach(() => {
+   vol.reset();
++  jest.mocked(openBrowserAsync).mockReset();
+ });
+ 
+ const userStub: Actor = {
+@@ -125,23 +162,35 @@ describe(loginAsync, () => {
+   });
+ });
+ 
+-describe(ssoLoginAsync, () => {
+-  it('saves user data to ~/.expo/state.json', async () => {
+-    jest.mocked(getSessionUsingBrowserAuthFlowAsync).mockResolvedValue('SESSION_SECRET');
++describe('browser authentication', () => {
++  it.each([
++    [{ sso: true }, '/sso-login'],
++    [{ browser: true }, '/login'],
++  ])('uses the requested browser flow and saves the session', async (options, pathname) => {
++    const callback = mockBrowserCallback('SESSION_SECRET');
++
++    await showLoginPromptAsync(options as any);
++
++    const result = await callback;
++    expect(result.browserUrl.pathname).toBe(pathname);
++    expect(result.statusCode).toBe(302);
++    expect(new URL(result.location!).origin).toBe('https://expo.dev');
++    expect(getSession()).toMatchObject({
++      sessionSecret: 'SESSION_SECRET',
++      userId: 'USER_ID',
++      username: 'USERNAME',
++    });
++  });
+ 
+-    await ssoLoginAsync();
++  it('redirects browser callback failures to expo.dev', async () => {
++    const callback = mockBrowserCallback();
+ 
+-    expect(await fs.promises.readFile(getSettingsFilePath(), 'utf8')).toMatchInlineSnapshot(`
+-      "{
+-        "auth": {
+-          "sessionSecret": "SESSION_SECRET",
+-          "userId": "USER_ID",
+-          "username": "USERNAME",
+-          "currentConnection": "Browser-Flow-Authentication"
+-        }
+-      }
+-      "
+-    `);
++    await expect(showLoginPromptAsync({ browser: true } as any)).rejects.toThrow();
++    expect(openBrowserAsync).toHaveBeenCalled();
++
++    const result = await callback;
++    expect(result.statusCode).toBe(302);
++    expect(new URL(result.location!).origin).toBe('https://expo.dev');
+   });
+ });
+ 

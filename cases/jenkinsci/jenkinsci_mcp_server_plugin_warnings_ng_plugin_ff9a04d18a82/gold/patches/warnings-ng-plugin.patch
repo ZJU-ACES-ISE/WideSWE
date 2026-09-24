@@ -1,0 +1,347 @@
+diff --git a/plugin/pom.xml b/plugin/pom.xml
+index b4f94e6ec..27539f7f2 100644
+--- a/plugin/pom.xml
++++ b/plugin/pom.xml
+@@ -35,6 +35,8 @@
+   </developers>
+ 
+   <properties>
++    <!-- TODO remove explicit version once it's available in BOM -->
++    <mcp.plugin.version>0.168.v13951585050d</mcp.plugin.version>
+     <maven.deploy.skip>false</maven.deploy.skip>
+ 
+     <!-- Library Dependencies Versions -->
+@@ -109,6 +111,7 @@
+     <dependency>
+       <groupId>io.jenkins.plugins</groupId>
+       <artifactId>prism-api</artifactId>
++      <version>1.30.0-703.v116fb_3b_5b_b_a_a_</version>
+     </dependency>
+     <dependency>
+       <groupId>org.jenkins-ci.plugins</groupId>
+@@ -158,6 +161,12 @@
+       <groupId>org.jenkins-ci.plugins</groupId>
+       <artifactId>variant</artifactId>
+     </dependency>
++    <dependency>
++      <groupId>io.jenkins.plugins</groupId>
++      <artifactId>mcp-server</artifactId>
++      <optional>true</optional>
++      <version>${mcp.plugin.version}</version>
++    </dependency>
+ 
+     <!-- AxivionSuite Dependencies -->
+     <dependency>
+@@ -230,6 +239,15 @@
+       <artifactId>git-client</artifactId>
+       <scope>test</scope>
+     </dependency>
++
++    <dependency>
++      <groupId>io.jenkins.plugins</groupId>
++      <artifactId>mcp-server</artifactId>
++      <optional>true</optional>
++      <version>${mcp.plugin.version}</version>
++      <classifier>tests</classifier>
++      <scope>test</scope>
++    </dependency>
+     <dependency>
+       <groupId>edu.hm.hafner</groupId>
+       <artifactId>analysis-model</artifactId>
+diff --git a/plugin/src/main/java/io/jenkins/plugins/analysis/core/mcp/WarningsMcpServerExtension.java b/plugin/src/main/java/io/jenkins/plugins/analysis/core/mcp/WarningsMcpServerExtension.java
+new file mode 100644
+index 000000000..1c1bc2754
+--- /dev/null
++++ b/plugin/src/main/java/io/jenkins/plugins/analysis/core/mcp/WarningsMcpServerExtension.java
+@@ -0,0 +1,86 @@
++package io.jenkins.plugins.analysis.core.mcp;
++
++import edu.hm.hafner.analysis.Issue;
++import hudson.model.Run;
++import io.jenkins.plugins.analysis.core.model.ResultAction;
++import io.jenkins.plugins.mcp.server.McpServerExtension;
++import io.jenkins.plugins.mcp.server.annotation.Tool;
++import io.jenkins.plugins.mcp.server.annotation.ToolParam;
++import io.jenkins.plugins.mcp.server.extensions.util.JenkinsUtil;
++import java.util.HashMap;
++import java.util.Map;
++import java.util.Optional;
++import java.util.stream.Collectors;
++
++import org.jenkinsci.plugins.variant.OptionalExtension;
++
++/**
++ * An extension of the for MCP server exposing
++ * {@link io.jenkins.plugins.analysis.core.model.AnalysisResult}
++ * associated with a given build as a JSON object.
++ */
++@OptionalExtension(requirePlugins = "mcp-server")
++public class WarningsMcpServerExtension implements McpServerExtension {
++    /**
++     * Retrieves the warnings from static analysis tools.
++     *
++     * @param buildNumber build number
++     * @param jobFullName full job name
++     * @param checkId check action ID
++     * @return map in the form {checkId1:[{category:"CAT", message:"MSG", type:"TYPE", ...}]}
++     */
++    @SuppressWarnings("rawtypes")
++    @Tool(
++            description = "Retrieves the warnings from static analysis tools associated with a Jenkins build",
++            annotations = @Tool.Annotations(destructiveHint = false))
++    public Map<String, Object> getWarnings(
++            @ToolParam(description = "Job full name of the Jenkins job (e.g., 'folder/job-name')")
++            final String jobFullName,
++                    @ToolParam(
++                            description =
++                                    "Build number (optional, if not provided, returns the test results for last build)",
++                            required = false)
++                    final Integer buildNumber,
++                    @ToolParam(
++                            description =
++                                    "ID of the check action (optional, if not provided, all warnings are returned)",
++                            required = false)
++                    final String checkId) {
++        Optional<Run> run = JenkinsUtil.getBuildByNumberOrLast(jobFullName, buildNumber);
++        if (run.isPresent()) {
++            Map<String, Object> response = new HashMap<>();
++            run.get().getActions(ResultAction.class)
++                    .stream()
++                    .filter(action -> checkId == null || action.getId().equals(checkId))
++                    .forEach(warningAction -> addToResponse(response, warningAction));
++            return response;
++        }
++        return Map.of();
++    }
++
++    private void addToResponse(final Map<String, Object> response,
++            final ResultAction warningAction) {
++        var result = warningAction.getResult();
++        response.put(
++                warningAction.getId(),
++                result.getIssues().stream().map(IssueJson::new).collect(Collectors.toList()));
++    }
++
++    private record IssueJson(
++            String category,
++            String message,
++            String type,
++            String severity,
++            String fileName,
++            int line) {
++        IssueJson(final Issue issue) {
++            this(
++                    issue.getCategory(),
++                    issue.getMessage(),
++                    issue.getType(),
++                    issue.getSeverity().toString(),
++                    issue.getFileName(),
++                    issue.getLineStart());
++        }
++    }
++}
+diff --git a/plugin/src/test/java/io/jenkins/plugins/analysis/core/mcp/WarningsMcpServerExtensionTest.java b/plugin/src/test/java/io/jenkins/plugins/analysis/core/mcp/WarningsMcpServerExtensionTest.java
+new file mode 100644
+index 000000000..a48c2cf8d
+--- /dev/null
++++ b/plugin/src/test/java/io/jenkins/plugins/analysis/core/mcp/WarningsMcpServerExtensionTest.java
+@@ -0,0 +1,128 @@
++package io.jenkins.plugins.analysis.core.mcp;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import com.google.gson.JsonArray;
++import com.google.gson.JsonObject;
++import com.google.gson.JsonParser;
++import hudson.FilePath;
++import hudson.model.Result;
++import io.jenkins.plugins.mcp.server.junit.JenkinsMcpClientBuilder;
++import io.jenkins.plugins.mcp.server.junit.McpClientTest;
++import io.modelcontextprotocol.spec.McpSchema;
++
++import java.net.URL;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Set;
++import org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition;
++import org.jenkinsci.plugins.workflow.job.WorkflowJob;
++import org.jvnet.hudson.test.JenkinsRule;
++import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
++
++@WithJenkins
++class WarningsMcpServerExtensionTest {
++    @McpClientTest
++    @SuppressWarnings("PMD.SignatureDeclareThrowsException")
++    void testMcpToolCallGetWarnings(final JenkinsRule jenkins,
++            final JenkinsMcpClientBuilder jenkinsMcpClientBuilder) throws Exception {
++        WorkflowJob j = jenkins.createProject(WorkflowJob.class, "singleStep");
++        j.setDefinition(new CpsFlowDefinition("""
++                        stage('first') {
++                          node {
++                            recordIssues qualityGates: [[threshold: 1, type: 'TOTAL', unstable: true]], tools: [
++                                checkStyle(pattern: '**/*.xml')
++                            ]
++                          }
++                        }
++                        """, true));
++        FilePath ws = jenkins.jenkins.getWorkspaceFor(j);
++        FilePath warningsFile = Objects.requireNonNull(ws).child("checkstyle.xml");
++        URL checkstyleReport = WarningsMcpServerExtensionTest.class.getResource("checkstyle-sample.xml");
++        assertThat(checkstyleReport).isNotNull();
++        warningsFile.copyFrom(checkstyleReport);
++
++        jenkins.buildAndAssertStatus(Result.UNSTABLE, j);
++
++        try (var client = jenkinsMcpClientBuilder.jenkins(jenkins).build()) {
++            McpSchema.CallToolRequest request = new McpSchema.CallToolRequest(
++                    "getWarnings", Map.of("jobFullName", j.getFullName()));
++
++            var response = client.callTool(request);
++            assertContainsSingleCheckstyleWarning(response);
++        }
++        try (var client = jenkinsMcpClientBuilder.jenkins(jenkins).build()) {
++            McpSchema.CallToolRequest request = new McpSchema.CallToolRequest(
++                    "getWarnings", Map.of("jobFullName", j.getFullName(),
++                    "checkId", "checkstyle"));
++
++            var response = client.callTool(request);
++            assertContainsSingleCheckstyleWarning(response);
++        }
++        try (var client = jenkinsMcpClientBuilder.jenkins(jenkins).build()) {
++            McpSchema.CallToolRequest request = new McpSchema.CallToolRequest(
++                    "getWarnings", Map.of("jobFullName", j.getFullName(),
++                    "checkId", "missing"));
++
++            var response = client.callTool(request);
++            assertResponseIsEmpty(response);
++        }
++    }
++
++    @McpClientTest
++    @SuppressWarnings("PMD.SignatureDeclareThrowsException")
++    void testMcpToolNoWarnings(final JenkinsRule jenkins,
++                                       final JenkinsMcpClientBuilder jenkinsMcpClientBuilder) throws Exception {
++        WorkflowJob j = jenkins.createProject(WorkflowJob.class, "singleStep");
++        j.setDefinition(new CpsFlowDefinition("""
++                        stage('first') {
++                          node {
++                            echo "no warnings"
++                          }
++                        }
++                        """, true));
++
++        try (var client = jenkinsMcpClientBuilder.jenkins(jenkins).build()) {
++            McpSchema.CallToolRequest request = new McpSchema.CallToolRequest(
++                    "getWarnings", Map.of("jobFullName", j.getFullName()));
++
++            var response = client.callTool(request);
++            assertResponseIsEmpty(response);
++        }
++    }
++
++    @McpClientTest
++    void testMcpToolNoJob(final JenkinsRule jenkins,
++                               final JenkinsMcpClientBuilder jenkinsMcpClientBuilder) {
++        try (var client = jenkinsMcpClientBuilder.jenkins(jenkins).build()) {
++            McpSchema.CallToolRequest request = new McpSchema.CallToolRequest(
++                    "getWarnings", Map.of("jobFullName", "missing"));
++
++            var response = client.callTool(request);
++            assertResponseIsEmpty(response);
++        }
++    }
++
++    private void assertResponseIsEmpty(final McpSchema.CallToolResult response) {
++        assertThat(response.isError()).isFalse();
++        assertThat(response.content()).hasSize(1);
++        McpSchema.Content firstItem = response.content().get(0);
++        assertThat(firstItem.type()).isEqualTo("text");
++        assertThat(((McpSchema.TextContent) firstItem).text()).contains("no results");
++    }
++
++    private void assertContainsSingleCheckstyleWarning(final McpSchema.CallToolResult response) {
++        assertThat(response.isError()).isFalse();
++        assertThat(response.content()).hasSize(1);
++        assertThat(response.content().get(0).type()).isEqualTo("text");
++        String responseText = ((McpSchema.TextContent) response.content().get(0)).text();
++        JsonObject parsed = JsonParser.parseString(responseText).getAsJsonObject();
++        JsonObject result = parsed.get("result").getAsJsonObject();
++
++        assertThat(result.keySet()).isEqualTo(Set.of("checkstyle"));
++        JsonArray warnings = result.get("checkstyle").getAsJsonArray();
++        assertThat(warnings.size()).isEqualTo(1);
++        assertThat(warnings.get(0).getAsJsonObject().keySet()).isEqualTo(
++                Set.of("category", "message", "type", "severity", "fileName", "line"));
++    }
++}
+diff --git a/plugin/src/test/resources/design.puml b/plugin/src/test/resources/design.puml
+index 25b1f6fc8..037e12974 100644
+--- a/plugin/src/test/resources/design.puml
++++ b/plugin/src/test/resources/design.puml
+@@ -15,6 +15,7 @@ skinparam component {
+ [Filter] <<..core.filter>>
+ [Portlets] <<..core.portlets>>
+ [Columns] <<..core.columns>>
++[MCP API] <<..core.mcp>>
+ [Rest API] <<..core.restapi>>
+ [Tokens] <<..core.tokens>>
+ [Utilities] <<..core.util>> <<..api>>
+@@ -45,4 +46,6 @@ skinparam component {
+ [Rest API] --> [Utilities]
+ [Filter] --> [Utilities]
+ 
++[MCP API] --> [Model]
++
+ @enduml
+diff --git a/plugin/src/test/resources/io/jenkins/plugins/analysis/core/mcp/checkstyle-sample.xml b/plugin/src/test/resources/io/jenkins/plugins/analysis/core/mcp/checkstyle-sample.xml
+new file mode 100644
+index 000000000..975f185f3
+--- /dev/null
++++ b/plugin/src/test/resources/io/jenkins/plugins/analysis/core/mcp/checkstyle-sample.xml
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<checkstyle version="10.0">
++    <file name="com/puppycrawl/tools/checkstyle/Main.java">
++        <error line="1" column="1" severity="error"
++               message="Missing package-info.java file."
++               source="com.puppycrawl.tools.checkstyle.checks.coding.MissingPackageInfoCheck"/>
++    </file>
++</checkstyle>
+\ No newline at end of file
+diff --git a/ui-tests/pom.xml b/ui-tests/pom.xml
+index 470354c10..7a11d0fb8 100644
+--- a/ui-tests/pom.xml
++++ b/ui-tests/pom.xml
+@@ -38,7 +38,7 @@
+         <!-- ClassNotFoundException if omitted -->
+         <groupId>io.netty</groupId>
+         <artifactId>netty-bom</artifactId>
+-        <version>4.2.12.Final</version>
++        <version>4.2.10.Final</version>
+         <type>pom</type>
+         <scope>import</scope>
+       </dependency>
+diff --git a/ui-tests/src/main/java/io/jenkins/plugins/analysis/warnings/AnalysisSummary.java b/ui-tests/src/main/java/io/jenkins/plugins/analysis/warnings/AnalysisSummary.java
+index b097fd3b0..320f1d803 100644
+--- a/ui-tests/src/main/java/io/jenkins/plugins/analysis/warnings/AnalysisSummary.java
++++ b/ui-tests/src/main/java/io/jenkins/plugins/analysis/warnings/AnalysisSummary.java
+@@ -45,7 +45,6 @@ public final class AnalysisSummary extends PageObject {
+      * @param id
+      *         the type of the result page (e.g., simian, checkstyle, cpd, etc.)
+      */
+-    @SuppressWarnings("PMD.ConstructorCallsOverridableMethod")
+     public AnalysisSummary(final Build parent, final String id) {
+         super(parent, parent.url(id));
+ 
+diff --git a/ui-tests/src/main/java/io/jenkins/plugins/analysis/warnings/DashboardTable.java b/ui-tests/src/main/java/io/jenkins/plugins/analysis/warnings/DashboardTable.java
+index cce524891..fc3c6d59b 100644
+--- a/ui-tests/src/main/java/io/jenkins/plugins/analysis/warnings/DashboardTable.java
++++ b/ui-tests/src/main/java/io/jenkins/plugins/analysis/warnings/DashboardTable.java
+@@ -35,7 +35,6 @@ public final class DashboardTable extends PageObject {
+      * @param url
+      *         the type of the result page (e.g., simian, checkstyle, cpd, etc.)
+      */
+-    @SuppressFBWarnings("MC")
+     public DashboardTable(final Build parent, final URL url) {
+         super(parent, url);
+ 

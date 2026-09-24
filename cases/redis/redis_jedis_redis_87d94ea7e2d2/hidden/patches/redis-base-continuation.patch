@@ -1,0 +1,38 @@
+diff --git a/tests/unit/type/stream-cgroups.tcl b/tests/unit/type/stream-cgroups.tcl
+--- a/tests/unit/type/stream-cgroups.tcl
++++ b/tests/unit/type/stream-cgroups.tcl
+@@ -548,6 +548,7 @@ start_server {
+         assert_equal [s total_error_replies] 1
+     }
+ 
++    if {[lindex [r command info XDELEX] 0] ne {}} {
+     test {XGROUP DESTROY removes all consumer group references} {
+         r DEL mystream
+         for {set j 0} {$j < 5} {incr j} {
+@@ -566,6 +567,7 @@ start_server {
+         assert_equal {1 1 1 1 1} [r XDELEX mystream ACKED IDS 5 0-1 1-1 2-1 3-1 4-1]
+         assert_equal 0 [r XLEN mystream] 
+     }
++    }
+ 
+     test {RENAME can unblock XREADGROUP with data} {
+         r del mystream{t}
+diff --git a/tests/unit/type/stream.tcl b/tests/unit/type/stream.tcl
+--- a/tests/unit/type/stream.tcl
++++ b/tests/unit/type/stream.tcl
+@@ -205,6 +205,7 @@ start_server {
+         }
+     }
+ 
++    if {[lindex [r command info XDELEX] 0] ne {}} {
+     test {XADD with MAXLEN option and ACKED option} {
+         r DEL mystream
+         r XADD mystream 1-0 f v
+@@ -262,6 +263,7 @@ start_server {
+         # All PEL entries should be cleaned up
+         assert {[lindex [r XPENDING mystream mygroup] 0] == 0}
+     }
++    }
+ 
+     test {XTRIM with MINID option} {
+         r DEL mystream

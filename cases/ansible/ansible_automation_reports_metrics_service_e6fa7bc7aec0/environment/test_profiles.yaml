@@ -1,0 +1,45 @@
+profiles:
+  automation_reports-hidden:
+    repo: automation-reports
+    workdir: repos/ansible/automation-reports
+    command: pytest -q -o addopts='' --ds=backend.tests.settings_for_test src/backend/tests/unit/test_cost_per_elapsed_second.py
+      src/backend/tests/unit/test_views.py
+    status: implemented
+    docker_service: ansible-aap-python
+    dependency_image: ecosyncbench/deps/ansible-aap-cost-py:e6fa7bc7aec0
+    test_files:
+    - src/backend/tests/conftest.py
+    - src/backend/tests/unit/test_cost_per_elapsed_second.py
+    - src/backend/tests/unit/test_views.py
+    patched_files:
+    - src/backend/tests/conftest.py
+    - src/backend/tests/unit/test_cost_per_elapsed_second.py
+    - src/backend/tests/unit/test_daily_subscription_cost.py
+    - src/backend/tests/unit/test_views.py
+    public_smoke_command: python -m pytest -q -o addopts="" --ds=backend.tests.settings_for_test
+      src/backend/tests/unit/test_date_ranges.py
+  metrics_service-hidden:
+    repo: metrics-service
+    workdir: repos/ansible/metrics-service
+    command: uv run pytest -q -o addopts='' tests/coverage/dashboard_reports/test_dashboard_models_extended.py
+      tests/coverage/general/test_final_push.py tests/unit/dashboard_reports/test_daily_subscription_cost.py
+      tests/unit/dashboard_reports/test_export_urls.py tests/unit/dashboard_reports/test_report_view_data.py
+      tests/unit/dashboard_reports/test_report_views.py
+    status: implemented
+    docker_service: ansible-aap-python
+    dependency_image: ecosyncbench/deps/ansible-aap-cost-py:e6fa7bc7aec0
+    test_files:
+    - tests/coverage/dashboard_reports/test_dashboard_models_extended.py
+    - tests/coverage/general/test_final_push.py
+    - tests/unit/dashboard_reports/test_daily_subscription_cost.py
+    - tests/unit/dashboard_reports/test_export_urls.py
+    - tests/unit/dashboard_reports/test_report_view_data.py
+    - tests/unit/dashboard_reports/test_report_views.py
+    patched_files:
+    - tests/coverage/dashboard_reports/test_dashboard_models_extended.py
+    - tests/coverage/general/test_final_push.py
+    - tests/unit/dashboard_reports/test_daily_subscription_cost.py
+    - tests/unit/dashboard_reports/test_export_urls.py
+    - tests/unit/dashboard_reports/test_report_view_data.py
+    - tests/unit/dashboard_reports/test_report_views.py
+    public_smoke_command: uv run pytest -q -o addopts="" tests/test_simple.py

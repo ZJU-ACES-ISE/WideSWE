@@ -1,0 +1,2220 @@
+diff --git a/apps/internal-storybook/tests/mcp-composition-auth.e2e.test.ts b/apps/internal-storybook/tests/mcp-composition-auth.e2e.test.ts
+index cdfbbc1..9e74a2c 100644
+--- a/apps/internal-storybook/tests/mcp-composition-auth.e2e.test.ts
++++ b/apps/internal-storybook/tests/mcp-composition-auth.e2e.test.ts
+@@ -171,6 +171,7 @@ describe('MCP Composition Auth E2E Tests', () => {
+ 				### Other Stories
+ 
+ 				- Small
++				- With A 11 Y Violation
+ 
+ 				## Props
+ 
+diff --git a/apps/internal-storybook/tests/mcp-composition.e2e.test.ts b/apps/internal-storybook/tests/mcp-composition.e2e.test.ts
+index 9f1da40..56470a5 100644
+--- a/apps/internal-storybook/tests/mcp-composition.e2e.test.ts
++++ b/apps/internal-storybook/tests/mcp-composition.e2e.test.ts
+@@ -113,6 +113,7 @@ describe('MCP Composition E2E Tests', () => {
+ 				### Other Stories
+ 
+ 				- Small
++				- With A 11 Y Violation
+ 
+ 				## Props
+ 
+diff --git a/apps/internal-storybook/tests/mcp-endpoint.e2e.test.ts b/apps/internal-storybook/tests/mcp-endpoint.e2e.test.ts
+index cee2fc6..bac3b7d 100644
+--- a/apps/internal-storybook/tests/mcp-endpoint.e2e.test.ts
++++ b/apps/internal-storybook/tests/mcp-endpoint.e2e.test.ts
+@@ -99,8 +99,8 @@ describe('MCP Endpoint E2E Tests', () => {
+ 			const response = await mcpRequest('tools/list');
+ 
+ 			expect(response.result).toHaveProperty('tools');
+-			// Dev and docs tools should be present
+-			expect(response.result.tools).toHaveLength(4);
++			// Dev, docs, and test tools should be present
++			expect(response.result.tools).toHaveLength(5);
+ 
+ 			expect(response.result.tools).toMatchInlineSnapshot(`
+ 				[
+@@ -252,7 +252,7 @@ describe('MCP Endpoint E2E Tests', () => {
+ 				    "title": "Preview stories",
+ 				  },
+ 				  {
+-				    "description": "Get comprehensive instructions for writing and updating Storybook stories (.stories.tsx, .stories.ts, .stories.jsx, .stories.js, .stories.svelte, .stories.vue files).
++				    "description": "Get comprehensive instructions for writing, testing, and fixing Storybook stories (.stories.tsx, .stories.ts, .stories.jsx, .stories.js, .stories.svelte, .stories.vue files).
+ 
+ 				CRITICAL: You MUST call this tool before:
+ 				- Creating new Storybook stories or story files
+@@ -260,6 +260,8 @@ describe('MCP Endpoint E2E Tests', () => {
+ 				- Adding new story variants or exports to story files
+ 				- Editing any file matching *.stories.* patterns
+ 				- Writing components that will need stories
++				- Running story tests or fixing test failures
++				- Handling accessibility (a11y) violations in stories (fix semantic issues directly; ask before visual/design changes)
+ 
+ 				This tool provides essential Storybook-specific guidance including:
+ 				- How to structure stories correctly for Storybook 9
+@@ -269,6 +271,7 @@ describe('MCP Endpoint E2E Tests', () => {
+ 				- Play function patterns for interactive testing
+ 				- Mocking strategies for external dependencies
+ 				- Story variants and coverage requirements
++				- How to handle test failures and accessibility violations
+ 
+ 				Even if you're familiar with Storybook, call this tool to ensure you're following the correct patterns, import paths, and conventions for this specific Storybook setup.",
+ 				    "inputSchema": {
+@@ -278,6 +281,73 @@ describe('MCP Endpoint E2E Tests', () => {
+ 				    "name": "get-storybook-story-instructions",
+ 				    "title": "Storybook Story Development Instructions",
+ 				  },
++				  {
++				    "description": "Run story tests.
++				Provide stories for focused runs (faster while iterating),
++				or omit stories to run all tests for full-project verification.
++				Use this continuously to monitor test results as you work on your UI components and stories.
++				Results will include passing/failing status, and accessibility violation reports.
++				For visual/design accessibility violations (for example color contrast), ask the user before changing styles.",
++				    "inputSchema": {
++				      "$schema": "http://json-schema.org/draft-07/schema#",
++				      "properties": {
++				        "a11y": {
++				          "default": true,
++				          "description": "Whether to run accessibility tests. Defaults to true. Disable if you only need component test results.",
++				          "type": "boolean",
++				        },
++				        "stories": {
++				          "description": "Stories to test for focused feedback. Omit this field to run tests for all available stories.
++				Prefer running tests for specific stories while developing to get faster feedback,
++				and only omit this when you explicitly need to run all tests for comprehensive verification.",
++				          "items": {
++				            "properties": {
++				              "absoluteStoryPath": {
++				                "type": "string",
++				              },
++				              "explicitStoryName": {
++				                "description": "If the story has an explicit name set via the "name" propoerty, that is different from the export name, provide it here.
++				Otherwise don't set this.",
++				                "type": "string",
++				              },
++				              "exportName": {
++				                "type": "string",
++				              },
++				              "globals": {
++				                "additionalProperties": {},
++				                "description": "Optional Storybook globals to set for the story preview. Globals are used for things like theme, locale, viewport, and other cross-cutting concerns.
++				Common globals include 'theme' (e.g., 'dark', 'light'), 'locale' (e.g., 'en', 'fr'), and 'backgrounds' (e.g., { value: '#000' }).",
++				                "propertyNames": {
++				                  "type": "string",
++				                },
++				                "type": "object",
++				              },
++				              "props": {
++				                "additionalProperties": {},
++				                "description": "Optional custom props to pass to the story for rendering. Use this when you don't want to render the default story,
++				but you want to customize some args or other props.
++				You can look up the component's documentation using the get-storybook-story-instructions tool to see what props are available.",
++				                "propertyNames": {
++				                  "type": "string",
++				                },
++				                "type": "object",
++				              },
++				            },
++				            "required": [
++				              "exportName",
++				              "absoluteStoryPath",
++				            ],
++				            "type": "object",
++				          },
++				          "type": "array",
++				        },
++				      },
++				      "required": [],
++				      "type": "object",
++				    },
++				    "name": "run-story-tests",
++				    "title": "Storybook Tests",
++				  },
+ 				  {
+ 				    "description": "List all available UI components and documentation entries from the Storybook",
+ 				    "inputSchema": {
+@@ -447,13 +517,16 @@ describe('MCP Endpoint E2E Tests', () => {
+ 			const text = response.result.content[0].text as string;
+ 			expect(text).toContain('# Button');
+ 			expect(text).toContain('## Stories');
++			expect(text).toContain('### Primary');
++			expect(text).toContain('### Secondary');
++			expect(text).toContain('## Props');
++			expect(text).toContain('export type Props =');
+ 			expect(text).toContain('## Docs');
+ 			expect(text).toContain('### Additional Information');
+ 			expect(text).toContain(
+ 				'that the string passed to the `label` prop uses the 🍌-emoji instead of spaces.',
+ 			);
+ 			expect(text).toContain('<Canvas of={ButtonStories.Primary} />');
+-			expect(text).toContain('## Props');
+ 		});
+ 
+ 		it('should return error for non-existent component', async () => {
+@@ -478,6 +551,166 @@ describe('MCP Endpoint E2E Tests', () => {
+ 		});
+ 	});
+ 
++	describe('Tool: run-story-tests', () => {
++		it('should run all tests when stories are omitted', async () => {
++			const response = await mcpRequest('tools/call', {
++				name: 'run-story-tests',
++				arguments: {},
++			});
++
++			const text = response.result.content[0].text;
++			expect(text).toContain('## Passing Stories');
++			expect(text).toContain('example-button--primary');
++			expect(text).toContain('page--logged-out');
++		});
++
++		it('should run tests for a story and report accessibility violations', async () => {
++			const cwd = process.cwd();
++			const storyPath = cwd.endsWith('/apps/internal-storybook')
++				? `${cwd}/stories/components/Button.stories.ts`
++				: `${cwd}/apps/internal-storybook/stories/components/Button.stories.ts`;
++
++			const response = await mcpRequest('tools/call', {
++				name: 'run-story-tests',
++				arguments: {
++					stories: [
++						{
++							exportName: 'WithA11yViolation',
++							absoluteStoryPath: storyPath,
++						},
++					],
++				},
++			});
++
++			const text = response.result.content[0].text;
++			expect(text).toContain('## Passing Stories');
++			expect(text).toContain('example-button--with-a-11-y-violation');
++			expect(text).toContain('## Accessibility Violations');
++			expect(text).toContain('example-button--with-a-11-y-violation - color-contrast');
++			expect(text).toContain('Expected contrast ratio of 4.5:1');
++		});
++
++		it('should run tests for multiple stories', async () => {
++			const cwd = process.cwd();
++			const storyPath = cwd.endsWith('/apps/internal-storybook')
++				? `${cwd}/stories/components/Button.stories.ts`
++				: `${cwd}/apps/internal-storybook/stories/components/Button.stories.ts`;
++
++			const response = await mcpRequest('tools/call', {
++				name: 'run-story-tests',
++				arguments: {
++					stories: [
++						{
++							exportName: 'Primary',
++							absoluteStoryPath: storyPath,
++						},
++						{
++							exportName: 'Secondary',
++							absoluteStoryPath: storyPath,
++						},
++					],
++				},
++			});
++
++			const text = response.result.content[0].text;
++			expect(text).toContain('## Passing Stories');
++			expect(text).toContain('example-button--primary');
++			expect(text).toContain('example-button--secondary');
++			expect(text).toContain('## Accessibility Violations');
++			expect(text).toContain('example-button--primary - color-contrast');
++		});
++
++		it('should return error for non-existent story', async () => {
++			const response = await mcpRequest('tools/call', {
++				name: 'run-story-tests',
++				arguments: {
++					stories: [
++						{
++							exportName: 'NonExistent',
++							absoluteStoryPath: `${process.cwd()}/stories/components/NonExistent.stories.ts`,
++						},
++					],
++				},
++			});
++
++			const text = response.result.content[0].text;
++			expect(text).toContain('No stories found matching the provided input.');
++			expect(text).toContain('No story found for export name "NonExistent"');
++		});
++
++		it('should sequentialize 4 concurrent calls to run-story-tests', async () => {
++			const cwd = process.cwd();
++			const storyPath = cwd.endsWith('/apps/internal-storybook')
++				? `${cwd}/stories/components/Button.stories.ts`
++				: `${cwd}/apps/internal-storybook/stories/components/Button.stories.ts`;
++
++			// Make 4 concurrent calls with different story exports
++			const promise1 = mcpRequest('tools/call', {
++				name: 'run-story-tests',
++				arguments: {
++					stories: [{ exportName: 'Primary', absoluteStoryPath: storyPath }],
++				},
++			});
++
++			const promise2 = mcpRequest('tools/call', {
++				name: 'run-story-tests',
++				arguments: {
++					stories: [{ exportName: 'Secondary', absoluteStoryPath: storyPath }],
++				},
++			});
++
++			const promise3 = mcpRequest('tools/call', {
++				name: 'run-story-tests',
++				arguments: {
++					stories: [{ exportName: 'Large', absoluteStoryPath: storyPath }],
++				},
++			});
++
++			const promise4 = mcpRequest('tools/call', {
++				name: 'run-story-tests',
++				arguments: {
++					stories: [{ exportName: 'Small', absoluteStoryPath: storyPath }],
++				},
++			});
++
++			// All calls should complete successfully
++			const [result1, result2, result3, result4] = await Promise.all([
++				promise1,
++				promise2,
++				promise3,
++				promise4,
++			]);
++
++			// Verify call 1 completed with Primary story
++			expect(result1.result).toBeDefined();
++			expect(result1.result.content).toBeDefined();
++			expect(result1.result.content.length).toBeGreaterThan(0);
++			expect(result1.result.content[0].text).toContain('example-button--primary');
++			expect(result1.result.content[0].text).toContain('Passing Stories');
++
++			// Verify call 2 completed with Secondary story
++			expect(result2.result).toBeDefined();
++			expect(result2.result.content).toBeDefined();
++			expect(result2.result.content.length).toBeGreaterThan(0);
++			expect(result2.result.content[0].text).toContain('example-button--secondary');
++			expect(result2.result.content[0].text).toContain('Passing Stories');
++
++			// Verify call 3 completed with Large story
++			expect(result3.result).toBeDefined();
++			expect(result3.result.content).toBeDefined();
++			expect(result3.result.content.length).toBeGreaterThan(0);
++			expect(result3.result.content[0].text).toContain('example-button--large');
++			expect(result3.result.content[0].text).toContain('Passing Stories');
++
++			// Verify call 4 completed with Small story
++			expect(result4.result).toBeDefined();
++			expect(result4.result.content).toBeDefined();
++			expect(result4.result.content.length).toBeGreaterThan(0);
++			expect(result4.result.content[0].text).toContain('example-button--small');
++			expect(result4.result.content[0].text).toContain('Passing Stories');
++		});
++	});
++
+ 	describe('Toolset Filtering', () => {
+ 		it('should respect X-MCP-Toolsets header for dev tools only', async () => {
+ 			const response = await fetch(MCP_ENDPOINT, {
+diff --git a/eval/lib/graders/judge.test.ts b/eval/lib/graders/judge.test.ts
+new file mode 100644
+index 0000000..aefa311
+--- /dev/null
++++ b/eval/lib/graders/judge.test.ts
+@@ -0,0 +1,129 @@
++import { describe, expect, it } from 'vitest';
++import * as os from 'node:os';
++import * as path from 'node:path';
++import * as fs from 'node:fs/promises';
++
++import { resolveJudgePromptFile, parseJudgeResult, renderJudgePromptTemplate } from './judge.ts';
++
++describe('judge parsing', () => {
++	it('parses simple JSON', () => {
++		const parsed = parseJudgeResult('{"score":0.5,"reason":"Solid rubric match."}');
++		expect(parsed).toEqual({ score: 0.5, reason: 'Solid rubric match.' });
++	});
++
++	it('clamps score to [0, 1]', () => {
++		expect(parseJudgeResult('{"score":2,"reason":"High confidence."}').score).toBe(1);
++		expect(parseJudgeResult('{"score":-1,"reason":"Low confidence."}').score).toBe(0);
++	});
++
++	it('parses score and reason', () => {
++		const parsed = parseJudgeResult('{"score":0.75,"reason":"Strong evidence provided."}');
++		expect(parsed).toEqual({ score: 0.75, reason: 'Strong evidence provided.' });
++	});
++
++	it('accepts fenced JSON', () => {
++		const raw = '```json\n{"score":0.75,"reason":"Looks good."}\n```';
++		const parsed = parseJudgeResult(raw);
++		expect(parsed.score).toBe(0.75);
++	});
++
++	it('throws if no JSON object', () => {
++		expect(() => {
++			parseJudgeResult('score: 0.2');
++		}).toThrow(/JSON object/i);
++	});
++
++	it('throws if score missing', () => {
++		expect(() => {
++			parseJudgeResult('{"ok":true,"reason":"x"}');
++		}).toThrow(/score/i);
++	});
++
++	it('throws if reason missing', () => {
++		expect(() => {
++			parseJudgeResult('{"score":0.4}');
++		}).toThrow(/reason/i);
++	});
++});
++
++describe('judge prompt resolution', () => {
++	it('returns undefined when judge.md does not exist', async () => {
++		const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eval-judge-'));
++		try {
++			const resolved = await resolveJudgePromptFile(dir);
++			expect(resolved).toBeUndefined();
++		} finally {
++			await fs.rm(dir, { recursive: true, force: true });
++		}
++	});
++
++	it('auto-detects judge.md when present', async () => {
++		const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eval-judge-'));
++		try {
++			await fs.writeFile(path.join(dir, 'judge.md'), 'Judge me');
++			const resolved = await resolveJudgePromptFile(dir);
++			expect(resolved).toContain(path.join(dir, 'judge.md'));
++		} finally {
++			await fs.rm(dir, { recursive: true, force: true });
++		}
++	});
++});
++
++describe('judge template placeholders', () => {
++	it('renders TRANSCRIPT_LAST_ASSISTANT_MESSAGE placeholder', async () => {
++		const transcript = {
++			prompt: 'p',
++			promptTokenCount: 0,
++			promptCost: 0,
++			messages: [],
++		} as any;
++
++		const { renderedPrompt, usedPlaceholders } = await renderJudgePromptTemplate(
++			'Evaluate this: {{TRANSCRIPT_LAST_ASSISTANT_MESSAGE}}',
++			{
++				projectPath: '/tmp',
++				resultsPath: '/tmp',
++				transcript,
++				finalAssistantText: 'Final answer text',
++			},
++		);
++
++		expect(usedPlaceholders).toBe(true);
++		expect(renderedPrompt).toContain('Final answer text');
++	});
++
++	it('renders PROJECT_FILE and RESULTS_FILE placeholders', async () => {
++		const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eval-judge-template-'));
++		const projectPath = path.join(dir, 'project');
++		const resultsPath = path.join(dir, 'results');
++		await fs.mkdir(projectPath, { recursive: true });
++		await fs.mkdir(resultsPath, { recursive: true });
++
++		try {
++			await fs.writeFile(path.join(projectPath, 'src.txt'), 'project-content');
++			await fs.writeFile(path.join(resultsPath, 'summary.txt'), 'results-content');
++
++			const transcript = {
++				prompt: 'p',
++				promptTokenCount: 0,
++				promptCost: 0,
++				messages: [],
++			} as any;
++
++			const { renderedPrompt } = await renderJudgePromptTemplate(
++				'P={{PROJECT_FILE:src.txt}} R={{RESULTS_FILE:summary.txt}}',
++				{
++					projectPath,
++					resultsPath,
++					transcript,
++					finalAssistantText: 'ignored',
++				},
++			);
++
++			expect(renderedPrompt).toContain('project-content');
++			expect(renderedPrompt).toContain('results-content');
++		} finally {
++			await fs.rm(dir, { recursive: true, force: true });
++		}
++	});
++});
+diff --git a/eval/lib/graders/mcp-tools.test.ts b/eval/lib/graders/mcp-tools.test.ts
+new file mode 100644
+index 0000000..7eedaf5
+--- /dev/null
++++ b/eval/lib/graders/mcp-tools.test.ts
+@@ -0,0 +1,164 @@
++import { describe, expect, it } from 'vitest';
++import { extractMcpToolsSummary } from './mcp-tools.ts';
++
++function createTranscriptWithMcpToolUse({
++	toolName,
++	input,
++}: {
++	toolName: string;
++	input: Record<string, unknown>;
++}) {
++	// We only need the subset of the transcript schema that `extractMcpToolsSummary` reads.
++	return [
++		{
++			type: 'assistant',
++			message: {
++				content: [
++					{
++						type: 'tool_use',
++						isMCP: true,
++						id: 'tool-use-1',
++						name: toolName,
++						input,
++					},
++				],
++			},
++		},
++		{
++			type: 'user',
++			tokenCount: 40,
++			message: {
++				content: [
++					{
++						type: 'tool_result',
++						tool_use_id: 'tool-use-1',
++						content: [{ type: 'text', text: 'ok' }],
++					},
++				],
++			},
++		},
++	] as any;
++}
++
++describe('mcp-tools grader expectedCalls matching', () => {
++	it('matches expectedCalls as deep partial input patterns', () => {
++		const messages = createTranscriptWithMcpToolUse({
++			toolName: 'mcp__storybook-dev-mcp__run-story-tests',
++			input: {
++				stories: [
++					{
++						absoluteStoryPath: '/abs/path/to/Foo.stories.tsx',
++						exportName: 'Bar',
++					},
++				],
++				a11y: false,
++			},
++		});
++
++		const summary = extractMcpToolsSummary(messages, {
++			'run-story-tests': {
++				expectedCalls: [{ a11y: false }],
++			},
++		});
++
++		expect(summary.allExpectationsPassed).toBe(true);
++		expect(summary.calledExpectedToolCount).toBe(1);
++
++		const runTool = summary.tools.find((t) => t.name.includes('run-story-tests'));
++		expect(runTool?.validation?.inputMatch).toBe(true);
++	});
++
++	it('fails validation when expectedCalls does not match any invocation', () => {
++		const messages = createTranscriptWithMcpToolUse({
++			toolName: 'mcp__storybook-dev-mcp__run-story-tests',
++			input: {
++				stories: [
++					{
++						absoluteStoryPath: '/abs/path/to/Foo.stories.tsx',
++						exportName: 'Bar',
++					},
++				],
++				a11y: false,
++			},
++		});
++
++		const summary = extractMcpToolsSummary(messages, {
++			'run-story-tests': {
++				expectedCalls: [{ a11y: true }],
++			},
++		});
++
++		expect(summary.allExpectationsPassed).toBe(false);
++
++		const runTool = summary.tools.find((t) => t.name.includes('run-story-tests'));
++		expect(runTool?.validation?.inputMatch).toBe(false);
++	});
++});
++
++describe('mcp-tools grader call count matching', () => {
++	it('passes when minCalls is satisfied', () => {
++		const messages = [
++			...createTranscriptWithMcpToolUse({
++				toolName: 'mcp__storybook-dev-mcp__run-story-tests',
++				input: { a11y: false },
++			}),
++			...createTranscriptWithMcpToolUse({
++				toolName: 'mcp__storybook-dev-mcp__run-story-tests',
++				input: { a11y: false },
++			}),
++		] as any;
++
++		const summary = extractMcpToolsSummary(messages, {
++			'run-story-tests': {
++				minCalls: 2,
++			},
++		});
++
++		expect(summary.allExpectationsPassed).toBe(true);
++		const runTool = summary.tools.find((t) => t.name.includes('run-story-tests'));
++		expect(runTool?.callCount).toBe(2);
++		expect(runTool?.validation?.minCallsMet).toBe(true);
++	});
++
++	it('fails when minCalls is not satisfied', () => {
++		const messages = createTranscriptWithMcpToolUse({
++			toolName: 'mcp__storybook-dev-mcp__run-story-tests',
++			input: { a11y: false },
++		});
++
++		const summary = extractMcpToolsSummary(messages, {
++			'run-story-tests': {
++				minCalls: 2,
++			},
++		});
++
++		expect(summary.allExpectationsPassed).toBe(false);
++		const runTool = summary.tools.find((t) => t.name.includes('run-story-tests'));
++		expect(runTool?.callCount).toBe(1);
++		expect(runTool?.validation?.minCallsMet).toBe(false);
++	});
++
++	it('fails when maxCalls is exceeded', () => {
++		const messages = [
++			...createTranscriptWithMcpToolUse({
++				toolName: 'mcp__storybook-dev-mcp__run-story-tests',
++				input: { a11y: false },
++			}),
++			...createTranscriptWithMcpToolUse({
++				toolName: 'mcp__storybook-dev-mcp__run-story-tests',
++				input: { a11y: false },
++			}),
++		] as any;
++
++		const summary = extractMcpToolsSummary(messages, {
++			'run-story-tests': {
++				maxCalls: 1,
++			},
++		});
++
++		expect(summary.allExpectationsPassed).toBe(false);
++		const runTool = summary.tools.find((t) => t.name.includes('run-story-tests'));
++		expect(runTool?.callCount).toBe(2);
++		expect(runTool?.validation?.maxCallsMet).toBe(false);
++	});
++});
+diff --git a/eval/lib/quality/error-counts.test.ts b/eval/lib/quality/error-counts.test.ts
+index 76812f0..b0c2f82 100644
+--- a/eval/lib/quality/error-counts.test.ts
++++ b/eval/lib/quality/error-counts.test.ts
+@@ -1,6 +1,11 @@
+ import { describe, it, expect } from 'vitest';
+ import type { TrialArgs, ExecutionSummary, GradingSummary } from '../../types.ts';
+-import { fromTypeCheckErrors, fromLintErrors, fromA11yViolations } from './error-counts.ts';
++import {
++	fromTypeCheckErrors,
++	fromLintErrors,
++	fromA11yViolations,
++	fromTestPassRate,
++} from './error-counts.ts';
+ 
+ function createGrading(overrides: Partial<GradingSummary> = {}): GradingSummary {
+ 	return {
+@@ -37,6 +42,14 @@ function calculateA11y(violations: number) {
+ 	})!;
+ }
+ 
++function calculateTestPassRate(passed: number, failed: number) {
++	return fromTestPassRate({
++		trialArgs: {} as TrialArgs,
++		execution: {} as ExecutionSummary,
++		grading: createGrading({ test: { passed, failed } }),
++	})!;
++}
++
+ describe('fromTypeCheckErrors', () => {
+ 	describe('score calculation', () => {
+ 		it('returns 1.0 for 0 errors', () => {
+@@ -111,3 +124,27 @@ describe('fromA11yViolations', () => {
+ 		});
+ 	});
+ });
++
++describe('fromTestPassRate', () => {
++	describe('score calculation', () => {
++		it('returns 0.0 when no tests were run', () => {
++			expect(calculateTestPassRate(0, 0).score).toBe(0.0);
++		});
++
++		it('returns 1.0 when all tests pass', () => {
++			expect(calculateTestPassRate(5, 0).score).toBe(1.0);
++		});
++
++		it('returns 0.75 for 75% pass rate', () => {
++			expect(calculateTestPassRate(3, 1).score).toBe(0.75);
++		});
++
++		it('returns 0.5 for 50% pass rate', () => {
++			expect(calculateTestPassRate(2, 2).score).toBe(0.5);
++		});
++
++		it('returns 0.0 when all tests fail', () => {
++			expect(calculateTestPassRate(0, 4).score).toBe(0.0);
++		});
++	});
++});
+diff --git a/packages/addon-mcp/src/mcp-handler.test.ts b/packages/addon-mcp/src/mcp-handler.test.ts
+index 23c4820..8ca96d8 100644
+--- a/packages/addon-mcp/src/mcp-handler.test.ts
++++ b/packages/addon-mcp/src/mcp-handler.test.ts
+@@ -403,6 +403,7 @@ describe('getToolsets', () => {
+ 			toolsets: {
+ 				dev: true,
+ 				docs: false,
++				test: true,
+ 			},
+ 		};
+ 
+@@ -411,6 +412,7 @@ describe('getToolsets', () => {
+ 		expect(result).toEqual({
+ 			dev: true,
+ 			docs: false,
++			test: true,
+ 		});
+ 	});
+ 
+@@ -422,6 +424,7 @@ describe('getToolsets', () => {
+ 			toolsets: {
+ 				dev: true,
+ 				docs: true,
++				test: true,
+ 			},
+ 		};
+ 
+@@ -430,6 +433,7 @@ describe('getToolsets', () => {
+ 		expect(result).toEqual({
+ 			dev: true,
+ 			docs: false,
++			test: false,
+ 		});
+ 	});
+ 
+@@ -443,6 +447,7 @@ describe('getToolsets', () => {
+ 			toolsets: {
+ 				dev: false,
+ 				docs: false,
++				test: false,
+ 			},
+ 		};
+ 
+@@ -451,6 +456,7 @@ describe('getToolsets', () => {
+ 		expect(result).toEqual({
+ 			dev: true,
+ 			docs: true,
++			test: false,
+ 		});
+ 	});
+ 
+@@ -464,6 +470,7 @@ describe('getToolsets', () => {
+ 			toolsets: {
+ 				dev: false,
+ 				docs: false,
++				test: false,
+ 			},
+ 		};
+ 
+@@ -472,6 +479,7 @@ describe('getToolsets', () => {
+ 		expect(result).toEqual({
+ 			dev: true,
+ 			docs: true,
++			test: false,
+ 		});
+ 	});
+ 
+@@ -485,6 +493,7 @@ describe('getToolsets', () => {
+ 			toolsets: {
+ 				dev: false,
+ 				docs: false,
++				test: false,
+ 			},
+ 		};
+ 
+@@ -493,6 +502,7 @@ describe('getToolsets', () => {
+ 		expect(result).toEqual({
+ 			dev: true,
+ 			docs: true,
++			test: false,
+ 		});
+ 	});
+ 
+@@ -504,6 +514,7 @@ describe('getToolsets', () => {
+ 			toolsets: {
+ 				dev: true,
+ 				docs: true,
++				test: true,
+ 			},
+ 		};
+ 
+@@ -512,6 +523,7 @@ describe('getToolsets', () => {
+ 		expect(result).toEqual({
+ 			dev: true,
+ 			docs: true,
++			test: true,
+ 		});
+ 	});
+ });
+diff --git a/packages/addon-mcp/src/tools/get-storybook-story-instructions.test.ts b/packages/addon-mcp/src/tools/get-storybook-story-instructions.test.ts
+index 58c764c..83bbb99 100644
+--- a/packages/addon-mcp/src/tools/get-storybook-story-instructions.test.ts
++++ b/packages/addon-mcp/src/tools/get-storybook-story-instructions.test.ts
+@@ -1,17 +1,24 @@
+ import { describe, it, expect, vi, beforeEach } from 'vitest';
+ import { McpServer } from 'tmcp';
+ import { ValibotJsonSchemaAdapter } from '@tmcp/adapter-valibot';
+-import {
+-	addGetUIBuildingInstructionsTool,
+-	GET_UI_BUILDING_INSTRUCTIONS_TOOL_NAME,
+-} from './get-storybook-story-instructions.ts';
++import { getAddonVitestConstants } from './run-story-tests.ts';
++import { addGetUIBuildingInstructionsTool } from './get-storybook-story-instructions.ts';
+ import type { AddonContext } from '../types.ts';
+-import { PREVIEW_STORIES_TOOL_NAME } from './preview-stories.ts';
++import { PREVIEW_STORIES_TOOL_NAME, GET_UI_BUILDING_INSTRUCTIONS_TOOL_NAME } from './tool-names.ts';
++
++vi.mock('./run-story-tests.ts', () => ({
++	getAddonVitestConstants: vi.fn(),
++}));
+ 
+ describe('getUIBuildingInstructionsTool', () => {
+ 	let server: McpServer<any, AddonContext>;
+ 
+ 	beforeEach(async () => {
++		vi.mocked(getAddonVitestConstants).mockResolvedValue({
++			TRIGGER_TEST_RUN_REQUEST: 'TRIGGER_TEST_RUN_REQUEST',
++			TRIGGER_TEST_RUN_RESPONSE: 'TRIGGER_TEST_RUN_RESPONSE',
++		});
++
+ 		const adapter = new ValibotJsonSchemaAdapter();
+ 		server = new McpServer(
+ 			{
+@@ -47,6 +54,106 @@ describe('getUIBuildingInstructionsTool', () => {
+ 		await addGetUIBuildingInstructionsTool(server);
+ 	});
+ 
++	async function getToolDescription(context: AddonContext) {
++		const response = await server.receive(
++			{
++				jsonrpc: '2.0' as const,
++				id: 100,
++				method: 'tools/list',
++				params: {},
++			},
++			{
++				sessionId: 'test-session',
++				custom: context,
++			},
++		);
++
++		const tools = response.result?.tools ?? [];
++		const instructionsTool = tools.find(
++			(tool: any) => tool.name === GET_UI_BUILDING_INSTRUCTIONS_TOOL_NAME,
++		);
++		return instructionsTool?.description as string;
++	}
++
++	it('should include testing and a11y description when available', async () => {
++		const mockOptions = {
++			presets: {
++				apply: vi.fn().mockResolvedValue('@storybook/react-vite'),
++			},
++		};
++
++		const description = await getToolDescription({
++			origin: 'http://localhost:6006',
++			options: mockOptions as any,
++			disableTelemetry: true,
++			a11yEnabled: true,
++			toolsets: {
++				dev: true,
++				docs: true,
++				test: true,
++			},
++		});
++
++		expect(description).toContain('Running story tests or fixing test failures');
++		expect(description).toContain(
++			'Handling accessibility (a11y) violations in stories (fix semantic issues directly; ask before visual/design changes)',
++		);
++		expect(description).toContain('How to handle test failures and accessibility violations');
++	});
++
++	it('should exclude testing and a11y description when test toolset is disabled', async () => {
++		const mockOptions = {
++			presets: {
++				apply: vi.fn().mockResolvedValue('@storybook/react-vite'),
++			},
++		};
++
++		const description = await getToolDescription({
++			origin: 'http://localhost:6006',
++			options: mockOptions as any,
++			disableTelemetry: true,
++			a11yEnabled: true,
++			toolsets: {
++				dev: true,
++				docs: true,
++				test: false,
++			},
++		});
++
++		expect(description).not.toContain('Running story tests or fixing test failures');
++		expect(description).not.toContain(
++			'Handling accessibility (a11y) violations in stories (fix semantic issues directly; ask before visual/design changes)',
++		);
++		expect(description).not.toContain('How to handle test failures');
++	});
++
++	it('should include testing but exclude a11y description when a11y is disabled', async () => {
++		const mockOptions = {
++			presets: {
++				apply: vi.fn().mockResolvedValue('@storybook/react-vite'),
++			},
++		};
++
++		const description = await getToolDescription({
++			origin: 'http://localhost:6006',
++			options: mockOptions as any,
++			disableTelemetry: true,
++			a11yEnabled: false,
++			toolsets: {
++				dev: true,
++				docs: true,
++				test: true,
++			},
++		});
++
++		expect(description).toContain('Running story tests or fixing test failures');
++		expect(description).toContain('How to handle test failures');
++		expect(description).not.toContain('How to handle test failures and accessibility violations');
++		expect(description).not.toContain(
++			'Handling accessibility (a11y) violations in stories (fix semantic issues directly; ask before visual/design changes)',
++		);
++	});
++
+ 	it('should return UI building instructions with framework placeholders replaced', async () => {
+ 		const mockOptions = {
+ 			presets: {
+diff --git a/packages/addon-mcp/src/tools/preview-stories.test.ts b/packages/addon-mcp/src/tools/preview-stories.test.ts
+index b339ff3..d556a0f 100644
+--- a/packages/addon-mcp/src/tools/preview-stories.test.ts
++++ b/packages/addon-mcp/src/tools/preview-stories.test.ts
+@@ -1,11 +1,12 @@
+ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+ import { McpServer } from 'tmcp';
+ import { ValibotJsonSchemaAdapter } from '@tmcp/adapter-valibot';
+-import { addPreviewStoriesTool, PREVIEW_STORIES_TOOL_NAME } from './preview-stories.ts';
++import { addPreviewStoriesTool } from './preview-stories.ts';
+ import type { AddonContext } from '../types.ts';
+ import smallStoryIndexFixture from '../../fixtures/small-story-index.fixture.json' with { type: 'json' };
+ import monorepoStoryIndexFixture from '../../fixtures/monorepo-story-index.fixture.json' with { type: 'json' };
+ import * as fetchStoryIndex from '../utils/fetch-story-index.ts';
++import { PREVIEW_STORIES_TOOL_NAME } from './tool-names.ts';
+ 
+ vi.mock('storybook/internal/csf', () => ({
+ 	storyNameFromExport: (exportName: string) => exportName,
+diff --git a/packages/addon-mcp/src/tools/run-story-tests.test.ts b/packages/addon-mcp/src/tools/run-story-tests.test.ts
+new file mode 100644
+index 0000000..d14e439
+--- /dev/null
++++ b/packages/addon-mcp/src/tools/run-story-tests.test.ts
+@@ -0,0 +1,1054 @@
++import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
++import { McpServer } from 'tmcp';
++import { ValibotJsonSchemaAdapter } from '@tmcp/adapter-valibot';
++import { addRunStoryTestsTool, getAddonVitestConstants } from './run-story-tests.ts';
++import type { AddonContext } from '../types.ts';
++import smallStoryIndexFixture from '../../fixtures/small-story-index.fixture.json' with { type: 'json' };
++import * as fetchStoryIndex from '../utils/fetch-story-index.ts';
++import type { TriggerTestRunResponsePayload } from '@storybook/addon-vitest/constants';
++import { RUN_STORY_TESTS_TOOL_NAME } from './tool-names.ts';
++
++vi.mock('storybook/internal/csf', () => ({
++	storyNameFromExport: (exportName: string) => exportName,
++}));
++
++vi.mock('storybook/internal/node-logger', () => ({
++	logger: {
++		info: vi.fn(),
++		debug: vi.fn(),
++		warn: vi.fn(),
++	},
++}));
++
++describe('getAddonVitestConstants', () => {
++	it('should return constants when addon-vitest is available', async () => {
++		const constants = await getAddonVitestConstants();
++		expect(constants).toMatchInlineSnapshot(`
++			{
++			  "TRIGGER_TEST_RUN_REQUEST": "storybook/test/trigger-test-run-request",
++			  "TRIGGER_TEST_RUN_RESPONSE": "storybook/test/trigger-test-run-response",
++			}
++		`);
++	});
++});
++
++describe('runStoryTestsTool', () => {
++	let server: McpServer<any, AddonContext>;
++	let mockChannel: {
++		on: Mock;
++		off: Mock;
++		emit: Mock;
++	};
++
++	type ChannelResponse = Omit<TriggerTestRunResponsePayload, 'requestId'>;
++
++	const createTestContext = (): AddonContext => {
++		mockChannel = {
++			on: vi.fn(),
++			off: vi.fn(),
++			emit: vi.fn(),
++		};
++
++		return {
++			origin: 'http://localhost:6006',
++			options: {
++				channel: mockChannel,
++			} as any,
++			disableTelemetry: true,
++			toolsets: {
++				dev: true,
++				docs: true,
++				test: true,
++			},
++		};
++	};
++
++	/**
++	 * Sets up the mock channel to respond with the given response when a test run is triggered.
++	 */
++	const setupChannelResponse = (response: ChannelResponse) => {
++		mockChannel.emit.mockImplementation((event, payload: any) => {
++			if (event === 'storybook/test/trigger-test-run-request') {
++				const onCallback = mockChannel.on.mock.calls.find(
++					(call) => call[0] === 'storybook/test/trigger-test-run-response',
++				)?.[1];
++				if (onCallback) {
++					setTimeout(() => {
++						onCallback({
++							requestId: payload.requestId,
++							...response,
++						});
++					}, 0);
++				}
++			}
++		});
++	};
++
++	/**
++	 * Calls the run-story-tests tool with optional focused stories.
++	 * Uses relative paths from 'src/' to avoid absolute path issues in snapshots.
++	 */
++	const callTool = async (
++		stories: Array<{ exportName: string; relativePath: string }> | undefined,
++		context: AddonContext,
++		options?: { a11y?: boolean },
++	) => {
++		const storyArguments = stories
++			? {
++					stories: stories.map((story) => ({
++						exportName: story.exportName,
++						absoluteStoryPath: `${process.cwd()}/${story.relativePath}`,
++					})),
++				}
++			: {};
++
++		const request = {
++			jsonrpc: '2.0' as const,
++			id: 1,
++			method: 'tools/call',
++			params: {
++				name: RUN_STORY_TESTS_TOOL_NAME,
++				arguments: {
++					...storyArguments,
++					...(options?.a11y !== undefined && { a11y: options.a11y }),
++				},
++			},
++		};
++
++		return server.receive(request, {
++			sessionId: 'test-session',
++			custom: context,
++		});
++	};
++
++	beforeEach(async () => {
++		const adapter = new ValibotJsonSchemaAdapter();
++		server = new McpServer(
++			{
++				name: 'test-server',
++				version: '1.0.0',
++				description: 'Test server for run-story-tests tool',
++			},
++			{
++				adapter,
++				capabilities: {
++					tools: { listChanged: true },
++				},
++			},
++		).withContext<AddonContext>();
++
++		// Initialize test session
++		await server.receive(
++			{
++				jsonrpc: '2.0',
++				id: 1,
++				method: 'initialize',
++				params: {
++					protocolVersion: '2025-06-18',
++					capabilities: {},
++					clientInfo: { name: 'test', version: '1.0.0' },
++				},
++			},
++			{
++				sessionId: 'test-session',
++			},
++		);
++
++		await addRunStoryTestsTool(server, { a11yEnabled: true });
++
++		// Mock fetchStoryIndex to return the fixture
++		vi.spyOn(fetchStoryIndex, 'fetchStoryIndex').mockResolvedValue(smallStoryIndexFixture as any);
++	});
++
++	it('should include visual a11y handling guidance in tool description', async () => {
++		const response = await server.receive(
++			{
++				jsonrpc: '2.0' as const,
++				id: 100,
++				method: 'tools/list',
++				params: {},
++			},
++			{
++				sessionId: 'test-session',
++				custom: createTestContext(),
++			},
++		);
++
++		const tools = response.result?.tools ?? [];
++		const runStoryTestsTool = tools.find((tool: any) => tool.name === RUN_STORY_TESTS_TOOL_NAME);
++
++		expect(runStoryTestsTool?.description).toContain(
++			'For visual/design accessibility violations (for example color contrast), ask the user before changing styles.',
++		);
++	});
++
++	it('should return passing stories when all tests pass', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: false },
++				storyIds: ['button--primary'],
++				totalTestCount: 1,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 1, error: 0 },
++				a11yCount: { success: 1, warning: 0, error: 0 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++				],
++				a11yStatuses: [],
++				a11yReports: {},
++				unhandledErrors: [],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		expect(response.result?.content[0].text).toMatchInlineSnapshot(`
++			"## Passing Stories
++
++			- button--primary"
++		`);
++		expect(mockChannel.emit).toHaveBeenCalledWith(
++			'storybook/test/trigger-test-run-request',
++			expect.objectContaining({
++				actor: 'addon-mcp',
++				storyIds: ['button--primary'],
++				config: { a11y: true },
++			}),
++		);
++	});
++
++	it('should run all tests when stories input is omitted', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: false },
++				storyIds: ['button--primary', 'input--default'],
++				totalTestCount: 2,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 2, error: 0 },
++				a11yCount: { success: 2, warning: 0, error: 0 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++					{
++						storyId: 'input--default',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++				],
++				a11yStatuses: [],
++				a11yReports: {},
++				unhandledErrors: [],
++			},
++		});
++
++		const response = await callTool(undefined, testContext);
++
++		expect(response.result?.content[0].text).toContain('button--primary');
++		expect(response.result?.content[0].text).toContain('input--default');
++		expect(mockChannel.emit).toHaveBeenCalledWith(
++			'storybook/test/trigger-test-run-request',
++			expect.objectContaining({
++				actor: 'addon-mcp',
++				storyIds: undefined,
++				config: { a11y: true },
++			}),
++		);
++	});
++
++	it('should pass a11y: false in config when disabled via input', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: false },
++				storyIds: ['button--primary'],
++				totalTestCount: 1,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 1, error: 0 },
++				a11yCount: { success: 0, warning: 0, error: 0 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++				],
++				a11yStatuses: [],
++				a11yReports: {},
++				unhandledErrors: [],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++			{ a11y: false },
++		);
++
++		expect(response.result?.content[0].text).toMatchInlineSnapshot(`
++			"## Passing Stories
++
++			- button--primary"
++		`);
++		expect(mockChannel.emit).toHaveBeenCalledWith(
++			'storybook/test/trigger-test-run-request',
++			expect.objectContaining({
++				actor: 'addon-mcp',
++				storyIds: ['button--primary'],
++				config: { a11y: false },
++			}),
++		);
++	});
++
++	it('should return failing stories with descriptions', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: false },
++				storyIds: ['button--primary'],
++				totalTestCount: 1,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 0, error: 1 },
++				a11yCount: { success: 0, warning: 0, error: 0 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:error',
++						title: 'Component Test',
++						description: 'Expected element to be visible',
++					},
++				],
++				a11yStatuses: [],
++				a11yReports: {},
++				unhandledErrors: [],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		expect(response.result?.content[0].text).toMatchInlineSnapshot(`
++			"## Failing Stories
++
++			### button--primary
++
++			Expected element to be visible"
++		`);
++	});
++
++	it('should show both passing and failing stories when there are mixed results', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: false },
++				storyIds: ['button--primary', 'button--secondary'],
++				totalTestCount: 2,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 1, error: 1 },
++				a11yCount: { success: 0, warning: 0, error: 0 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++					{
++						storyId: 'button--secondary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:error',
++						title: 'Component Test',
++						description: 'Expected button text to be "Secondary"',
++					},
++				],
++				a11yStatuses: [],
++				a11yReports: {},
++				unhandledErrors: [],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		expect(response.result?.content[0].text).toMatchInlineSnapshot(`
++			"## Passing Stories
++
++			- button--primary
++
++			## Failing Stories
++
++			### button--secondary
++
++			Expected button text to be "Secondary""
++		`);
++	});
++
++	it('should include a11y violations in results', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: true },
++				storyIds: ['button--primary'],
++				totalTestCount: 1,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 1, error: 0 },
++				a11yCount: { success: 0, warning: 1, error: 1 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++				],
++				a11yStatuses: [],
++				a11yReports: {
++					'button--primary': [
++						{
++							violations: [
++								{
++									id: 'color-contrast',
++									description: 'Color contrast ratio is insufficient',
++									nodes: [
++										{
++											html: '<button style="color: #fff; background: #ccc;">Click me</button>',
++											impact: 'critical',
++											failureSummary: '2.5:1 (required: 4.5:1)',
++											linkPath: '/inspect/button--primary?inspectPath=button.0',
++										},
++									],
++								},
++							],
++						},
++					],
++				},
++				unhandledErrors: [],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		expect(response.result?.content[0].text).toMatchInlineSnapshot(`
++			"## Passing Stories
++
++			- button--primary
++
++			## Accessibility Violations
++
++			### button--primary - color-contrast
++
++			Color contrast ratio is insufficient
++
++			#### Affected Elements
++			- **Impact**: critical
++			  **Message**: 2.5:1 (required: 4.5:1)
++			  **Element**: <button style="color: #fff; background: #ccc;">Click me</button>
++			  **Inspect**: http://localhost:6006/inspect/button--primary?inspectPath=button.0"
++		`);
++	});
++
++	it('should include a11y violations when a11y input is omitted (defaults to true)', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: true },
++				storyIds: ['button--primary'],
++				totalTestCount: 1,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 1, error: 0 },
++				a11yCount: { success: 0, warning: 1, error: 1 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++				],
++				a11yStatuses: [],
++				a11yReports: {
++					'button--primary': [
++						{
++							violations: [
++								{
++									id: 'color-contrast',
++									description: 'Color contrast ratio is insufficient',
++									nodes: [
++										{
++											html: '<button style="color: #fff; background: #ccc;">Click me</button>',
++											impact: 'critical',
++											failureSummary: '2.5:1 (required: 4.5:1)',
++											linkPath: '/inspect/button--primary?inspectPath=button.0',
++										},
++									],
++								},
++							],
++						},
++					],
++				},
++				unhandledErrors: [],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		expect(response.result?.content[0].text).toContain('## Accessibility Violations');
++	});
++
++	it('should collect telemetry with result counts when enabled', async () => {
++		const { telemetry } = await import('storybook/internal/telemetry');
++		const testContext = {
++			...createTestContext(),
++			disableTelemetry: false,
++		};
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: true },
++				storyIds: ['button--primary'],
++				totalTestCount: 1,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 1, error: 0 },
++				a11yCount: { success: 0, warning: 1, error: 0 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++				],
++				a11yStatuses: [],
++				a11yReports: {
++					'button--primary': [
++						{
++							violations: [
++								{
++									id: 'color-contrast',
++									description: 'Color contrast ratio is insufficient',
++									nodes: [
++										{
++											html: '<button>Click me</button>',
++											impact: 'critical',
++											failureSummary: '2.5:1 (required: 4.5:1)',
++											linkPath: '/inspect/button--primary?inspectPath=button.0',
++										},
++									],
++								},
++							],
++						},
++					],
++				},
++				unhandledErrors: [],
++			},
++		});
++
++		await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		expect(telemetry).toHaveBeenCalledWith(
++			'addon-mcp',
++			expect.objectContaining({
++				event: 'tool:runStoryTests',
++				mcpSessionId: 'test-session',
++				toolset: 'test',
++				runA11y: true,
++				inputStoryCount: 1,
++				matchedStoryCount: 1,
++				passingStoryCount: 1,
++				failingStoryCount: 0,
++				a11yViolationCount: 1,
++				unhandledErrorCount: 0,
++			}),
++		);
++	});
++
++	it('should handle unhandled errors', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: false },
++				storyIds: ['button--primary'],
++				totalTestCount: 1,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 0, error: 1 },
++				a11yCount: { success: 0, warning: 0, error: 0 },
++				componentTestStatuses: [],
++				a11yStatuses: [],
++				a11yReports: {},
++				unhandledErrors: [
++					{
++						name: 'ReferenceError',
++						message: 'foo is not defined',
++						stack: 'ReferenceError: foo is not defined\n    at Button.tsx:10:5',
++						VITEST_TEST_PATH: '/src/Button.stories.tsx',
++						VITEST_TEST_NAME: 'Button > Primary',
++					},
++				],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		expect(response.result?.content[0].text).toMatchInlineSnapshot(`
++			"## Unhandled Errors
++
++			### ReferenceError
++
++			**Error message**: foo is not defined
++			**Path**: /src/Button.stories.tsx
++			**Test name**: Button > Primary
++			**Stack trace**:
++			ReferenceError: foo is not defined
++			    at Button.tsx:10:5"
++		`);
++	});
++
++	it('should not report stories as passing when unhandled errors block the run', async () => {
++		const testContext = createTestContext();
++
++		// Simulate a case where tests couldn't run at all (e.g., Playwright not installed)
++		// componentTestCount.error is 0 because no actual test failures occurred
++		// but unhandled errors exist because the test runner couldn't start
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: false },
++				storyIds: ['button--primary'],
++				totalTestCount: 1,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 0, error: 0 },
++				a11yCount: { success: 0, warning: 0, error: 0 },
++				componentTestStatuses: [],
++				a11yStatuses: [],
++				a11yReports: {},
++				unhandledErrors: [
++					{
++						name: 'Error',
++						message: "browserType.launch: Executable doesn't exist at /path/to/chromium",
++						stack: "Error: browserType.launch: Executable doesn't exist\n    at Browser.ts:100:5",
++						VITEST_TEST_PATH: '/src/Button.stories.tsx',
++						VITEST_TEST_NAME: 'Button > Primary',
++					},
++				],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		// Should NOT contain "Passing Stories" section since tests couldn't run
++		expect(response.result).toMatchInlineSnapshot(`
++			{
++			  "content": [
++			    {
++			      "text": "## Unhandled Errors
++
++			### Error
++
++			**Error message**: browserType.launch: Executable doesn't exist at /path/to/chromium
++			**Path**: /src/Button.stories.tsx
++			**Test name**: Button > Primary
++			**Stack trace**:
++			Error: browserType.launch: Executable doesn't exist
++			    at Browser.ts:100:5",
++			      "type": "text",
++			    },
++			  ],
++			}
++		`);
++	});
++
++	it('should show passing stories AND unhandled errors when some tests pass but others have errors', async () => {
++		const testContext = createTestContext();
++
++		// Simulate: 3 tests passed, 1 had an unhandled error (e.g., component import failed)
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: false },
++				storyIds: ['button--primary', 'button--secondary', 'button--disabled', 'button--loading'],
++				totalTestCount: 4,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 3, error: 0 },
++				a11yCount: { success: 0, warning: 0, error: 0 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++					{
++						storyId: 'button--secondary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++					{
++						storyId: 'button--disabled',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++					// button--loading has no status because it had an unhandled error
++				],
++				a11yStatuses: [],
++				a11yReports: {},
++				unhandledErrors: [
++					{
++						name: 'SyntaxError',
++						message: 'Cannot find module ./LoadingSpinner',
++						stack: 'SyntaxError: Cannot find module ./LoadingSpinner\n    at Button.tsx:5:1',
++						VITEST_TEST_PATH: '/src/Button.stories.tsx',
++						VITEST_TEST_NAME: 'Button > Loading',
++					},
++				],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		// Should show both passing stories AND unhandled errors
++		expect(response.result?.content[0].text).toMatchInlineSnapshot(`
++			"## Passing Stories
++
++			- button--primary
++			- button--secondary
++			- button--disabled
++
++			## Unhandled Errors
++
++			### SyntaxError
++
++			**Error message**: Cannot find module ./LoadingSpinner
++			**Path**: /src/Button.stories.tsx
++			**Test name**: Button > Loading
++			**Stack trace**:
++			SyntaxError: Cannot find module ./LoadingSpinner
++			    at Button.tsx:5:1"
++		`);
++	});
++
++	it('should return error when no stories found', async () => {
++		const testContext = createTestContext();
++
++		const response = await callTool(
++			[
++				{
++					exportName: 'NonExistent',
++					relativePath: 'src/NonExistent.stories.tsx',
++				},
++			],
++			testContext,
++		);
++
++		// Contains absolute path, so use assertion instead of snapshot
++		expect(response.result?.content[0].text).toContain(
++			'No stories found matching the provided input',
++		);
++	});
++
++	it('should handle test run error status', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'error',
++			error: { message: 'Vitest failed to start' },
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		expect(response.result).toMatchInlineSnapshot(`
++			{
++			  "content": [
++			    {
++			      "text": "Error: Vitest failed to start",
++			      "type": "text",
++			    },
++			  ],
++			  "isError": true,
++			}
++		`);
++	});
++
++	it('should handle test run cancelled status', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({ status: 'cancelled' });
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		expect(response.result).toMatchInlineSnapshot(`
++			{
++			  "content": [
++			    {
++			      "text": "Error: Test run was cancelled",
++			      "type": "text",
++			    },
++			  ],
++			  "isError": true,
++			}
++		`);
++	});
++
++	it('should clean up listener after matching completed response', async () => {
++		const testContext = createTestContext();
++
++		setupChannelResponse({
++			status: 'completed',
++			result: {
++				triggeredBy: 'external:addon-mcp',
++				config: { coverage: false, a11y: false },
++				storyIds: ['button--primary'],
++				totalTestCount: 1,
++				startedAt: Date.now(),
++				finishedAt: Date.now(),
++				coverageSummary: undefined,
++				componentTestCount: { success: 1, error: 0 },
++				a11yCount: { success: 1, warning: 0, error: 0 },
++				componentTestStatuses: [
++					{
++						storyId: 'button--primary',
++						typeId: 'storybook/component-test',
++						value: 'status-value:success',
++						title: 'Component Test',
++						description: '',
++					},
++				],
++				a11yStatuses: [],
++				a11yReports: {},
++				unhandledErrors: [],
++			},
++		});
++
++		const response = await callTool(
++			[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++			testContext,
++		);
++
++		const responseHandler = mockChannel.on.mock.calls.find(
++			(call) => call[0] === 'storybook/test/trigger-test-run-response',
++		)?.[1];
++
++		expect(response.result?.content[0].text).toContain('## Passing Stories');
++		expect(mockChannel.off).toHaveBeenCalledWith(
++			'storybook/test/trigger-test-run-response',
++			responseHandler,
++		);
++	});
++
++	describe('queue behavior', () => {
++		const getResponseHandlers = () =>
++			mockChannel.on.mock.calls
++				.filter((call) => call[0] === 'storybook/test/trigger-test-run-response')
++				.map((call) => call[1]);
++
++		it('should process concurrent calls in order', async () => {
++			const testContext = createTestContext();
++			const executionOrder: string[] = [];
++			const completionOrder: string[] = [];
++
++			// Set up channel to track execution order and respond immediately
++			// Must call ALL registered handlers since concurrent calls register multiple handlers
++			mockChannel.emit.mockImplementation((event, payload: any) => {
++				if (event === 'storybook/test/trigger-test-run-request') {
++					const storyId = payload.storyIds[0];
++					executionOrder.push(storyId);
++
++					// Call all registered response handlers (they filter by requestId internally)
++					const responseHandlers = mockChannel.on.mock.calls
++						.filter((call) => call[0] === 'storybook/test/trigger-test-run-response')
++						.map((call) => call[1]);
++
++					const response = {
++						requestId: payload.requestId,
++						status: 'completed',
++						result: {
++							triggeredBy: 'external:addon-mcp',
++							config: { coverage: false, a11y: false },
++							storyIds: [storyId],
++							totalTestCount: 1,
++							startedAt: Date.now(),
++							finishedAt: Date.now(),
++							coverageSummary: undefined,
++							componentTestCount: { success: 1, error: 0 },
++							a11yCount: { success: 0, warning: 0, error: 0 },
++							componentTestStatuses: [
++								{
++									storyId,
++									typeId: 'storybook/component-test',
++									value: 'status-value:success',
++									title: 'Component Test',
++									description: '',
++								},
++							],
++							a11yStatuses: [],
++							a11yReports: {},
++							unhandledErrors: [],
++						},
++					};
++
++					responseHandlers.forEach((handler) => handler(response));
++				}
++			});
++
++			// Fire 4 calls concurrently - they should execute in FIFO order due to queue
++			const call1 = callTool(
++				[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++				testContext,
++			).then((r) => {
++				completionOrder.push('button--primary');
++				return r;
++			});
++			const call2 = callTool(
++				[{ exportName: 'Secondary', relativePath: 'src/Button.stories.tsx' }],
++				testContext,
++			).then((r) => {
++				completionOrder.push('button--secondary');
++				return r;
++			});
++			const call3 = callTool(
++				[{ exportName: 'Default', relativePath: 'src/Input.stories.tsx' }],
++				testContext,
++			).then((r) => {
++				completionOrder.push('input--default');
++				return r;
++			});
++			const call4 = callTool(
++				[{ exportName: 'Primary', relativePath: 'src/Button.stories.tsx' }],
++				testContext,
++			).then((r) => {
++				completionOrder.push('button--primary-2');
++				return r;
++			});
++
++			// Wait for all calls to complete
++			const results = await Promise.all([call1, call2, call3, call4]);
++
++			// All calls should succeed
++			expect(results.every((r) => r.result?.content[0]?.text?.includes('Passing Stories'))).toBe(
++				true,
++			);
++
++			// Execution order should match call order (FIFO)
++			expect(executionOrder).toEqual([
++				'button--primary',
++				'button--secondary',
++				'input--default',
++				'button--primary',
++			]);
++
++			// Completion order should also match call order
++			expect(completionOrder).toEqual([
++				'button--primary',
++				'button--secondary',
++				'input--default',
++				'button--primary-2',
++			]);
++		});
++	});
++});
+diff --git a/packages/addon-mcp/src/utils/find-story-ids.test.ts b/packages/addon-mcp/src/utils/find-story-ids.test.ts
+new file mode 100644
+index 0000000..2e20b49
+--- /dev/null
++++ b/packages/addon-mcp/src/utils/find-story-ids.test.ts
+@@ -0,0 +1,206 @@
++import { describe, it, expect, vi } from 'vitest';
++import { findStoryIds } from './find-story-ids.ts';
++import type { StoryIndex } from 'storybook/internal/types';
++
++vi.mock('storybook/internal/csf', () => ({
++	storyNameFromExport: (exportName: string) => exportName,
++}));
++
++vi.mock('storybook/internal/node-logger', () => ({
++	logger: {
++		debug: vi.fn(),
++	},
++}));
++
++describe('findStoryIds', () => {
++	const mockStoryIndex: StoryIndex = {
++		v: 5,
++		entries: {
++			'button--primary': {
++				type: 'story',
++				subtype: 'story',
++				id: 'button--primary',
++				name: 'Primary',
++				title: 'Button',
++				importPath: './src/Button.stories.tsx',
++				tags: ['story'],
++			},
++			'button--secondary': {
++				type: 'story',
++				subtype: 'story',
++				id: 'button--secondary',
++				name: 'Secondary',
++				title: 'Button',
++				importPath: './src/Button.stories.tsx',
++				tags: ['story'],
++			},
++			'input--default': {
++				type: 'story',
++				subtype: 'story',
++				id: 'input--default',
++				name: 'Default',
++				title: 'Input',
++				importPath: './src/Input.stories.tsx',
++				tags: ['story'],
++			},
++		},
++	};
++
++	it('should find a single story by export name', () => {
++		const stories = [
++			{
++				exportName: 'Primary',
++				absoluteStoryPath: `${process.cwd()}/src/Button.stories.tsx`,
++			},
++		];
++
++		const result = findStoryIds(mockStoryIndex, stories);
++
++		expect(result.found).toHaveLength(1);
++		expect(result.found[0]!.id).toBe('button--primary');
++		expect(result.found[0]!.input).toEqual(stories[0]);
++		expect(result.notFound).toHaveLength(0);
++	});
++
++	it('should find multiple stories', () => {
++		const stories = [
++			{
++				exportName: 'Primary',
++				absoluteStoryPath: `${process.cwd()}/src/Button.stories.tsx`,
++			},
++			{
++				exportName: 'Secondary',
++				absoluteStoryPath: `${process.cwd()}/src/Button.stories.tsx`,
++			},
++			{
++				exportName: 'Default',
++				absoluteStoryPath: `${process.cwd()}/src/Input.stories.tsx`,
++			},
++		];
++
++		const result = findStoryIds(mockStoryIndex, stories);
++
++		expect(result.found).toHaveLength(3);
++		expect(result.found.map((f) => f.id)).toEqual([
++			'button--primary',
++			'button--secondary',
++			'input--default',
++		]);
++		expect(result.notFound).toHaveLength(0);
++	});
++
++	it('should return not found for non-existent stories', () => {
++		const stories = [
++			{
++				exportName: 'NonExistent',
++				absoluteStoryPath: `${process.cwd()}/src/NonExistent.stories.tsx`,
++			},
++		];
++
++		const result = findStoryIds(mockStoryIndex, stories);
++
++		expect(result.found).toHaveLength(0);
++		expect(result.notFound).toHaveLength(1);
++		expect(result.notFound[0]!.errorMessage).toContain('No story found');
++		expect(result.notFound[0]!.errorMessage).toContain('NonExistent');
++		expect(result.notFound[0]!.errorMessage).toContain(
++			'did you forget to pass the explicit story name?',
++		);
++	});
++
++	it('should not include hint when explicit story name is provided but not found', () => {
++		const stories = [
++			{
++				exportName: 'NonExistent',
++				explicitStoryName: 'NonExistent',
++				absoluteStoryPath: `${process.cwd()}/src/NonExistent.stories.tsx`,
++			},
++		];
++
++		const result = findStoryIds(mockStoryIndex, stories);
++
++		expect(result.notFound).toHaveLength(1);
++		expect(result.notFound[0]!.errorMessage).not.toContain(
++			'did you forget to pass the explicit story name?',
++		);
++	});
++
++	it('should find story by explicit story name', () => {
++		const stories = [
++			{
++				exportName: 'SomeExport',
++				explicitStoryName: 'Primary',
++				absoluteStoryPath: `${process.cwd()}/src/Button.stories.tsx`,
++			},
++		];
++
++		const result = findStoryIds(mockStoryIndex, stories);
++
++		expect(result.found).toHaveLength(1);
++		expect(result.found[0]!.id).toBe('button--primary');
++	});
++
++	it('should handle mix of found and not found stories', () => {
++		const stories = [
++			{
++				exportName: 'Primary',
++				absoluteStoryPath: `${process.cwd()}/src/Button.stories.tsx`,
++			},
++			{
++				exportName: 'NonExistent',
++				absoluteStoryPath: `${process.cwd()}/src/NonExistent.stories.tsx`,
++			},
++			{
++				exportName: 'Default',
++				absoluteStoryPath: `${process.cwd()}/src/Input.stories.tsx`,
++			},
++		];
++
++		const result = findStoryIds(mockStoryIndex, stories);
++
++		expect(result.found).toHaveLength(2);
++		expect(result.found.map((f) => f.id)).toEqual(['button--primary', 'input--default']);
++		expect(result.notFound).toHaveLength(1);
++		expect(result.notFound[0]!.input.exportName).toBe('NonExistent');
++	});
++
++	it('should return empty results for empty input', () => {
++		const result = findStoryIds(mockStoryIndex, []);
++
++		expect(result.found).toHaveLength(0);
++		expect(result.notFound).toHaveLength(0);
++	});
++
++	it('should not find story with wrong file path', () => {
++		const stories = [
++			{
++				exportName: 'Primary',
++				absoluteStoryPath: `${process.cwd()}/src/WrongFile.stories.tsx`,
++			},
++		];
++
++		const result = findStoryIds(mockStoryIndex, stories);
++
++		expect(result.found).toHaveLength(0);
++		expect(result.notFound).toHaveLength(1);
++	});
++
++	it('should match stories when cwd and absolute path use Windows separators', () => {
++		const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(String.raw`C:\repo`);
++
++		const stories = [
++			{
++				exportName: 'Primary',
++				absoluteStoryPath: String.raw`C:\repo\src\Button.stories.tsx`,
++			},
++		];
++
++		const result = findStoryIds(mockStoryIndex, stories);
++
++		expect(result.found).toHaveLength(1);
++		expect(result.found[0]!.id).toBe('button--primary');
++		expect(result.notFound).toHaveLength(0);
++
++		cwdSpy.mockRestore();
++	});
++});

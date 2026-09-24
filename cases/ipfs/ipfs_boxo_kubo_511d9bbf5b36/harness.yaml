@@ -1,0 +1,43 @@
+task_id: ipfs_boxo_kubo_511d9bbf5b36
+agent_runtime_source_masks:
+- /opt/ecosync/image-deps/ecosyncbench_deps_ipfs-kubo-go_511d9bbf5b36/gomodcache/github.com/ipfs/boxo@v0.34.1-0.20250909170220-e69f67e94c11
+agent_runtime_file_source_masks:
+- /opt/ecosync/image-deps/ecosyncbench_deps_ipfs-kubo-go_511d9bbf5b36/gomodcache/cache/download/github.com/ipfs/boxo/@v/v0.34.1-0.20250909170220-e69f67e94c11.zip
+hidden_test_patches:
+- repo: boxo
+  patch: hidden/patches/boxo-hidden-tests.patch
+  test_profile: boxo-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - bitswap/server/internal/decision/engine_test.go
+  - blockservice/blockservice_test.go
+  - gateway/gateway_test.go
+  - ipld/unixfs/mod/dagmodifier_test.go
+  - verifcid/allowlist_test.go
+  - verifcid/cid_test.go
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from ipfs/boxo PR(s) 1018
+- repo: kubo
+  patch: hidden/patches/kubo-hidden-tests.patch
+  test_profile: kubo-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test/cli/identity_cid_test.go
+  - test/dependencies/go.mod
+  - test/dependencies/go.sum
+  - test/sharness/t0275-cid-security.sh
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from ipfs/kubo PR(s) 10949
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - boxo-hidden
+    - kubo-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

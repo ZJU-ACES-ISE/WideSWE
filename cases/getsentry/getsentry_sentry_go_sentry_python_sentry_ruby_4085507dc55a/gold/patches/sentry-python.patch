@@ -1,0 +1,110 @@
+diff --git a/sentry_sdk/consts.py b/sentry_sdk/consts.py
+index efda9329..c168a1fc 100644
+--- a/sentry_sdk/consts.py
++++ b/sentry_sdk/consts.py
+@@ -1024,6 +1024,7 @@ class ClientConstructor:
+         enable_metrics=True,  # type: bool
+         before_send_metric=None,  # type: Optional[Callable[[Metric, Hint], Optional[Metric]]]
+         org_id=None,  # type: Optional[str]
++        strict_trace_continuation=False,  # type: bool
+     ):
+         # type: (...) -> None
+         """Initialize the Sentry SDK with the given parameters. All parameters described here can be used in a call to `sentry_sdk.init()`.
+@@ -1427,6 +1428,15 @@ class ClientConstructor:
+             If `trace_ignore_status_codes` is not provided, requests with any status code
+             may be traced.
+ 
++        :param strict_trace_continuation: If set to `True`, the SDK will only continue a trace if the `org_id` of the incoming trace found in the
++           `baggage` header matches the `org_id` of the current Sentry client and only if BOTH are present.
++
++            If set to `False`, consistency of `org_id` will only be enforced if both are present. If either are missing, the trace will be continued.
++
++            The client's organization ID is extracted from the DSN or can be set with the `org_id` option.
++            If the organization IDs do not match, the SDK will start a new trace instead of continuing the incoming one.
++            This is useful to prevent traces of unknown third-party services from being continued in your application.
++
+         :param org_id: An optional organization ID. The SDK will try to extract if from the DSN in most cases
+             but you can provide it explicitly for self-hosted and Relay setups. This value is used for
+             trace propagation and for features like `strict_trace_continuation`.
+diff --git a/sentry_sdk/tracing_utils.py b/sentry_sdk/tracing_utils.py
+index 9d92b53b..b6c18483 100644
+--- a/sentry_sdk/tracing_utils.py
++++ b/sentry_sdk/tracing_utils.py
+@@ -15,7 +15,6 @@ from sentry_sdk.consts import OP, SPANDATA, SPANSTATUS, SPANTEMPLATE
+ from sentry_sdk.utils import (
+     capture_internal_exceptions,
+     filename_for_module,
+-    Dsn,
+     logger,
+     match_regex_list,
+     qualname_from_function,
+@@ -453,15 +452,23 @@ class PropagationContext:
+ 
+         sentry_trace_header = normalized_data.get(SENTRY_TRACE_HEADER_NAME)
+         sentrytrace_data = extract_sentrytrace_data(sentry_trace_header)
++
++        # nothing to propagate if no sentry-trace
+         if sentrytrace_data is None:
+             return None
+ 
++        baggage_header = normalized_data.get(BAGGAGE_HEADER_NAME)
++        baggage = (
++            Baggage.from_incoming_header(baggage_header) if baggage_header else None
++        )
++
++        if not _should_continue_trace(baggage):
++            return None
++
+         propagation_context = PropagationContext()
+         propagation_context.update(sentrytrace_data)
+-
+-        baggage_header = normalized_data.get(BAGGAGE_HEADER_NAME)
+-        if baggage_header:
+-            propagation_context.baggage = Baggage.from_incoming_header(baggage_header)
++        if baggage:
++            propagation_context.baggage = baggage
+ 
+         propagation_context._fill_sample_rand()
+ 
+@@ -1230,6 +1237,41 @@ def _set_output_attributes(span, template, send_pii, result):
+     span.update_data(_get_output_attributes(template, send_pii, result) or {})
+ 
+ 
++def _should_continue_trace(baggage):
++    # type: (Optional[Baggage]) -> bool
++    """
++    Check if we should continue the incoming trace according to the strict_trace_continuation spec.
++    https://develop.sentry.dev/sdk/telemetry/traces/#stricttracecontinuation
++    """
++
++    client = sentry_sdk.get_client()
++    parsed_dsn = client.parsed_dsn
++    client_org_id = parsed_dsn.org_id if parsed_dsn else None
++    baggage_org_id = baggage.sentry_items.get("org_id") if baggage else None
++
++    if (
++        client_org_id is not None
++        and baggage_org_id is not None
++        and client_org_id != baggage_org_id
++    ):
++        logger.debug(
++            f"Starting a new trace because org IDs don't match (incoming baggage org_id: {baggage_org_id}, SDK org_id: {client_org_id})"
++        )
++        return False
++
++    strict_trace_continuation = client.options.get("strict_trace_continuation", False)  # type: bool
++    if strict_trace_continuation:
++        if (baggage_org_id is not None and client_org_id is None) or (
++            baggage_org_id is None and client_org_id is not None
++        ):
++            logger.debug(
++                f"Starting a new trace because strict trace continuation is enabled and one org ID is missing (incoming baggage org_id: {baggage_org_id}, SDK org_id: {client_org_id})"
++            )
++            return False
++
++    return True
++
++
+ # Circular imports
+ from sentry_sdk.tracing import (
+     BAGGAGE_HEADER_NAME,

@@ -1,0 +1,328 @@
+diff --git a/src/Microsoft.Diagnostics.DebugServices.Implementation/Utilities.cs b/src/Microsoft.Diagnostics.DebugServices.Implementation/Utilities.cs
+index 36634a60..553dae69 100644
+--- a/src/Microsoft.Diagnostics.DebugServices.Implementation/Utilities.cs
++++ b/src/Microsoft.Diagnostics.DebugServices.Implementation/Utilities.cs
+@@ -281,16 +281,13 @@ public static Stream TryOpenFile(string path)
+         /// </summary>
+         public static string GetDotNetHomeDirectory()
+         {
+-            string dotnetHome;
+-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
++            string basePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
++            if (!string.IsNullOrEmpty(basePath))
+             {
+-                dotnetHome = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE") ?? throw new ArgumentNullException("USERPROFILE environment variable not found"), ".dotnet");
++                throw new ArgumentNullException("UserProfile directory not found");
+             }
+-            else
+-            {
+-                dotnetHome = Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? throw new ArgumentNullException("HOME environment variable not found"), ".dotnet");
+-            }
+-            return dotnetHome;
++
++            return Path.Combine(basePath, ".dotnet");
+         }
+ 
+         /// <summary>
+diff --git a/src/Microsoft.Diagnostics.TestHelpers/TestConfiguration.cs b/src/Microsoft.Diagnostics.TestHelpers/TestConfiguration.cs
+index 01821e32..256f271b 100644
+--- a/src/Microsoft.Diagnostics.TestHelpers/TestConfiguration.cs
++++ b/src/Microsoft.Diagnostics.TestHelpers/TestConfiguration.cs
+@@ -53,18 +53,10 @@ private void ParseConfigFile(string path)
+                 // This emulates that logic so the VS Test Explorer can still run the tests for
+                 // config files that don't set the NugetPackagesCacheDir value (like the SOS unit
+                 // tests).
+-                string nugetPackagesRoot = null;
+-                if (OS.Kind == OSKind.Windows)
++                string basePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
++                if (!string.IsNullOrEmpty(basePath))
+                 {
+-                    nugetPackagesRoot = Environment.GetEnvironmentVariable("UserProfile");
+-                }
+-                else if (OS.Kind is OSKind.Linux or OSKind.OSX)
+-                {
+-                    nugetPackagesRoot = Environment.GetEnvironmentVariable("HOME");
+-                }
+-                if (nugetPackagesRoot != null)
+-                {
+-                    nugetPackages = Path.Combine(nugetPackagesRoot, ".nuget", "packages");
++                    nugetPackages = Path.Combine(basePath, ".nuget", "packages");
+                 }
+             }
+             // The TargetArchitecture and NuGetPackageCacheDir can still be overridden
+diff --git a/src/SOS/Strike/strike.cpp b/src/SOS/Strike/strike.cpp
+index 91d46be7..2309e817 100644
+--- a/src/SOS/Strike/strike.cpp
++++ b/src/SOS/Strike/strike.cpp
+@@ -1317,7 +1317,7 @@ DECLARE_API(DumpMT)
+ 
+         table.WriteRow("Entry", "MethodDesc", "JIT", "Slot", "Name");
+ 
+-        ISOSMethodEnum *pMethodEnumerator;
++        ToRelease<ISOSMethodEnum> pMethodEnumerator;
+         if (SUCCEEDED(g_sos15->GetMethodTableSlotEnumerator(dwStartAddr, &pMethodEnumerator)))
+         {
+             SOSMethodData entry;
+diff --git a/src/SOS/Strike/util.cpp b/src/SOS/Strike/util.cpp
+index 30df0681..28d5c9b1 100644
+--- a/src/SOS/Strike/util.cpp
++++ b/src/SOS/Strike/util.cpp
+@@ -3644,7 +3644,7 @@ class SOSDacInterface15Simulator : public ISOSDacInterface15
+         unsigned int slotCount;
+         ULONG refCount;
+     public:
+-        SOSMethodEnum(CLRDATA_ADDRESS mt) : pMT(mt), refCount(1)
++        SOSMethodEnum(CLRDATA_ADDRESS mt) : pMT(mt), refCount(0)
+         {
+         }
+ 
+@@ -3769,16 +3769,18 @@ public:
+             ISOSMethodEnum **enumerator)
+     {
+         SOSMethodEnum *simulator = new(std::nothrow) SOSMethodEnum(mt);
+-        *enumerator = simulator;
+         if (simulator == NULL)
+         {
+             return E_OUTOFMEMORY;
+         }
+         HRESULT hr = simulator->Reset();
++
++        if (SUCCEEDED(hr))
++            hr = simulator->QueryInterface(__uuidof(ISOSMethodEnum), (void**)enumerator);
++
+         if (FAILED(hr))
+-        {
+-            simulator->Release();
+-        }
++            delete simulator;
++
+         return hr;
+     }
+ } SOSDacInterface15Simulator_Instance;
+diff --git a/src/Tools/dotnet-trace/CommandLine/Commands/CollectLinuxCommand.cs b/src/Tools/dotnet-trace/CommandLine/Commands/CollectLinuxCommand.cs
+index 32fec275..d3305196 100644
+--- a/src/Tools/dotnet-trace/CommandLine/Commands/CollectLinuxCommand.cs
++++ b/src/Tools/dotnet-trace/CommandLine/Commands/CollectLinuxCommand.cs
+@@ -23,6 +23,8 @@ internal partial class CollectLinuxCommandHandler
+         private LineRewriter rewriter;
+         private long statusUpdateTimestamp;
+         private Version minRuntimeSupportingUserEventsIPCCommand = new(10, 0, 0);
++        private readonly bool cancelOnEnter;
++        private readonly bool printStatusOverTime;
+ 
+         internal sealed record CollectLinuxArgs(
+             CancellationToken Ct,
+@@ -41,6 +43,8 @@ public CollectLinuxCommandHandler(IConsole console = null)
+         {
+             Console = console ?? new DefaultConsole();
+             rewriter = new LineRewriter(Console);
++            cancelOnEnter = !Console.IsInputRedirected;
++            printStatusOverTime = !Console.IsOutputRedirected;
+         }
+ 
+         internal static bool IsSupported()
+@@ -82,8 +86,6 @@ internal int CollectLinux(CollectLinuxArgs args)
+ 
+             int ret = (int)ReturnCode.TracingError;
+             string scriptPath = null;
+-            bool cursorVisibilityChanged = false;
+-            bool originalCursorVisible = false;
+             try
+             {
+                 if (args.Probe)
+@@ -104,12 +106,9 @@ internal int CollectLinux(CollectLinuxArgs args)
+ 
+                 args.Ct.Register(() => stopTracing = true);
+ 
+-                // Only hide cursor if output is not redirected
+                 if (!Console.IsOutputRedirected)
+                 {
+-                    originalCursorVisible = Console.CursorVisible;
+                     Console.CursorVisible = false;
+-                    cursorVisibilityChanged = true;
+                 }
+ 
+                 byte[] command = BuildRecordTraceArgs(args, out scriptPath);
+@@ -145,10 +144,9 @@ internal int CollectLinux(CollectLinuxArgs args)
+             }
+             finally
+             {
+-                // Restore cursor visibility to its original state if we changed it
+-                if (cursorVisibilityChanged)
++                if (!Console.IsOutputRedirected)
+                 {
+-                    Console.CursorVisible = originalCursorVisible;
++                    Console.CursorVisible = true;
+                 }
+ 
+                 if (!string.IsNullOrEmpty(scriptPath))
+@@ -491,12 +489,12 @@ private int OutputHandler(uint type, IntPtr data, UIntPtr dataLen)
+                 }
+             }
+ 
+-            if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Enter)
++            if (cancelOnEnter && Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Enter)
+             {
+                 stopTracing = true;
+             }
+ 
+-            if (ot == OutputType.Progress)
++            if (printStatusOverTime && ot == OutputType.Progress)
+             {
+                 long currentTimestamp = Stopwatch.GetTimestamp();
+                 if (statusUpdateTimestamp != 0 && currentTimestamp < statusUpdateTimestamp)
+diff --git a/src/tests/Common/MockConsole.cs b/src/tests/Common/MockConsole.cs
+index 7046b473..a8f2307d 100644
+--- a/src/tests/Common/MockConsole.cs
++++ b/src/tests/Common/MockConsole.cs
+@@ -47,9 +47,9 @@ public MockConsole(int width, int height, ITestOutputHelper outputHelper = null)
+ 
+         public bool IsOutputRedirected { get; set; }
+ 
+-        public bool IsInputRedirected { get; private set; }
++        public bool IsInputRedirected { get; set; }
+ 
+-        public bool KeyAvailable { get; private set; }
++        public bool KeyAvailable { get; set; }
+ 
+         public TextWriter Out => this;
+ 
+@@ -186,9 +186,11 @@ public void FlushTestLogging()
+ 
+         public string GetLineText(int row) => new string(_chars[row]).TrimEnd();
+ 
+-        public ConsoleKeyInfo ReadKey() => Console.ReadKey();
++        public ConsoleKeyInfo NextKeyInfo { get; set; } = new ConsoleKeyInfo('\0', ConsoleKey.Enter, false, false, false);
+ 
+-        public ConsoleKeyInfo ReadKey(bool intercept) => Console.ReadKey(intercept);
++        public ConsoleKeyInfo ReadKey() => NextKeyInfo;
++
++        public ConsoleKeyInfo ReadKey(bool intercept) => NextKeyInfo;
+ 
+         public string[] Lines
+         {
+diff --git a/src/tests/dotnet-trace/CollectLinuxCommandFunctionalTests.cs b/src/tests/dotnet-trace/CollectLinuxCommandFunctionalTests.cs
+index 8d0a6639..ca4ebe39 100644
+--- a/src/tests/dotnet-trace/CollectLinuxCommandFunctionalTests.cs
++++ b/src/tests/dotnet-trace/CollectLinuxCommandFunctionalTests.cs
+@@ -23,7 +23,7 @@ public class CollectLinuxCommandFunctionalTests
+     {
+         public static bool IsCollectLinuxSupported => CollectLinuxCommandHandler.IsSupported();
+         public static bool IsCollectLinuxNotSupported => !CollectLinuxCommandHandler.IsSupported();
+-        
++
+         private readonly ITestOutputHelper _outputHelper;
+ 
+         public CollectLinuxCommandFunctionalTests(ITestOutputHelper outputHelper)
+@@ -225,20 +225,24 @@ public void CollectLinuxCommand_NotSupported_OnNonLinux()
+         [ConditionalFact(nameof(IsCollectLinuxSupported))]
+         public void CollectLinuxCommand_RestoresCursorVisibility_OnSuccess()
+         {
+-            MockConsole console = new(200, 30, _outputHelper);
+-            console.CursorVisible = true;
++            MockConsole console = new(200, 30, _outputHelper)
++            {
++                CursorVisible = false
++            };
+ 
+             int exitCode = Run(TestArgs(), console);
+ 
+-            // Cursor should be restored to visible after command completes
++            // Cursor visibility should always be restored to visible after command completes
+             Assert.True(console.CursorVisible, "Cursor should be visible after command completes");
+         }
+ 
+         [ConditionalFact(nameof(IsCollectLinuxSupported))]
+         public void CollectLinuxCommand_RestoresCursorVisibility_OnError()
+         {
+-            MockConsole console = new(200, 30, _outputHelper);
+-            console.CursorVisible = true;
++            MockConsole console = new(200, 30, _outputHelper)
++            {
++                CursorVisible = false
++            };
+ 
+             var handler = new CollectLinuxCommandHandler(console);
+             // Simulate an error by throwing an exception in the RecordTraceInvoker
+@@ -248,7 +252,7 @@ public void CollectLinuxCommand_RestoresCursorVisibility_OnError()
+ 
+             int exitCode = handler.CollectLinux(TestArgs());
+ 
+-            // Cursor should be restored to visible even when an error occurs
++            // Cursor visibility should always be restored to visible even when an error occurs
+             Assert.True(console.CursorVisible, "Cursor should be visible after error");
+             Assert.Equal((int)ReturnCode.TracingError, exitCode);
+         }
+@@ -258,9 +262,11 @@ public void CollectLinuxCommand_RestoresCursorVisibility_OnError()
+         [InlineData(false)]
+         public void CollectLinuxCommand_DoesNotChangeCursorVisibility_WhenOutputIsRedirected(bool initialCursorVisible)
+         {
+-            MockConsole console = new(200, 30, _outputHelper);
+-            console.CursorVisible = initialCursorVisible;
+-            console.IsOutputRedirected = true;
++            MockConsole console = new(200, 30, _outputHelper)
++            {
++                CursorVisible = initialCursorVisible,
++                IsOutputRedirected = true
++            };
+ 
+             int exitCode = Run(TestArgs(), console);
+ 
+@@ -269,6 +275,57 @@ public void CollectLinuxCommand_DoesNotChangeCursorVisibility_WhenOutputIsRedire
+             Assert.Equal(initialCursorVisible, console.CursorVisible);
+         }
+ 
++        [ConditionalFact(nameof(IsCollectLinuxSupported))]
++        public void CollectLinuxCommand_DoesNotPrintStatusUpdates_WhenOutputIsRedirected()
++        {
++            MockConsole console = new(200, 30, _outputHelper);
++            console.IsOutputRedirected = true;
++
++            var handler = new CollectLinuxCommandHandler(console);
++            handler.RecordTraceInvoker = (cmd, len, cb) => {
++                // Send progress output type.
++                cb((uint)3, IntPtr.Zero, UIntPtr.Zero);
++                return 0;
++            };
++
++            int exitCode = handler.CollectLinux(TestArgs());
++            Assert.Equal((int)ReturnCode.Ok, exitCode);
++
++            string[] lines = console.Lines;
++            Assert.DoesNotContain(lines, l => l.Contains("Recording trace", StringComparison.OrdinalIgnoreCase));
++            Assert.DoesNotContain(lines, l => l.Contains("Press <Enter>", StringComparison.OrdinalIgnoreCase));
++        }
++
++        [ConditionalFact(nameof(IsCollectLinuxSupported))]
++        public void CollectLinuxCommand_DoesNotReadKey_WhenInputIsRedirected()
++        {
++            MockConsole console = new(200, 30, _outputHelper);
++            console.IsInputRedirected = true;
++            console.KeyAvailable = true;
++            console.NextKeyInfo = new ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false);
++
++            var handler = new CollectLinuxCommandHandler(console);
++            bool callbackInvoked = false;
++            handler.RecordTraceInvoker = (cmd, len, cb) => {
++                // Send progress output type.
++                int result = cb((uint)3, IntPtr.Zero, UIntPtr.Zero);
++
++                // It should return 0, i.e., continue tracing, even though
++                // enter was pressed.
++                Assert.Equal(0, result);
++
++                callbackInvoked = true;
++
++                return 0;
++            };
++
++            int exitCode = handler.CollectLinux(TestArgs());
++            Assert.Equal((int)ReturnCode.Ok, exitCode);
++
++            // The important assertion is in the callback so make sure it was called.
++            Assert.True(callbackInvoked);
++        }
++
+         private static int Run(object args, MockConsole console)
+         {
+             var handler = new CollectLinuxCommandHandler(console);

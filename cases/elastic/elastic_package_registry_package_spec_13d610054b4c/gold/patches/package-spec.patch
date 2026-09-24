@@ -1,0 +1,455 @@
+diff --git a/code/go/internal/validator/semantic/validate_deprecated_replaced_by.go b/code/go/internal/validator/semantic/validate_deprecated_replaced_by.go
+new file mode 100644
+index 00000000..439c3935
+--- /dev/null
++++ b/code/go/internal/validator/semantic/validate_deprecated_replaced_by.go
+@@ -0,0 +1,138 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License;
++// you may not use this file except in compliance with the Elastic License.
++
++package semantic
++
++import (
++	"io/fs"
++
++	"gopkg.in/yaml.v3"
++
++	"github.com/elastic/package-spec/v3/code/go/internal/fspath"
++	"github.com/elastic/package-spec/v3/code/go/pkg/specerrors"
++)
++
++type deprecatedInfo struct {
++	Since       string `yaml:"since"`
++	Description string `yaml:"description"`
++	ReplacedBy  *struct {
++		Package        string `yaml:"package,omitempty"`
++		PolicyTemplate string `yaml:"policy_template,omitempty"`
++		Input          string `yaml:"input,omitempty"`
++		DataStream     string `yaml:"data_stream,omitempty"`
++		Variable       string `yaml:"variable,omitempty"`
++	} `yaml:"replaced_by,omitempty"`
++}
++
++// ValidateDeprecatedReplacedBy checks that when deprecated.replaced_by is used, the required fields are set.
++func ValidateDeprecatedReplacedBy(fsys fspath.FS) specerrors.ValidationErrors {
++	errs := validatePackageManifestDeprecatedReplacedBy(fsys)
++	dsErrs := validateDataStreamsDeprecatedReplacedBy(fsys)
++
++	return append(errs, dsErrs...)
++}
++
++func validatePackageManifestDeprecatedReplacedBy(fsys fspath.FS) specerrors.ValidationErrors {
++	// package manifest structure
++	type manifest struct {
++		Type            string          `yaml:"type,omitempty"`
++		Deprecated      *deprecatedInfo `yaml:"deprecated,omitempty"`
++		PolicyTemplates []struct {
++			Deprecated *deprecatedInfo `yaml:"deprecated,omitempty"`
++			Inputs     []struct {
++				Deprecated *deprecatedInfo `yaml:"deprecated,omitempty"`
++			} `yaml:"inputs,omitempty"`
++		} `yaml:"policy_templates,omitempty"`
++	}
++
++	manifestPath := "manifest.yml"
++	data, err := fs.ReadFile(fsys, manifestPath)
++	if err != nil {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("file \"%s\" is invalid: %w", fsys.Path(manifestPath), err)}
++	}
++
++	var m manifest
++	err = yaml.Unmarshal(data, &m)
++	if err != nil {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("file \"%s\" is invalid: %w", fsys.Path(manifestPath), err)}
++	}
++	var errs specerrors.ValidationErrors
++	if m.Deprecated != nil && m.Deprecated.ReplacedBy != nil {
++		rb := m.Deprecated.ReplacedBy
++		if rb.Package == "" {
++			errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: deprecated.replaced_by.package must be specified when deprecated.replaced_by is used", fsys.Path(manifestPath)))
++		}
++	}
++	for _, pt := range m.PolicyTemplates {
++		if pt.Deprecated != nil && pt.Deprecated.ReplacedBy != nil {
++			rb := pt.Deprecated.ReplacedBy
++			if rb.PolicyTemplate == "" {
++				errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: policy_template deprecated.replaced_by.policy_template must be specified when deprecated.replaced_by is used", fsys.Path(manifestPath)))
++			}
++		}
++		for _, input := range pt.Inputs {
++			if input.Deprecated != nil && input.Deprecated.ReplacedBy != nil {
++				rb := input.Deprecated.ReplacedBy
++				if rb.Input == "" {
++					errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: input deprecated.replaced_by.input must be specified when deprecated.replaced_by is used", fsys.Path(manifestPath)))
++				}
++			}
++		}
++	}
++	return errs
++
++}
++
++func validateDataStreamsDeprecatedReplacedBy(fsys fspath.FS) specerrors.ValidationErrors {
++	// stream manifest structure
++	type streamManifest struct {
++		Deprecated *deprecatedInfo `yaml:"deprecated,omitempty"`
++		Streams    []struct {
++			Vars []struct {
++				Deprecated *deprecatedInfo `yaml:"deprecated,omitempty"`
++			} `yaml:"vars,omitempty"`
++		} `yaml:"streams,omitempty"`
++	}
++
++	dsManifests, err := fs.Glob(fsys, "data_stream/*/manifest.yml")
++	if err != nil {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("error while searching for data stream manifests: %w", err)}
++	}
++
++	var errs specerrors.ValidationErrors
++	for _, dsManifestPath := range dsManifests {
++		data, err := fs.ReadFile(fsys, dsManifestPath)
++		if err != nil {
++			errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: %w", fsys.Path(dsManifestPath), err))
++			continue
++		}
++		var sm streamManifest
++		err = yaml.Unmarshal(data, &sm)
++		if err != nil {
++			errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: %w", fsys.Path(dsManifestPath), err))
++			continue
++		}
++		if sm.Deprecated != nil && sm.Deprecated.ReplacedBy != nil {
++			rb := sm.Deprecated.ReplacedBy
++			if rb.DataStream == "" {
++				errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: deprecated.replaced_by.data_stream must be specified when deprecated.replaced_by is used", fsys.Path(dsManifestPath)))
++			}
++		}
++
++		for _, stream := range sm.Streams {
++			for _, v := range stream.Vars {
++				if v.Deprecated != nil && v.Deprecated.ReplacedBy != nil {
++					rb := v.Deprecated.ReplacedBy
++					if rb.Variable == "" {
++						errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: variable deprecated.replaced_by.variable must be specified when deprecated.replaced_by is used", fsys.Path(dsManifestPath)))
++					}
++				}
++			}
++		}
++	}
++	return errs
++}
+diff --git a/code/go/internal/validator/semantic/validate_integration_inputs_deprecated.go b/code/go/internal/validator/semantic/validate_integration_inputs_deprecated.go
+new file mode 100644
+index 00000000..b393da6a
+--- /dev/null
++++ b/code/go/internal/validator/semantic/validate_integration_inputs_deprecated.go
+@@ -0,0 +1,76 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License;
++// you may not use this file except in compliance with the Elastic License.
++
++package semantic
++
++import (
++	"io/fs"
++
++	"gopkg.in/yaml.v3"
++
++	"github.com/elastic/package-spec/v3/code/go/internal/fspath"
++	"github.com/elastic/package-spec/v3/code/go/pkg/specerrors"
++)
++
++// ValidateIntegrationInputsDeprecation checks that if all inputs in an integration package are deprecated,
++// then the integration package itself must be marked as deprecated.
++func ValidateIntegrationInputsDeprecation(fsys fspath.FS) specerrors.ValidationErrors {
++
++	type manifest struct {
++		Type       string `yaml:"type,omitempty"`
++		Deprecated *struct {
++			Since       string `yaml:"since,omitempty"`
++			Description string `yaml:"description,omitempty"`
++		} `yaml:"deprecated,omitempty"`
++		PolicyTemplates []struct {
++			Inputs []struct {
++				Deprecated *struct {
++					Since       string `yaml:"since,omitempty"`
++					Description string `yaml:"description,omitempty"`
++				} `yaml:"deprecated,omitempty"`
++			} `yaml:"inputs,omitempty"`
++		} `yaml:"policy_templates,omitempty"`
++	}
++
++	manifestPath := "manifest.yml"
++	data, err := fs.ReadFile(fsys, manifestPath)
++	if err != nil {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("file \"%s\" is invalid: %w", fsys.Path(manifestPath), err)}
++	}
++
++	var m manifest
++	err = yaml.Unmarshal(data, &m)
++	if err != nil {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("file \"%s\" is invalid: %w", fsys.Path(manifestPath), err)}
++	}
++	// skip if not an integration package
++	if m.Type != packageTypeIntegration {
++		return nil
++	}
++
++	// if package is deprecated, skip checks
++	if m.Deprecated != nil {
++		return nil
++	}
++
++	total := 0
++	deprecated := 0
++	for _, pt := range m.PolicyTemplates {
++		for _, input := range pt.Inputs {
++			total++
++			if input.Deprecated != nil {
++				deprecated++
++			}
++		}
++	}
++	if deprecated == total && total > 0 {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("file \"%s\" is invalid: all inputs are deprecated but the integration package is not marked as deprecated", fsys.Path(manifestPath)),
++		}
++	}
++
++	return nil
++}
+diff --git a/code/go/internal/validator/spec.go b/code/go/internal/validator/spec.go
+index d8754222..7484e8df 100644
+--- a/code/go/internal/validator/spec.go
++++ b/code/go/internal/validator/spec.go
+@@ -228,6 +228,8 @@ func (s Spec) rules(pkgType string, rootSpec spectypes.ItemSpec) validationRules
+ 		{fn: semantic.ValidateStaticHandlebarsFiles, types: []string{"integration", "input"}},
+ 		{fn: semantic.ValidateKibanaTagDuplicates},
+ 		{fn: semantic.ValidatePipelineOnFailure, types: []string{"integration"}, since: semver.MustParse("3.6.0")},
++		{fn: semantic.ValidateIntegrationInputsDeprecation, types: []string{"integration"}, since: semver.MustParse("3.6.0")},
++		{fn: semantic.ValidateDeprecatedReplacedBy, since: semver.MustParse("3.6.0")},
+ 	}
+ 
+ 	var validationRules validationRules
+diff --git a/spec/changelog.yml b/spec/changelog.yml
+index ec14e3f7..6e97d144 100644
+--- a/spec/changelog.yml
++++ b/spec/changelog.yml
+@@ -24,6 +24,9 @@
+     - description: Add pipeline global on_failure validations.
+       type: breaking-change
+       link: https://github.com/elastic/package-spec/pull/1038
++    - description: Add support for deprecating packages or individual features (policy_templates, inputs, data_streams or variables).
++      type: enhancement
++      link: https://github.com/elastic/package-spec/pull/1053
+ - version: 3.5.6-next
+   changes:
+     - description: Add validation for Kibana tag duplicates.
+diff --git a/spec/content/manifest.spec.yml b/spec/content/manifest.spec.yml
+index 8aead08f..df833fce 100644
+--- a/spec/content/manifest.spec.yml
++++ b/spec/content/manifest.spec.yml
+@@ -82,6 +82,8 @@ spec:
+       $ref: "../integration/manifest.spec.yml#/definitions/screenshots"
+     owner:
+       $ref: "../integration/manifest.spec.yml#/definitions/owner"
++    deprecated:
++      $ref: "../integration/manifest.spec.yml#/definitions/deprecated"
+   required:
+   - format_version
+   - name
+@@ -90,3 +92,10 @@ spec:
+   - version
+   - type
+   - owner
++
++# JSON patches for newer versions should be placed on top
++versions:
++  - before: 3.6.0
++    patch:
++      - op: remove # remove deprecated field for package
++        path: "/properties/deprecated"
+\ No newline at end of file
+diff --git a/spec/input/manifest.spec.yml b/spec/input/manifest.spec.yml
+index 227ea017..c3d4cc96 100644
+--- a/spec/input/manifest.spec.yml
++++ b/spec/input/manifest.spec.yml
+@@ -88,6 +88,8 @@ spec:
+           template_path:
+             description: "Path to Elasticsearch index template for stream."
+             type: string
++          deprecated:
++            $ref: "../integration/manifest.spec.yml#/definitions/deprecated"
+         required:
+           - name
+           - title
+@@ -112,6 +114,8 @@ spec:
+       properties:
+         index_template:
+           $ref: "../integration/data_stream/manifest.spec.yml#/definitions/elasticsearch_index_template"
++    deprecated:
++      $ref: "../integration/manifest.spec.yml#/definitions/deprecated"
+   required:
+   - format_version
+   - name
+@@ -128,6 +132,10 @@ versions:
+     patch:
+       - op: remove
+         path: "/required/7" # removes requirement for conditions
++      - op: remove
++        path: "/properties/deprecated" # removes deprecated field for package
++      - op: remove
++        path: "/properties/policy_templates/items/properties/deprecated" # removes deprecated field for policy templates
+   # Reserve otelcol input name before 3.5.0.
+   - before: 3.5.0
+     patch:
+diff --git a/spec/integration/changelog.spec.yml b/spec/integration/changelog.spec.yml
+index e6eeadc6..b8f42ada 100644
+--- a/spec/integration/changelog.spec.yml
++++ b/spec/integration/changelog.spec.yml
+@@ -30,6 +30,7 @@ spec:
+               - "breaking-change"
+               - "bugfix"
+               - "enhancement"
++              - "deprecation"
+             link:
+               description: Link to issue or PR describing change in detail.
+               type: string
+@@ -41,4 +42,10 @@ spec:
+           - link
+     required:
+     - version
+-    - changes
+\ No newline at end of file
++    - changes
++
++versions:
++  - before: 3.6.0
++    patch:
++      - op: remove # deprecation change type
++        path: "/items/properties/changes/items/properties/type/enum/3"
+\ No newline at end of file
+diff --git a/spec/integration/data_stream/manifest.spec.yml b/spec/integration/data_stream/manifest.spec.yml
+index ac311487..07b68e32 100644
+--- a/spec/integration/data_stream/manifest.spec.yml
++++ b/spec/integration/data_stream/manifest.spec.yml
+@@ -164,6 +164,8 @@ spec:
+           default:
+             description: Default value(s) for variable
+             $ref: "#/definitions/input_variable_value"
++          deprecated:
++            $ref: "../../integration/manifest.spec.yml#/definitions/deprecated"
+         allOf:
+          - if:
+              properties:
+@@ -645,10 +647,18 @@ spec:
+         dynamic_namespace:
+           description: When set to true, agents running this integration are granted data stream privileges for all namespaces of its type
+           type: boolean
++    deprecated:
++      $ref: "../../integration/manifest.spec.yml#/definitions/deprecated"
+   required:
+   - title
+ # JSON patches for newer versions should be placed on top
+ versions:
++  - before: 3.6.0
++    patch:
++      - op: remove # removes deprecated field for data stream
++        path: "/properties/deprecated"
++      - op: remove # remove deprecated field for vars
++        path: /definitions/vars/items/properties/deprecated
+   - before: 3.5.0
+     patch:
+       # Require >=3.5.0 to use the duration variable type.
+diff --git a/spec/integration/manifest.spec.yml b/spec/integration/manifest.spec.yml
+index be75cbde..e1044b6f 100644
+--- a/spec/integration/manifest.spec.yml
++++ b/spec/integration/manifest.spec.yml
+@@ -495,6 +495,39 @@ spec:
+       required:
+         - github
+         - type
++    deprecated:
++      description: Information on deprecation of a package or an individual feature.
++      type: object
++      additionalProperties: false
++      properties:
++        since:
++          description: Version since when is deprecated.
++          $ref: "#/definitions/version"
++        description:
++          description: Reason of deprecation.
++          type: string
++        replaced_by:
++          type: object
++          additionalProperties: false
++          properties:
++            package:
++              description: Name of the package that replaces the deprecated one.
++              type: string
++            input:
++              description: Name of the input that replaces the deprecated one.
++              type: string
++            policy_template:
++              description: Name of the policy template that replaces the deprecated one.
++              type: string
++            variable:
++              description: Name of the variable that replaces the deprecated one.
++              type: string
++            data_stream:
++              description: Name of the data stream that replaces the deprecated one.
++              type: string         
++      required:
++        - since
++        - description
+   properties:
+     format_version:
+       description: The version of the package specification format used by this package.
+@@ -634,6 +667,8 @@ spec:
+                   $ref: "./data_stream/manifest.spec.yml#/definitions/required_vars"
+                 vars:
+                   $ref: "./data_stream/manifest.spec.yml#/definitions/vars"
++                deprecated:
++                  $ref: "#/definitions/deprecated"
+               required:
+                 - type
+                 - title
+@@ -646,6 +681,8 @@ spec:
+             $ref: "#/definitions/screenshots"
+           vars:
+             $ref: "./data_stream/manifest.spec.yml#/definitions/vars"
++          deprecated:
++            $ref: "#/definitions/deprecated"
+         required:
+           - name
+           - title
+@@ -676,6 +713,8 @@ spec:
+               type: array
+               items:
+                 type: string
++    deprecated:
++      $ref: "#/definitions/deprecated"
+   required:
+     - format_version
+     - name
+@@ -715,6 +754,14 @@ versions:
+         path: "/definitions/conditions/required/0" # removes requirement for agent
+       - op: remove
+         path: "/definitions/conditions/properties/agent/required/0" # removes requirement for version
++      - op: remove # removes package deprecation info
++        path: "/properties/deprecated"
++      - op: remove # removes policy template input deprecation info
++        path: "/properties/policy_templates/items/properties/inputs/items/properties/deprecated"
++      - op: remove # removes policy template deprecation info
++        path: "/properties/policy_templates/items/properties/deprecated"
++      - op: remove # remove deprecated definition
++        path: "/definitions/deprecated"
+   - before: 3.3.2
+     patch:
+       - op: remove

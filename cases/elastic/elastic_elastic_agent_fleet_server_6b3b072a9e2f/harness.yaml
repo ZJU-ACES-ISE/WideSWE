@@ -1,0 +1,37 @@
+task_id: elastic_elastic_agent_fleet_server_6b3b072a9e2f
+hidden_test_patches:
+- repo: elastic-agent
+  patch: hidden/patches/elastic-agent-hidden-tests.patch
+  test_profile: elastic_agent-hidden
+  origin: upstream_test_diff
+  source_file:
+  - internal/pkg/agent/application/enroll/enroll_test.go
+  - internal/pkg/fleetapi/checkin_cmd_test.go
+  - testing/fleetservertest/fleetserver_test.go
+  - testing/integration/ess/checkin_compress_test.go
+  hidden_file:
+  - internal/pkg/agent/configuration/checkin_compression_contract_test.go
+  - internal/pkg/agent/application/gateway/fleet/checkin_compression_contract_test.go
+  semantic_changes: Validate supported configuration values and request wire behavior through pre-existing production entry points without requiring Gold-specific constants, helpers, persistence paths, or constructor signatures.
+  source: upstream test changes from elastic/elastic-agent PR(s) 13110
+- repo: fleet-server
+  patch: hidden/patches/fleet-server-hidden-tests.patch
+  test_profile: fleet_server-hidden
+  origin: upstream_test_diff
+  source_file:
+  - internal/pkg/api/handleCheckin_test.go
+  - internal/pkg/server/fleet_integration_test.go
+  hidden_file:
+  - internal/pkg/api/checkin_gzip_contract_test.go
+  semantic_changes: Compare compressed and uncompressed request semantics, validate bad-request classification without exact error text, and inspect the public OpenAPI contract without requiring Gold-specific decoding internals or a specific inline/enum representation.
+  source: upstream test changes from elastic/fleet-server PR(s) 6491
+profile_sets:
+  linux-docker:
+    description: Independent behavioral contract tests derived from upstream requirements.
+    hidden_tests:
+    - elastic_agent-hidden
+    - fleet_server-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

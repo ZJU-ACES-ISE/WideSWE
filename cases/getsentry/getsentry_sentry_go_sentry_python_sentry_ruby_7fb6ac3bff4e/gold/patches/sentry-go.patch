@@ -1,0 +1,397 @@
+diff --git a/internal/http/transport.go b/internal/http/transport.go
+index e826759..51bd687 100644
+--- a/internal/http/transport.go
++++ b/internal/http/transport.go
+@@ -17,6 +17,7 @@ import (
+ 	"github.com/getsentry/sentry-go/internal/debuglog"
+ 	"github.com/getsentry/sentry-go/internal/protocol"
+ 	"github.com/getsentry/sentry-go/internal/ratelimit"
++	"github.com/getsentry/sentry-go/internal/util"
+ )
+ 
+ const (
+@@ -24,10 +25,6 @@ const (
+ 
+ 	defaultTimeout   = time.Second * 30
+ 	defaultQueueSize = 1000
+-
+-	// maxDrainResponseBytes is the maximum number of bytes that transport
+-	// implementations will read from response bodies when draining them.
+-	maxDrainResponseBytes = 16 << 10
+ )
+ 
+ var (
+@@ -218,10 +215,10 @@ func (t *SyncTransport) SendEnvelopeWithContext(ctx context.Context, envelope *p
+ 		debuglog.Printf("There was an issue creating the request: %v", err)
+ 		return err
+ 	}
++	identifier := util.EnvelopeIdentifier(envelope)
+ 	debuglog.Printf(
+-		"Sending %s [%s] to %s project: %s",
+-		envelope.Items[0].Header.Type,
+-		envelope.Header.EventID,
++		"Sending %s to %s project: %s",
++		identifier,
+ 		t.dsn.GetHost(),
+ 		t.dsn.GetProjectID(),
+ 	)
+@@ -231,23 +228,16 @@ func (t *SyncTransport) SendEnvelopeWithContext(ctx context.Context, envelope *p
+ 		debuglog.Printf("There was an issue with sending an event: %v", err)
+ 		return err
+ 	}
+-	if response.StatusCode >= 400 && response.StatusCode <= 599 {
+-		b, err := io.ReadAll(response.Body)
+-		if err != nil {
+-			debuglog.Printf("Error while reading response body: %v", err)
+-		}
+-		debuglog.Printf("Sending %s failed with the following error: %s", envelope.Header.EventID, string(b))
+-	}
++	util.HandleHTTPResponse(response, identifier)
+ 
+ 	t.mu.Lock()
+ 	if t.limits == nil {
+ 		t.limits = make(ratelimit.Map)
+ 	}
+-
+ 	t.limits.Merge(ratelimit.FromResponse(response))
+ 	t.mu.Unlock()
+ 
+-	_, _ = io.CopyN(io.Discard, response.Body, maxDrainResponseBytes)
++	_, _ = io.CopyN(io.Discard, response.Body, util.MaxDrainResponseBytes)
+ 	return response.Body.Close()
+ }
+ 
+@@ -378,10 +368,10 @@ func (t *AsyncTransport) SendEnvelope(envelope *protocol.Envelope) error {
+ 
+ 	select {
+ 	case t.queue <- envelope:
++		identifier := util.EnvelopeIdentifier(envelope)
+ 		debuglog.Printf(
+-			"Sending %s [%s] to %s project: %s",
+-			envelope.Items[0].Header.Type,
+-			envelope.Header.EventID,
++			"Sending %s to %s project: %s",
++			identifier,
+ 			t.dsn.GetHost(),
+ 			t.dsn.GetProjectID(),
+ 		)
+@@ -495,7 +485,8 @@ func (t *AsyncTransport) sendEnvelopeHTTP(envelope *protocol.Envelope) bool {
+ 	}
+ 	defer response.Body.Close()
+ 
+-	success := t.handleResponse(response)
++	identifier := util.EnvelopeIdentifier(envelope)
++	success := util.HandleHTTPResponse(response, identifier)
+ 
+ 	t.mu.Lock()
+ 	if t.limits == nil {
+@@ -504,31 +495,10 @@ func (t *AsyncTransport) sendEnvelopeHTTP(envelope *protocol.Envelope) bool {
+ 	t.limits.Merge(ratelimit.FromResponse(response))
+ 	t.mu.Unlock()
+ 
+-	_, _ = io.CopyN(io.Discard, response.Body, maxDrainResponseBytes)
++	_, _ = io.CopyN(io.Discard, response.Body, util.MaxDrainResponseBytes)
+ 	return success
+ }
+ 
+-func (t *AsyncTransport) handleResponse(response *http.Response) bool {
+-	if response.StatusCode >= 200 && response.StatusCode < 300 {
+-		return true
+-	}
+-
+-	if response.StatusCode >= 400 && response.StatusCode < 500 {
+-		if body, err := io.ReadAll(io.LimitReader(response.Body, maxDrainResponseBytes)); err == nil {
+-			debuglog.Printf("Client error %d: %s", response.StatusCode, string(body))
+-		}
+-		return false
+-	}
+-
+-	if response.StatusCode >= 500 {
+-		debuglog.Printf("Server error %d", response.StatusCode)
+-		return false
+-	}
+-
+-	debuglog.Printf("Unexpected status code %d", response.StatusCode)
+-	return false
+-}
+-
+ func (t *AsyncTransport) isRateLimited(category ratelimit.Category) bool {
+ 	t.mu.RLock()
+ 	defer t.mu.RUnlock()
+diff --git a/internal/protocol/envelope.go b/internal/protocol/envelope.go
+index 2b98e8f..0ec2784 100644
+--- a/internal/protocol/envelope.go
++++ b/internal/protocol/envelope.go
+@@ -70,7 +70,7 @@ type EnvelopeItemHeader struct {
+ 	ItemCount *int `json:"item_count,omitempty"`
+ }
+ 
+-// EnvelopeItem represents a single item within an envelope.
++// EnvelopeItem represents a single item or batch within an envelope.
+ type EnvelopeItem struct {
+ 	Header  *EnvelopeItemHeader `json:"-"`
+ 	Payload []byte              `json:"-"`
+diff --git a/internal/util/util.go b/internal/util/util.go
+new file mode 100644
+index 0000000..375d5c1
+--- /dev/null
++++ b/internal/util/util.go
+@@ -0,0 +1,83 @@
++package util
++
++import (
++	"fmt"
++	"io"
++	"net/http"
++
++	"github.com/getsentry/sentry-go/internal/debuglog"
++	"github.com/getsentry/sentry-go/internal/protocol"
++)
++
++// MaxDrainResponseBytes is the maximum number of bytes that transport
++// implementations will read from response bodies when draining them.
++const MaxDrainResponseBytes = 16 << 10
++
++// HandleHTTPResponse is a helper method that reads the HTTP response and handles debug output.
++func HandleHTTPResponse(response *http.Response, identifier string) bool {
++	if response.StatusCode >= 200 && response.StatusCode < 300 {
++		return true
++	}
++
++	if response.StatusCode >= 400 && response.StatusCode <= 599 {
++		body, err := io.ReadAll(io.LimitReader(response.Body, MaxDrainResponseBytes))
++		if err != nil {
++			debuglog.Printf("Error while reading response body: %v", err)
++			return false
++		}
++
++		switch {
++		case response.StatusCode == http.StatusRequestEntityTooLarge:
++			debuglog.Printf("Sending %s failed because the request was too large: %s", identifier, string(body))
++		case response.StatusCode >= 500:
++			debuglog.Printf("Sending %s failed with server error %d: %s", identifier, response.StatusCode, string(body))
++		default:
++			debuglog.Printf("Sending %s failed with client error %d: %s", identifier, response.StatusCode, string(body))
++		}
++		return false
++	}
++
++	debuglog.Printf("Unexpected status code %d for event %s", response.StatusCode, identifier)
++	return false
++}
++
++// EnvelopeIdentifier returns a human-readable identifier for the event to be used in log messages.
++// Format: "<description> [<event-id>]".
++func EnvelopeIdentifier(envelope *protocol.Envelope) string {
++	if envelope == nil || len(envelope.Items) == 0 {
++		return "empty envelope"
++	}
++
++	var description string
++	// we don't currently support mixed envelope types, so all event types would have the same type.
++	itemType := envelope.Items[0].Header.Type
++
++	switch itemType {
++	case protocol.EnvelopeItemTypeEvent:
++		description = "error"
++	case protocol.EnvelopeItemTypeTransaction:
++		description = "transaction"
++	case protocol.EnvelopeItemTypeCheckIn:
++		description = "check-in"
++	case protocol.EnvelopeItemTypeLog:
++		logCount := 0
++		for _, item := range envelope.Items {
++			if item != nil && item.Header != nil && item.Header.Type == protocol.EnvelopeItemTypeLog && item.Header.ItemCount != nil {
++				logCount += *item.Header.ItemCount
++			}
++		}
++		description = fmt.Sprintf("%d log events", logCount)
++	case protocol.EnvelopeItemTypeTraceMetric:
++		metricCount := 0
++		for _, item := range envelope.Items {
++			if item != nil && item.Header != nil && item.Header.Type == protocol.EnvelopeItemTypeTraceMetric && item.Header.ItemCount != nil {
++				metricCount += *item.Header.ItemCount
++			}
++		}
++		description = fmt.Sprintf("%d metric events", metricCount)
++	default:
++		description = fmt.Sprintf("%s event", itemType)
++	}
++
++	return fmt.Sprintf("%s [%s]", description, envelope.Header.EventID)
++}
+diff --git a/transport.go b/transport.go
+index 34d2ef5..1b56575 100644
+--- a/transport.go
++++ b/transport.go
+@@ -17,6 +17,7 @@ import (
+ 	httpinternal "github.com/getsentry/sentry-go/internal/http"
+ 	"github.com/getsentry/sentry-go/internal/protocol"
+ 	"github.com/getsentry/sentry-go/internal/ratelimit"
++	"github.com/getsentry/sentry-go/internal/util"
+ )
+ 
+ const (
+@@ -24,17 +25,6 @@ const (
+ 	defaultTimeout    = time.Second * 30
+ )
+ 
+-// maxDrainResponseBytes is the maximum number of bytes that transport
+-// implementations will read from response bodies when draining them.
+-//
+-// Sentry's ingestion API responses are typically short and the SDK doesn't need
+-// the contents of the response body. However, the net/http HTTP client requires
+-// response bodies to be fully drained (and closed) for TCP keep-alive to work.
+-//
+-// maxDrainResponseBytes strikes a balance between reading too much data (if the
+-// server is misbehaving) and reusing TCP connections.
+-const maxDrainResponseBytes = 16 << 10
+-
+ // Transport is used by the Client to deliver events to remote server.
+ type Transport interface {
+ 	Flush(timeout time.Duration) bool
+@@ -296,8 +286,9 @@ type batch struct {
+ }
+ 
+ type batchItem struct {
+-	request  *http.Request
+-	category ratelimit.Category
++	request         *http.Request
++	category        ratelimit.Category
++	eventIdentifier string
+ }
+ 
+ // HTTPTransport is the default, non-blocking, implementation of Transport.
+@@ -416,21 +407,17 @@ func (t *HTTPTransport) SendEventWithContext(ctx context.Context, event *Event)
+ 	// channel (used as a queue).
+ 	b := <-t.buffer
+ 
++	identifier := eventIdentifier(event)
++
+ 	select {
+ 	case b.items <- batchItem{
+-		request:  request,
+-		category: category,
++		request:         request,
++		category:        category,
++		eventIdentifier: identifier,
+ 	}:
+-		var eventType string
+-		if event.Type == transactionType {
+-			eventType = "transaction"
+-		} else {
+-			eventType = fmt.Sprintf("%s event", event.Type)
+-		}
+ 		debuglog.Printf(
+-			"Sending %s [%s] to %s project: %s",
+-			eventType,
+-			event.EventID,
++			"Sending %s to %s project: %s",
++			identifier,
+ 			t.dsn.GetHost(),
+ 			t.dsn.GetProjectID(),
+ 		)
+@@ -549,13 +536,7 @@ func (t *HTTPTransport) worker() {
+ 					debuglog.Printf("There was an issue with sending an event: %v", err)
+ 					continue
+ 				}
+-				if response.StatusCode >= 400 && response.StatusCode <= 599 {
+-					b, err := io.ReadAll(response.Body)
+-					if err != nil {
+-						debuglog.Printf("Error while reading response code: %v", err)
+-					}
+-					debuglog.Printf("Sending %s failed with the following error: %s", eventType, string(b))
+-				}
++				util.HandleHTTPResponse(response, item.eventIdentifier)
+ 
+ 				t.mu.Lock()
+ 				if t.limits == nil {
+@@ -566,7 +547,7 @@ func (t *HTTPTransport) worker() {
+ 
+ 				// Drain body up to a limit and close it, allowing the
+ 				// transport to reuse TCP connections.
+-				_, _ = io.CopyN(io.Discard, response.Body, maxDrainResponseBytes)
++				_, _ = io.CopyN(io.Discard, response.Body, util.MaxDrainResponseBytes)
+ 				response.Body.Close()
+ 			}
+ 		}
+@@ -673,23 +654,10 @@ func (t *HTTPSyncTransport) SendEventWithContext(ctx context.Context, event *Eve
+ 		return
+ 	}
+ 
+-	var eventIdentifier string
+-	switch event.Type {
+-	case errorType:
+-		eventIdentifier = "error"
+-	case transactionType:
+-		eventIdentifier = "transaction"
+-	case logEvent.Type:
+-		eventIdentifier = fmt.Sprintf("%d log events", len(event.Logs))
+-	case traceMetricEvent.Type:
+-		eventIdentifier = fmt.Sprintf("%d metric events", len(event.Metrics))
+-	default:
+-		eventIdentifier = fmt.Sprintf("%s event", event.Type)
+-	}
++	identifier := eventIdentifier(event)
+ 	debuglog.Printf(
+-		"Sending %s [%s] to %s project: %s",
+-		eventIdentifier,
+-		event.EventID,
++		"Sending %s to %s project: %s",
++		identifier,
+ 		t.dsn.GetHost(),
+ 		t.dsn.GetProjectID(),
+ 	)
+@@ -699,13 +667,7 @@ func (t *HTTPSyncTransport) SendEventWithContext(ctx context.Context, event *Eve
+ 		debuglog.Printf("There was an issue with sending an event: %v", err)
+ 		return
+ 	}
+-	if response.StatusCode >= 400 && response.StatusCode <= 599 {
+-		b, err := io.ReadAll(response.Body)
+-		if err != nil {
+-			debuglog.Printf("Error while reading response code: %v", err)
+-		}
+-		debuglog.Printf("Sending %s failed with the following error: %s", eventIdentifier, string(b))
+-	}
++	util.HandleHTTPResponse(response, identifier)
+ 
+ 	t.mu.Lock()
+ 	if t.limits == nil {
+@@ -717,7 +679,7 @@ func (t *HTTPSyncTransport) SendEventWithContext(ctx context.Context, event *Eve
+ 
+ 	// Drain body up to a limit and close it, allowing the
+ 	// transport to reuse TCP connections.
+-	_, _ = io.CopyN(io.Discard, response.Body, maxDrainResponseBytes)
++	_, _ = io.CopyN(io.Discard, response.Body, util.MaxDrainResponseBytes)
+ 	response.Body.Close()
+ }
+ 
+diff --git a/util.go b/util.go
+index 5452430..298172a 100644
+--- a/util.go
++++ b/util.go
+@@ -109,3 +109,24 @@ func revisionFromBuildInfo(info *debug.BuildInfo) string {
+ func Pointer[T any](v T) *T {
+ 	return &v
+ }
++
++// eventIdentifier returns a human-readable identifier for the event to be used in log messages.
++// Format: "<description> [<event-id>]".
++func eventIdentifier(event *Event) string {
++	var description string
++	switch event.Type {
++	case errorType:
++		description = "error"
++	case transactionType:
++		description = "transaction"
++	case checkInType:
++		description = "check-in"
++	case logEvent.Type:
++		description = fmt.Sprintf("%d log events", len(event.Logs))
++	case traceMetricEvent.Type:
++		description = fmt.Sprintf("%d metric events", len(event.Metrics))
++	default:
++		description = fmt.Sprintf("%s event", event.Type)
++	}
++	return fmt.Sprintf("%s [%s]", description, event.EventID)
++}

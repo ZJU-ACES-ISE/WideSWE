@@ -1,0 +1,31 @@
+task_id: home_assistant_core_supervisor_7012a8e9bde2
+hidden_test_patches:
+- repo: core
+  patch: hidden/patches/core-hidden-tests.patch
+  test_profile: core-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/components/hassio/test_ingress.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from home-assistant/core PR(s) 163885
+- repo: supervisor
+  patch: hidden/patches/supervisor-hidden-tests.patch
+  test_profile: supervisor-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/api/test_ingress.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from home-assistant/supervisor PR(s) 6266
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - core-hidden
+    - supervisor-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

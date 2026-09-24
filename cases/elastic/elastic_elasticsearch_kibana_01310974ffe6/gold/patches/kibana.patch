@@ -1,0 +1,178 @@
+diff --git a/x-pack/platform/plugins/shared/actions/server/mocks.ts b/x-pack/platform/plugins/shared/actions/server/mocks.ts
+index 82d1d7bd977..390813767dd 100644
+--- a/x-pack/platform/plugins/shared/actions/server/mocks.ts
++++ b/x-pack/platform/plugins/shared/actions/server/mocks.ts
+@@ -65,6 +65,7 @@ const createStartMock = () => {
+     renderActionParameterTemplates: jest.fn(),
+     isSystemActionConnector: jest.fn(),
+     registerDynamicConnector: jest.fn(),
++    unregisterDynamicConnector: jest.fn(),
+   });
+ 
+   return mock;
+diff --git a/x-pack/platform/plugins/shared/actions/server/plugin.ts b/x-pack/platform/plugins/shared/actions/server/plugin.ts
+index a31f6dd3ffe..8a9b2a3914c 100644
+--- a/x-pack/platform/plugins/shared/actions/server/plugin.ts
++++ b/x-pack/platform/plugins/shared/actions/server/plugin.ts
+@@ -205,6 +205,15 @@ export interface PluginStartContract {
+    * @returns boolean indicating whether the connector was added or not
+    */
+   registerDynamicConnector: (connector: InMemoryConnector) => boolean;
++
++  /**
++   * Remove a previously registered dynamic InMemoryConnector from the inMemoryConnectors list.
++   * Only connectors flagged as dynamic (via registerDynamicConnector) can be removed this way;
++   * preconfigured or system connectors are left untouched.
++   * @param connectorId id of the dynamic connector to remove
++   * @returns boolean indicating whether the connector was removed or not
++   */
++  unregisterDynamicConnector: (connectorId: string) => boolean;
+ }
+ 
+ export interface ActionsPluginsSetup {
+@@ -789,6 +798,8 @@ export class ActionsPlugin
+       },
+       registerDynamicConnector: (connector: InMemoryConnector) =>
+         this.registerDynamicConnector(connector),
++      unregisterDynamicConnector: (connectorId: string) =>
++        this.unregisterDynamicConnector(connectorId),
+     };
+   }
+ 
+@@ -1055,6 +1066,18 @@ export class ActionsPlugin
+     return false;
+   };
+ 
++  private unregisterDynamicConnector = (connectorId: string): boolean => {
++    const index = this.inMemoryConnectors.findIndex(
++      (c) => c.id === connectorId && c.isDynamic === true
++    );
++    if (index === -1) {
++      return false;
++    }
++    this.inMemoryConnectors.splice(index, 1);
++    this.logger.info(`Unregistered dynamic connector with id ${connectorId}`);
++    return true;
++  };
++
+   public stop() {
+     if (this.licenseState) {
+       this.licenseState.clean();
+diff --git a/x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.ts b/x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.ts
+index 9dcaff209d7..2a117e1e9db 100644
+--- a/x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.ts
++++ b/x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.ts
+@@ -21,8 +21,14 @@ import {
+   connectorFromEndpoint,
+   filterPreconfiguredEndpoints,
+   findEndpointsWithoutConnectors,
++  findStaleDynamicConnectorIds,
+ } from '../utils/in_memory_connectors';
+ 
++interface DynamicConnectorSync {
++  connectorsToAdd: InMemoryConnector[];
++  connectorIdsToRemove: string[];
++}
++
+ export class DynamicConnectorsPoller {
+   private readonly logger: Logger;
+   private readonly client: ElasticsearchClient;
+@@ -69,8 +75,8 @@ export class DynamicConnectorsPoller {
+       Rx.mergeMap(this.fetchInferenceEndpoints.bind(this)),
+       Rx.map(this.handleInferenceEndpointsResponse.bind(this)),
+       Rx.map(filterPreconfiguredEndpoints),
+-      Rx.map(this.generateConnectorsForEndpoints.bind(this)),
+-      Rx.tap(this.updateDynamicConnectors.bind(this)),
++      Rx.map(this.resolveDynamicConnectorSync.bind(this)),
++      Rx.tap(this.applyDynamicConnectorSync.bind(this)),
+       Rx.delay(this.pollingIntervalMs),
+       Rx.repeat(),
+       Rx.catchError(this.handleError.bind(this)),
+@@ -97,19 +103,29 @@ export class DynamicConnectorsPoller {
+     throw response;
+   }
+ 
+-  private generateConnectorsForEndpoints(
++  private resolveDynamicConnectorSync(
+     preconfiguredEISEndpoints: InferenceInferenceEndpointInfo[]
+-  ): InMemoryConnector[] {
++  ): DynamicConnectorSync {
+     const inMemoryConnectors = [...this.actions.inMemoryConnectors];
+     const inferenceEndpointsWithoutConnectors = findEndpointsWithoutConnectors(
+       preconfiguredEISEndpoints,
+       inMemoryConnectors
+     );
++    const connectorIdsToRemove = findStaleDynamicConnectorIds(
++      preconfiguredEISEndpoints,
++      inMemoryConnectors
++    );
+ 
+-    return inferenceEndpointsWithoutConnectors.map(connectorFromEndpoint);
++    return {
++      connectorsToAdd: inferenceEndpointsWithoutConnectors.map(connectorFromEndpoint),
++      connectorIdsToRemove,
++    };
+   }
+ 
+-  private updateDynamicConnectors(connectorsToAdd: InMemoryConnector[]) {
++  private applyDynamicConnectorSync({
++    connectorsToAdd,
++    connectorIdsToRemove,
++  }: DynamicConnectorSync) {
+     if (connectorsToAdd.length > 0) {
+       this.logger.debug(
+         `Found ${connectorsToAdd.length} preconfigured EIS endpoints to register as inMemoryConnectors`
+@@ -118,6 +134,14 @@ export class DynamicConnectorsPoller {
+         this.actions.registerDynamicConnector(connector);
+       }
+     }
++    if (connectorIdsToRemove.length > 0) {
++      this.logger.debug(
++        `Found ${connectorIdsToRemove.length} stale dynamic connectors to unregister`
++      );
++      for (const connectorId of connectorIdsToRemove) {
++        this.actions.unregisterDynamicConnector(connectorId);
++      }
++    }
+   }
+ 
+   private handleError(error: unknown, _caught$: Observable<unknown>): Observable<never> {
+diff --git a/x-pack/platform/plugins/shared/search_inference_endpoints/server/utils/in_memory_connectors.ts b/x-pack/platform/plugins/shared/search_inference_endpoints/server/utils/in_memory_connectors.ts
+index 6e46388d330..e7b69e0d62c 100644
+--- a/x-pack/platform/plugins/shared/search_inference_endpoints/server/utils/in_memory_connectors.ts
++++ b/x-pack/platform/plugins/shared/search_inference_endpoints/server/utils/in_memory_connectors.ts
+@@ -38,6 +38,12 @@ function isConnectorWithInferenceId(
+   );
+ }
+ 
++function isDynamicInferenceConnector(
++  connector: InMemoryConnector
++): connector is InMemoryConnectorWithInferenceId {
++  return connector.isDynamic === true && isConnectorWithInferenceId(connector);
++}
++
+ export function findEndpointsWithoutConnectors(
+   endpoints: InferenceInferenceEndpointInfo[],
+   connectors: InMemoryConnector[]
+@@ -50,6 +56,21 @@ export function findEndpointsWithoutConnectors(
+   );
+ }
+ 
++/**
++ * Returns the ids of dynamic inference connectors that no longer have a corresponding
++ * eligible inference endpoint.
++ */
++export function findStaleDynamicConnectorIds(
++  eligibleEndpoints: InferenceInferenceEndpointInfo[],
++  connectors: InMemoryConnector[]
++): string[] {
++  const eligibleInferenceIds = new Set(eligibleEndpoints.map((endpoint) => endpoint.inference_id));
++  return connectors
++    .filter(isDynamicInferenceConnector)
++    .filter((connector) => !eligibleInferenceIds.has(connector.config.inferenceId))
++    .map((connector) => connector.id);
++}
++
+ export function connectorFromEndpoint(endpoint: InferenceInferenceEndpointInfo): InMemoryConnector {
+   return {
+     id: getConnectorIdFromEndpoint(endpoint),

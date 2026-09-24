@@ -1,0 +1,86 @@
+diff --git a/hf_xet/tests/request_headers_contract.py b/hf_xet/tests/request_headers_contract.py
+new file mode 100644
+index 0000000..3a91616
+--- /dev/null
++++ b/hf_xet/tests/request_headers_contract.py
+@@ -0,0 +1,80 @@
++import socket
++import sys
++import tempfile
++import threading
++from pathlib import Path
++
++import hf_xet
++
++
++def capture_download_headers(request_headers):
++    listener = socket.socket()
++    listener.bind(("127.0.0.1", 0))
++    listener.listen(1)
++    listener.settimeout(5)
++    endpoint = f"http://127.0.0.1:{listener.getsockname()[1]}"
++    captured = []
++
++    def serve():
++        try:
++            connection, _ = listener.accept()
++        except socket.timeout:
++            listener.close()
++            return
++        connection.settimeout(5)
++        request = b""
++        while b"\r\n\r\n" not in request:
++            block = connection.recv(4096)
++            if not block:
++                break
++            request += block
++        captured.append(request.decode("latin-1"))
++        connection.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
++        connection.close()
++        listener.close()
++
++    server = threading.Thread(target=serve, daemon=True)
++    server.start()
++    destination = Path(tempfile.gettempdir()) / f"hf-xet-header-contract-{id(listener)}"
++    info = hf_xet.PyXetDownloadInfo(str(destination), "0" * 64, 0)
++    try:
++        hf_xet.download_files([info], endpoint, None, None, None, request_headers=request_headers)
++    except RuntimeError:
++        pass
++    server.join(6)
++    assert not server.is_alive(), "CAS request was not received"
++    assert captured, "CAS request was not received"
++    return captured[0].lower()
++
++
++def assert_forwarded(request):
++    assert "x-contract-test: forwarded\r\n" in request
++    user_agent = next(line for line in request.splitlines() if line.startswith("user-agent:"))
++    assert "hf_xet/" in user_agent
++    return user_agent
++
++
++def download_with_existing_user_agent():
++    request = capture_download_headers(
++        {"user-agent": "huggingface_hub/contract-test", "x-contract-test": "forwarded"}
++    )
++    assert "huggingface_hub/contract-test" in assert_forwarded(request)
++
++
++def download_without_user_agent():
++    assert_forwarded(capture_download_headers({"x-contract-test": "forwarded"}))
++
++
++def upload_apis_accept_request_headers():
++    headers = {"x-contract-test": "forwarded"}
++    endpoint = f"local://{tempfile.mkdtemp(prefix='hf-xet-header-contract-')}"
++    hf_xet.upload_files([], endpoint, None, None, None, None, request_headers=headers)
++    hf_xet.upload_bytes([], endpoint, None, None, None, None, request_headers=headers)
++
++
++if __name__ == "__main__":
++    {
++        "download_with_existing_user_agent": download_with_existing_user_agent,
++        "download_without_user_agent": download_without_user_agent,
++        "upload_apis_accept_request_headers": upload_apis_accept_request_headers,
++    }[sys.argv[1]]()

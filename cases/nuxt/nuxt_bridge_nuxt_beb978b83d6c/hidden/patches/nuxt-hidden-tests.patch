@@ -1,0 +1,22 @@
+diff --git a/test/nuxt/composables.test.ts b/test/nuxt/composables.test.ts
+index 0bd921729..248bef762 100644
+--- a/test/nuxt/composables.test.ts
++++ b/test/nuxt/composables.test.ts
+@@ -794,6 +794,17 @@ describe('useCookie', () => {
+       expect(computedVal.value).toBe(-1)
+     }
+   })
++
++  it('should set cookie value when called on client', () => {
++    useCookie('cookie-watch-false', { default: () => 'foo', watch: false })
++    expect(document.cookie).toContain('cookie-watch-false=foo')
++
++    useCookie('cookie-watch-true', { default: () => 'foo', watch: true })
++    expect(document.cookie).toContain('cookie-watch-true=foo')
++
++    useCookie('cookie-readonly', { default: () => 'foo', readonly: true })
++    expect(document.cookie).toContain('cookie-readonly=foo')
++  })
+ })
+ 
+ describe('callOnce', () => {

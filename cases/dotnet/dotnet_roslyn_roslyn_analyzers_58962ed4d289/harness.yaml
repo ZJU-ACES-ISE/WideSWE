@@ -1,0 +1,32 @@
+task_id: dotnet_roslyn_roslyn_analyzers_58962ed4d289
+hidden_test_patches:
+- repo: roslyn
+  patch: hidden/patches/roslyn-hidden-tests.patch
+  test_profile: roslyn-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - src/Workspaces/CoreTest/WorkspaceTests/AdhocWorkspaceTests.cs
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from dotnet/roslyn PR(s) 79576
+- repo: roslyn-analyzers
+  patch: hidden/patches/roslyn-analyzers-hidden-tests.patch
+  test_profile: roslyn_analyzers-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStaticTests.cs
+  - src/NetAnalyzers/UnitTests/Microsoft.NetCore.Analyzers/InteropServices/DynamicInterfaceCastableImplementationTests.cs
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from dotnet/roslyn-analyzers PR(s) 7739
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - roslyn-hidden
+    - roslyn_analyzers-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

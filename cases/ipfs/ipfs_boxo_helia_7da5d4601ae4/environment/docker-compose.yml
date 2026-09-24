@@ -1,0 +1,17 @@
+services:
+  boxo-hidden:
+    image: ecosyncbench/deps/ipfs-boxo-go:7da5d4601ae4
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/go-mod-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/go:1.26-bookworm
+        ECOSYNC_TASK_ID: ipfs_boxo_helia_7da5d4601ae4
+        ECOSYNC_REPO: ipfs/boxo
+        ECOSYNC_REPO_PATH: repos/ipfs/boxo
+        ECOSYNC_BASE_COMMIT: 96ceee6d32b024aaffe66ee45c1d14088c4c6688
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 7da5d4601ae4-boxo
+    working_dir: /workspace/repos/ipfs/boxo
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-go-test.sh boxo-hidden ./bitswap/client/internal/messagequeue ./bitswap/server/internal/decision'

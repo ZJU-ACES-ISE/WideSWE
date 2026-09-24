@@ -1,0 +1,108 @@
+diff --git a/x-pack/platform/plugins/shared/actions/server/plugin.test.ts b/x-pack/platform/plugins/shared/actions/server/plugin.test.ts
+index 7a179527bef..7810c572119 100644
+--- a/x-pack/platform/plugins/shared/actions/server/plugin.test.ts
++++ b/x-pack/platform/plugins/shared/actions/server/plugin.test.ts
+@@ -918,6 +918,38 @@ describe('Actions Plugin', () => {
+           expect(pluginStart.inMemoryConnectors.length).toEqual(1);
+           expect(pluginStart.inMemoryConnectors[0]).toEqual(existingConnector);
+         });
++
++        it('should remove a registered dynamic connector and report success', () => {
++          const dynamicConnector: InMemoryConnector = {
++            id: 'dynamic-connector-id',
++            actionTypeId: '.inference',
++            name: 'Inference Test',
++            config: {},
++            secrets: {},
++            isPreconfigured: true,
++            isDeprecated: false,
++            isSystemAction: false,
++            isConnectorTypeDeprecated: false,
++          };
++          pluginStart.registerDynamicConnector(dynamicConnector);
++
++          expect(pluginStart.unregisterDynamicConnector(dynamicConnector.id)).toBe(true);
++          expect(pluginStart.inMemoryConnectors.map(({ id }) => id)).not.toContain(
++            dynamicConnector.id
++          );
++        });
++
++        it('should report false when the connector does not exist', () => {
++          expect(pluginStart.unregisterDynamicConnector('missing-connector')).toBe(false);
++          expect(pluginStart.inMemoryConnectors).toHaveLength(1);
++        });
++
++        it('should protect non-dynamic connectors', () => {
++          const existingConnector = pluginStart.inMemoryConnectors[0];
++
++          expect(pluginStart.unregisterDynamicConnector(existingConnector.id)).toBe(false);
++          expect(pluginStart.inMemoryConnectors).toContainEqual(existingConnector);
++        });
+       });
+     });
+ 
+diff --git a/x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.test.ts b/x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.test.ts
+index 867ccb287ff..053a102ff73 100644
+--- a/x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.test.ts
++++ b/x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.test.ts
+@@ -45,6 +45,11 @@ describe('DynamicConnectorsPoller', () => {
+       endpoints: mockEISPreconfiguredEndpoints,
+     });
+     mockActions.inMemoryConnectors = [];
++    (
++      mockActions as typeof mockActions & {
++        unregisterDynamicConnector: jest.Mock;
++      }
++    ).unregisterDynamicConnector = jest.fn();
+     poller = new DynamicConnectorsPoller(logger, actions, client, pollingIntervalMins);
+   });
+ 
+@@ -108,6 +113,48 @@ describe('DynamicConnectorsPoller', () => {
+     })
+   );
+ 
++  it(
++    'unregisters only stale dynamic inference connectors',
++    fakeSchedulers(async (advance) => {
++      const [eligibleEndpoint, staleEndpoint] = filterPreconfiguredEndpoints(
++        mockEISPreconfiguredEndpoints
++      );
++      const matchingConnector = connectorFromEndpoint(eligibleEndpoint);
++      const staleConnector = connectorFromEndpoint(staleEndpoint);
++      const otherTypeConnector = {
++        ...staleConnector,
++        id: 'dynamic-slack',
++        actionTypeId: '.slack',
++      };
++      const connectorWithoutInferenceId = {
++        ...staleConnector,
++        id: 'dynamic-without-inference-id',
++        config: {},
++      };
++      const nonDynamicConnector = {
++        ...staleConnector,
++        id: 'preconfigured-inference',
++        isDynamic: false,
++      };
++
++      mockInferenceGet.mockResolvedValue({ endpoints: [eligibleEndpoint] });
++      mockActions.inMemoryConnectors = [
++        matchingConnector,
++        staleConnector,
++        otherTypeConnector,
++        connectorWithoutInferenceId,
++        nonDynamicConnector,
++      ];
++
++      poller.start();
++      advance(testInitialAdvance);
++      await wait();
++
++      expect(mockActions.unregisterDynamicConnector).toHaveBeenCalledTimes(1);
++      expect(mockActions.unregisterDynamicConnector).toHaveBeenCalledWith(staleConnector.id);
++    })
++  );
++
+   it(
+     'handles errors from elasticsearch client',
+     fakeSchedulers(async (advance) => {

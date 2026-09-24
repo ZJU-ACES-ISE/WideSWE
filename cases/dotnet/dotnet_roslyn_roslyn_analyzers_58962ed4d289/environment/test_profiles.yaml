@@ -1,0 +1,31 @@
+profiles:
+  roslyn-hidden:
+    repo: roslyn
+    workdir: repos/dotnet/roslyn
+    command: bash environment/run_profile.sh roslyn-hidden
+    public_smoke_command: >-
+      dotnet test src/Workspaces/CoreTest/Microsoft.CodeAnalysis.Workspaces.UnitTests.csproj
+      --framework net8.0
+      --filter "FullyQualifiedName~AdhocWorkspaceTests"
+      --logger "trx;LogFileName=roslyn-public-smoke.trx"
+      --results-directory /workspace/.ecosyncbench/test-reports/roslyn-public-smoke
+      --verbosity minimal
+    dependency_image: ecosyncbench/deps/dotnet-roslyn-analyzers-extension-members:58962ed4d289
+    status: implemented
+    test_files:
+    - src/Workspaces/CoreTest/WorkspaceTests/AdhocWorkspaceTests.cs
+  roslyn_analyzers-hidden:
+    repo: roslyn-analyzers
+    workdir: repos/dotnet/roslyn-analyzers
+    command: bash environment/run_profile.sh roslyn_analyzers-hidden
+    public_smoke_command: >-
+      dotnet test src/NetAnalyzers/UnitTests/Microsoft.CodeAnalysis.NetAnalyzers.UnitTests.csproj
+      --filter "FullyQualifiedName~MarkMembersAsStaticTests|FullyQualifiedName~DynamicInterfaceCastableImplementationTests"
+      --logger "trx;LogFileName=roslyn-analyzers-public-smoke.trx"
+      --results-directory /workspace/.ecosyncbench/test-reports/roslyn-analyzers-public-smoke
+      --verbosity minimal
+    dependency_image: ecosyncbench/deps/dotnet-roslyn-analyzers-extension-members:58962ed4d289
+    status: implemented
+    test_files:
+    - src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStaticTests.cs
+    - src/NetAnalyzers/UnitTests/Microsoft.NetCore.Analyzers/InteropServices/DynamicInterfaceCastableImplementationTests.cs

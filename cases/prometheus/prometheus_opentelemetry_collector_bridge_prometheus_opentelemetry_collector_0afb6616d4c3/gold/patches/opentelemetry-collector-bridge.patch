@@ -1,0 +1,459 @@
+diff --git a/config.go b/config.go
+index 7ada4c7..5fbad36 100644
+--- a/config.go
++++ b/config.go
+@@ -18,13 +18,6 @@ import (
+ 	"time"
+ )
+ 
+-// Config is the interface that exporter-specific configurations must implement.
+-// Each Prometheus exporter will provide its own Config implementation.
+-type Config interface {
+-	// Validate checks if the configuration is valid.
+-	Validate() error
+-}
+-
+ // ReceiverConfig holds the common configuration for all Prometheus exporter receivers.
+ type ReceiverConfig struct {
+ 	// ScrapeInterval defines how often to collect metrics from the exporter.
+@@ -37,7 +30,7 @@ type ReceiverConfig struct {
+ 
+ 	// exporterConfigInstance is the unmarshaled exporter-specific config.
+ 	// This is set by the factory after unmarshaling.
+-	exporterConfigInstance Config
++	exporterConfigInstance any
+ }
+ 
+ // Validate checks if the ReceiverConfig is valid.
+@@ -45,27 +38,14 @@ func (cfg *ReceiverConfig) Validate() error {
+ 	if cfg.ScrapeInterval <= 0 {
+ 		return errors.New("scrape_interval must be greater than 0")
+ 	}
+-
+-	// Validate the exporter-specific config if it exists
+-	if cfg.exporterConfigInstance != nil {
+-		if err := cfg.exporterConfigInstance.Validate(); err != nil {
++	if v, ok := cfg.exporterConfigInstance.(interface{ Validate() error }); ok {
++		if err := v.Validate(); err != nil {
+ 			return err
+ 		}
+ 	}
+-
+ 	return nil
+ }
+ 
+-// SetExporterConfig sets the unmarshaled exporter-specific configuration.
+-func (cfg *ReceiverConfig) SetExporterConfig(exporterCfg Config) {
+-	cfg.exporterConfigInstance = exporterCfg
+-}
+-
+-// GetExporterConfig returns the unmarshaled exporter-specific configuration.
+-func (cfg *ReceiverConfig) GetExporterConfig() Config {
+-	return cfg.exporterConfigInstance
+-}
+-
+ func createDefaultConfig() ReceiverConfig {
+ 	return ReceiverConfig{
+ 		ScrapeInterval: 30 * time.Second,
+diff --git a/config_test.go b/config_test.go
+index 96c9146..e84ac75 100644
+--- a/config_test.go
++++ b/config_test.go
+@@ -62,11 +62,11 @@ func TestReceiverConfig_Validate(t *testing.T) {
+ 				cfg := ReceiverConfig{
+ 					ScrapeInterval: 30 * time.Second,
+ 				}
+-				cfg.SetExporterConfig(&mockConfig{
++				cfg.exporterConfigInstance = &mockConfig{
+ 					validateFunc: func() error {
+ 						return nil
+ 					},
+-				})
++				}
+ 				return cfg
+ 			},
+ 		},
+@@ -76,11 +76,11 @@ func TestReceiverConfig_Validate(t *testing.T) {
+ 				cfg := ReceiverConfig{
+ 					ScrapeInterval: 0,
+ 				}
+-				cfg.SetExporterConfig(&mockConfig{
++				cfg.exporterConfigInstance = &mockConfig{
+ 					validateFunc: func() error {
+ 						return nil
+ 					},
+-				})
++				}
+ 				return cfg
+ 			},
+ 			wantErr:     true,
+@@ -92,11 +92,11 @@ func TestReceiverConfig_Validate(t *testing.T) {
+ 				cfg := ReceiverConfig{
+ 					ScrapeInterval: 30 * time.Second,
+ 				}
+-				cfg.SetExporterConfig(&mockConfig{
++				cfg.exporterConfigInstance = &mockConfig{
+ 					validateFunc: func() error {
+ 						return errors.New("exporter config validation failed")
+ 					},
+-				})
++				}
+ 				return cfg
+ 			},
+ 			wantErr:     true,
+@@ -108,16 +108,26 @@ func TestReceiverConfig_Validate(t *testing.T) {
+ 				cfg := ReceiverConfig{
+ 					ScrapeInterval: -1 * time.Second,
+ 				}
+-				cfg.SetExporterConfig(&mockConfig{
++				cfg.exporterConfigInstance = &mockConfig{
+ 					validateFunc: func() error {
+ 						return errors.New("exporter error")
+ 					},
+-				})
++				}
+ 				return cfg
+ 			},
+ 			wantErr:     true,
+ 			errContains: "scrape_interval must be greater than 0",
+ 		},
++		{
++			name: "exporter config without Validate passes",
++			setupConfig: func() ReceiverConfig {
++				cfg := ReceiverConfig{
++					ScrapeInterval: 30 * time.Second,
++				}
++				cfg.exporterConfigInstance = struct{ Foo string }{Foo: "bar"}
++				return cfg
++			},
++		},
+ 	}
+ 
+ 	for _, tt := range tests {
+@@ -139,41 +149,6 @@ func TestReceiverConfig_Validate(t *testing.T) {
+ 	}
+ }
+ 
+-func TestReceiverConfig_SetAndGetExporterConfig(t *testing.T) {
+-	tests := []struct {
+-		name           string
+-		exporterConfig Config
+-	}{
+-		{
+-			name: "set and get non-nil exporter config",
+-			exporterConfig: &mockConfig{
+-				validateFunc: func() error {
+-					return nil
+-				},
+-			},
+-		},
+-		{
+-			name:           "set and get nil exporter config",
+-			exporterConfig: nil,
+-		},
+-	}
+-
+-	for _, tt := range tests {
+-		t.Run(tt.name, func(t *testing.T) {
+-			cfg := ReceiverConfig{
+-				ScrapeInterval: 30 * time.Second,
+-			}
+-
+-			cfg.SetExporterConfig(tt.exporterConfig)
+-			got := cfg.GetExporterConfig()
+-
+-			if got != tt.exporterConfig {
+-				t.Errorf("GetExporterConfig() returned different instance")
+-			}
+-		})
+-	}
+-}
+-
+ func TestCreateDefaultConfig(t *testing.T) {
+ 	cfg := createDefaultConfig()
+ 
+diff --git a/doc.go b/doc.go
+index d4d7575..a4fed22 100644
+--- a/doc.go
++++ b/doc.go
+@@ -22,7 +22,7 @@
+ // The prometheuscollectorbridge package provides the core infrastructure for converting
+ // Prometheus exporters into OTel receivers:
+ //
+-//  1. Config system for exporter-specific configuration with automatic validation
++//  1. Config system for exporter-specific configuration with optional validation
+ //  2. Factory pattern for creating receiver instances
+ //  3. Lifecycle management (Start/Shutdown)
+ //  4. Periodic metric scraping from Prometheus registries
+@@ -38,7 +38,7 @@
+ //	    // exporter state
+ //	}
+ //
+-//	func (i *MyExporterLifecycleManager) Start(ctx context.Context, set receiver.Settings, cfg Config) (*prometheus.Registry, error) {
++//	func (i *MyExporterLifecycleManager) Start(ctx context.Context, set receiver.Settings, cfg any) (*prometheus.Registry, error) {
+ //	    i.settings = set
+ //	    // Start your exporter and return its registry
+ //	}
+@@ -58,7 +58,7 @@
+ //
+ //	type MyConfigUnmarshaler struct{}
+ //
+-//	func (u *MyConfigUnmarshaler) GetConfigStruct() Config {
++//	func (u *MyConfigUnmarshaler) GetConfigStruct() any {
+ //	    return &MyConfig{}
+ //	}
+ //
+@@ -83,9 +83,39 @@
+ //	      items: ["item1", "item2"]
+ //
+ // The framework automatically validates configuration using mapstructure tags:
+-// - Unknown fields are rejected
+-// - Type mismatches are caught (e.g., string where bool expected)
+-// - Custom validation can be added via the Config.Validate() method
++//   - Unknown fields are rejected
++//   - Type mismatches are caught (e.g., string where bool expected)
++//
++// # Validation
++//
++// Custom validation is opt-in. Implement a `Validate() error` method on your
++// config struct and the framework will call it after decoding, before the
++// receiver starts. A non-nil return rejects the configuration; the error
++// surfaces through ReceiverConfig.Validate().
++//
++//	func (c *MyConfig) Validate() error {
++//	    if c.Timeout <= 0 {
++//	        return errors.New("timeout must be positive")
++//	    }
++//	    return nil
++//	}
++//
++// Scope: use Validate for invariants specific to the receiver layer —
++// fields or constraints that exist only because of how the receiver wraps
++// the exporter. Validation of the underlying exporter's own configuration
++// belongs in the exporter, not here; if the exporter has a constructor or
++// init path that rejects bad config, let those checks stay there and
++// surface through the lifecycle manager's Start method. Duplicating
++// exporter-level checks in the receiver's Validate would split the same
++// concern across two places.
++//
++// Don't use Validate for checks that require I/O or external dependencies
++// (network reachability, credential validity). Those need a context and
++// belong in Start.
++//
++// Exporters without anything to validate can omit the method entirely; the
++// framework only invokes it when the config satisfies
++// interface{ Validate() error }.
+ //
+ // # Architecture
+ //
+diff --git a/factory.go b/factory.go
+index 14594e0..5ea2c9f 100644
+--- a/factory.go
++++ b/factory.go
+@@ -29,7 +29,7 @@ import (
+ type ExporterLifecycleManager interface {
+ 	// Start sets up the exporter and returns a prometheus.Registry
+ 	// containing all the metrics collectors.
+-	Start(ctx context.Context, set receiver.Settings, exporterConfig Config) (*prometheus.Registry, error)
++	Start(ctx context.Context, set receiver.Settings, exporterConfig any) (*prometheus.Registry, error)
+ 
+ 	// Shutdown is used to release resources when the receiver is shutting down.
+ 	// Implementations that need receiver settings during shutdown should retain
+@@ -42,12 +42,12 @@ type ExporterLifecycleManager interface {
+ type ConfigUnmarshaler interface {
+ 	// GetConfigStruct returns a pointer to the config struct that mapstructure
+ 	// will populate. The struct should have appropriate mapstructure tags.
+-	GetConfigStruct() Config
++	GetConfigStruct() any
+ }
+ 
+ // ConfigDecoder decodes exporter-specific configuration.
+ type ConfigDecoder interface {
+-	DecodeConfig(raw map[string]interface{}) (Config, error)
++	DecodeConfig(raw map[string]interface{}) (any, error)
+ }
+ 
+ // FactoryOption is a function that configures a Factory.
+@@ -159,7 +159,7 @@ func createMetricsReceiver(
+ 				return nil, fmt.Errorf("failed to decode config: %w", err)
+ 			}
+ 
+-			receiverCfg.SetExporterConfig(exporterCfg)
++			receiverCfg.exporterConfigInstance = exporterCfg
+ 		}
+ 
+ 		if err := receiverCfg.Validate(); err != nil {
+@@ -180,7 +180,7 @@ type mapstructureConfigDecoder struct {
+ }
+ 
+ // DecodeConfig implements the ConfigDecoder interface using mapstructure.
+-func (d mapstructureConfigDecoder) DecodeConfig(raw map[string]interface{}) (Config, error) {
++func (d mapstructureConfigDecoder) DecodeConfig(raw map[string]interface{}) (any, error) {
+ 	exporterCfg := d.unmarshaler.GetConfigStruct()
+ 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+ 		Result:           exporterCfg,
+diff --git a/factory_test.go b/factory_test.go
+index 9bb6c99..547294c 100644
+--- a/factory_test.go
++++ b/factory_test.go
+@@ -28,11 +28,11 @@ import (
+ 
+ // mockLifecycleManager is a test implementation of ExporterLifecycleManager.
+ type mockLifecycleManager struct {
+-	startFunc    func(ctx context.Context, set receiver.Settings, cfg Config) (*prometheus.Registry, error)
++	startFunc    func(ctx context.Context, set receiver.Settings, cfg any) (*prometheus.Registry, error)
+ 	shutdownFunc func(ctx context.Context) error
+ }
+ 
+-func (m *mockLifecycleManager) Start(ctx context.Context, set receiver.Settings, cfg Config) (*prometheus.Registry, error) {
++func (m *mockLifecycleManager) Start(ctx context.Context, set receiver.Settings, cfg any) (*prometheus.Registry, error) {
+ 	if m.startFunc != nil {
+ 		return m.startFunc(ctx, set, cfg)
+ 	}
+@@ -48,10 +48,10 @@ func (m *mockLifecycleManager) Shutdown(ctx context.Context) error {
+ 
+ // mockConfigUnmarshaler is a test implementation of ConfigUnmarshaler.
+ type mockConfigUnmarshaler struct {
+-	getConfigStructFunc func() Config
++	getConfigStructFunc func() any
+ }
+ 
+-func (m *mockConfigUnmarshaler) GetConfigStruct() Config {
++func (m *mockConfigUnmarshaler) GetConfigStruct() any {
+ 	if m.getConfigStructFunc != nil {
+ 		return m.getConfigStructFunc()
+ 	}
+@@ -59,10 +59,10 @@ func (m *mockConfigUnmarshaler) GetConfigStruct() Config {
+ }
+ 
+ type mockConfigDecoder struct {
+-	decodeConfigFunc func(raw map[string]interface{}) (Config, error)
++	decodeConfigFunc func(raw map[string]interface{}) (any, error)
+ }
+ 
+-func (m *mockConfigDecoder) DecodeConfig(raw map[string]interface{}) (Config, error) {
++func (m *mockConfigDecoder) DecodeConfig(raw map[string]interface{}) (any, error) {
+ 	if m.decodeConfigFunc != nil {
+ 		return m.decodeConfigFunc(raw)
+ 	}
+@@ -336,7 +336,7 @@ func TestCreateMetricsReceiver_EmptyExporterConfig(t *testing.T) {
+ func TestCreateMetricsReceiver_ValidExporterConfig(t *testing.T) {
+ 	receiverType := component.MustNewType("test")
+ 	unmarshaler := &mockConfigUnmarshaler{
+-		getConfigStructFunc: func() Config {
++		getConfigStructFunc: func() any {
+ 			return &testExporterConfig{}
+ 		},
+ 	}
+@@ -370,14 +370,14 @@ func TestCreateMetricsReceiver_ValidExporterConfig(t *testing.T) {
+ 		t.Fatal("CreateMetrics() returned nil receiver")
+ 	}
+ 
+-	exporterCfg := cfg.GetExporterConfig()
++	exporterCfg := cfg.exporterConfigInstance
+ 	if exporterCfg == nil {
+-		t.Fatal("GetExporterConfig() returned nil")
++		t.Fatal("exporterConfigInstance is nil")
+ 	}
+ 
+ 	typedCfg, ok := exporterCfg.(*testExporterConfig)
+ 	if !ok {
+-		t.Fatalf("GetExporterConfig() returned wrong type: %T", exporterCfg)
++		t.Fatalf("exporterConfigInstance has wrong type: %T", exporterCfg)
+ 	}
+ 
+ 	if !typedCfg.EnableFeature {
+@@ -398,7 +398,7 @@ func TestCreateMetricsReceiver_CustomConfigDecoder(t *testing.T) {
+ 	receiverType := component.MustNewType("test")
+ 	decodeConfigCalled := false
+ 	unmarshaler := &mockConfigDecoder{
+-		decodeConfigFunc: func(raw map[string]interface{}) (Config, error) {
++		decodeConfigFunc: func(raw map[string]interface{}) (any, error) {
+ 			decodeConfigCalled = true
+ 			if raw["custom"] != "value" {
+ 				t.Fatalf("raw[custom] = %v, want value", raw["custom"])
+@@ -440,10 +440,10 @@ func TestCreateMetricsReceiver_CustomConfigDecoder(t *testing.T) {
+ 		t.Fatal("DecodeConfig() was not called")
+ 	}
+ 
+-	exporterCfg := cfg.GetExporterConfig()
++	exporterCfg := cfg.exporterConfigInstance
+ 	typedCfg, ok := exporterCfg.(*testExporterConfig)
+ 	if !ok {
+-		t.Fatalf("GetExporterConfig() returned wrong type: %T", exporterCfg)
++		t.Fatalf("exporterConfigInstance has wrong type: %T", exporterCfg)
+ 	}
+ 	if !typedCfg.EnableFeature || typedCfg.Timeout != "10s" || typedCfg.Port != 9090 {
+ 		t.Fatalf("decoded config = %#v, want custom decoded config", typedCfg)
+@@ -456,7 +456,7 @@ func TestCreateMetricsReceiver_CustomConfigDecoder(t *testing.T) {
+ func TestCreateMetricsReceiver_CustomConfigDecoderError(t *testing.T) {
+ 	receiverType := component.MustNewType("test")
+ 	unmarshaler := &mockConfigDecoder{
+-		decodeConfigFunc: func(map[string]interface{}) (Config, error) {
++		decodeConfigFunc: func(map[string]interface{}) (any, error) {
+ 			return nil, errors.New("custom decode failed")
+ 		},
+ 	}
+@@ -493,7 +493,7 @@ func TestCreateMetricsReceiver_CustomConfigDecoderError(t *testing.T) {
+ func TestCreateMetricsReceiver_UnknownFieldsRejected(t *testing.T) {
+ 	receiverType := component.MustNewType("test")
+ 	unmarshaler := &mockConfigUnmarshaler{
+-		getConfigStructFunc: func() Config {
++		getConfigStructFunc: func() any {
+ 			return &testExporterConfig{}
+ 		},
+ 	}
+@@ -531,7 +531,7 @@ func TestCreateMetricsReceiver_UnknownFieldsRejected(t *testing.T) {
+ func TestCreateMetricsReceiver_TypeMismatch(t *testing.T) {
+ 	receiverType := component.MustNewType("test")
+ 	unmarshaler := &mockConfigUnmarshaler{
+-		getConfigStructFunc: func() Config {
++		getConfigStructFunc: func() any {
+ 			return &testExporterConfig{}
+ 		},
+ 	}
+@@ -596,7 +596,7 @@ func TestCreateMetricsReceiver_TypeMismatch(t *testing.T) {
+ func TestCreateMetricsReceiver_ConfigValidationFails(t *testing.T) {
+ 	receiverType := component.MustNewType("test")
+ 	unmarshaler := &mockConfigUnmarshaler{
+-		getConfigStructFunc: func() Config {
++		getConfigStructFunc: func() any {
+ 			return &testExporterConfig{}
+ 		},
+ 	}
+diff --git a/receiver.go b/receiver.go
+index 50c03ad..b27c1b5 100644
+--- a/receiver.go
++++ b/receiver.go
+@@ -56,8 +56,7 @@ func newPrometheusReceiver(
+ func (r *prometheusReceiver) Start(ctx context.Context, host component.Host) error {
+ 	r.settings.Logger.Info("Starting Prometheus exporter receiver")
+ 
+-	exporterConfig := r.config.GetExporterConfig()
+-	registry, err := r.lifecycleManager.Start(ctx, r.settings, exporterConfig)
++	registry, err := r.lifecycleManager.Start(ctx, r.settings, r.config.exporterConfigInstance)
+ 	if err != nil {
+ 		return fmt.Errorf("failed to start exporter: %w", err)
+ 	}
+diff --git a/receiver_test.go b/receiver_test.go
+index 6066502..7d28cb6 100644
+--- a/receiver_test.go
++++ b/receiver_test.go
+@@ -31,7 +31,7 @@ func TestEndToEnd_FullReceiverPipeline(t *testing.T) {
+ 	var startID, shutdownID component.ID
+ 	var shutdownSettings receiver.Settings
+ 	lifecycleManager := &mockLifecycleManager{
+-		startFunc: func(_ context.Context, set receiver.Settings, _ Config) (*prometheus.Registry, error) {
++		startFunc: func(_ context.Context, set receiver.Settings, _ any) (*prometheus.Registry, error) {
+ 			startID = set.ID
+ 			shutdownSettings = set
+ 			reg := prometheus.NewRegistry()
+@@ -121,7 +121,7 @@ func TestEndToEnd_FullReceiverPipeline(t *testing.T) {
+ 
+ func TestEndToEnd_MultipleScrapes(t *testing.T) {
+ 	lifecycleManager := &mockLifecycleManager{
+-		startFunc: func(_ context.Context, _ receiver.Settings, _ Config) (*prometheus.Registry, error) {
++		startFunc: func(_ context.Context, _ receiver.Settings, _ any) (*prometheus.Registry, error) {
+ 			reg := prometheus.NewRegistry()
+ 			gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+ 				Name: "scrape_test_metric",

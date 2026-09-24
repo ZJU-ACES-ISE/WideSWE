@@ -1,0 +1,36 @@
+task_id: kubernetes_autoscaler_kubernetes_ced4125b7730
+hidden_test_patches:
+- repo: autoscaler
+  patch: hidden/patches/autoscaler-hidden-tests.patch
+  test_profile: autoscaler-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - vertical-pod-autoscaler/test/integration/recommender/recommender_test.go
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from kubernetes/autoscaler PR(s) 9524
+- repo: kubernetes
+  patch: hidden/patches/kubernetes-hidden-tests.patch
+  test_profile: kubernetes-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - pkg/controller/podautoscaler/horizontal_test.go
+  - pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go
+  - test/compatibility_lifecycle/reference/feature_list.md
+  - test/compatibility_lifecycle/reference/versioned_feature_list.yaml
+  - test/integration/apiserver/apidefinitions/generation_test.go
+  - pkg/apis/autoscaling/validation/validation_test.go
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from kubernetes/kubernetes PR(s) 138228, 138653
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - autoscaler-hidden
+    - kubernetes-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

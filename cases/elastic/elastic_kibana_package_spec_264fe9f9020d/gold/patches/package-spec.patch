@@ -1,0 +1,398 @@
+diff --git a/code/go/internal/validator/semantic/validate_var_groups.go b/code/go/internal/validator/semantic/validate_var_groups.go
+new file mode 100644
+index 00000000..07d28ef3
+--- /dev/null
++++ b/code/go/internal/validator/semantic/validate_var_groups.go
+@@ -0,0 +1,200 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License;
++// you may not use this file except in compliance with the Elastic License.
++
++package semantic
++
++import (
++	"fmt"
++	"io/fs"
++	"path"
++
++	"gopkg.in/yaml.v3"
++
++	"github.com/elastic/package-spec/v3/code/go/internal/fspath"
++	"github.com/elastic/package-spec/v3/code/go/pkg/specerrors"
++)
++
++// ValidateVarGroups validates var_groups definitions in manifests.
++// It checks that:
++// - vars referenced in options[].vars exist in the manifest vars array
++// - var_group names are unique
++// - option names within each var_group are unique
++// - vars in a var_group must not have required: true (requirement is controlled by var_group)
++func ValidateVarGroups(fsys fspath.FS) specerrors.ValidationErrors {
++	// Validate main manifest.
++	d, err := fs.ReadFile(fsys, "manifest.yml")
++	if err != nil {
++		return specerrors.ValidationErrors{specerrors.NewStructuredErrorf("failed to read file \"%s\": %w", fsys.Path("manifest.yml"), err)}
++	}
++
++	var manifest varGroupsManifest
++	err = yaml.Unmarshal(d, &manifest)
++	if err != nil {
++		return specerrors.ValidationErrors{specerrors.NewStructuredErrorf("file \"%s\" is invalid: failed to parse manifest: %w", fsys.Path("manifest.yml"), err)}
++	}
++	errs := validateVarGroupsManifest(fsys.Path("manifest.yml"), manifest)
++
++	// Validate data stream manifests.
++	dataStreams, err := listDataStreams(fsys)
++	if err != nil {
++		return specerrors.ValidationErrors{specerrors.NewStructuredErrorf("failed to list data streams: %w", err)}
++	}
++	for _, ds := range dataStreams {
++		errs = append(errs, validateDataStreamVarGroups(fsys, path.Join("data_stream", ds, "manifest.yml"), manifest)...)
++	}
++
++	return errs
++}
++
++type varGroupsManifestVar struct {
++	Name     string `yaml:"name"`
++	Required bool   `yaml:"required"`
++}
++
++type varGroupOption struct {
++	Name string   `yaml:"name"`
++	Vars []string `yaml:"vars"`
++}
++
++type varGroup struct {
++	Name     string           `yaml:"name"`
++	Required bool             `yaml:"required"`
++	Options  []varGroupOption `yaml:"options"`
++}
++
++type varGroupsManifest struct {
++	Vars            []varGroupsManifestVar `yaml:"vars"`
++	VarGroups       []varGroup             `yaml:"var_groups"`
++	PolicyTemplates []struct {
++		Vars   []varGroupsManifestVar `yaml:"vars"`
++		Inputs []struct {
++			Vars []varGroupsManifestVar `yaml:"vars"`
++		} `yaml:"inputs"`
++	} `yaml:"policy_templates"`
++}
++
++type varGroupsStream struct {
++	Title     string                 `yaml:"title"`
++	Input     string                 `yaml:"input"`
++	Vars      []varGroupsManifestVar `yaml:"vars"`
++	VarGroups []varGroup             `yaml:"var_groups"`
++}
++
++type varGroupsDataStreamManifest struct {
++	Streams []varGroupsStream `yaml:"streams"`
++}
++
++func validateVarGroupsManifest(filePath string, manifest varGroupsManifest) specerrors.ValidationErrors {
++	var errs specerrors.ValidationErrors
++
++	// Collect all available vars from package, policy templates, and inputs
++	var availableVars []varGroupsManifestVar
++	availableVars = append(availableVars, manifest.Vars...)
++	for _, template := range manifest.PolicyTemplates {
++		availableVars = append(availableVars, template.Vars...)
++		for _, input := range template.Inputs {
++			availableVars = append(availableVars, input.Vars...)
++		}
++	}
++
++	errs = append(errs, validateVarGroups(filePath, manifest.VarGroups, availableVars)...)
++
++	return errs
++}
++
++func validateDataStreamVarGroups(fsys fspath.FS, filePath string, pkgManifest varGroupsManifest) specerrors.ValidationErrors {
++	d, err := fs.ReadFile(fsys, filePath)
++	if err != nil {
++		// File might not exist, which is fine
++		return nil
++	}
++
++	var manifest varGroupsDataStreamManifest
++	err = yaml.Unmarshal(d, &manifest)
++	if err != nil {
++		return specerrors.ValidationErrors{specerrors.NewStructuredErrorf("file \"%s\" is invalid: failed to parse manifest: %w", fsys.Path(filePath), err)}
++	}
++
++	var errs specerrors.ValidationErrors
++
++	// Validate var_groups in each stream
++	for i, stream := range manifest.Streams {
++		if len(stream.VarGroups) == 0 {
++			continue
++		}
++
++		// Collect available vars from both package manifest and stream-level vars
++		var availableVars []varGroupsManifestVar
++		availableVars = append(availableVars, pkgManifest.Vars...)
++		availableVars = append(availableVars, stream.Vars...)
++
++		streamID := stream.Title
++		if streamID == "" {
++			streamID = stream.Input
++		}
++		if streamID == "" {
++			streamID = fmt.Sprintf("stream[%d]", i)
++		}
++
++		streamErrs := validateVarGroups(
++			fmt.Sprintf("%s (stream: %s)", fsys.Path(filePath), streamID),
++			stream.VarGroups,
++			availableVars,
++		)
++		errs = append(errs, streamErrs...)
++	}
++
++	return errs
++}
++
++func validateVarGroups(filePath string, varGroups []varGroup, availableVars []varGroupsManifestVar) specerrors.ValidationErrors {
++	var errs specerrors.ValidationErrors
++
++	// Build a map for quick var lookup
++	varMap := make(map[string]varGroupsManifestVar)
++	for _, v := range availableVars {
++		varMap[v.Name] = v
++	}
++
++	// Check for duplicate var_group names
++	seenGroupNames := make(map[string]bool)
++	for _, vg := range varGroups {
++		if seenGroupNames[vg.Name] {
++			errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: duplicate var_group name %q", filePath, vg.Name))
++		}
++		seenGroupNames[vg.Name] = true
++
++		// Check for duplicate option names within each var_group
++		seenOptionNames := make(map[string]bool)
++		for _, opt := range vg.Options {
++			if seenOptionNames[opt.Name] {
++				errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: duplicate option name %q in var_group %q", filePath, opt.Name, vg.Name))
++			}
++			seenOptionNames[opt.Name] = true
++
++			// Validate that referenced vars exist and check required consistency
++			for _, varName := range opt.Vars {
++				varDef, exists := varMap[varName]
++				if !exists {
++					errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: var %q referenced in var_group %q option %q is not defined", filePath, varName, vg.Name, opt.Name))
++					continue
++				}
++
++				// Validate that vars in a var_group do not have required: true
++				// The requirement is controlled entirely by the var_group:
++				// - If var_group is required, all vars are implicitly required (inferred)
++				// - If var_group is not required, the entire group is optional
++				if varDef.Required {
++					if vg.Required {
++						errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: var %q in required var_group %q should not have required: true (requirement is inferred from var_group)", filePath, varName, vg.Name))
++					} else {
++						errs = append(errs, specerrors.NewStructuredErrorf("file \"%s\" is invalid: var %q in non-required var_group %q should not have required: true (var_group is optional)", filePath, varName, vg.Name))
++					}
++				}
++			}
++		}
++	}
++
++	return errs
++}
+diff --git a/code/go/internal/validator/spec.go b/code/go/internal/validator/spec.go
+index 7484e8df..bbdbf729 100644
+--- a/code/go/internal/validator/spec.go
++++ b/code/go/internal/validator/spec.go
+@@ -218,6 +218,7 @@ func (s Spec) rules(pkgType string, rootSpec spectypes.ItemSpec) validationRules
+ 		{fn: semantic.ValidateDimensionsPresent, types: []string{"integration"}, since: semver.MustParse("3.0.1")},
+ 		{fn: semantic.ValidateCapabilitiesRequired, since: semver.MustParse("2.10.0")}, // capabilities definition was added in spec version 2.10.0
+ 		{fn: semantic.ValidateRequiredVarGroups},
++		{fn: semantic.ValidateVarGroups, since: semver.MustParse("3.6.0")},
+ 		{fn: semantic.ValidateDocsStructure},
+ 		{fn: semantic.ValidateDeploymentModes, types: []string{"integration"}},
+ 		{fn: semantic.ValidateDurationVariables, since: semver.MustParse("3.5.0")},
+diff --git a/spec/changelog.yml b/spec/changelog.yml
+index 1c484a49..d4f0a103 100644
+--- a/spec/changelog.yml
++++ b/spec/changelog.yml
+@@ -21,6 +21,11 @@
+     - description: Add support for deprecating packages or individual features (policy_templates, inputs, data_streams or variables).
+       type: enhancement
+       link: https://github.com/elastic/package-spec/pull/1053
++    # Pending on https://github.com/elastic/kibana/pull/249449
++    # Pending on https://github.com/elastic/integrations/pull/16985
++    - description: Add var_groups schema to support conditional variable groups for Cloud Connector integration.
++      type: enhancement
++      link: https://github.com/elastic/package-spec/issues/1054
+     # Pending on https://github.com/elastic/kibana/pull/251205
+     - description: Allow to set time series index mode in input packages.
+       type: enhancement
+diff --git a/spec/integration/data_stream/manifest.spec.yml b/spec/integration/data_stream/manifest.spec.yml
+index 39a3ff63..c16cf818 100644
+--- a/spec/integration/data_stream/manifest.spec.yml
++++ b/spec/integration/data_stream/manifest.spec.yml
+@@ -601,6 +601,8 @@ spec:
+             $ref: "#/definitions/required_vars"
+           vars:
+             $ref: "#/definitions/vars"
++          var_groups:
++            $ref: "../../integration/manifest.spec.yml#/definitions/var_groups"
+           enabled:
+             description: Is stream enabled?
+             type: boolean
+@@ -666,6 +668,8 @@ versions:
+         path: "/properties/deprecated"
+       - op: remove # remove deprecated field for vars
+         path: /definitions/vars/items/properties/deprecated
++      - op: remove
++        path: "/properties/streams/items/properties/var_groups" # removes var_groups from streams
+   - before: 3.5.0
+     patch:
+       # Require >=3.5.0 to use the duration variable type.
+diff --git a/spec/integration/manifest.spec.yml b/spec/integration/manifest.spec.yml
+index b334a25c..ddb51b21 100644
+--- a/spec/integration/manifest.spec.yml
++++ b/spec/integration/manifest.spec.yml
+@@ -524,6 +524,97 @@ spec:
+       required:
+         - since
+         - description
++    var_groups:
++      description: >
++        Defines mutually exclusive groups of variables. When an option is selected,
++        only the variables in that option's vars array are shown. The selected option
++        name is stored in the policy. Additional properties on options are allowed
++        for feature-specific extensions (e.g., Cloud Connector metadata).
++      type: array
++      items:
++        type: object
++        additionalProperties: false
++        properties:
++          name:
++            description: Unique identifier for this variable group selector.
++            type: string
++            pattern: '^[a-z][a-z0-9_]*$'
++            examples:
++              - credential_type
++          title:
++            description: Section header displayed in the UI (e.g., "Setup Access").
++            type: string
++            examples:
++              - Setup Access
++          selector_title:
++            description: Label for the dropdown selector (e.g., "Preferred method").
++            type: string
++            examples:
++              - Preferred method
++          description:
++            description: Help text explaining what this selector controls.
++            type: string
++            examples:
++              - Select how you want to authenticate with AWS.
++          required:
++            description: >
++              Whether a selection is required for this var_group. When true, Fleet UI
++              will require the user to select an option, and all variables within the
++              selected option are treated as required (inferred). When false (default),
++              the entire var_group is optional. Variables within a var_group must not
++              have required: true - the requirement is controlled entirely by this field.
++            type: boolean
++            default: false
++          options:
++            description: Available options. First option is the default.
++            type: array
++            minItems: 1
++            items:
++              type: object
++              additionalProperties: true
++              properties:
++                name:
++                  description: Unique identifier (stored in policy when selected).
++                  type: string
++                  pattern: '^[a-z][a-z0-9_]*$'
++                  examples:
++                    - direct_access_key
++                    - cloud_connectors
++                title:
++                  description: Display title shown in the dropdown.
++                  type: string
++                  examples:
++                    - Direct Access Keys
++                    - Cloud Connector (recommended)
++                description:
++                  description: Help text for this option.
++                  type: string
++                  examples:
++                    - Use AWS access key ID and secret access key directly.
++                vars:
++                  description: Variable names to display when this option is selected.
++                  type: array
++                  items:
++                    type: string
++                  examples:
++                    - [access_key_id, secret_access_key]
++                hide_in_deployment_modes:
++                  description: Deployment modes where this option is hidden.
++                  type: array
++                  items:
++                    type: string
++                    enum:
++                      - default
++                      - agentless
++              required:
++                - name
++                - title
++                - vars
++        required:
++          - name
++          - title
++          - selector_title
++          - options
+   properties:
+     format_version:
+       description: The version of the package specification format used by this package.
+@@ -665,6 +756,17 @@ spec:
+                   $ref: "./data_stream/manifest.spec.yml#/definitions/vars"
+                 deprecated:
+                   $ref: "#/definitions/deprecated"
++                hide_in_var_group_options:
++                  description: >
++                    Filter out specific var_group options for this input.
++                    Keys are var_group names, values are arrays of option names to hide.
++                  type: object
++                  additionalProperties:
++                    type: array
++                    items:
++                      type: string
++                  examples:
++                    - credential_type: [cloud_connectors]
+               required:
+                 - type
+                 - title
+@@ -689,6 +791,8 @@ spec:
+       $ref: "#/definitions/screenshots"
+     vars:
+       $ref: "./data_stream/manifest.spec.yml#/definitions/vars"
++    var_groups:
++      $ref: "#/definitions/var_groups"
+     owner:
+       $ref: "#/definitions/owner"
+     agent:
+@@ -751,6 +855,12 @@ versions:
+         path: "/properties/policy_templates/items/properties/deprecated"
+       - op: remove # remove deprecated definition
+         path: "/definitions/deprecated"
++      - op: remove
++        path: "/definitions/var_groups" # removes var_groups definition
++      - op: remove
++        path: "/properties/var_groups" # removes var_groups property
++      - op: remove
++        path: "/properties/policy_templates/items/properties/inputs/items/properties/hide_in_var_group_options" # removes hide_in_var_group_options from inputs
+   - before: 3.3.2
+     patch:
+       - op: remove

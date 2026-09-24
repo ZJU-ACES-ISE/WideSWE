@@ -1,0 +1,37 @@
+task_id: elastic_beats_cloud_on_k8s_7807f1ca05af
+hidden_test_patches:
+- repo: beats
+  patch: hidden/patches/beats-hidden-tests.patch
+  test_profile: beats-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - filebeat/module/elasticsearch/querylog/test/test.log
+  - filebeat/module/elasticsearch/querylog/test/test.log-expected.json
+  - filebeat/tests/system/filebeat.py
+  - filebeat/tests/system/test_modules.py
+  hidden_file: *id001
+  semantic_changes: Adapt upstream tests to validate prompt-visible fields, keep the absent fileset collectable, and backport the upstream event-wait stabilization.
+  source: upstream test changes from elastic/beats PR(s) 49914
+- repo: cloud-on-k8s
+  patch: hidden/patches/cloud-on-k8s-hidden-tests.patch
+  test_profile: cloud_on_k8s-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - pkg/controller/common/stackmon/config_test.go
+  - pkg/controller/elasticsearch/stackmon/__snapshots__/sidecar_test.snap
+  - pkg/controller/elasticsearch/stackmon/sidecar_test.go
+  hidden_file:
+  - pkg/controller/elasticsearch/stackmon/sidecar_test.go
+  semantic_changes: Replace implementation-bound upstream assertions with final Filebeat YAML behavior checks.
+  source: upstream test changes from elastic/cloud-on-k8s PR(s) 9291
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - beats-hidden
+    - cloud_on_k8s-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

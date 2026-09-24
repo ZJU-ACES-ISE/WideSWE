@@ -1,0 +1,91 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ded1b96d7..6914a8d60 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -16,6 +16,7 @@ The following emojis are used to highlight certain changes:
+ 
+ ### Added
+ 
++- `routing/http/client`: `WithProviderInfoFunc` option resolves provider addresses at provide-time instead of client construction time. This only impacts legacy HTTP-only custom routing setups that depend on [IPIP-526](https://github.com/ipfs/specs/pull/526) and were sending unresolved `0.0.0.0` addresses in provider records instead of actual interface addresses. [#1115](https://github.com/ipfs/boxo/pull/1115)
+ - `chunker`: added `Register` function to allow custom chunkers to be registered for use with `FromString`.
+ 
+ ### Changed
+diff --git a/routing/http/client/client.go b/routing/http/client/client.go
+index ce9c989c0..5ebf24089 100644
+--- a/routing/http/client/client.go
++++ b/routing/http/client/client.go
+@@ -69,9 +69,10 @@ type Client struct {
+ 	httpClient httpClient
+ 	accepts    string
+ 
+-	peerID   peer.ID
+-	addrs    []types.Multiaddr
+-	identity crypto.PrivKey
++	peerID    peer.ID
++	addrs     []types.Multiaddr
++	addrsFunc func() []types.Multiaddr
++	identity  crypto.PrivKey
+ 
+ 	// Called immediately after signing a provide request. It is used
+ 	// for testing, e.g., testing the server with a mangled signature.
+@@ -177,6 +178,9 @@ func WithUserAgent(ua string) Option {
+ 	}
+ }
+ 
++// WithProviderInfo sets the peer ID and static addresses used in provide requests.
++// Mutually exclusive with [WithProviderInfoFunc]; if both are provided,
++// [WithProviderInfoFunc] takes precedence.
+ func WithProviderInfo(peerID peer.ID, addrs []multiaddr.Multiaddr) Option {
+ 	return func(c *Client) error {
+ 		c.peerID = peerID
+@@ -187,6 +191,27 @@ func WithProviderInfo(peerID peer.ID, addrs []multiaddr.Multiaddr) Option {
+ 	}
+ }
+ 
++// WithProviderInfoFunc is like [WithProviderInfo] but accepts a callback that
++// is evaluated each time a provide request is made. Use this when addresses
++// may change over the lifetime of the client (e.g., resolved from a libp2p
++// host instead of static configuration).
++// Mutually exclusive with [WithProviderInfo]; if both are provided,
++// WithProviderInfoFunc takes precedence.
++func WithProviderInfoFunc(peerID peer.ID, addrsFunc func() []multiaddr.Multiaddr) Option {
++	return func(c *Client) error {
++		c.peerID = peerID
++		c.addrsFunc = func() []types.Multiaddr {
++			addrs := addrsFunc()
++			out := make([]types.Multiaddr, len(addrs))
++			for i, a := range addrs {
++				out[i] = types.Multiaddr{Multiaddr: a}
++			}
++			return out
++		}
++		return nil
++	}
++}
++
+ func WithStreamResultsRequired() Option {
+ 	return func(c *Client) error {
+ 		c.accepts = mediaTypeNDJSON
+@@ -336,6 +361,13 @@ func (c *Client) FindProviders(ctx context.Context, key cid.Cid) (providers iter
+ 	return &measuringIter[iter.Result[types.Record]]{Iter: it, ctx: ctx, m: m}, nil
+ }
+ 
++func (c *Client) providerAddrs() []types.Multiaddr {
++	if c.addrsFunc != nil {
++		return c.addrsFunc()
++	}
++	return c.addrs
++}
++
+ // Deprecated: historic API from [IPIP-526], may be removed in a future version.
+ //
+ // [IPIP-526]: https://specs.ipfs.tech/ipips/ipip-0526/
+@@ -362,7 +394,7 @@ func (c *Client) ProvideBitswap(ctx context.Context, keys []cid.Cid, ttl time.Du
+ 			AdvisoryTTL: &types.Duration{Duration: ttl},
+ 			Timestamp:   &types.Time{Time: now},
+ 			ID:          &c.peerID,
+-			Addrs:       c.addrs,
++			Addrs:       c.providerAddrs(),
+ 		},
+ 	}
+ 	err := req.Sign(c.peerID, c.identity)

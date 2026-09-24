@@ -1,0 +1,102 @@
+diff --git a/aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py b/aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py
+new file mode 100644
+index 00000000..64ebda2a
+--- /dev/null
++++ b/aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py
+@@ -0,0 +1,96 @@
++import pytest
++from ansible_base.lib.utils.response import get_relative_url
++from django.db import connection
++from django.test.utils import CaptureQueriesContext
++
++
++@pytest.mark.django_db
++class TestUserListQueryOptimization:
++    """Verify that the user list endpoint uses optimized queries
++    (select_related + is_platform_auditor annotation) and produces
++    correct serialized output."""
++
++    def test_user_list_query_count_reduced(self, admin_api_client, system_user):
++        """The select_related + annotation optimization should reduce per-user
++        queries. Without optimization, each user adds ~8 queries (3 FK loads
++        + 1 .exists() from DAB, plus 4 from UserSerializer authenticator lookups).
++        With optimization, the DAB queries are eliminated, leaving ~4/user from
++        the serializer's authenticator queries (a separate optimization target)."""
++        from aap_gateway_api.models import User
++
++        url = get_relative_url("user-list")
++
++        # Baseline with few users
++        with CaptureQueriesContext(connection) as baseline_ctx:
++            response = admin_api_client.get(url)
++        assert response.status_code == 200
++        baseline_queries = len(baseline_ctx.captured_queries)
++        baseline_users = response.data["count"]
++
++        # Add 10 more users
++        for i in range(10):
++            User.objects.create(username=f"perf-test-user-{i}")
++
++        with CaptureQueriesContext(connection) as after_ctx:
++            response = admin_api_client.get(url)
++        assert response.status_code == 200
++        after_queries = len(after_ctx.captured_queries)
++        after_users = response.data["count"]
++
++        users_added = after_users - baseline_users
++        queries_added = after_queries - baseline_queries
++        queries_per_user = queries_added / users_added if users_added else 0
++
++        # Without optimization: ~8 queries per user (DAB FK loads + serializer authenticator queries)
++        # With optimization: ~4 queries per user (only serializer authenticator queries remain)
++        assert queries_per_user <= 5, (
++            f"Adding {users_added} users added {queries_per_user:.1f} queries/user "
++            f"(expected <=5, got {queries_added} additional queries). "
++            f"Before: {baseline_queries}, after: {after_queries}."
++        )
++
++    def test_user_list_contains_related_and_summary_fields(self, admin_api_client, system_user):
++        """The optimized list endpoint must still return related and
++        summary_fields in the serialized output."""
++        from aap_gateway_api.models import User
++
++        User.objects.create(username="related-fields-test")
++        url = get_relative_url("user-list")
++
++        response = admin_api_client.get(url)
++        assert response.status_code == 200
++        assert response.data["count"] > 0
++
++        user_data = response.data["results"][0]
++        assert "related" in user_data
++        assert "summary_fields" in user_data
++        assert "url" in user_data
++
++    def test_user_list_is_platform_auditor_correct(self, admin_api_client, user, system_user):
++        """is_platform_auditor should reflect actual role assignment,
++        whether computed via annotation or .exists() fallback."""
++        url = get_relative_url("user-list")
++
++        # Before assigning role
++        response = admin_api_client.get(url)
++        user_data = next(u for u in response.data["results"] if u["id"] == user.pk)
++        assert user_data["is_platform_auditor"] is False
++
++        # Assign platform auditor role
++        user.is_platform_auditor = True
++        user.save()
++
++        response = admin_api_client.get(url)
++        user_data = next(u for u in response.data["results"] if u["id"] == user.pk)
++        assert user_data["is_platform_auditor"] is True
++
++    def test_user_detail_not_affected_by_list_optimization(self, admin_api_client, user, system_user):
++        """Detail view should work correctly without the list-only
++        select_related/annotation optimizations."""
++        url = get_relative_url("user-detail", kwargs={"pk": user.pk})
++        response = admin_api_client.get(url)
++
++        assert response.status_code == 200
++        assert "related" in response.data
++        assert "summary_fields" in response.data
++        assert response.data["is_platform_auditor"] is False

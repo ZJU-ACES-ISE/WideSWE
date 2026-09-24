@@ -1,0 +1,78 @@
+diff --git a/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/ElasticInferenceServiceTests.java b/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/ElasticInferenceServiceTests.java
+index 236a6be3d74..6ce484954d3 100644
+--- a/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/ElasticInferenceServiceTests.java
++++ b/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/ElasticInferenceServiceTests.java
+@@ -1243,7 +1243,7 @@ public class ElasticInferenceServiceTests extends ESSingleNodeTestCase {
+                       "task_types": ["chat"]
+                     },
+                     {
+-                      "model_name": "elser-v2",
++                      "model_name": "elser_model_2",
+                       "task_types": ["embed/text/sparse"]
+                     },
+                     {
+@@ -1270,7 +1270,7 @@ public class ElasticInferenceServiceTests extends ESSingleNodeTestCase {
+                 is(
+                     List.of(
+                         new InferenceService.DefaultConfigId(
+-                            ".elser-v2-elastic",
++                            ".elser-2-elastic",
+                             MinimalServiceSettings.sparseEmbedding(ElasticInferenceService.NAME),
+                             service
+                         ),
+@@ -1306,7 +1306,7 @@ public class ElasticInferenceServiceTests extends ESSingleNodeTestCase {
+             service.defaultConfigs(listener);
+             var models = listener.actionGet(TIMEOUT);
+             assertThat(models.size(), is(4));
+-            assertThat(models.get(0).getConfigurations().getInferenceEntityId(), is(".elser-v2-elastic"));
++            assertThat(models.get(0).getConfigurations().getInferenceEntityId(), is(".elser-2-elastic"));
+             assertThat(models.get(1).getConfigurations().getInferenceEntityId(), is(".multilingual-embed-v1-elastic"));
+             assertThat(models.get(2).getConfigurations().getInferenceEntityId(), is(".rainbow-sprinkles-elastic"));
+             assertThat(models.get(3).getConfigurations().getInferenceEntityId(), is(".rerank-v1-elastic"));
+diff --git a/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/authorization/ElasticInferenceServiceAuthorizationHandlerTests.java b/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/authorization/ElasticInferenceServiceAuthorizationHandlerTests.java
+index d8c8c9e5b7a..6bd7a345d72 100644
+--- a/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/authorization/ElasticInferenceServiceAuthorizationHandlerTests.java
++++ b/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/authorization/ElasticInferenceServiceAuthorizationHandlerTests.java
+@@ -188,13 +188,13 @@ public class ElasticInferenceServiceAuthorizationHandlerTests extends ESSingleNo
+                 ),
+                 MinimalServiceSettings.chatCompletion(ElasticInferenceService.NAME)
+             ),
+-            "elser-v2",
++            "elser-2",
+             new DefaultModelConfig(
+                 new ElasticInferenceServiceSparseEmbeddingsModel(
+-                    defaultEndpointId("elser-v2"),
++                    defaultEndpointId("elser-2"),
+                     TaskType.SPARSE_EMBEDDING,
+                     "test",
+-                    new ElasticInferenceServiceSparseEmbeddingsServiceSettings("elser-v2", null, null),
++                    new ElasticInferenceServiceSparseEmbeddingsServiceSettings("elser-2", null, null),
+                     EmptyTaskSettings.INSTANCE,
+                     EmptySecretSettings.INSTANCE,
+                     ElasticInferenceServiceComponents.EMPTY_INSTANCE,
+diff --git a/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElserModelsTests.java b/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElserModelsTests.java
+index fa0148ac69d..d9ffddd62fb 100644
+--- a/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElserModelsTests.java
++++ b/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElserModelsTests.java
+@@ -19,21 +19,7 @@ public class ElserModelsTests extends ESTestCase {
+         assertTrue(org.elasticsearch.xpack.inference.services.elasticsearch.ElserModels.isValidModel(randomElserModel()));
+     }
+ 
+-    public void testIsValidEisModel() {
+-        assertTrue(
+-            org.elasticsearch.xpack.inference.services.elasticsearch.ElserModels.isValidEisModel(
+-                org.elasticsearch.xpack.inference.services.elasticsearch.ElserModels.ELSER_V2_MODEL
+-            )
+-        );
+-    }
+-
+     public void testIsInvalidModel() {
+         assertFalse(org.elasticsearch.xpack.inference.services.elasticsearch.ElserModels.isValidModel("invalid"));
+     }
+-
+-    public void testIsInvalidEisModel() {
+-        assertFalse(
+-            org.elasticsearch.xpack.inference.services.elasticsearch.ElserModels.isValidEisModel(ElserModels.ELSER_V2_MODEL_LINUX_X86)
+-        );
+-    }
+ }

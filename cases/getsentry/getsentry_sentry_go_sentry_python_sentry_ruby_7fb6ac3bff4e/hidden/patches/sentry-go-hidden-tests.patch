@@ -1,0 +1,91 @@
+diff --git a/internal/http/transport_413_ecosync_test.go b/internal/http/transport_413_ecosync_test.go
+new file mode 100644
+index 0000000..f42856d
+--- /dev/null
++++ b/internal/http/transport_413_ecosync_test.go
+@@ -0,0 +1,59 @@
++package http
++
++import (
++	"bytes"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/getsentry/sentry-go/internal/debuglog"
++	"github.com/getsentry/sentry-go/internal/protocol"
++	"github.com/getsentry/sentry-go/internal/testutils"
++)
++
++func TestEcoSyncRequestEntityTooLargeResponse(t *testing.T) {
++	var requestCount int64
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		atomic.AddInt64(&requestCount, 1)
++		w.WriteHeader(http.StatusRequestEntityTooLarge)
++		_, _ = w.Write([]byte("relay response details"))
++	}))
++	defer server.Close()
++
++	var logBuffer bytes.Buffer
++	debuglog.SetOutput(&logBuffer)
++	defer debuglog.SetOutput(io.Discard)
++
++	transport, ok := NewAsyncTransport(TransportOptions{
++		Dsn: "http://key@" + server.URL[7:] + "/123",
++	}).(*AsyncTransport)
++	if !ok {
++		t.Fatal("expected AsyncTransport")
++	}
++	defer transport.Close()
++
++	if err := transport.SendEnvelope(testEnvelope(protocol.EnvelopeItemTypeEvent)); err != nil {
++		t.Fatalf("failed to send envelope: %v", err)
++	}
++	if !transport.Flush(testutils.FlushTimeout()) {
++		t.Fatal("Flush timed out")
++	}
++	if got := atomic.LoadInt64(&requestCount); got != 1 {
++		t.Fatalf("request count = %d, want 1", got)
++	}
++
++	output := logBuffer.String()
++	lowerOutput := strings.ToLower(output)
++	hasSizeReason := strings.Contains(lowerOutput, "too large") ||
++		(strings.Contains(lowerOutput, "size") &&
++			(strings.Contains(lowerOutput, "limit") || strings.Contains(lowerOutput, "exceed")))
++	if !hasSizeReason {
++		t.Fatalf("missing HTTP 413 size-rejection message in %q", output)
++	}
++	if !strings.Contains(output, "relay response details") {
++		t.Fatalf("missing response body in %q", output)
++	}
++}
+diff --git a/internal/http/transport_test.go b/internal/http/transport_test.go
+index 5891572..743266e 100644
+--- a/internal/http/transport_test.go
++++ b/internal/http/transport_test.go
+@@ -469,7 +469,7 @@ func TestKeepAlive(t *testing.T) {
+ 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+ 				fmt.Fprintln(w, `{"id":"ec71d87189164e79ab1e61030c183af0"}`)
+ 				if largeResponse {
+-					fmt.Fprintln(w, strings.Repeat(" ", maxDrainResponseBytes))
++					fmt.Fprintln(w, strings.Repeat(" ", 16 << 10))
+ 				}
+ 			}))
+ 			defer server.Close()
+diff --git a/transport_test.go b/transport_test.go
+index bbf10a4..74654e2 100644
+--- a/transport_test.go
++++ b/transport_test.go
+@@ -639,7 +639,7 @@ func testKeepAlive(t *testing.T, tr Transport) {
+ 		// it doesn't matter for this test.
+ 		fmt.Fprintln(w, `{"id":"ec71d87189164e79ab1e61030c183af0"}`)
+ 		if largeResponse {
+-			fmt.Fprintln(w, strings.Repeat(" ", maxDrainResponseBytes))
++			fmt.Fprintln(w, strings.Repeat(" ", 16 << 10))
+ 		}
+ 	}))
+ 	defer srv.Close()

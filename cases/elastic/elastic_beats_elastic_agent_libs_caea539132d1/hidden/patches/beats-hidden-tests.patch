@@ -1,0 +1,92 @@
+diff --git a/libbeat/common/transport/tlsloggercontract/logger_contract_test.go b/libbeat/common/transport/tlsloggercontract/logger_contract_test.go
+new file mode 100644
+index 00000000..15a25498
+--- /dev/null
++++ b/libbeat/common/transport/tlsloggercontract/logger_contract_test.go
+@@ -0,0 +1,86 @@
++// Licensed to Elasticsearch B.V. under one or more contributor
++// license agreements. See the NOTICE file distributed with
++// this work for additional information regarding copyright
++// ownership. Elasticsearch B.V. licenses this file to you under
++// the Apache License, Version 2.0 (the "License"); you may
++// not use this file except in compliance with the License.
++
++package tlsloggercontract_test
++
++import (
++	"reflect"
++	"testing"
++
++	"github.com/elastic/elastic-agent-libs/logp"
++	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
++)
++
++func callTLSLoader(t *testing.T, loader any, config any, logger *logp.Logger) {
++	t.Helper()
++
++	fn := reflect.ValueOf(loader)
++	fnType := fn.Type()
++	configType := reflect.TypeOf(config)
++	loggerType := reflect.TypeOf(logger)
++	args := make([]reflect.Value, fnType.NumIn())
++	foundConfig := false
++	foundLogger := false
++
++	for i := 0; i < fnType.NumIn(); i++ {
++		parameterType := fnType.In(i)
++		switch {
++		case parameterType == configType && !foundConfig:
++			args[i] = reflect.ValueOf(config)
++			foundConfig = true
++		case parameterType == loggerType && !foundLogger:
++			args[i] = reflect.ValueOf(logger)
++			foundLogger = true
++		case fnType.IsVariadic() && i == fnType.NumIn()-1 && parameterType.Elem() == loggerType && !foundLogger:
++			loggers := reflect.MakeSlice(parameterType, 1, 1)
++			loggers.Index(0).Set(reflect.ValueOf(logger))
++			args[i] = loggers
++			foundLogger = true
++		default:
++			t.Fatalf("loader parameter %d has unsupported type %s", i, parameterType)
++		}
++	}
++
++	if !foundConfig {
++		t.Fatal("loader must accept its TLS configuration")
++	}
++	if !foundLogger {
++		t.Fatal("loader must accept a *logp.Logger")
++	}
++
++	var results []reflect.Value
++	if fnType.IsVariadic() {
++		results = fn.CallSlice(args)
++	} else {
++		results = fn.Call(args)
++	}
++	if len(results) != 2 {
++		t.Fatalf("loader returned %d values, want (*TLSConfig, error)", len(results))
++	}
++	if results[0].Type() != reflect.TypeOf((*tlscommon.TLSConfig)(nil)) {
++		t.Fatalf("loader first return type is %s, want *tlscommon.TLSConfig", results[0].Type())
++	}
++	if !results[1].Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {
++		t.Fatalf("loader second return type is %s, want error", results[1].Type())
++	}
++	if !results[1].IsNil() {
++		t.Fatalf("loader returned error: %v", results[1].Interface())
++	}
++}
++
++func TestTLSLoadersAcceptCallerLogger(t *testing.T) {
++	logger := logp.NewNopLogger()
++	disabled := false
++
++	t.Run("client", func(t *testing.T) {
++		callTLSLoader(t, tlscommon.LoadTLSConfig, &tlscommon.Config{Enabled: &disabled}, logger)
++	})
++
++	t.Run("server", func(t *testing.T) {
++		callTLSLoader(t, tlscommon.LoadTLSServerConfig, &tlscommon.ServerConfig{Enabled: &disabled}, logger)
++	})
++}

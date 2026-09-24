@@ -1,0 +1,73 @@
+diff --git a/packages/pointer_interceptor/pointer_interceptor_web/CHANGELOG.md b/packages/pointer_interceptor/pointer_interceptor_web/CHANGELOG.md
+index 5d0a856b6..bff77a7ee 100644
+--- a/packages/pointer_interceptor/pointer_interceptor_web/CHANGELOG.md
++++ b/packages/pointer_interceptor/pointer_interceptor_web/CHANGELOG.md
+@@ -1,6 +1,7 @@
+-## NEXT
++## 0.10.3
+ 
+ * Updates minimum supported SDK version to Flutter 3.27/Dart 3.6.
++* Fixes `TextField` internal focus loss when wrapped with `PointerInterceptor`.
+ 
+ ## 0.10.2+1
+ 
+diff --git a/packages/pointer_interceptor/pointer_interceptor_web/lib/pointer_interceptor_web.dart b/packages/pointer_interceptor/pointer_interceptor_web/lib/pointer_interceptor_web.dart
+index 97e1fbe61..0cae4ce8d 100644
+--- a/packages/pointer_interceptor/pointer_interceptor_web/lib/pointer_interceptor_web.dart
++++ b/packages/pointer_interceptor/pointer_interceptor_web/lib/pointer_interceptor_web.dart
+@@ -2,6 +2,8 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++import 'dart:js_interop';
++
+ import 'package:flutter/widgets.dart';
+ import 'package:flutter_web_plugins/flutter_web_plugins.dart';
+ import 'package:pointer_interceptor_platform_interface/pointer_interceptor_platform_interface.dart';
+@@ -17,8 +19,8 @@ class PointerInterceptorWeb extends PointerInterceptorPlatform {
+   }
+ 
+   // Slightly modify the created `element` (for `debug` mode).
+-  void _onElementCreated(Object element) {
+-    (element as web.HTMLElement)
++  void _debugOnElementCreated(web.HTMLElement element) {
++    element
+       ..style.width = '100%'
+       ..style.height = '100%'
+       ..style.backgroundColor = 'rgba(255, 0, 0, .5)';
+@@ -41,7 +43,21 @@ class PointerInterceptorWeb extends PointerInterceptorPlatform {
+           child: HtmlElementView.fromTagName(
+             tagName: 'div',
+             isVisible: false,
+-            onElementCreated: debug ? _onElementCreated : null,
++            onElementCreated: (Object element) {
++              element as web.HTMLElement;
++              if (debug) {
++                _debugOnElementCreated(element);
++              }
++
++              // Prevent the default action of `mousedown` events to avoid
++              // input focus loss.
++              element.addEventListener(
++                'mousedown',
++                (web.Event event) {
++                  event.preventDefault();
++                }.toJS,
++              );
++            },
+           ),
+         ),
+         child,
+diff --git a/packages/pointer_interceptor/pointer_interceptor_web/pubspec.yaml b/packages/pointer_interceptor/pointer_interceptor_web/pubspec.yaml
+index 52836e0c4..11ec6a7d4 100644
+--- a/packages/pointer_interceptor/pointer_interceptor_web/pubspec.yaml
++++ b/packages/pointer_interceptor/pointer_interceptor_web/pubspec.yaml
+@@ -2,7 +2,7 @@ name: pointer_interceptor_web
+ description: Web implementation of the pointer_interceptor plugin.
+ repository: https://github.com/flutter/packages/tree/main/packages/pointer_interceptor/pointer_interceptor_web
+ issue_tracker: https://github.com/flutter/flutter/issues?q=is%3Aissue+is%3Aopen+label%3Apointer_interceptor
+-version: 0.10.2+1
++version: 0.10.3
+ 
+ environment:
+   sdk: ^3.6.0

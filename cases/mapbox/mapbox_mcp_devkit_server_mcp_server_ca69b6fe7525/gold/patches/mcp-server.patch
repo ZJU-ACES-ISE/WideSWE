@@ -1,0 +1,634 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 1e59bc3..185a9b2 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -40,6 +40,25 @@
+ 
+ ## 0.8.3
+ 
++### Breaking Changes
++
++- **`static_map_image_tool`**: Tool now returns the map URL as `text` content instead of a base64-encoded image
++  - Before: `content: [{ type: "image", data: "...base64...", mimeType: "image/png" }]`
++  - After: `content: [{ type: "text", text: "https://api.mapbox.com/styles/v1/..." }]`
++  - In MCP Apps-capable hosts the image is rendered interactively via `StaticMapUIResource`; in other hosts the model receives the URL and can present or use it directly
++
++### Features Added
++
++- **MCP Apps Support for StaticMapImageTool** (#109)
++  - Added interactive map preview in compatible MCP clients (VS Code, Claude Code, Goose)
++  - Implemented `StaticMapUIResource` serving interactive HTML with inline MCP Apps SDK
++  - Added `@modelcontextprotocol/ext-apps@^1.0.1` dependency
++  - Enhanced `BaseTool` with `meta` property for MCP Apps metadata
++  - Configured CSP for `api.mapbox.com` domains
++  - Sends `ui/notifications/size-changed` to fit panel to rendered image height
++  - Fullscreen toggle using `ui/request-display-mode`
++  - Uses proper `RESOURCE_MIME_TYPE` ("text/html;profile=mcp-app") per MCP Apps specification
++
+ ### Security
+ 
+ - **CVE-2026-0621**: Updated `@modelcontextprotocol/sdk` to 1.25.3 to fix ReDoS vulnerability in UriTemplate regex patterns
+@@ -47,6 +66,7 @@
+ 
+ ### Dependencies
+ 
++- Added `@modelcontextprotocol/ext-apps@^1.0.1`
+ - Updated `@modelcontextprotocol/sdk` from 1.17.5 to 1.25.3
+ 
+ ## 0.8.2
+diff --git a/package-lock.json b/package-lock.json
+index e14f200..5a18b42 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -11,6 +11,7 @@
+       "license": "MIT",
+       "dependencies": {
+         "@mcp-ui/server": "^5.13.1",
++        "@modelcontextprotocol/ext-apps": "^1.1.0",
+         "@modelcontextprotocol/sdk": "^1.26.0",
+         "@opentelemetry/api": "^1.9.0",
+         "@opentelemetry/auto-instrumentations-node": "^0.56.0",
+@@ -1868,7 +1869,7 @@
+         "@modelcontextprotocol/sdk": "^1.25.1"
+       }
+     },
+-    "node_modules/@modelcontextprotocol/ext-apps": {
++    "node_modules/@mcp-ui/server/node_modules/@modelcontextprotocol/ext-apps": {
+       "version": "0.2.2",
+       "resolved": "https://registry.npmjs.org/@modelcontextprotocol/ext-apps/-/ext-apps-0.2.2.tgz",
+       "integrity": "sha512-h8sN3QIBLqMsRXjKL76M5VmBQf3N0I1G1DiDiSYAgtdynYQctHqCs79WEo1d5wClyZVYBWXdRcxgiR/WBfSOqw==",
+@@ -1913,6 +1914,49 @@
+         }
+       }
+     },
++    "node_modules/@modelcontextprotocol/ext-apps": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/@modelcontextprotocol/ext-apps/-/ext-apps-1.1.0.tgz",
++      "integrity": "sha512-o65O+sHHKP4h1kWMEz9sFKVIzF1BYZj/Oi5WM34g3IIqbwGxGZEailWiMqv360TWyL4HkdgLL6cXDtXebddaDQ==",
++      "hasInstallScript": true,
++      "license": "MIT",
++      "workspaces": [
++        "examples/*"
++      ],
++      "optionalDependencies": {
++        "@oven/bun-darwin-aarch64": "^1.2.21",
++        "@oven/bun-darwin-x64": "^1.2.21",
++        "@oven/bun-darwin-x64-baseline": "^1.2.21",
++        "@oven/bun-linux-aarch64": "^1.2.21",
++        "@oven/bun-linux-aarch64-musl": "^1.2.21",
++        "@oven/bun-linux-x64": "^1.2.21",
++        "@oven/bun-linux-x64-baseline": "^1.2.21",
++        "@oven/bun-linux-x64-musl": "^1.2.21",
++        "@oven/bun-linux-x64-musl-baseline": "^1.2.21",
++        "@oven/bun-windows-x64": "^1.2.21",
++        "@oven/bun-windows-x64-baseline": "^1.2.21",
++        "@rollup/rollup-darwin-arm64": "^4.53.3",
++        "@rollup/rollup-darwin-x64": "^4.53.3",
++        "@rollup/rollup-linux-arm64-gnu": "^4.53.3",
++        "@rollup/rollup-linux-x64-gnu": "^4.53.3",
++        "@rollup/rollup-win32-arm64-msvc": "^4.53.3",
++        "@rollup/rollup-win32-x64-msvc": "^4.53.3"
++      },
++      "peerDependencies": {
++        "@modelcontextprotocol/sdk": "^1.24.0",
++        "react": "^17.0.0 || ^18.0.0 || ^19.0.0",
++        "react-dom": "^17.0.0 || ^18.0.0 || ^19.0.0",
++        "zod": "^3.25.0 || ^4.0.0"
++      },
++      "peerDependenciesMeta": {
++        "react": {
++          "optional": true
++        },
++        "react-dom": {
++          "optional": true
++        }
++      }
++    },
+     "node_modules/@modelcontextprotocol/sdk": {
+       "version": "1.26.0",
+       "resolved": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.26.0.tgz",
+@@ -6279,7 +6323,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "os": [
+diff --git a/package.json b/package.json
+index 6d2b02d..16b66ef 100644
+--- a/package.json
++++ b/package.json
+@@ -77,6 +77,7 @@
+   ],
+   "dependencies": {
+     "@mcp-ui/server": "^5.13.1",
++    "@modelcontextprotocol/ext-apps": "^1.1.0",
+     "@modelcontextprotocol/sdk": "^1.26.0",
+     "@opentelemetry/api": "^1.9.0",
+     "@opentelemetry/auto-instrumentations-node": "^0.56.0",
+diff --git a/src/index.ts b/src/index.ts
+index 8d654ee..2127806 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -11,6 +11,10 @@ import { SpanStatusCode } from '@opentelemetry/api';
+ 
+ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
++import {
++  registerAppResource,
++  RESOURCE_MIME_TYPE
++} from '@modelcontextprotocol/ext-apps/server';
+ import {
+   ListPromptsRequestSchema,
+   GetPromptRequestSchema
+@@ -109,8 +113,30 @@ enabledCoreTools.forEach((tool) => {
+   tool.installTo(server);
+ });
+ 
+-// Register all resources to the server
+-allResources.forEach((resource) => {
++// Separate MCP Apps UI resources from regular resources
++const uiResources = allResources.filter((r) => r.uri.startsWith('ui://'));
++const regularResources = allResources.filter((r) => !r.uri.startsWith('ui://'));
++
++// Register MCP Apps UI resources using registerAppResource
++// IMPORTANT: Use RESOURCE_MIME_TYPE which is "text/html;profile=mcp-app"
++// This tells clients (like Claude Desktop) that this is an MCP App
++uiResources.forEach((resource) => {
++  registerAppResource(
++    // eslint-disable-next-line @typescript-eslint/no-explicit-any
++    server as any,
++    resource.name,
++    resource.uri,
++    // eslint-disable-next-line @typescript-eslint/no-explicit-any
++    { mimeType: RESOURCE_MIME_TYPE, description: resource.description } as any,
++    async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      return await resource.read(resource.uri, {} as any);
++    }
++  );
++});
++
++// Register regular resources using standard registration
++regularResources.forEach((resource) => {
+   resource.installTo(server);
+ });
+ 
+diff --git a/src/resources/resourceRegistry.ts b/src/resources/resourceRegistry.ts
+index fc62306..0b9d59a 100644
+--- a/src/resources/resourceRegistry.ts
++++ b/src/resources/resourceRegistry.ts
+@@ -4,13 +4,15 @@
+ // INSERT NEW RESOURCE IMPORT HERE
+ import { CategoryListResource } from './category-list/CategoryListResource.js';
+ import { TemporaryDataResource } from './temporary/TemporaryDataResource.js';
++import { StaticMapUIResource } from './ui-apps/StaticMapUIResource.js';
+ import { httpRequest } from '../utils/httpPipeline.js';
+ 
+ // Central registry of all resources
+ export const ALL_RESOURCES = [
+   // INSERT NEW RESOURCE INSTANCE HERE
+   new CategoryListResource({ httpRequest }),
+-  new TemporaryDataResource()
++  new TemporaryDataResource(),
++  new StaticMapUIResource()
+ ] as const;
+ 
+ export type ResourceInstance = (typeof ALL_RESOURCES)[number];
+diff --git a/src/resources/ui-apps/StaticMapUIResource.ts b/src/resources/ui-apps/StaticMapUIResource.ts
+new file mode 100644
+index 0000000..4325251
+--- /dev/null
++++ b/src/resources/ui-apps/StaticMapUIResource.ts
+@@ -0,0 +1,269 @@
++// Copyright (c) Mapbox, Inc.
++// Licensed under the MIT License.
++
++import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
++import type {
++  ReadResourceResult,
++  ServerNotification,
++  ServerRequest
++} from '@modelcontextprotocol/sdk/types.js';
++import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
++import { BaseResource } from '../BaseResource.js';
++
++/**
++ * Serves UI App HTML for Static Map Preview
++ * Implements MCP Apps pattern with ui:// scheme
++ */
++export class StaticMapUIResource extends BaseResource {
++  readonly name = 'Static Map Preview UI';
++  readonly uri = 'ui://mapbox/static-map/index.html';
++  readonly description =
++    'Interactive UI for previewing static map images (MCP Apps)';
++  readonly mimeType = RESOURCE_MIME_TYPE;
++
++  async read(
++    // eslint-disable-next-line @typescript-eslint/no-unused-vars
++    _uri: string,
++    // eslint-disable-next-line @typescript-eslint/no-unused-vars
++    _extra?: RequestHandlerExtra<ServerRequest, ServerNotification>
++  ): Promise<ReadResourceResult> {
++    // Generate HTML for static map visualization with MCP Apps protocol support
++    const html = `<!DOCTYPE html>
++<html>
++<head>
++  <meta charset="UTF-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1.0">
++  <title>Static Map Preview</title>
++  <style>
++    * { margin: 0; padding: 0; box-sizing: border-box; }
++    body {
++      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
++      background: #000;
++    }
++    #toolbar {
++      display: none;
++      align-items: center;
++      justify-content: flex-end;
++      padding: 6px 10px;
++      background: rgba(0, 0, 0, 0.7);
++      gap: 8px;
++    }
++    #toolbar.visible { display: flex; }
++    #fullscreen-btn {
++      background: rgba(255, 255, 255, 0.15);
++      border: 1px solid rgba(255, 255, 255, 0.3);
++      color: #fff;
++      padding: 4px 12px;
++      border-radius: 4px;
++      cursor: pointer;
++      font-size: 12px;
++    }
++    #fullscreen-btn:hover { background: rgba(255, 255, 255, 0.25); }
++    #image-container {
++      position: relative;
++    }
++    #preview-image {
++      display: none;
++      max-width: 100%;
++      width: 100%;
++      cursor: zoom-in;
++    }
++    #preview-image.zoomed {
++      cursor: zoom-out;
++      max-width: none;
++      width: auto;
++    }
++    #loading {
++      padding: 20px;
++      color: #fff;
++      font-size: 16px;
++    }
++    #error {
++      padding: 20px;
++      color: #ff6b6b;
++      text-align: center;
++    }
++  </style>
++</head>
++<body>
++  <div id="toolbar">
++    <button id="fullscreen-btn">⛶ Fullscreen</button>
++  </div>
++  <div id="image-container">
++    <div id="loading">Loading static map preview...</div>
++    <img id="preview-image" alt="Static Map Preview">
++    <div id="error" style="display:none"></div>
++  </div>
++
++  <script type="module">
++    const image = document.getElementById('preview-image');
++    const loading = document.getElementById('loading');
++    const errorDiv = document.getElementById('error');
++    const toolbar = document.getElementById('toolbar');
++    const fullscreenBtn = document.getElementById('fullscreen-btn');
++
++    let isZoomed = false;
++    let currentDisplayMode = 'inline';
++    let canFullscreen = false;
++
++    image.addEventListener('click', () => {
++      isZoomed = !isZoomed;
++      image.classList.toggle('zoomed', isZoomed);
++    });
++
++    let messageId = 0;
++    const pendingRequests = new Map();
++
++    function sendRequest(method, params = {}) {
++      const id = ++messageId;
++      window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
++      return new Promise((resolve, reject) => {
++        pendingRequests.set(id, { resolve, reject });
++      });
++    }
++
++    function sendNotification(method, params = {}) {
++      window.parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
++    }
++
++    function requestSizeToFit() {
++      if (currentDisplayMode !== 'inline') return;
++      // Use requestAnimationFrame to measure after layout so we get the
++      // actual rendered height (constrained by max-width:100%), not natural px
++      requestAnimationFrame(() => {
++        const toolbarHeight = canFullscreen ? toolbar.offsetHeight : 0;
++        sendNotification('ui/notifications/size-changed', {
++          height: Math.round(image.getBoundingClientRect().height) + toolbarHeight
++        });
++      });
++    }
++
++    function updateFullscreenButton() {
++      fullscreenBtn.textContent =
++        currentDisplayMode === 'fullscreen' ? '⊟ Exit Fullscreen' : '⛶ Fullscreen';
++    }
++
++    async function toggleFullscreen() {
++      const newMode = currentDisplayMode === 'fullscreen' ? 'inline' : 'fullscreen';
++      try {
++        const result = await sendRequest('ui/request-display-mode', { mode: newMode });
++        currentDisplayMode = result?.mode ?? newMode;
++        updateFullscreenButton();
++        if (currentDisplayMode === 'inline') requestSizeToFit();
++      } catch (e) {
++        console.error('Failed to change display mode:', e);
++      }
++    }
++
++    fullscreenBtn.addEventListener('click', toggleFullscreen);
++
++    window.addEventListener('message', (event) => {
++      const message = event.data;
++      if (!message || typeof message !== 'object') return;
++
++      if (message.id !== undefined && pendingRequests.has(message.id)) {
++        const { resolve, reject } = pendingRequests.get(message.id);
++        pendingRequests.delete(message.id);
++        if (message.error) reject(new Error(message.error.message));
++        else resolve(message.result);
++        return;
++      }
++
++      if (message.method === 'ui/notifications/tool-result') {
++        if (message.params) handleToolResult(message.params);
++      }
++
++      if (message.method === 'ui/notifications/host-context-changed') {
++        const ctx = message.params;
++        if (ctx?.displayMode) {
++          currentDisplayMode = ctx.displayMode;
++          updateFullscreenButton();
++          if (currentDisplayMode === 'inline' && image.style.display !== 'none') {
++            requestSizeToFit();
++          }
++        }
++      }
++    });
++
++    async function handleToolResult(result) {
++      const textContent = result.content?.find(c => c.type === 'text');
++      if (!textContent?.text) {
++        loading.style.display = 'none';
++        errorDiv.textContent = 'No URL found in tool result';
++        errorDiv.style.display = 'block';
++        return;
++      }
++
++      const url = textContent.text;
++      if (!url.includes('api.mapbox.com/styles/') || !url.includes('/static/')) {
++        loading.style.display = 'none';
++        errorDiv.textContent = 'Unsupported URL format';
++        errorDiv.style.display = 'block';
++        return;
++      }
++
++      loading.textContent = 'Fetching map from Mapbox...';
++      try {
++        const response = await fetch(url);
++        if (!response.ok) throw new Error('HTTP ' + response.status);
++        const blob = await response.blob();
++        const blobUrl = URL.createObjectURL(blob);
++
++        image.onload = () => {
++          loading.style.display = 'none';
++          image.style.display = 'block';
++          if (canFullscreen) toolbar.classList.add('visible');
++          requestSizeToFit();
++        };
++        image.src = blobUrl;
++      } catch (error) {
++        loading.style.display = 'none';
++        errorDiv.textContent = 'Failed to load image: ' + error.message;
++        errorDiv.style.display = 'block';
++      }
++    }
++
++    async function init() {
++      try {
++        const result = await sendRequest('ui/initialize', {
++          protocolVersion: '2026-01-26',
++          appCapabilities: {},
++          appInfo: { name: 'Static Map Preview', version: '1.0.0' }
++        });
++
++        sendNotification('ui/notifications/initialized', {});
++
++        const hostContext = result?.hostContext;
++        currentDisplayMode = hostContext?.displayMode ?? 'inline';
++        canFullscreen = hostContext?.availableDisplayModes?.includes('fullscreen') ?? false;
++      } catch (error) {
++        console.error('Failed to connect to MCP host:', error);
++        loading.textContent = 'Failed to connect: ' + error.message;
++        loading.style.color = '#cc0000';
++      }
++    }
++
++    init();
++  </script>
++</body>
++</html>`;
++
++    return {
++      contents: [
++        {
++          uri: this.uri,
++          mimeType: RESOURCE_MIME_TYPE,
++          text: html,
++          _meta: {
++            ui: {
++              csp: {
++                connectDomains: ['https://api.mapbox.com'],
++                resourceDomains: ['https://api.mapbox.com']
++              }
++            }
++          }
++        }
++      ]
++    };
++  }
++}
+diff --git a/src/tools/BaseTool.ts b/src/tools/BaseTool.ts
+index 665999e..6da3bf9 100644
+--- a/src/tools/BaseTool.ts
++++ b/src/tools/BaseTool.ts
+@@ -23,6 +23,16 @@ export abstract class BaseTool<
+ 
+   readonly inputSchema: InputSchema;
+   readonly outputSchema?: OutputSchema;
++  readonly meta?: {
++    ui?: {
++      resourceUri?: string;
++      csp?: {
++        connectDomains?: string[];
++        resourceDomains?: string[];
++        frameDomains?: string[];
++      };
++    };
++  };
+   protected server: McpServer | null = null;
+ 
+   constructor(params: {
+@@ -47,6 +57,16 @@ export abstract class BaseTool<
+       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       outputSchema?: any;
+       annotations?: ToolAnnotations;
++      _meta?: {
++        ui?: {
++          resourceUri?: string;
++          csp?: {
++            connectDomains?: string[];
++            resourceDomains?: string[];
++            frameDomains?: string[];
++          };
++        };
++      };
+     } = {
+       title: this.annotations.title,
+       description: this.description,
+@@ -62,6 +82,11 @@ export abstract class BaseTool<
+         (this.outputSchema as unknown as z.ZodObject<any>).shape;
+     }
+ 
++    // Add _meta for MCP Apps support if provided (includes CSP configuration)
++    if (this.meta) {
++      config._meta = this.meta;
++    }
++
+     return server.registerTool(
+       this.name,
+       config,
+diff --git a/src/tools/static-map-image-tool/StaticMapImageTool.ts b/src/tools/static-map-image-tool/StaticMapImageTool.ts
+index 7a9123c..a39eab8 100644
+--- a/src/tools/static-map-image-tool/StaticMapImageTool.ts
++++ b/src/tools/static-map-image-tool/StaticMapImageTool.ts
+@@ -1,6 +1,7 @@
+ // Copyright (c) Mapbox, Inc.
+ // Licensed under the MIT License.
+ 
++import { randomUUID } from 'node:crypto';
+ import type { z } from 'zod';
+ import { createUIResource } from '@mcp-ui/server';
+ import { MapboxApiBasedTool } from '../MapboxApiBasedTool.js';
+@@ -15,7 +16,7 @@ export class StaticMapImageTool extends MapboxApiBasedTool<
+ > {
+   name = 'static_map_image_tool';
+   description =
+-    'Generates a static map image from Mapbox Static Images API. Supports center coordinates, zoom level (0-22), image size (up to 1280x1280), various Mapbox styles, and overlays (markers, paths, GeoJSON). Returns PNG for vector styles, JPEG for raster-only styles.';
++    'Generates a static map image from Mapbox Static Images API. Supports center coordinates, zoom level (0-22), image size (up to 1280x1280), various Mapbox styles, and overlays (markers, paths, GeoJSON). Returns the Static Maps API URL for visualization.';
+   annotations = {
+     title: 'Static Map Image Tool',
+     readOnlyHint: true,
+@@ -23,6 +24,15 @@ export class StaticMapImageTool extends MapboxApiBasedTool<
+     idempotentHint: true,
+     openWorldHint: true
+   };
++  readonly meta = {
++    ui: {
++      resourceUri: 'ui://mapbox/static-map/index.html',
++      csp: {
++        connectDomains: ['https://api.mapbox.com'],
++        resourceDomains: ['https://api.mapbox.com']
++      }
++    }
++  };
+ 
+   constructor(params: { httpRequest: HttpRequest }) {
+     super({
+@@ -100,57 +110,16 @@ export class StaticMapImageTool extends MapboxApiBasedTool<
+     const density = input.highDensity ? '@2x' : '';
+     const url = `${MapboxApiBasedTool.mapboxApiEndpoint}styles/v1/${input.style}/static/${overlayString}${lng},${lat},${input.zoom}/${width}x${height}${density}?access_token=${accessToken}`;
+ 
+-    const response = await this.httpRequest(url);
+-
+-    if (!response.ok) {
+-      const errorMessage = await this.getErrorMessage(response);
+-      return {
+-        content: [
+-          {
+-            type: 'text',
+-            text: `Static Map API error: ${errorMessage}`
+-          }
+-        ],
+-        isError: true
+-      };
+-    }
+-
+-    const buffer = await response.arrayBuffer();
+-
+-    const base64Data = Buffer.from(buffer).toString('base64');
+-
+-    // Determine MIME type based on style (raster-only styles return JPEG)
+-    const isRasterStyle = input.style.includes('satellite');
+-    const mimeType = isRasterStyle ? 'image/jpeg' : 'image/png';
+-
+-    // Build descriptive text with map metadata (Issue #103)
+-    // Text content provides additional context alongside the image
+-    const textDescription = [
+-      'Static map image generated successfully.',
+-      `Center: ${lat}, ${lng}`,
+-      `Zoom: ${input.zoom}`,
+-      `Size: ${width}x${height}${input.highDensity ? ' @2x' : ''}`,
+-      `Style: ${input.style}`,
+-      input.overlays?.length ? `Overlays: ${input.overlays.length}` : null
+-    ]
+-      .filter(Boolean)
+-      .join('\n');
+-
+-    // Build content array with text first, then image
+-    // Per MCP spec, content array can have multiple items of different types
++    // Return the URL directly instead of fetching and encoding
++    // This enables MCP Apps to display the image with proper CSP
+     const content: CallToolResult['content'] = [
+       {
+         type: 'text',
+-        text: textDescription
+-      },
+-      {
+-        type: 'image',
+-        data: base64Data,
+-        mimeType
++        text: url
+       }
+     ];
+ 
+-    // Conditionally add MCP-UI resource if enabled
++    // Conditionally add MCP-UI resource if enabled (backward compatibility)
+     if (isMcpUiEnabled()) {
+       const uiResource = createUIResource({
+         uri: `ui://mapbox/static-map/${input.style}/${lng},${lat},${input.zoom}`,
+@@ -168,7 +137,10 @@ export class StaticMapImageTool extends MapboxApiBasedTool<
+ 
+     return {
+       content,
+-      isError: false
++      isError: false,
++      _meta: {
++        viewUUID: randomUUID()
++      }
+     };
+   }
+ }

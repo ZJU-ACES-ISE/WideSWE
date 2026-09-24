@@ -1,0 +1,150 @@
+diff --git a/x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/optimizer/promql/PromqlBucketsContractTests.java b/x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/optimizer/promql/PromqlBucketsContractTests.java
+new file mode 100644
+index 00000000000..fc5bfed6346
+--- /dev/null
++++ b/x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/optimizer/promql/PromqlBucketsContractTests.java
+@@ -0,0 +1,144 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++package org.elasticsearch.xpack.esql.optimizer.promql;
++
++import org.elasticsearch.TransportVersion;
++import org.elasticsearch.index.IndexMode;
++import org.elasticsearch.xpack.esql.EsqlTestUtils;
++import org.elasticsearch.xpack.esql.analysis.Analyzer;
++import org.elasticsearch.xpack.esql.analysis.AnalyzerContext;
++import org.elasticsearch.xpack.esql.core.expression.AttributeSet;
++import org.elasticsearch.xpack.esql.core.expression.Expression;
++import org.elasticsearch.xpack.esql.core.expression.FoldContext;
++import org.elasticsearch.xpack.esql.core.tree.Source;
++import org.elasticsearch.xpack.esql.expression.function.EsqlFunctionRegistry;
++import org.elasticsearch.xpack.esql.index.EsIndex;
++import org.elasticsearch.xpack.esql.index.IndexResolution;
++import org.elasticsearch.xpack.esql.optimizer.AbstractLogicalPlanOptimizerTests;
++import org.elasticsearch.xpack.esql.plan.IndexPattern;
++import org.elasticsearch.xpack.esql.plan.logical.LogicalPlan;
++import org.junit.BeforeClass;
++
++import java.time.Duration;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++
++import static java.util.Collections.emptyMap;
++import static org.elasticsearch.xpack.esql.EsqlTestUtils.TEST_VERIFIER;
++import static org.elasticsearch.xpack.esql.EsqlTestUtils.emptyInferenceResolution;
++import static org.elasticsearch.xpack.esql.EsqlTestUtils.loadMapping;
++import static org.elasticsearch.xpack.esql.plan.QuerySettings.UNMAPPED_FIELDS;
++import static org.hamcrest.Matchers.empty;
++import static org.hamcrest.Matchers.hasItem;
++import static org.hamcrest.Matchers.hasSize;
++import static org.hamcrest.Matchers.not;
++
++public class PromqlBucketsContractTests extends AbstractLogicalPlanOptimizerTests {
++
++    private static Analyzer analyzer;
++
++    @BeforeClass
++    public static void initAnalyzer() {
++        var mapping = loadMapping("k8s-mappings.json");
++        var index = IndexResolution.valid(
++            new EsIndex("k8s", mapping, Map.of("k8s", IndexMode.TIME_SERIES), Map.of(), Map.of(), Set.of())
++        );
++        analyzer = new Analyzer(
++            new AnalyzerContext(
++                EsqlTestUtils.TEST_CFG,
++                new EsqlFunctionRegistry(),
++                Map.of(new IndexPattern(Source.EMPTY, "k8s"), index),
++                emptyMap(),
++                enrichResolution,
++                emptyInferenceResolution(),
++                TransportVersion.current(),
++                UNMAPPED_FIELDS.defaultValue()
++            ),
++            TEST_VERIFIER
++        );
++    }
++
++    public void testExplicitBucketsDeriveRoundedStep() {
++        assertStep(
++            """
++                PROMQL index=k8s start="2024-05-10T00:00:00.000Z" end="2024-05-10T01:00:00.000Z" buckets=6 (
++                  avg(network.bytes_in)
++                )
++                """,
++            Duration.ofMinutes(10)
++        );
++    }
++
++    public void testDefaultBucketsDeriveRoundedStep() {
++        assertStep(
++            """
++                PROMQL index=k8s start="2024-05-10T00:00:00.000Z" end="2024-05-10T01:00:00.000Z" (
++                  avg(network.bytes_in)
++                )
++                """,
++            Duration.ofMinutes(1)
++        );
++    }
++
++    public void testExplicitStepRemainsSupported() {
++        assertStep("PROMQL index=k8s step=20s avg(network.bytes_in)", Duration.ofSeconds(20));
++    }
++
++    public void testStepAndBucketsAreMutuallyExclusive() {
++        assertRejected(
++            "PROMQL index=k8s step=20s buckets=3 start=\"2024-05-10T00:00:00Z\" end=\"2024-05-10T00:01:00Z\" avg(network.bytes_in)"
++        );
++    }
++
++    public void testAutoBucketingRequiresBothBounds() {
++        assertRejected("PROMQL index=k8s buckets=3 avg(network.bytes_in)");
++        assertRejected("PROMQL index=k8s start=\"2024-05-10T00:00:00Z\" avg(network.bytes_in)");
++        assertRejected("PROMQL index=k8s end=\"2024-05-10T00:01:00Z\" avg(network.bytes_in)");
++    }
++
++    public void testStepAndBucketsMustBePositive() {
++        assertRejected("PROMQL index=k8s step=0 avg(network.bytes_in)");
++        assertRejected("PROMQL index=k8s step=-1s avg(network.bytes_in)");
++        assertRejected(
++            "PROMQL index=k8s buckets=0 start=\"2024-05-10T00:00:00Z\" end=\"2024-05-10T00:01:00Z\" avg(network.bytes_in)"
++        );
++        assertRejected(
++            "PROMQL index=k8s buckets=-1 start=\"2024-05-10T00:00:00Z\" end=\"2024-05-10T00:01:00Z\" avg(network.bytes_in)"
++        );
++    }
++
++    private void assertStep(String query, Duration expected) {
++        LogicalPlan plan = planPromqlContract(query);
++        assertThat(plan.output().stream().filter(attribute -> attribute.name().equals("step")).toList(), hasSize(1));
++
++        List<Duration> durations = new ArrayList<>();
++        plan.forEachExpressionDown(Expression.class, expression -> {
++            if (expression.foldable()) {
++                Object value = expression.fold(FoldContext.small());
++                if (value instanceof Duration duration) {
++                    durations.add(duration);
++                }
++            }
++        });
++        assertThat(durations, hasItem(expected));
++    }
++
++    private void assertRejected(String query) {
++        assertThrows(RuntimeException.class, () -> planPromqlContract(query));
++    }
++
++    private LogicalPlan planPromqlContract(String query) {
++        LogicalPlan analyzed = analyzer.analyze(parser.parseQuery(query));
++        AttributeSet.Builder references = AttributeSet.builder();
++        analyzed.forEachDown(node -> references.addAll(node.references()));
++        assertThat(references.build(), not(empty()));
++        return logicalOptimizer.optimize(analyzed);
++    }
++}

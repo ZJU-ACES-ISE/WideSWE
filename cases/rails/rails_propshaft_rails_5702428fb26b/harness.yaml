@@ -1,0 +1,33 @@
+task_id: rails_propshaft_rails_5702428fb26b
+hidden_test_patches:
+- repo: propshaft
+  patch: hidden/patches/propshaft-hidden-tests.patch
+  test_profile: propshaft-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test/fixtures/assets/first_path/test.html
+  - test/propshaft/asset_test.rb
+  - test/propshaft/server_test.rb
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from rails/propshaft PR(s) 264
+- repo: rails
+  patch: hidden/patches/rails-hidden-tests.patch
+  test_profile: rails-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - actionpack/test/dispatch/static_test.rb
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from rails/rails PR(s) 57188
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - propshaft-hidden
+    - rails-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

@@ -1,0 +1,2192 @@
+diff --git a/x-pack/platform/plugins/shared/fleet/common/services/simplified_package_policy_helper.test.ts b/x-pack/platform/plugins/shared/fleet/common/services/simplified_package_policy_helper.test.ts
+index 57cf357712b..53d021c8a39 100644
+--- a/x-pack/platform/plugins/shared/fleet/common/services/simplified_package_policy_helper.test.ts
++++ b/x-pack/platform/plugins/shared/fleet/common/services/simplified_package_policy_helper.test.ts
+@@ -11,6 +11,7 @@ import nginxPackageInfo from '../../server/services/package_policies/fixtures/pa
+ 
+ import {
+   simplifiedPackagePolicytoNewPackagePolicy,
++  packagePolicyToSimplifiedPackagePolicy,
+   generateInputId,
+ } from './simplified_package_policy_helper';
+ 
+@@ -57,7 +58,11 @@ describe('toPackagePolicy', () => {
+         nginxPackageInfo as unknown as PackageInfo
+       );
+ 
+-      expect(res).toMatchSnapshot();
++      const { var_group_selections: _varGroupSelections, ...snapshotValue } = res as typeof res & {
++        var_group_selections?: Record<string, string>;
++      };
++
++      expect(snapshotValue).toMatchSnapshot();
+     });
+ 
+     it('should enable default inputs streams', () => {
+@@ -176,5 +181,41 @@ describe('toPackagePolicy', () => {
+ 
+       expect(res.additional_datastreams_permissions).toEqual(['logs-test-123']);
+     });
++
++    it('should preserve var_group_selections when creating package policy', () => {
++      const varGroupSelections = { auth_method: 'api_key' };
++      const res = simplifiedPackagePolicytoNewPackagePolicy(
++        {
++          name: 'nginx-1',
++          namespace: 'default',
++          policy_id: 'policy123',
++          policy_ids: ['policy123'],
++          description: 'Test description',
++          var_group_selections: varGroupSelections,
++        },
++        nginxPackageInfo as unknown as PackageInfo
++      );
++
++      expect(res.var_group_selections).toEqual(varGroupSelections);
++    });
++
++    it('should include var_group_selections when converting back to simplified policy', () => {
++      const varGroupSelections = { auth_method: 'api_key' };
++      const packagePolicy = simplifiedPackagePolicytoNewPackagePolicy(
++        {
++          name: 'nginx-1',
++          namespace: 'default',
++          policy_id: 'policy123',
++          policy_ids: ['policy123'],
++          description: 'Test description',
++          var_group_selections: varGroupSelections,
++        },
++        nginxPackageInfo as unknown as PackageInfo
++      );
++
++      const simplified = packagePolicyToSimplifiedPackagePolicy(packagePolicy as any);
++
++      expect((simplified as any).var_group_selections).toEqual(varGroupSelections);
++    });
+   });
+ });
+diff --git a/x-pack/platform/plugins/shared/fleet/common/services/validate_package_policy.test.ts b/x-pack/platform/plugins/shared/fleet/common/services/validate_package_policy.test.ts
+index d8dede8e007..5b8b84e7ea4 100644
+--- a/x-pack/platform/plugins/shared/fleet/common/services/validate_package_policy.test.ts
++++ b/x-pack/platform/plugins/shared/fleet/common/services/validate_package_policy.test.ts
+@@ -2213,3 +2213,227 @@ describe('Fleet - parseDuration()', () => {
+     expect(result.errors[0]).toContain('Invalid duration format');
+   });
+ });
++
++describe('Fleet - validatePackagePolicy with var_groups', () => {
++  const packageInfoWithVarGroups: PackageInfo = {
++    name: 'test_package',
++    version: '1.0.0',
++    title: 'Test Package',
++    description: 'Test package with var_groups',
++    type: 'integration',
++    format_version: '3.0.0',
++    owner: { github: 'elastic/integrations', type: 'elastic' },
++    categories: ['custom'],
++    status: installationStatuses.NotInstalled,
++    assets: { kibana: {} },
++    data_streams: [],
++    policy_templates: [],
++    vars: [
++      { name: 'api_key', type: 'password', title: 'API Key' },
++      { name: 'api_url', type: 'text', title: 'API URL' },
++      { name: 'client_id', type: 'text', title: 'Client ID' },
++      { name: 'client_secret', type: 'password', title: 'Client Secret' },
++      { name: 'proxy_url', type: 'text', title: 'Proxy URL' },
++    ],
++    var_groups: [
++      {
++        name: 'auth_method',
++        title: 'Authentication',
++        selector_title: 'Select method',
++        required: true,
++        options: [
++          {
++            name: 'api_key',
++            title: 'API Key',
++            vars: ['api_key', 'api_url'],
++          },
++          {
++            name: 'oauth',
++            title: 'OAuth',
++            vars: ['client_id', 'client_secret'],
++          },
++        ],
++      },
++    ],
++  } as unknown as PackageInfo;
++
++  const basePackagePolicy: NewPackagePolicy = {
++    name: 'test-policy',
++    namespace: 'default',
++    description: '',
++    policy_ids: ['policy-1'],
++    enabled: true,
++    inputs: [],
++    vars: {
++      api_key: { type: 'password', value: '' },
++      api_url: { type: 'text', value: '' },
++      client_id: { type: 'text', value: '' },
++      client_secret: { type: 'password', value: '' },
++      proxy_url: { type: 'text', value: '' },
++    },
++    var_group_selections: { auth_method: 'api_key' },
++  };
++
++  it('should validate vars in selected var_group option as required when var_group.required is true', () => {
++    const policyWithUndefinedApiKey = {
++      ...basePackagePolicy,
++      vars: {
++        ...basePackagePolicy.vars,
++        api_key: { type: 'password', value: undefined }, // Undefined - should be invalid
++        api_url: { type: 'text', value: undefined }, // Undefined - should be invalid
++      },
++      var_group_selections: { auth_method: 'api_key' },
++    };
++
++    const result = validatePackagePolicy(policyWithUndefinedApiKey, packageInfoWithVarGroups, load);
++
++    // api_key and api_url should have validation errors because they're required by var_group
++    expect(result.vars?.api_key).toEqual([expect.stringContaining('is required')]);
++    expect(result.vars?.api_url).toEqual([expect.stringContaining('is required')]);
++  });
++
++  it('should allow empty strings for var_group required vars (same as regular required vars)', () => {
++    const policyWithEmptyApiKey = {
++      ...basePackagePolicy,
++      vars: {
++        ...basePackagePolicy.vars,
++        api_key: { type: 'password', value: '' }, // Empty string is allowed
++        api_url: { type: 'text', value: '' }, // Empty string is allowed
++      },
++      var_group_selections: { auth_method: 'api_key' },
++    };
++
++    const result = validatePackagePolicy(policyWithEmptyApiKey, packageInfoWithVarGroups, load);
++
++    // Empty strings are allowed for var_group required vars (same as regular required vars)
++    expect(result.vars?.api_key).toBeNull();
++    expect(result.vars?.api_url).toBeNull();
++  });
++
++  it('should not validate vars outside selected var_group option', () => {
++    const policyWithApiKeySelected = {
++      ...basePackagePolicy,
++      vars: {
++        ...basePackagePolicy.vars,
++        api_key: { type: 'password', value: 'my-api-key' },
++        api_url: { type: 'text', value: 'https://api.example.com' },
++        client_id: { type: 'text', value: '' }, // Empty but not in selected option
++        client_secret: { type: 'password', value: '' }, // Empty but not in selected option
++      },
++      var_group_selections: { auth_method: 'api_key' },
++    };
++
++    const result = validatePackagePolicy(policyWithApiKeySelected, packageInfoWithVarGroups, load);
++
++    // api_key and api_url have values, should be valid (null)
++    expect(result.vars?.api_key).toBeNull();
++    expect(result.vars?.api_url).toBeNull();
++    // client_id and client_secret are not in selected option, should be skipped (null)
++    expect(result.vars?.client_id).toBeNull();
++    expect(result.vars?.client_secret).toBeNull();
++  });
++
++  it('should validate oauth vars when oauth option is selected', () => {
++    const policyWithOAuthSelected = {
++      ...basePackagePolicy,
++      vars: {
++        ...basePackagePolicy.vars,
++        api_key: { type: 'password', value: '' }, // Not in selected option
++        api_url: { type: 'text', value: '' }, // Not in selected option
++        client_id: { type: 'text', value: undefined }, // In selected option - should be required
++        client_secret: { type: 'password', value: undefined }, // In selected option - should be required
++      },
++      var_group_selections: { auth_method: 'oauth' },
++    };
++
++    const result = validatePackagePolicy(policyWithOAuthSelected, packageInfoWithVarGroups, load);
++
++    // api_key and api_url are not in selected option, should be skipped
++    expect(result.vars?.api_key).toBeNull();
++    expect(result.vars?.api_url).toBeNull();
++    // client_id and client_secret are in selected option and undefined, should be invalid
++    expect(result.vars?.client_id).toEqual([expect.stringContaining('is required')]);
++    expect(result.vars?.client_secret).toEqual([expect.stringContaining('is required')]);
++  });
++
++  it('should always validate vars not controlled by any var_group', () => {
++    const packageInfoWithRequiredNonGroupVar: PackageInfo = {
++      ...packageInfoWithVarGroups,
++      vars: [
++        ...packageInfoWithVarGroups.vars!,
++        { name: 'required_var', type: 'text', title: 'Required Var', required: true },
++      ],
++    } as unknown as PackageInfo;
++
++    // Test with undefined value - should fail required validation
++    const policyWithMissingRequiredVar = {
++      ...basePackagePolicy,
++      vars: {
++        ...basePackagePolicy.vars,
++        api_key: { type: 'password', value: 'my-key' },
++        api_url: { type: 'text', value: 'https://api.example.com' },
++        required_var: { type: 'text', value: undefined }, // Required by varDef, value is undefined
++      },
++      var_group_selections: { auth_method: 'api_key' },
++    };
++
++    const result = validatePackagePolicy(
++      policyWithMissingRequiredVar,
++      packageInfoWithRequiredNonGroupVar,
++      load
++    );
++
++    // required_var is not controlled by var_group but has required: true and undefined value
++    expect(result.vars?.required_var).toEqual([expect.stringContaining('is required')]);
++  });
++
++  it('should allow empty strings for regular required vars (not required by var_group)', () => {
++    const packageInfoWithRequiredNonGroupVar: PackageInfo = {
++      ...packageInfoWithVarGroups,
++      vars: [
++        ...packageInfoWithVarGroups.vars!,
++        { name: 'required_var', type: 'text', title: 'Required Var', required: true },
++      ],
++    } as unknown as PackageInfo;
++
++    // Note: Empty strings are allowed for regular required vars in Fleet
++    // Only undefined values trigger required validation error
++    const policyWithEmptyRequiredVar = {
++      ...basePackagePolicy,
++      vars: {
++        ...basePackagePolicy.vars,
++        api_key: { type: 'password', value: 'my-key' },
++        api_url: { type: 'text', value: 'https://api.example.com' },
++        required_var: { type: 'text', value: '' }, // Required by varDef but empty string is OK
++      },
++      var_group_selections: { auth_method: 'api_key' },
++    };
++
++    const result = validatePackagePolicy(
++      policyWithEmptyRequiredVar,
++      packageInfoWithRequiredNonGroupVar,
++      load
++    );
++
++    // Empty strings are allowed for regular required vars
++    expect(result.vars?.required_var).toBeNull();
++  });
++
++  it('should pass validation when all required var_group vars have values', () => {
++    const validPolicy = {
++      ...basePackagePolicy,
++      vars: {
++        ...basePackagePolicy.vars,
++        api_key: { type: 'password', value: 'my-api-key' },
++        api_url: { type: 'text', value: 'https://api.example.com' },
++      },
++      var_group_selections: { auth_method: 'api_key' },
++    };
++
++    const result = validatePackagePolicy(validPolicy, packageInfoWithVarGroups, load);
++
++    expect(result.vars?.api_key).toBeNull();
++    expect(result.vars?.api_url).toBeNull();
++    expect(validationHasErrors(result)).toBe(false);
++  });
++});
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/hooks.test.tsx b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/hooks.test.tsx
+index 2040a0f2ad7..81853da509f 100644
+--- a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/hooks.test.tsx
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/hooks.test.tsx
+@@ -5,15 +5,16 @@
+  * 2.0.
+  */
+ 
+-import { waitFor } from '@testing-library/react';
++import { waitFor, renderHook, act } from '@testing-library/react';
+ 
+ import { createFleetTestRendererMock } from '../../../../../../../../mock';
+ import type { MockedFleetStartServices } from '../../../../../../../../mock';
+ import { useLicense } from '../../../../../../../../hooks/use_license';
+ import type { LicenseService } from '../../../../../../services';
+ import type { PackagePolicy } from '../../../../../../../../../common/types';
++import type { RegistryVarGroup } from '../../../../../../types';
+ 
+-import { useOutputs } from './hooks';
++import { useOutputs, useVarGroupSelections } from './hooks';
+ 
+ jest.mock('../../../../../../../../hooks/use_license');
+ 
+@@ -148,3 +149,250 @@ describe('useOutputs', () => {
+     expect(result.current.allowedOutputs).toHaveLength(0);
+   });
+ });
++
++const mockVarGroups: RegistryVarGroup[] = [
++  {
++    name: 'auth_method',
++    title: 'Authentication',
++    selector_title: 'Select method',
++    options: [
++      {
++        name: 'cloud_connector',
++        title: 'Cloud Connector',
++        vars: ['connector_id'],
++        hide_in_deployment_modes: ['default'],
++      },
++      { name: 'api_key', title: 'API Key', vars: ['api_key_var'] },
++      { name: 'oauth', title: 'OAuth', vars: ['client_id', 'client_secret'] },
++    ],
++  },
++];
++
++describe('useVarGroupSelections', () => {
++  let mockOnSelectionsChange: jest.Mock;
++
++  beforeEach(() => {
++    mockOnSelectionsChange = jest.fn();
++  });
++
++  afterEach(() => {
++    jest.clearAllMocks();
++  });
++
++  describe('selections derivation', () => {
++    it('should return saved selections when provided', () => {
++      const savedSelections = { auth_method: 'oauth' };
++
++      const { result } = renderHook(() =>
++        useVarGroupSelections({
++          varGroups: mockVarGroups,
++          savedSelections,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      expect(result.current.selections).toEqual({ auth_method: 'oauth' });
++    });
++
++    it('should compute defaults when savedSelections is undefined and deployment mode is default', () => {
++      const { result } = renderHook(() =>
++        useVarGroupSelections({
++          varGroups: mockVarGroups,
++          savedSelections: undefined,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      // First visible option (api_key) should be selected
++      expect(result.current.selections).toEqual({ auth_method: 'api_key' });
++    });
++
++    it('should return empty object when varGroups is undefined', () => {
++      const { result } = renderHook(() =>
++        useVarGroupSelections({
++          varGroups: undefined,
++          savedSelections: undefined,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      expect(result.current.selections).toEqual({});
++    });
++  });
++
++  describe('initialization effect', () => {
++    it('should call onSelectionsChange with defaults on mount when savedSelections is undefined', () => {
++      renderHook(() =>
++        useVarGroupSelections({
++          varGroups: mockVarGroups,
++          savedSelections: undefined,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      expect(mockOnSelectionsChange).toHaveBeenCalledWith({
++        var_group_selections: { auth_method: 'api_key' },
++      });
++    });
++
++    it('should not call onSelectionsChange when savedSelections is already set', () => {
++      renderHook(() =>
++        useVarGroupSelections({
++          varGroups: mockVarGroups,
++          savedSelections: { auth_method: 'oauth' },
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      expect(mockOnSelectionsChange).not.toHaveBeenCalled();
++    });
++
++    it('should not call onSelectionsChange when varGroups is undefined', () => {
++      renderHook(() =>
++        useVarGroupSelections({
++          varGroups: undefined,
++          savedSelections: undefined,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      expect(mockOnSelectionsChange).not.toHaveBeenCalled();
++    });
++
++    it('should not call onSelectionsChange when varGroups is empty', () => {
++      renderHook(() =>
++        useVarGroupSelections({
++          varGroups: [],
++          savedSelections: undefined,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      expect(mockOnSelectionsChange).not.toHaveBeenCalled();
++    });
++  });
++
++  describe('handleSelectionChange', () => {
++    it('should call onSelectionsChange with updated selections', () => {
++      const savedSelections = { auth_method: 'api_key' };
++
++      const { result } = renderHook(() =>
++        useVarGroupSelections({
++          varGroups: mockVarGroups,
++          savedSelections,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      act(() => {
++        result.current.handleSelectionChange('auth_method', 'oauth');
++      });
++
++      expect(mockOnSelectionsChange).toHaveBeenCalledWith({
++        var_group_selections: { auth_method: 'oauth' },
++      });
++    });
++
++    it('should merge with existing selections when changing', () => {
++      const savedSelections = { auth_method: 'api_key', other_group: 'existing' };
++
++      const { result } = renderHook(() =>
++        useVarGroupSelections({
++          varGroups: mockVarGroups,
++          savedSelections,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      act(() => {
++        result.current.handleSelectionChange('auth_method', 'oauth');
++      });
++
++      expect(mockOnSelectionsChange).toHaveBeenCalledWith({
++        var_group_selections: { auth_method: 'oauth', other_group: 'existing' },
++      });
++    });
++
++    it('should handle selection change when savedSelections is undefined', () => {
++      const { result } = renderHook(() =>
++        useVarGroupSelections({
++          varGroups: mockVarGroups,
++          savedSelections: undefined,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        })
++      );
++
++      // Clear the initialization call
++      mockOnSelectionsChange.mockClear();
++
++      act(() => {
++        result.current.handleSelectionChange('auth_method', 'oauth');
++      });
++
++      expect(mockOnSelectionsChange).toHaveBeenCalledWith({
++        var_group_selections: { auth_method: 'oauth' },
++      });
++    });
++  });
++
++  describe('re-renders and memoization', () => {
++    it('should not re-compute selections if dependencies do not change', () => {
++      const savedSelections = { auth_method: 'oauth' };
++
++      const { result, rerender } = renderHook((props) => useVarGroupSelections(props), {
++        initialProps: {
++          varGroups: mockVarGroups,
++          savedSelections,
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        },
++      });
++
++      const initialSelections = result.current.selections;
++
++      // Rerender with same props
++      rerender({
++        varGroups: mockVarGroups,
++        savedSelections,
++        isAgentlessEnabled: false,
++        onSelectionsChange: mockOnSelectionsChange,
++      });
++
++      // Should be the same reference (memoized)
++      expect(result.current.selections).toBe(initialSelections);
++    });
++
++    it('should re-compute selections when savedSelections changes', () => {
++      const { result, rerender } = renderHook((props) => useVarGroupSelections(props), {
++        initialProps: {
++          varGroups: mockVarGroups,
++          savedSelections: { auth_method: 'api_key' },
++          isAgentlessEnabled: false,
++          onSelectionsChange: mockOnSelectionsChange,
++        },
++      });
++
++      expect(result.current.selections).toEqual({ auth_method: 'api_key' });
++
++      // Rerender with different savedSelections
++      rerender({
++        varGroups: mockVarGroups,
++        savedSelections: { auth_method: 'oauth' },
++        isAgentlessEnabled: false,
++        onSelectionsChange: mockOnSelectionsChange,
++      });
++
++      expect(result.current.selections).toEqual({ auth_method: 'oauth' });
++    });
++  });
++});
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.test.tsx b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.test.tsx
+new file mode 100644
+index 00000000000..f0c80825bc9
+--- /dev/null
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.test.tsx
+@@ -0,0 +1,401 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import React from 'react';
++import { fireEvent, waitFor } from '@testing-library/react';
++
++import { createFleetTestRendererMock } from '../../../../../../../../mock';
++import type { TestRenderer } from '../../../../../../../../mock';
++import { useAgentless } from '../../../single_page_layout/hooks/setup_technology';
++
++import type {
++  PackageInfo,
++  RegistryStreamWithDataStream,
++  NewPackagePolicyInputStream,
++  RegistryVarGroup,
++} from '../../../../../../types';
++
++import { PackagePolicyInputStreamConfig } from './package_policy_input_stream';
++
++jest.mock('../../../single_page_layout/hooks/setup_technology', () => {
++  return {
++    useAgentless: jest.fn(),
++  };
++});
++
++jest.mock('react-router-dom', () => ({
++  ...jest.requireActual('react-router-dom'),
++  useRouteMatch: () => ({
++    params: {},
++  }),
++}));
++
++const useAgentlessMock = useAgentless as jest.MockedFunction<typeof useAgentless>;
++
++// Mock stream-level var_group
++const mockStreamVarGroup: RegistryVarGroup = {
++  name: 'auth_method',
++  title: 'Authentication Method',
++  selector_title: 'Choose authentication',
++  description: 'Select how to authenticate to the service.',
++  options: [
++    {
++      name: 'api_key',
++      title: 'API Key',
++      description: 'Authenticate using an API key.',
++      vars: ['api_key'],
++    },
++    {
++      name: 'oauth',
++      title: 'OAuth',
++      description: 'Authenticate using OAuth.',
++      vars: ['client_id', 'client_secret'],
++    },
++    {
++      name: 'cloud_connector',
++      title: 'Cloud Connector',
++      vars: ['connector_id'],
++      hide_in_deployment_modes: ['default'],
++    },
++  ],
++};
++
++// Package input stream with stream-level var_groups
++const mockPackageInputStreamWithVarGroups: RegistryStreamWithDataStream = {
++  input: 'httpjson',
++  title: 'Collect logs via API',
++  template_path: 'stream.yml.hbs',
++  var_groups: [mockStreamVarGroup],
++  vars: [
++    {
++      name: 'api_key',
++      type: 'password',
++      title: 'API Key',
++      required: true,
++      show_user: true,
++    },
++    {
++      name: 'client_id',
++      type: 'text',
++      title: 'Client ID',
++      required: true,
++      show_user: true,
++    },
++    {
++      name: 'client_secret',
++      type: 'password',
++      title: 'Client Secret',
++      required: true,
++      show_user: true,
++    },
++    {
++      name: 'connector_id',
++      type: 'text',
++      title: 'Connector ID',
++      required: true,
++      show_user: true,
++    },
++    {
++      name: 'url',
++      type: 'text',
++      title: 'API URL',
++      required: true,
++      show_user: true,
++    },
++  ],
++  description: 'Collect logs from an HTTP API',
++  data_stream: {
++    title: 'API Logs',
++    release: 'ga',
++    type: 'logs',
++    package: 'test_package',
++    dataset: 'test_package.api_logs',
++    path: 'api_logs',
++    elasticsearch: {},
++    ingest_pipeline: 'default',
++    streams: [],
++  },
++};
++
++// Package policy input stream (what gets saved)
++const mockPackagePolicyInputStream: NewPackagePolicyInputStream = {
++  id: 'stream-1',
++  enabled: true,
++  data_stream: {
++    type: 'logs',
++    dataset: 'test_package.api_logs',
++  },
++  vars: {
++    api_key: { type: 'password', value: '' },
++    client_id: { type: 'text', value: '' },
++    client_secret: { type: 'password', value: '' },
++    connector_id: { type: 'text', value: '' },
++    url: { type: 'text', value: 'https://api.example.com' },
++  },
++};
++
++const mockPackageInfo: PackageInfo = {
++  name: 'test_package',
++  version: '1.0.0',
++  title: 'Test Package',
++  description: 'A test package for var_groups',
++  type: 'integration',
++  format_version: '3.0.0',
++  owner: { github: 'elastic/integrations', type: 'elastic' },
++  categories: ['custom'],
++  data_streams: [],
++  policy_templates: [],
++  assets: { kibana: {} },
++  status: 'installed',
++} as unknown as PackageInfo;
++
++describe('PackagePolicyInputStreamConfig', () => {
++  let testRenderer: TestRenderer;
++  let renderResult: ReturnType<typeof testRenderer.render>;
++  let mockUpdatePackagePolicyInputStream: jest.Mock;
++
++  beforeEach(() => {
++    testRenderer = createFleetTestRendererMock();
++    mockUpdatePackagePolicyInputStream = jest.fn();
++
++    useAgentlessMock.mockReturnValue({
++      isAgentlessEnabled: false,
++      isAgentlessDefault: false,
++      isAgentlessAgentPolicy: jest.fn(),
++      isAgentlessIntegration: jest.fn(),
++      isServerless: false,
++      isCloud: false,
++    });
++  });
++
++  afterEach(() => {
++    jest.resetAllMocks();
++  });
++
++  const render = (
++    packageInputStream: RegistryStreamWithDataStream = mockPackageInputStreamWithVarGroups,
++    packagePolicyInputStream: NewPackagePolicyInputStream = mockPackagePolicyInputStream,
++    packageInfo: PackageInfo = mockPackageInfo
++  ) => {
++    renderResult = testRenderer.render(
++      <PackagePolicyInputStreamConfig
++        packageInputStream={packageInputStream}
++        packageInfo={packageInfo}
++        packagePolicyInputStream={packagePolicyInputStream}
++        updatePackagePolicyInputStream={mockUpdatePackagePolicyInputStream}
++        inputStreamValidationResults={{ vars: {} }}
++        forceShowErrors={false}
++        totalStreams={2}
++      />
++    );
++  };
++
++  describe('stream-level var_groups', () => {
++    it('test data has var_groups defined', () => {
++      // Sanity check that our test data is correctly structured
++      expect(mockPackageInputStreamWithVarGroups.var_groups).toBeDefined();
++      expect(mockPackageInputStreamWithVarGroups.var_groups).toHaveLength(1);
++      expect(mockPackageInputStreamWithVarGroups.var_groups![0].name).toBe('auth_method');
++      expect(mockPackageInputStreamWithVarGroups.var_groups![0].options).toHaveLength(3);
++    });
++
++    it('should render VarGroupSelector when stream has var_groups', async () => {
++      render();
++
++      await waitFor(() => {
++        expect(renderResult.getByText('Authentication Method')).toBeInTheDocument();
++        expect(renderResult.getByText('Choose authentication')).toBeInTheDocument();
++        expect(
++          renderResult.getByText('Select how to authenticate to the service.')
++        ).toBeInTheDocument();
++      });
++    });
++
++    it('should show only vars for the selected option (api_key by default)', async () => {
++      render();
++
++      await waitFor(() => {
++        // API Key var should be visible (first option is selected by default)
++        // Use test-subj which is more reliable than text matching for input fields
++        expect(renderResult.getByTestId('passwordInput-api-key')).toBeInTheDocument();
++
++        // OAuth vars should be hidden
++        expect(renderResult.queryByTestId('textInput-client-id')).not.toBeInTheDocument();
++        expect(renderResult.queryByTestId('passwordInput-client-secret')).not.toBeInTheDocument();
++
++        // Common var (url) should always be visible
++        expect(renderResult.getByTestId('textInput-api-url')).toBeInTheDocument();
++      });
++    });
++
++    it('should show OAuth vars when oauth option is selected', async () => {
++      render();
++
++      await waitFor(() => {
++        expect(renderResult.getByTestId('varGroupSelector-auth_method')).toBeInTheDocument();
++      });
++
++      const select = renderResult.getByTestId('varGroupSelector-auth_method');
++      fireEvent.change(select, { target: { value: 'oauth' } });
++
++      // Verify callback was called with new selection
++      await waitFor(() => {
++        expect(mockUpdatePackagePolicyInputStream).toHaveBeenCalledWith({
++          var_group_selections: { auth_method: 'oauth' },
++        });
++      });
++
++      // Re-render with updated props (simulating what parent component would do)
++      const updatedPolicyInputStream: NewPackagePolicyInputStream = {
++        ...mockPackagePolicyInputStream,
++        var_group_selections: { auth_method: 'oauth' },
++      };
++      renderResult.rerender(
++        <PackagePolicyInputStreamConfig
++          packageInputStream={mockPackageInputStreamWithVarGroups}
++          packageInfo={mockPackageInfo}
++          packagePolicyInputStream={updatedPolicyInputStream}
++          updatePackagePolicyInputStream={mockUpdatePackagePolicyInputStream}
++          inputStreamValidationResults={{ vars: {} }}
++          forceShowErrors={false}
++          totalStreams={2}
++        />
++      );
++
++      await waitFor(() => {
++        // OAuth vars should now be visible
++        expect(renderResult.getByTestId('textInput-client-id')).toBeInTheDocument();
++        expect(renderResult.getByTestId('passwordInput-client-secret')).toBeInTheDocument();
++
++        // API Key should be hidden
++        expect(renderResult.queryByTestId('passwordInput-api-key')).not.toBeInTheDocument();
++      });
++    });
++
++    it('should persist var_group_selections to the policy when selection changes', async () => {
++      render();
++
++      await waitFor(() => {
++        expect(renderResult.getByTestId('varGroupSelector-auth_method')).toBeInTheDocument();
++      });
++
++      const select = renderResult.getByTestId('varGroupSelector-auth_method');
++      fireEvent.change(select, { target: { value: 'oauth' } });
++
++      await waitFor(() => {
++        expect(mockUpdatePackagePolicyInputStream).toHaveBeenCalledWith({
++          var_group_selections: { auth_method: 'oauth' },
++        });
++      });
++    });
++
++    it('should use saved var_group_selections from policy', async () => {
++      const policyWithSavedSelections: NewPackagePolicyInputStream = {
++        ...mockPackagePolicyInputStream,
++        var_group_selections: { auth_method: 'oauth' },
++      };
++
++      render(mockPackageInputStreamWithVarGroups, policyWithSavedSelections);
++
++      await waitFor(() => {
++        // OAuth vars should be visible (saved selection)
++        expect(renderResult.getByTestId('textInput-client-id')).toBeInTheDocument();
++        expect(renderResult.getByTestId('passwordInput-client-secret')).toBeInTheDocument();
++
++        // API Key should be hidden
++        expect(renderResult.queryByTestId('passwordInput-api-key')).not.toBeInTheDocument();
++      });
++    });
++
++    it('should filter options based on deployment mode (agentless)', async () => {
++      useAgentlessMock.mockReturnValue({
++        isAgentlessEnabled: true,
++        isAgentlessDefault: false,
++        isAgentlessAgentPolicy: jest.fn(),
++        isAgentlessIntegration: jest.fn(),
++        isServerless: false,
++        isCloud: true,
++      });
++
++      render();
++
++      await waitFor(() => {
++        const select = renderResult.getByTestId('varGroupSelector-auth_method');
++        const options = Array.from(select.querySelectorAll('option'));
++
++        // cloud_connector should be visible in agentless mode
++        expect(options.find((o) => o.value === 'cloud_connector')).toBeDefined();
++      });
++    });
++
++    it('should filter options based on deployment mode (default)', async () => {
++      useAgentlessMock.mockReturnValue({
++        isAgentlessEnabled: false,
++        isAgentlessDefault: false,
++        isAgentlessAgentPolicy: jest.fn(),
++        isAgentlessIntegration: jest.fn(),
++        isServerless: false,
++        isCloud: false,
++      });
++
++      render();
++
++      await waitFor(() => {
++        const select = renderResult.getByTestId('varGroupSelector-auth_method');
++        const options = Array.from(select.querySelectorAll('option'));
++
++        // cloud_connector should be filtered out in default mode
++        expect(options.find((o) => o.value === 'cloud_connector')).toBeUndefined();
++      });
++    });
++
++    it('should not render VarGroupSelector when stream has no var_groups', async () => {
++      const streamWithoutVarGroups: RegistryStreamWithDataStream = {
++        ...mockPackageInputStreamWithVarGroups,
++        var_groups: undefined,
++      };
++
++      render(streamWithoutVarGroups);
++
++      await waitFor(() => {
++        // No var group selector should be rendered
++        expect(renderResult.queryByText('Authentication Method')).not.toBeInTheDocument();
++
++        // All vars should be visible since there's no var_group filtering
++        expect(renderResult.getByTestId('passwordInput-api-key')).toBeInTheDocument();
++        expect(renderResult.getByTestId('textInput-client-id')).toBeInTheDocument();
++        expect(renderResult.getByTestId('passwordInput-client-secret')).toBeInTheDocument();
++      });
++    });
++
++    it('should use package-level var_groups when stream has none but package has them', async () => {
++      const packageInfoWithVarGroups: PackageInfo = {
++        ...mockPackageInfo,
++        var_groups: [mockStreamVarGroup],
++      };
++
++      const streamWithoutVarGroups: RegistryStreamWithDataStream = {
++        ...mockPackageInputStreamWithVarGroups,
++        var_groups: undefined,
++      };
++
++      // When stream has no var_groups but package does, the component uses the varGroupSelections prop
++      // Since we're not passing varGroupSelections, it defaults to {}, so NO filtering should occur
++      // (vars not controlled by any var_group are shown, vars controlled without selection are hidden)
++      render(streamWithoutVarGroups, mockPackagePolicyInputStream, packageInfoWithVarGroups);
++
++      await waitFor(() => {
++        // Without varGroupSelections prop, package-level filtering hides all controlled vars
++        // Only the uncontrolled var (url) should be visible
++        expect(renderResult.getByTestId('textInput-api-url')).toBeInTheDocument();
++
++        // Controlled vars are hidden because no selection is provided
++        expect(renderResult.queryByTestId('passwordInput-api-key')).not.toBeInTheDocument();
++      });
++    });
++  });
++});
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/var_group_selector.test.tsx b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/var_group_selector.test.tsx
+new file mode 100644
+index 00000000000..257406f26d9
+--- /dev/null
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/var_group_selector.test.tsx
+@@ -0,0 +1,450 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import React from 'react';
++import { render, fireEvent, screen } from '@testing-library/react';
++
++import type { RegistryVarGroup } from '../../../../../../types';
++
++import {
++  getVisibleOptions,
++  getVisibleVarsForOption,
++  getVarsControlledByVarGroups,
++  shouldShowVar,
++  computeDefaultVarGroupSelections,
++  isVarRequiredByVarGroup,
++} from '../../../services/var_group_helpers';
++
++import { VarGroupSelector } from './var_group_selector';
++
++const mockVarGroup: RegistryVarGroup = {
++  name: 'credential_type',
++  title: 'Setup Access',
++  selector_title: 'Preferred method',
++  description: 'Select how you want to authenticate.',
++  options: [
++    {
++      name: 'direct_access_key',
++      title: 'Direct Access Keys',
++      description: 'Use access key ID and secret access key.',
++      vars: ['access_key_id', 'secret_access_key'],
++    },
++    {
++      name: 'temporary_access_key',
++      title: 'Temporary Access Keys',
++      vars: ['access_key_id', 'secret_access_key', 'session_token'],
++    },
++    {
++      name: 'cloud_connectors',
++      title: 'Cloud Connector',
++      vars: ['role_arn', 'external_id'],
++      hide_in_deployment_modes: ['default'],
++    },
++    {
++      name: 'assume_role',
++      title: 'Assume Role',
++      vars: ['role_arn'],
++      hide_in_deployment_modes: ['agentless'],
++    },
++  ],
++};
++
++describe('VarGroupSelector', () => {
++  describe('getVisibleOptions', () => {
++    it('should return all options when no deployment mode filtering applies', () => {
++      const varGroup: RegistryVarGroup = {
++        name: 'test',
++        title: 'Test',
++        selector_title: 'Select',
++        options: [
++          { name: 'opt1', title: 'Option 1', vars: ['var1'] },
++          { name: 'opt2', title: 'Option 2', vars: ['var2'] },
++        ],
++      };
++
++      const visible = getVisibleOptions(varGroup, false);
++      expect(visible).toHaveLength(2);
++      expect(visible.map((o) => o.name)).toEqual(['opt1', 'opt2']);
++    });
++
++    it('should filter out options hidden in default deployment mode', () => {
++      const visible = getVisibleOptions(mockVarGroup, false);
++      expect(visible.map((o) => o.name)).toEqual([
++        'direct_access_key',
++        'temporary_access_key',
++        'assume_role',
++      ]);
++      expect(visible.find((o) => o.name === 'cloud_connectors')).toBeUndefined();
++    });
++
++    it('should filter out options hidden in agentless deployment mode', () => {
++      const visible = getVisibleOptions(mockVarGroup, true);
++      expect(visible.map((o) => o.name)).toEqual([
++        'direct_access_key',
++        'temporary_access_key',
++        'cloud_connectors',
++      ]);
++      expect(visible.find((o) => o.name === 'assume_role')).toBeUndefined();
++    });
++
++    it('should filter out options via hide_in_var_group_options', () => {
++      const hideInVarGroupOptions = { credential_type: ['direct_access_key'] };
++      const visible = getVisibleOptions(mockVarGroup, false, hideInVarGroupOptions);
++      expect(visible.find((o) => o.name === 'direct_access_key')).toBeUndefined();
++    });
++  });
++
++  describe('getVisibleVarsForOption', () => {
++    it('should return vars for the selected option', () => {
++      const vars = getVisibleVarsForOption(mockVarGroup, 'direct_access_key');
++      expect(vars).toEqual(['access_key_id', 'secret_access_key']);
++    });
++
++    it('should return undefined for unknown option', () => {
++      const vars = getVisibleVarsForOption(mockVarGroup, 'unknown');
++      expect(vars).toBeUndefined();
++    });
++
++    it('should return undefined when no option is selected', () => {
++      const vars = getVisibleVarsForOption(mockVarGroup, undefined);
++      expect(vars).toBeUndefined();
++    });
++  });
++
++  describe('getVarsControlledByVarGroups', () => {
++    it('should collect all vars from all options in all groups', () => {
++      const controlled = getVarsControlledByVarGroups([mockVarGroup]);
++      expect(controlled).toContain('access_key_id');
++      expect(controlled).toContain('secret_access_key');
++      expect(controlled).toContain('session_token');
++      expect(controlled).toContain('role_arn');
++      expect(controlled).toContain('external_id');
++    });
++
++    it('should return empty set for empty var_groups', () => {
++      const controlled = getVarsControlledByVarGroups([]);
++      expect(controlled.size).toBe(0);
++    });
++  });
++
++  describe('shouldShowVar', () => {
++    const varGroups = [mockVarGroup];
++
++    it('should show var not controlled by any var_group', () => {
++      const selections = { credential_type: 'direct_access_key' };
++      expect(shouldShowVar('proxy_url', varGroups, selections)).toBe(true);
++    });
++
++    it('should show var when its option is selected', () => {
++      const selections = { credential_type: 'direct_access_key' };
++      expect(shouldShowVar('access_key_id', varGroups, selections)).toBe(true);
++      expect(shouldShowVar('secret_access_key', varGroups, selections)).toBe(true);
++    });
++
++    it('should hide var when its option is not selected', () => {
++      const selections = { credential_type: 'direct_access_key' };
++      expect(shouldShowVar('session_token', varGroups, selections)).toBe(false);
++      expect(shouldShowVar('role_arn', varGroups, selections)).toBe(false);
++    });
++
++    it('should show role_arn when assume_role is selected', () => {
++      const selections = { credential_type: 'assume_role' };
++      expect(shouldShowVar('role_arn', varGroups, selections)).toBe(true);
++    });
++  });
++
++  describe('computeDefaultVarGroupSelections', () => {
++    it('should return first visible option for each var_group', () => {
++      const defaults = computeDefaultVarGroupSelections([mockVarGroup], false);
++      expect(defaults).toEqual({ credential_type: 'direct_access_key' });
++    });
++
++    it('should return empty object when varGroups is undefined', () => {
++      const defaults = computeDefaultVarGroupSelections(undefined, false);
++      expect(defaults).toEqual({});
++    });
++
++    it('should return empty object when varGroups is empty', () => {
++      const defaults = computeDefaultVarGroupSelections([], false);
++      expect(defaults).toEqual({});
++    });
++
++    it('should select first visible option based on deployment mode (default)', () => {
++      // In default mode, cloud_connectors is hidden, so first option is direct_access_key
++      const defaults = computeDefaultVarGroupSelections([mockVarGroup], false);
++      expect(defaults.credential_type).toBe('direct_access_key');
++    });
++
++    it('should select first visible option based on deployment mode (agentless)', () => {
++      // In agentless mode, assume_role is hidden, so first option is still direct_access_key
++      const defaults = computeDefaultVarGroupSelections([mockVarGroup], true);
++      expect(defaults.credential_type).toBe('direct_access_key');
++    });
++
++    it('should handle multiple var_groups', () => {
++      const multipleGroups: RegistryVarGroup[] = [
++        {
++          name: 'auth_type',
++          title: 'Auth',
++          selector_title: 'Select',
++          options: [
++            { name: 'api_key', title: 'API Key', vars: ['api_key'] },
++            { name: 'oauth', title: 'OAuth', vars: ['client_id'] },
++          ],
++        },
++        {
++          name: 'connection_type',
++          title: 'Connection',
++          selector_title: 'Select',
++          options: [
++            { name: 'direct', title: 'Direct', vars: ['host'] },
++            { name: 'proxy', title: 'Proxy', vars: ['proxy_url'] },
++          ],
++        },
++      ];
++
++      const defaults = computeDefaultVarGroupSelections(multipleGroups, false);
++      expect(defaults).toEqual({
++        auth_type: 'api_key',
++        connection_type: 'direct',
++      });
++    });
++
++    it('should skip var_groups with no visible options', () => {
++      const groupWithAllHidden: RegistryVarGroup = {
++        name: 'hidden_group',
++        title: 'Hidden',
++        selector_title: 'Select',
++        options: [
++          {
++            name: 'opt1',
++            title: 'Option 1',
++            vars: ['var1'],
++            hide_in_deployment_modes: ['default'],
++          },
++          {
++            name: 'opt2',
++            title: 'Option 2',
++            vars: ['var2'],
++            hide_in_deployment_modes: ['default'],
++          },
++        ],
++      };
++
++      // In default mode, all options are hidden
++      const defaults = computeDefaultVarGroupSelections([groupWithAllHidden], false);
++      expect(defaults).toEqual({});
++    });
++
++    it('should respect hideInVarGroupOptions parameter', () => {
++      const hideInVarGroupOptions = { credential_type: ['direct_access_key'] };
++      const defaults = computeDefaultVarGroupSelections(
++        [mockVarGroup],
++        false,
++        hideInVarGroupOptions
++      );
++      // direct_access_key is hidden, so next visible option is temporary_access_key
++      expect(defaults.credential_type).toBe('temporary_access_key');
++    });
++  });
++
++  describe('VarGroupSelector component', () => {
++    const defaultProps = {
++      varGroup: mockVarGroup,
++      selectedOptionName: 'direct_access_key',
++      onSelectionChange: jest.fn(),
++      isAgentlessEnabled: false,
++    };
++
++    beforeEach(() => {
++      jest.clearAllMocks();
++    });
++
++    it('should render the selector with title and options', () => {
++      render(<VarGroupSelector {...defaultProps} />);
++
++      expect(screen.getByText('Setup Access')).toBeInTheDocument();
++      expect(screen.getByText('Preferred method')).toBeInTheDocument();
++    });
++
++    it('should render group description', () => {
++      render(<VarGroupSelector {...defaultProps} />);
++
++      expect(screen.getByText('Select how you want to authenticate.')).toBeInTheDocument();
++    });
++
++    it('should call onSelectionChange when option is selected', () => {
++      render(<VarGroupSelector {...defaultProps} />);
++
++      const select = screen.getByTestId('varGroupSelector-credential_type');
++      fireEvent.change(select, { target: { value: 'temporary_access_key' } });
++
++      expect(defaultProps.onSelectionChange).toHaveBeenCalledWith(
++        'credential_type',
++        'temporary_access_key'
++      );
++    });
++
++    it('should not render if only one option is visible', () => {
++      const singleOptionGroup: RegistryVarGroup = {
++        name: 'single',
++        title: 'Single',
++        selector_title: 'Select',
++        options: [{ name: 'only_option', title: 'Only Option', vars: ['var1'] }],
++      };
++
++      const { container } = render(
++        <VarGroupSelector
++          {...defaultProps}
++          varGroup={singleOptionGroup}
++          selectedOptionName="only_option"
++        />
++      );
++
++      expect(container.firstChild).toBeNull();
++    });
++
++    it('should filter options based on agentless deployment mode', () => {
++      render(<VarGroupSelector {...defaultProps} isAgentlessEnabled={true} />);
++
++      const select = screen.getByTestId('varGroupSelector-credential_type');
++      const options = Array.from(select.querySelectorAll('option'));
++
++      // assume_role should be filtered out in agentless mode
++      expect(options.find((o) => o.value === 'assume_role')).toBeUndefined();
++      // cloud_connectors should be visible in agentless mode
++      expect(options.find((o) => o.value === 'cloud_connectors')).toBeDefined();
++    });
++
++    it('should filter options based on default deployment mode', () => {
++      render(<VarGroupSelector {...defaultProps} isAgentlessEnabled={false} />);
++
++      const select = screen.getByTestId('varGroupSelector-credential_type');
++      const options = Array.from(select.querySelectorAll('option'));
++
++      // cloud_connectors should be filtered out in default mode
++      expect(options.find((o) => o.value === 'cloud_connectors')).toBeUndefined();
++      // assume_role should be visible in default mode
++      expect(options.find((o) => o.value === 'assume_role')).toBeDefined();
++    });
++  });
++
++  describe('isVarRequiredByVarGroup', () => {
++    const requiredVarGroup: RegistryVarGroup = {
++      name: 'auth_method',
++      title: 'Authentication',
++      selector_title: 'Select method',
++      required: true,
++      options: [
++        {
++          name: 'api_key',
++          title: 'API Key',
++          vars: ['api_key', 'api_url'],
++        },
++        {
++          name: 'oauth',
++          title: 'OAuth',
++          vars: ['client_id', 'client_secret'],
++        },
++      ],
++    };
++
++    const optionalVarGroup: RegistryVarGroup = {
++      name: 'compression',
++      title: 'Compression',
++      selector_title: 'Select type',
++      required: false,
++      options: [
++        {
++          name: 'gzip',
++          title: 'Gzip',
++          vars: ['compression_level'],
++        },
++        {
++          name: 'none',
++          title: 'None',
++          vars: [],
++        },
++      ],
++    };
++
++    it('should return true for var in selected option of required var_group', () => {
++      const selections = { auth_method: 'api_key' };
++      expect(isVarRequiredByVarGroup('api_key', [requiredVarGroup], selections)).toBe(true);
++      expect(isVarRequiredByVarGroup('api_url', [requiredVarGroup], selections)).toBe(true);
++    });
++
++    it('should return false for var not in selected option of required var_group', () => {
++      const selections = { auth_method: 'api_key' };
++      expect(isVarRequiredByVarGroup('client_id', [requiredVarGroup], selections)).toBe(false);
++      expect(isVarRequiredByVarGroup('client_secret', [requiredVarGroup], selections)).toBe(false);
++    });
++
++    it('should return false for var in optional var_group', () => {
++      const selections = { compression: 'gzip' };
++      expect(isVarRequiredByVarGroup('compression_level', [optionalVarGroup], selections)).toBe(
++        false
++      );
++    });
++
++    it('should return false for var not controlled by any var_group', () => {
++      const selections = { auth_method: 'api_key' };
++      expect(isVarRequiredByVarGroup('proxy_url', [requiredVarGroup], selections)).toBe(false);
++    });
++
++    it('should return false when varGroups is empty', () => {
++      expect(isVarRequiredByVarGroup('api_key', [], { auth_method: 'api_key' })).toBe(false);
++    });
++
++    it('should return false when varGroupSelections is empty', () => {
++      expect(isVarRequiredByVarGroup('api_key', [requiredVarGroup], {})).toBe(false);
++    });
++
++    it('should return true when oauth option is selected', () => {
++      const selections = { auth_method: 'oauth' };
++      expect(isVarRequiredByVarGroup('client_id', [requiredVarGroup], selections)).toBe(true);
++      expect(isVarRequiredByVarGroup('client_secret', [requiredVarGroup], selections)).toBe(true);
++      // api_key vars should not be required when oauth is selected
++      expect(isVarRequiredByVarGroup('api_key', [requiredVarGroup], selections)).toBe(false);
++    });
++
++    it('should handle multiple var_groups with mixed required settings', () => {
++      const selections = { auth_method: 'api_key', compression: 'gzip' };
++      // Required var_group var should be required
++      expect(
++        isVarRequiredByVarGroup('api_key', [requiredVarGroup, optionalVarGroup], selections)
++      ).toBe(true);
++      // Optional var_group var should not be required
++      expect(
++        isVarRequiredByVarGroup(
++          'compression_level',
++          [requiredVarGroup, optionalVarGroup],
++          selections
++        )
++      ).toBe(false);
++    });
++
++    it('should handle var_group without required field (defaults to false)', () => {
++      const varGroupWithoutRequired: RegistryVarGroup = {
++        name: 'test',
++        title: 'Test',
++        selector_title: 'Select',
++        // Note: no required field
++        options: [
++          {
++            name: 'opt1',
++            title: 'Option 1',
++            vars: ['var1'],
++          },
++        ],
++      };
++
++      const selections = { test: 'opt1' };
++      expect(isVarRequiredByVarGroup('var1', [varGroupWithoutRequired], selections)).toBe(false);
++    });
++  });
++});
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_configure_package.test.tsx b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_configure_package.test.tsx
+index 3dab923fc55..f1a66e2b1f9 100644
+--- a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_configure_package.test.tsx
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_configure_package.test.tsx
+@@ -15,7 +15,10 @@ import type { NewPackagePolicy, PackageInfo } from '../../../../../types';
+ 
+ import { validatePackagePolicy } from '../../services';
+ 
+-import { StepConfigurePackagePolicy } from './step_configure_package';
++import {
++  StepConfigurePackagePolicy,
++  isInputCompatibleWithVarGroupSelections,
++} from './step_configure_package';
+ 
+ describe('StepConfigurePackage', () => {
+   let packageInfo: PackageInfo;
+@@ -217,3 +220,113 @@ describe('StepConfigurePackage', () => {
+     expect(await renderResult.queryByText('Some agentless input')).not.toBeInTheDocument();
+   });
+ });
++
++describe('isInputCompatibleWithVarGroupSelections', () => {
++  // Basic Compatibility Tests
++  it('should return true when input has no hide_in_var_group_options', () => {
++    const input = { type: 'httpjson', title: 'Test Input' } as any;
++    const selections = { credential_type: 'direct_access_key' };
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(true);
++  });
++
++  it('should return true when hide_in_var_group_options is empty object', () => {
++    const input = {
++      type: 'httpjson',
++      title: 'Test Input',
++      hide_in_var_group_options: {},
++    } as any;
++    const selections = { credential_type: 'direct_access_key' };
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(true);
++  });
++
++  // Selection Matching Tests
++  it('should return true when selected option is NOT in the hidden list', () => {
++    const input = {
++      type: 'aws-s3',
++      title: 'AWS S3 Input',
++      hide_in_var_group_options: { credential_type: ['cloud_connectors'] },
++    } as any;
++    const selections = { credential_type: 'direct_access_key' };
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(true);
++  });
++
++  it('should return false when selected option IS in the hidden list', () => {
++    const input = {
++      type: 'aws-s3',
++      title: 'AWS S3 Input',
++      hide_in_var_group_options: { credential_type: ['cloud_connectors'] },
++    } as any;
++    const selections = { credential_type: 'cloud_connectors' };
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(false);
++  });
++
++  it('should return true when no selection exists for the var group', () => {
++    const input = {
++      type: 'aws-s3',
++      title: 'AWS S3 Input',
++      hide_in_var_group_options: { credential_type: ['cloud_connectors'] },
++    } as any;
++    const selections = {};
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(true);
++  });
++
++  // Multiple Groups Tests
++  it('should check all var groups and return false if ANY match', () => {
++    const input = {
++      type: 'test-input',
++      title: 'Test Input',
++      hide_in_var_group_options: {
++        credential_type: ['cloud_connectors'],
++        auth_method: ['oauth'],
++      },
++    } as any;
++    // First group doesn't match, but second does
++    const selections = { credential_type: 'direct_access_key', auth_method: 'oauth' };
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(false);
++  });
++
++  it('should return true only when no groups have matching hidden options', () => {
++    const input = {
++      type: 'test-input',
++      title: 'Test Input',
++      hide_in_var_group_options: {
++        credential_type: ['cloud_connectors'],
++        auth_method: ['oauth'],
++      },
++    } as any;
++    const selections = { credential_type: 'direct_access_key', auth_method: 'basic' };
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(true);
++  });
++
++  // Multiple Hidden Options Tests
++  it('should return false when selected option matches any item in the hidden array', () => {
++    const input = {
++      type: 'aws-s3',
++      title: 'AWS S3 Input',
++      hide_in_var_group_options: { credential_type: ['cloud_connectors', 'assume_role'] },
++    } as any;
++    const selections = { credential_type: 'assume_role' };
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(false);
++  });
++
++  it('should return true when selected option does not match any item in array', () => {
++    const input = {
++      type: 'aws-s3',
++      title: 'AWS S3 Input',
++      hide_in_var_group_options: { credential_type: ['cloud_connectors', 'assume_role'] },
++    } as any;
++    const selections = { credential_type: 'direct_access_key' };
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(true);
++  });
++
++  // Edge Cases
++  it('should handle undefined selection for a group gracefully', () => {
++    const input = {
++      type: 'aws-s3',
++      title: 'AWS S3 Input',
++      hide_in_var_group_options: { credential_type: ['cloud_connectors'] },
++    } as any;
++    const selections = { other_group: 'some_value' };
++    expect(isInputCompatibleWithVarGroupSelections(input, selections)).toBe(true);
++  });
++});
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_define_package_policy.test.tsx b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_define_package_policy.test.tsx
+index 9f6f626f11b..d409b334d31 100644
+--- a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_define_package_policy.test.tsx
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/step_define_package_policy.test.tsx
+@@ -198,4 +198,169 @@ describe('StepDefinePackagePolicy', () => {
+       });
+     });
+   });
++
++  describe('loading state', () => {
++    it('should render Loading component when validationResults is undefined', () => {
++      renderResult = testRenderer.render(
++        <StepDefinePackagePolicy
++          packageInfo={packageInfo}
++          packagePolicy={packagePolicy}
++          updatePackagePolicy={mockUpdatePackagePolicy}
++          validationResults={undefined}
++          submitAttempted={false}
++        />
++      );
++
++      expect(renderResult.getByTestId('loadingSpinner')).toBeInTheDocument();
++      expect(renderResult.queryByTestId('packagePolicyNameInput')).not.toBeInTheDocument();
++    });
++  });
++
++  describe('managed policy', () => {
++    it('should display managed policy callout when is_managed is true', () => {
++      packagePolicy.is_managed = true;
++
++      act(() => {
++        render();
++      });
++
++      expect(
++        renderResult.getByText('This is a managed package policy. You cannot modify it here.')
++      ).toBeInTheDocument();
++    });
++
++    it('should make name field read-only when is_managed is true', () => {
++      packagePolicy.is_managed = true;
++
++      act(() => {
++        render();
++      });
++
++      const nameInput = renderResult.getByTestId('packagePolicyNameInput');
++      expect(nameInput).toHaveAttribute('readonly');
++    });
++
++    it('should make description field read-only when is_managed is true', () => {
++      packagePolicy.is_managed = true;
++
++      act(() => {
++        render();
++      });
++
++      const descriptionInput = renderResult.getByTestId('packagePolicyDescriptionInput');
++      expect(descriptionInput).toHaveAttribute('readonly');
++    });
++
++    it('should not show advanced options toggle when is_managed is true', () => {
++      packagePolicy.is_managed = true;
++
++      act(() => {
++        render();
++      });
++
++      expect(renderResult.queryByText('Advanced options')).not.toBeInTheDocument();
++    });
++  });
++
++  describe('additional datastreams permissions', () => {
++    it('should render the permissions combo box in advanced options', async () => {
++      act(() => {
++        render();
++      });
++
++      await userEvent.click(renderResult.getByText('Advanced options').closest('button')!);
++
++      await waitFor(() => {
++        expect(renderResult.getByText('Add a reroute processor permission')).toBeInTheDocument();
++      });
++    });
++
++    it('should display validation errors for additional_datastreams_permissions', async () => {
++      const validationResultsWithError = {
++        ...validationResults,
++        additional_datastreams_permissions: ['Invalid permission format'],
++      };
++
++      renderResult = testRenderer.render(
++        <StepDefinePackagePolicy
++          packageInfo={packageInfo}
++          packagePolicy={packagePolicy}
++          updatePackagePolicy={mockUpdatePackagePolicy}
++          validationResults={validationResultsWithError}
++          submitAttempted={true}
++        />
++      );
++
++      await userEvent.click(renderResult.getByText('Advanced options').closest('button')!);
++
++      await waitFor(() => {
++        expect(renderResult.getByText('Invalid permission format')).toBeInTheDocument();
++      });
++    });
++  });
++
++  describe('var group selections state management', () => {
++    const packageInfoWithVarGroups: PackageInfo = {
++      ...packageInfo,
++      var_groups: [
++        {
++          name: 'auth_method',
++          title: 'Authentication',
++          selector_title: 'Select method',
++          options: [
++            { name: 'api_key', title: 'API Key', vars: ['api_key_var'] },
++            { name: 'basic', title: 'Basic Auth', vars: ['username_var', 'password_var'] },
++          ],
++        },
++      ],
++    };
++
++    it('should use var_group_selections from policy', () => {
++      const policyWithSelections = {
++        ...packagePolicy,
++        var_group_selections: { auth_method: 'basic' },
++      };
++
++      renderResult = testRenderer.render(
++        <StepDefinePackagePolicy
++          packageInfo={packageInfoWithVarGroups}
++          packagePolicy={policyWithSelections}
++          updatePackagePolicy={mockUpdatePackagePolicy}
++          validationResults={validationResults}
++          submitAttempted={false}
++        />
++      );
++
++      const selector = renderResult.queryByTestId('varGroupSelector-auth_method');
++      if (selector) {
++        expect(selector).toHaveValue('basic');
++      }
++    });
++
++    it('should update policy var_group_selections when selection changes', async () => {
++      const policyWithSelections = {
++        ...packagePolicy,
++        var_group_selections: { auth_method: 'api_key' },
++      };
++
++      renderResult = testRenderer.render(
++        <StepDefinePackagePolicy
++          packageInfo={packageInfoWithVarGroups}
++          packagePolicy={policyWithSelections}
++          updatePackagePolicy={mockUpdatePackagePolicy}
++          validationResults={validationResults}
++          submitAttempted={false}
++        />
++      );
++
++      const selector = renderResult.queryByTestId('varGroupSelector-auth_method');
++      if (selector) {
++        await userEvent.selectOptions(selector, 'basic');
++
++        expect(mockUpdatePackagePolicy).toHaveBeenCalledWith({
++          var_group_selections: { auth_method: 'basic' },
++        });
++      }
++    });
++  });
+ });
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/services/is_advanced_var.test.ts b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/services/is_advanced_var.test.ts
+index e756ad2bfce..d2c97665f65 100644
+--- a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/services/is_advanced_var.test.ts
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/services/is_advanced_var.test.ts
+@@ -5,7 +5,10 @@
+  * 2.0.
+  */
+ 
++import type { RegistryVarGroup } from '../../../../types';
++
+ import { isAdvancedVar } from './is_advanced_var';
++import { isVarInSelectedVarGroupOption } from './var_group_helpers';
+ 
+ describe('Fleet - isAdvancedVar', () => {
+   it('returns true for vars that should be show under advanced options', () => {
+@@ -61,4 +64,188 @@ describe('Fleet - isAdvancedVar', () => {
+       })
+     ).toBe(false);
+   });
++
++  describe('with var_groups context', () => {
++    const mockVarGroups: RegistryVarGroup[] = [
++      {
++        name: 'auth_method',
++        title: 'Authentication',
++        selector_title: 'Select method',
++        options: [
++          { name: 'api_key', title: 'API Key', vars: ['api_key', 'api_url'] },
++          { name: 'oauth', title: 'OAuth', vars: ['client_id', 'client_secret'] },
++        ],
++      },
++    ];
++
++    it('returns false (not advanced) for vars with show_user: false that are in a selected var_group option', () => {
++      // api_key var has show_user: false but is in the selected var_group option
++      expect(
++        isAdvancedVar(
++          {
++            name: 'api_key',
++            type: 'password',
++            show_user: false, // Would normally be advanced
++          },
++          mockVarGroups,
++          { auth_method: 'api_key' } // api_key option is selected
++        )
++      ).toBe(false); // Should NOT be advanced because it's in the selected option
++    });
++
++    it('returns true (advanced) for vars with show_user: false that are NOT in a selected var_group option', () => {
++      // client_id var has show_user: false and is NOT in the selected var_group option
++      expect(
++        isAdvancedVar(
++          {
++            name: 'client_id',
++            type: 'text',
++            show_user: false,
++          },
++          mockVarGroups,
++          { auth_method: 'api_key' } // api_key option is selected, not oauth
++        )
++      ).toBe(true); // Should be advanced because it's not in the selected option
++    });
++
++    it('returns true (advanced) for vars with show_user: false that are not controlled by any var_group', () => {
++      expect(
++        isAdvancedVar(
++          {
++            name: 'unrelated_var',
++            type: 'text',
++            show_user: false,
++          },
++          mockVarGroups,
++          { auth_method: 'api_key' }
++        )
++      ).toBe(true); // Should be advanced because it's not controlled by var_groups
++    });
++
++    it('returns false for vars with show_user: true regardless of var_groups', () => {
++      expect(
++        isAdvancedVar(
++          {
++            name: 'api_key',
++            type: 'password',
++            show_user: true,
++          },
++          mockVarGroups,
++          { auth_method: 'oauth' } // Different option selected
++        )
++      ).toBe(false); // show_user: true always wins
++    });
++
++    it('handles missing var_groups gracefully', () => {
++      expect(
++        isAdvancedVar(
++          {
++            name: 'mock_var',
++            type: 'text',
++            show_user: false,
++          },
++          undefined,
++          { auth_method: 'api_key' }
++        )
++      ).toBe(true); // Falls back to original behavior
++    });
++
++    it('handles empty var_groups gracefully', () => {
++      expect(
++        isAdvancedVar(
++          {
++            name: 'mock_var',
++            type: 'text',
++            show_user: false,
++          },
++          [],
++          { auth_method: 'api_key' }
++        )
++      ).toBe(true); // Falls back to original behavior
++    });
++
++    it('handles missing varGroupSelections gracefully', () => {
++      expect(
++        isAdvancedVar(
++          {
++            name: 'api_key',
++            type: 'password',
++            show_user: false,
++          },
++          mockVarGroups,
++          undefined
++        )
++      ).toBe(true); // Falls back to original behavior
++    });
++  });
++});
++
++describe('Fleet - isVarInSelectedVarGroupOption', () => {
++  const mockVarGroups: RegistryVarGroup[] = [
++    {
++      name: 'auth_method',
++      title: 'Authentication',
++      selector_title: 'Select method',
++      options: [
++        { name: 'api_key', title: 'API Key', vars: ['api_key', 'api_url'] },
++        { name: 'oauth', title: 'OAuth', vars: ['client_id', 'client_secret'] },
++      ],
++    },
++    {
++      name: 'data_format',
++      title: 'Data Format',
++      selector_title: 'Select format',
++      options: [
++        { name: 'json', title: 'JSON', vars: ['json_config'] },
++        { name: 'xml', title: 'XML', vars: ['xml_config'] },
++      ],
++    },
++  ];
++
++  it('returns true if var is in a selected var_group option', () => {
++    expect(
++      isVarInSelectedVarGroupOption('api_key', mockVarGroups, { auth_method: 'api_key' })
++    ).toBe(true);
++
++    expect(
++      isVarInSelectedVarGroupOption('api_url', mockVarGroups, { auth_method: 'api_key' })
++    ).toBe(true);
++
++    expect(
++      isVarInSelectedVarGroupOption('client_id', mockVarGroups, { auth_method: 'oauth' })
++    ).toBe(true);
++  });
++
++  it('returns false if var is NOT in a selected var_group option', () => {
++    expect(
++      isVarInSelectedVarGroupOption('client_id', mockVarGroups, { auth_method: 'api_key' })
++    ).toBe(false);
++
++    expect(isVarInSelectedVarGroupOption('api_key', mockVarGroups, { auth_method: 'oauth' })).toBe(
++      false
++    );
++  });
++
++  it('returns false if var is not controlled by any var_group', () => {
++    expect(
++      isVarInSelectedVarGroupOption('unrelated_var', mockVarGroups, { auth_method: 'api_key' })
++    ).toBe(false);
++  });
++
++  it('returns false if no selection is made for the var_group', () => {
++    expect(isVarInSelectedVarGroupOption('api_key', mockVarGroups, {})).toBe(false);
++
++    expect(isVarInSelectedVarGroupOption('api_key', mockVarGroups, { data_format: 'json' })).toBe(
++      false
++    );
++  });
++
++  it('handles multiple var_groups correctly', () => {
++    const selections = { auth_method: 'api_key', data_format: 'json' };
++
++    expect(isVarInSelectedVarGroupOption('api_key', mockVarGroups, selections)).toBe(true);
++    expect(isVarInSelectedVarGroupOption('json_config', mockVarGroups, selections)).toBe(true);
++    expect(isVarInSelectedVarGroupOption('xml_config', mockVarGroups, selections)).toBe(false);
++    expect(isVarInSelectedVarGroupOption('client_id', mockVarGroups, selections)).toBe(false);
++  });
+ });
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/edit_package_policy_page/index.test.tsx b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/edit_package_policy_page/index.test.tsx
+index c835803fc86..c9f9d16c2d5 100644
+--- a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/edit_package_policy_page/index.test.tsx
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/edit_package_policy_page/index.test.tsx
+@@ -18,6 +18,7 @@ import {
+   sendUpgradePackagePolicyDryRun,
+   sendUpdatePackagePolicy,
+   useStartServices,
++  sendGetPackageInfoByKey,
+   sendCreateAgentPolicy,
+   sendBulkGetAgentPolicies,
+   useGetAgentPolicies,
+@@ -31,6 +32,8 @@ import { EditPackagePolicyPage } from '.';
+ 
+ type MockFn = jest.MockedFunction<any>;
+ 
++let lastStepConfigureProps: any;
++
+ jest.mock('../create_package_policy_page/components/steps/components/use_policies', () => {
+   return {
+     ...jest.requireActual('../create_package_policy_page/components/steps/components/use_policies'),
+@@ -168,6 +171,17 @@ jest.mock('../../../../integrations/hooks', () => {
+   };
+ });
+ 
++jest.mock('../create_package_policy_page/components', () => {
++  const actual = jest.requireActual('../create_package_policy_page/components');
++  return {
++    ...actual,
++    StepConfigurePackagePolicy: jest.fn((props) => {
++      lastStepConfigureProps = props;
++      return (actual as any).StepConfigurePackagePolicy(props);
++    }),
++  };
++});
++
+ jest.mock('react-router-dom', () => ({
+   ...jest.requireActual('react-router-dom'),
+   useRouteMatch: jest.fn().mockReturnValue({
+@@ -236,6 +250,7 @@ describe('edit package policy page', () => {
+ 
+   beforeEach(() => {
+     testRenderer = createFleetTestRendererMock();
++    lastStepConfigureProps = undefined;
+ 
+     (useGetOnePackagePolicy as MockFn).mockReturnValue({
+       data: {
+@@ -527,6 +542,110 @@ describe('edit package policy page', () => {
+     expect(renderResult.queryByTestId('agentPolicyMultiSelect')).not.toBeInTheDocument();
+   });
+ 
++  it('passes existing var_group selections to configure step', async () => {
++    const varGroupSelections = { auth_method: 'oauth' };
++
++    (useGetOnePackagePolicy as MockFn).mockReturnValueOnce({
++      data: {
++        item: { ...mockPackagePolicy, var_group_selections: varGroupSelections },
++      },
++    });
++    (sendGetOnePackagePolicy as MockFn).mockResolvedValueOnce({
++      data: {
++        item: { ...mockPackagePolicy, var_group_selections: varGroupSelections },
++      },
++    });
++
++    render();
++
++    await waitFor(() => {
++      expect(lastStepConfigureProps?.varGroupSelections).toEqual(varGroupSelections);
++    });
++  });
++
++  it('computes default var_group selections when missing', async () => {
++    (sendGetPackageInfoByKey as MockFn).mockImplementationOnce((name: string, version: string) =>
++      Promise.resolve({
++        data: {
++          item: {
++            name,
++            title: 'Nginx',
++            version,
++            release: 'ga',
++            description: 'Collect logs and metrics from Nginx HTTP servers with Elastic Agent.',
++            policy_templates: [
++              {
++                name: 'nginx',
++                title: 'Nginx logs and metrics',
++                description: 'Collect logs and metrics from Nginx instances',
++                inputs: [
++                  {
++                    type: 'logfile',
++                    title: 'Collect logs from Nginx instances',
++                    description: 'Collecting Nginx access and error logs',
++                  },
++                ],
++                multiple: true,
++              },
++            ],
++            var_groups: [
++              {
++                name: 'auth_method',
++                title: 'Auth method',
++                selector_title: 'Select auth method',
++                options: [
++                  { name: 'api_key', title: 'API key', vars: ['api_key'] },
++                  { name: 'oauth', title: 'OAuth', vars: ['client_id'] },
++                ],
++              },
++            ],
++            data_streams: [
++              {
++                type: 'logs',
++                dataset: 'nginx.access',
++                title: 'Nginx access logs',
++                release: 'experimental',
++                ingest_pipeline: 'default',
++                streams: [
++                  {
++                    input: 'logfile',
++                    vars: [
++                      {
++                        name: 'paths',
++                        type: 'text',
++                        title: 'Paths',
++                        multi: true,
++                        required: true,
++                        show_user: true,
++                        default: ['/var/log/nginx/access.log*'],
++                      },
++                    ],
++                    template_path: 'stream.yml.hbs',
++                    title: 'Nginx access logs',
++                    description: 'Collect Nginx access logs',
++                    enabled: true,
++                  },
++                ],
++                package: 'nginx',
++                path: 'access',
++              },
++            ],
++            latestVersion: version,
++            keepPoliciesUpToDate: false,
++            status: 'not_installed',
++          },
++        },
++        isLoading: false,
++      })
++    );
++
++    render();
++
++    await waitFor(() => {
++      expect(lastStepConfigureProps?.varGroupSelections).toEqual({ auth_method: 'api_key' });
++    });
++  });
++
+   describe('modify agent policies', () => {
+     beforeEach(() => {
+       useMultipleAgentPoliciesMock.mockReturnValue({ canUseMultipleAgentPolicies: true });
+diff --git a/x-pack/platform/plugins/shared/fleet/server/routes/package_policy/handlers.test.ts b/x-pack/platform/plugins/shared/fleet/server/routes/package_policy/handlers.test.ts
+index 540359b5e41..18ac05c4224 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/routes/package_policy/handlers.test.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/routes/package_policy/handlers.test.ts
+@@ -300,6 +300,7 @@ describe('When calling package policy', () => {
+           type: 'text',
+         },
+       },
++      var_group_selections: { auth_method: 'api_key' },
+     };
+ 
+     beforeEach(() => {
+@@ -399,6 +400,19 @@ describe('When calling package policy', () => {
+       });
+     });
+ 
++    it('should update var_group_selections when provided', async () => {
++      const newData = {
++        var_group_selections: { auth_method: 'oauth' },
++      };
++      const request = getUpdateKibanaRequest(newData as any);
++
++      await routeHandler(context, request, response);
++
++      expect(response.ok).toHaveBeenCalledWith({
++        body: { item: { ...existingPolicy, ...newData } },
++      });
++    });
++
+     it('should throw if policy_ids changed on agentless integration', async () => {
+       (agentPolicyService.get as jest.Mock).mockResolvedValue({
+         supports_agentless: true,
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/epm/archive/parse.test.ts b/x-pack/platform/plugins/shared/fleet/server/services/epm/archive/parse.test.ts
+index 0fec24d394d..ad83c253882 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/epm/archive/parse.test.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/services/epm/archive/parse.test.ts
+@@ -502,6 +502,53 @@ owner:
+       })
+     );
+   });
++
++  it('should parse package with var_groups present', () => {
++    const manifest = `
++format_version: 1.0.0
++name: input_only
++title: Custom Logs
++description: Read lines from active log files with Elastic Agent.
++type: input
++version: 0.1.0
++license: basic
++categories: [custom]
++policy_templates:
++  - name: first_policy_template
++    type: logs
++    title: Custom log file
++    description: Collect your custom log files.
++    input: logfile
++    template_path: input.yml.hbs
++var_groups:
++  - name: auth_method
++    title: Auth method
++    selector_title: Select auth method
++    options:
++      - name: api_key
++        title: API key
++        vars: [api_key]
++owner:
++  github: elastic/integrations
++`;
++
++    const packageInfo = parseAndVerifyArchive(['input_only-0.1.0/manifest.yml'], {
++      'input_only-0.1.0/manifest.yml': Buffer.from(manifest, 'utf8'),
++    });
++
++    expect(packageInfo).toEqual(
++      expect.objectContaining({
++        var_groups: [
++          {
++            name: 'auth_method',
++            title: 'Auth method',
++            selector_title: 'Select auth method',
++            options: [{ name: 'api_key', title: 'API key', vars: ['api_key'] }],
++          },
++        ],
++      })
++    );
++  });
+ });
+ 
+ describe('parseAndVerifyDataStreams', () => {

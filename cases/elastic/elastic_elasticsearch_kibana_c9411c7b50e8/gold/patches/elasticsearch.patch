@@ -1,0 +1,597 @@
+diff --git a/x-pack/plugin/esql/qa/testFixtures/src/main/resources/k8s-timeseries-promql.csv-spec b/x-pack/plugin/esql/qa/testFixtures/src/main/resources/k8s-timeseries-promql.csv-spec
+index 19952dd5a57..e77d51d22a2 100644
+--- a/x-pack/plugin/esql/qa/testFixtures/src/main/resources/k8s-timeseries-promql.csv-spec
++++ b/x-pack/plugin/esql/qa/testFixtures/src/main/resources/k8s-timeseries-promql.csv-spec
+@@ -20,6 +20,21 @@ sum(avg_over_time(network.cost[5m])):double | step:date
+ 50.25                                       | 2024-05-10T00:20:00.000Z
+ ;
+ 
++auto_step_buckets
++required_capability: promql_command_v0
++required_capability: promql_buckets_parameter
++PROMQL index=k8s start="2024-05-10T00:00:00.000Z" end="2024-05-10T00:20:00.000Z" buckets=4 1
++| KEEP step
++| SORT step;
++
++step:datetime
++2024-05-10T00:00:00.000Z
++2024-05-10T00:05:00.000Z
++2024-05-10T00:10:00.000Z
++2024-05-10T00:15:00.000Z
++2024-05-10T00:20:00.000Z
++;
++
+ not_equals_filter
+ required_capability: promql_command_v0
+ PROMQL index=k8s step=1h cost=(max by (cluster) (network.total_bytes_in{cluster!="prod"}))
+@@ -672,121 +687,3 @@ PROMQL index=k8s step=1h result=(rate(unmapped.metric[1h])) | SORT result;
+ 
+ result:double | step:datetime | _timeseries:keyword
+ ;
+-
+-scalar_single_element
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-PROMQL index=k8s step=1h result=(scalar(vector(42)));
+-
+-result:double | step:datetime
+-42.0          | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_with_pi
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-PROMQL index=k8s step=1h result=(scalar(vector(pi())));
+-
+-result:double         | step:datetime
+-3.141592653589793     | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_sum_global
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-PROMQL index=k8s step=1h result=(scalar(sum(network.bytes_in)));
+-
+-result:double | step:datetime
+-4852.0        | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_sum_by_cluster_nan
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-// produces 3 results, scalar returns NaN
+-PROMQL index=k8s step=1h result=(scalar(sum by (cluster) (network.bytes_in)));
+-
+-result:double | step:datetime
+-NaN           | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_sum_by_cluster_counter_nan
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-// counter field produces 3 results, scalar returns NaN
+-PROMQL index=k8s step=1h result=(scalar(sum by (cluster) (network.total_bytes_in)));
+-
+-result:double | step:datetime
+-NaN           | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_sum_by_cluster_counter_one
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-// counter field produces exactly 1 result
+-PROMQL index=k8s step=1h result=(scalar(sum by (cluster) (network.total_bytes_in{cluster="prod"})));
+-
+-result:double | step:datetime
+-21193.0      | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_sum_by_cluster_one
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-// produces exactly 1 result
+-PROMQL index=k8s step=1h result=(scalar(sum by (cluster) (network.bytes_in{cluster="prod"})));
+-
+-result:double | step:datetime
+-2517.0        | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_raw_metric_nan
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-// raw instant vector has multiple time series, scalar returns NaN
+-PROMQL index=k8s step=1h result=(scalar(network.cost));
+-
+-result:double | step:datetime
+-NaN           | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_nested_avg_avg_over_time
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-required_capability: promql_nested_aggregates
+-PROMQL index=k8s step=1h result=(scalar(avg(avg_over_time(network.cost[1h]))));
+-
+-result:double          | step:datetime
+-6.2580600391577725     | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_nested_four_levels
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-required_capability: promql_nested_aggregates
+-PROMQL index=k8s step=1h result=(scalar(max(avg by (cluster) (sum by (cluster, pod) (avg_over_time(network.cost[1h]))))));
+-
+-result:double    | step:datetime
+-6.92301245210728 | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_nested_count_sum_by_cluster
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-required_capability: promql_nested_aggregates
+-// count of 3 grouped sums produces 1 result, scalar returns it
+-PROMQL index=k8s step=1h result=(scalar(count(sum by (cluster) (network.cost))));
+-
+-result:double | step:datetime
+-3.0           | 2024-05-10T00:00:00.000Z
+-;
+-
+-scalar_in_binary_arithmetic
+-required_capability: promql_command_v0
+-required_capability: promql_scalar
+-PROMQL index=k8s step=1h result=(scalar(sum(network.cost)) + 1);
+-
+-result:double | step:datetime
+-62.0          | 2024-05-10T00:00:00.000Z
+-;
+-
+diff --git a/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/action/EsqlCapabilities.java b/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/action/EsqlCapabilities.java
+index d6768c37c4a..dfb276c7823 100644
+--- a/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/action/EsqlCapabilities.java
++++ b/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/action/EsqlCapabilities.java
+@@ -1916,6 +1916,11 @@ public class EsqlCapabilities {
+          */
+         PROMQL_TIME,
+ 
++        /**
++         * Support for deriving PromQL time buckets from [start, end, buckets] when [step] is omitted.
++         */
++        PROMQL_BUCKETS_PARAMETER,
++
+         /**
+          * Queries for unmapped fields return no data instead of an error.
+          * Also filters out nulls from results.
+@@ -1933,11 +1938,6 @@ public class EsqlCapabilities {
+          */
+         PROMQL_POST_PROCESSING_STATS,
+ 
+-        /**
+-         * PromQL scalar() function support.
+-         */
+-        PROMQL_SCALAR,
+-
+         /**
+          * KNN function adds support for k and visit_percentage options
+          */
+diff --git a/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/optimizer/rules/logical/promql/TranslatePromqlToEsqlPlan.java b/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/optimizer/rules/logical/promql/TranslatePromqlToEsqlPlan.java
+index 93859faf1ca..6934d92078e 100644
+--- a/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/optimizer/rules/logical/promql/TranslatePromqlToEsqlPlan.java
++++ b/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/optimizer/rules/logical/promql/TranslatePromqlToEsqlPlan.java
+@@ -13,6 +13,7 @@ import org.elasticsearch.xpack.esql.core.expression.Alias;
+ import org.elasticsearch.xpack.esql.core.expression.Attribute;
+ import org.elasticsearch.xpack.esql.core.expression.Expression;
+ import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
++import org.elasticsearch.xpack.esql.core.expression.FoldContext;
+ import org.elasticsearch.xpack.esql.core.expression.Literal;
+ import org.elasticsearch.xpack.esql.core.expression.MetadataAttribute;
+ import org.elasticsearch.xpack.esql.core.expression.NamedExpression;
+@@ -22,7 +23,6 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
+ import org.elasticsearch.xpack.esql.core.type.EsField;
+ import org.elasticsearch.xpack.esql.expression.function.aggregate.AggregateFunction;
+ import org.elasticsearch.xpack.esql.expression.function.aggregate.LastOverTime;
+-import org.elasticsearch.xpack.esql.expression.function.aggregate.Scalar;
+ import org.elasticsearch.xpack.esql.expression.function.aggregate.Values;
+ import org.elasticsearch.xpack.esql.expression.function.grouping.Bucket;
+ import org.elasticsearch.xpack.esql.expression.function.scalar.convert.ToDouble;
+@@ -52,7 +52,6 @@ import org.elasticsearch.xpack.esql.plan.logical.TimeSeriesAggregate;
+ import org.elasticsearch.xpack.esql.plan.logical.promql.AcrossSeriesAggregate;
+ import org.elasticsearch.xpack.esql.plan.logical.promql.PromqlCommand;
+ import org.elasticsearch.xpack.esql.plan.logical.promql.PromqlFunctionCall;
+-import org.elasticsearch.xpack.esql.plan.logical.promql.ScalarConversionFunction;
+ import org.elasticsearch.xpack.esql.plan.logical.promql.ScalarFunction;
+ import org.elasticsearch.xpack.esql.plan.logical.promql.WithinSeriesAggregate;
+ import org.elasticsearch.xpack.esql.plan.logical.promql.operator.VectorBinaryComparison;
+@@ -172,7 +171,6 @@ public final class TranslatePromqlToEsqlPlan extends OptimizerRules.Parameterize
+     private TranslationResult translateNode(LogicalPlan node, LogicalPlan currentPlan, TranslationContext ctx) {
+         return switch (node) {
+             case AcrossSeriesAggregate agg -> translateAcrossSeriesAggregate(agg, currentPlan, ctx);
+-            case ScalarConversionFunction scalar -> translateScalarConversion(scalar, currentPlan, ctx);
+             case WithinSeriesAggregate withinAgg -> translateFunctionCall(withinAgg, currentPlan, ctx);
+             case PromqlFunctionCall functionCall -> translateFunctionCall(functionCall, currentPlan, ctx);
+             case ScalarFunction scalarFunction -> translateScalarFunction(scalarFunction, currentPlan, ctx);
+@@ -206,41 +204,6 @@ public final class TranslatePromqlToEsqlPlan extends OptimizerRules.Parameterize
+         }
+     }
+ 
+-    /**
+-     * Translates a ScalarConversionFunction.
+-     */
+-    private TranslationResult translateScalarConversion(
+-        ScalarConversionFunction scalarFunc,
+-        LogicalPlan currentPlan,
+-        TranslationContext ctx
+-    ) {
+-        TranslationResult childResult = translateNode(scalarFunc.child(), currentPlan, ctx);
+-
+-        // Foldable: convert to double directly
+-        if (childResult.expression().foldable()) {
+-            return new TranslationResult(childResult.plan(), new ToDouble(scalarFunc.source(), childResult.expression()));
+-        }
+-
+-        // Child aggregated: grouping by step
+-        // E.g. scalar(sum by (cluster) (metric)))
+-        Expression scalarExpr = new Scalar(scalarFunc.source(), childResult.expression());
+-        if (containsAggregation(childResult.plan())) {
+-            // plain Aggregate grouped by step only, collapsing all series into one value per step.
+-            Attribute stepAttr = ctx.stepAttr();
+-            Alias aggAlias = new Alias(scalarExpr.source(), ctx.promqlCommand().valueColumnName(), scalarExpr);
+-            LogicalPlan aggregate = new Aggregate(
+-                ctx.promqlCommand().source(),
+-                childResult.plan(),
+-                List.of(stepAttr),
+-                List.of(aggAlias, stepAttr)
+-            );
+-            return new TranslationResult(aggregate, getValueOutput(aggregate));
+-        }
+-
+-        LogicalPlan timeSeriesAgg = createInnerAggregate(ctx, childResult.plan(), scalarFunc.output(), scalarExpr);
+-        return new TranslationResult(timeSeriesAgg, getValueOutput(timeSeriesAgg));
+-    }
+-
+     /**
+      * Gets the value output from an aggregate plan.
+      */
+@@ -565,13 +528,7 @@ public final class TranslatePromqlToEsqlPlan extends OptimizerRules.Parameterize
+     }
+ 
+     private static Alias createStepBucketAlias(PromqlCommand promqlCommand) {
+-        Expression timeBucketSize;
+-        if (promqlCommand.isRangeQuery()) {
+-            timeBucketSize = promqlCommand.step();
+-        } else {
+-            // use default lookback for instant queries
+-            timeBucketSize = Literal.timeDuration(promqlCommand.source(), DEFAULT_LOOKBACK);
+-        }
++        Expression timeBucketSize = resolveTimeBucketSize(promqlCommand);
+         Bucket b = new Bucket(
+             timeBucketSize.source(),
+             promqlCommand.timestamp(),
+@@ -583,6 +540,34 @@ public final class TranslatePromqlToEsqlPlan extends OptimizerRules.Parameterize
+         return new Alias(b.source(), STEP_COLUMN_NAME, b, promqlCommand.stepId());
+     }
+ 
++    private static Expression resolveTimeBucketSize(PromqlCommand promqlCommand) {
++        if (promqlCommand.isRangeQuery()) {
++            if (promqlCommand.step().value() != null) {
++                return promqlCommand.step();
++            }
++            return resolveAutoStepFromBuckets(promqlCommand);
++        }
++        // use default lookback for instant queries
++        return Literal.timeDuration(promqlCommand.source(), DEFAULT_LOOKBACK);
++    }
++
++    private static Literal resolveAutoStepFromBuckets(PromqlCommand promqlCommand) {
++        Bucket autoBucket = new Bucket(
++            promqlCommand.buckets().source(),
++            promqlCommand.timestamp(),
++            promqlCommand.buckets(),
++            promqlCommand.start(),
++            promqlCommand.end(),
++            ConfigurationAware.CONFIGURATION_MARKER
++        );
++        long rangeStart = ((Number) promqlCommand.start().value()).longValue();
++        long rangeEnd = ((Number) promqlCommand.end().value()).longValue();
++        var rounding = autoBucket.getDateRounding(FoldContext.small(), rangeStart, rangeEnd);
++        long roundedStart = rounding.round(rangeStart);
++        long nextRoundedValue = rounding.nextRoundingValue(roundedStart);
++        return Literal.timeDuration(promqlCommand.source(), Duration.ofMillis(Math.max(1L, nextRoundedValue - roundedStart)));
++    }
++
+     /**
+      * Translates PromQL label matchers into ESQL filter expressions.
+      * <p>
+diff --git a/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/parser/LogicalPlanBuilder.java b/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/parser/LogicalPlanBuilder.java
+index 01fcd637e8a..69a8fea28c8 100644
+--- a/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/parser/LogicalPlanBuilder.java
++++ b/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/parser/LogicalPlanBuilder.java
+@@ -122,8 +122,9 @@ import static org.elasticsearch.xpack.esql.plan.logical.Enrich.Mode;
+  */
+ public class LogicalPlanBuilder extends ExpressionBuilder {
+ 
+-    private static final String TIME = "time", START = "start", END = "end", STEP = "step", INDEX = "index";
+-    private static final Set<String> PROMQL_ALLOWED_PARAMS = Set.of(TIME, START, END, STEP, INDEX);
++    private static final String TIME = "time", START = "start", END = "end", STEP = "step", BUCKETS = "buckets", INDEX = "index";
++    private static final int DEFAULT_PROMQL_BUCKETS = 100;
++    private static final Set<String> PROMQL_ALLOWED_PARAMS = Set.of(TIME, START, END, STEP, BUCKETS, INDEX);
+ 
+     /**
+      * Maximum number of commands allowed per query
+@@ -1296,6 +1297,7 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
+             params.startLiteral(),
+             params.endLiteral(),
+             params.stepLiteral(),
++            params.bucketsLiteral(),
+             valueColumnName,
+             new UnresolvedTimestamp(source)
+         );
+@@ -1318,6 +1320,7 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
+         Instant start = null;
+         Instant end = null;
+         Duration step = null;
++        Integer buckets = null;
+         IndexPattern indexPattern = new IndexPattern(source, "*");
+ 
+         Set<String> paramsSeen = new HashSet<>();
+@@ -1332,13 +1335,8 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
+                 case TIME -> time = PromqlParserUtils.parseDate(valueSource, parseParamValueString(paramCtx.value));
+                 case START -> start = PromqlParserUtils.parseDate(valueSource, parseParamValueString(paramCtx.value));
+                 case END -> end = PromqlParserUtils.parseDate(valueSource, parseParamValueString(paramCtx.value));
+-                case STEP -> {
+-                    try {
+-                        step = Duration.ofSeconds(Integer.parseInt(parseParamValueString(paramCtx.value)));
+-                    } catch (NumberFormatException ignore) {
+-                        step = PromqlParserUtils.parseDuration(valueSource, parseParamValueString(paramCtx.value));
+-                    }
+-                }
++                case STEP -> step = parsePositivePromqlDuration(valueSource, parseParamValueString(paramCtx.value), STEP);
++                case BUCKETS -> buckets = parsePositiveInteger(valueSource, parseParamValueString(paramCtx.value), BUCKETS);
+                 case INDEX -> indexPattern = parseIndexPattern(paramCtx.value);
+                 default -> {
+                     String message = "Unknown parameter [{}]";
+@@ -1353,19 +1351,22 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
+ 
+         // Validation logic for time parameters
+         if (time != null) {
+-            if (start != null || end != null || step != null) {
++            // instant query
++            if (step != null || buckets != null || start != null || end != null) {
+                 throw new ParsingException(
+                     source,
+-                    "Specify either [{}] for instant query or [{}], [{}] or [{}] for a range query",
++                    "Specify either [{}] for instant query or any of [{}], [{}], [{}], [{}] for a range query",
+                     TIME,
+                     STEP,
++                    BUCKETS,
+                     START,
+                     END
+                 );
+             }
+             start = time;
+             end = time;
+-        } else if (step != null || start != null || end != null) {
++        } else {
++            // range query
+             if (start != null || end != null) {
+                 if (start == null || end == null) {
+                     throw new ParsingException(
+@@ -1384,21 +1385,31 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
+                     );
+                 }
+             }
+-            if (step == null) {
+-                throw new ParsingException(source, "Parameter [{}] must be specified for a range query", STEP);
+-            } else if (step.isPositive() == false) {
+-                throw new ParsingException(
+-                    source,
+-                    "invalid parameter \"step\": zero or negative query resolution step widths are not accepted. "
+-                        + "Try a positive integer",
+-                    step
+-                );
++            if (step != null && buckets != null) {
++                throw new ParsingException(source, "Parameters [{}] and [{}] are mutually exclusive for a range query", STEP, BUCKETS);
++            }
++            if (step == null && buckets == null) {
++                buckets = DEFAULT_PROMQL_BUCKETS;
+             }
+-        } else {
+-            start = Instant.now();
+-            end = start;
+         }
+-        return new PromqlParams(source, start, end, step, indexPattern);
++        return new PromqlParams(source, start, end, step, buckets, indexPattern);
++    }
++
++    private Duration parsePositivePromqlDuration(Source source, String value, String parameterName) {
++        Duration parsedValue;
++        try {
++            parsedValue = Duration.ofSeconds(Integer.parseInt(value));
++        } catch (NumberFormatException ignore) {
++            try {
++                parsedValue = PromqlParserUtils.parseDuration(source, value);
++            } catch (ParsingException e) {
++                throw new ParsingException(source, "Invalid value [{}] for parameter [{}]", value, parameterName);
++            }
++        }
++        if (parsedValue.isPositive() == false) {
++            throw new ParsingException(source, "Invalid value [{}] for parameter [{}], expected a positive duration", value, parameterName);
++        }
++        return parsedValue;
+     }
+ 
+     private String parseParamName(EsqlBaseParser.PromqlParamNameContext ctx) {
+@@ -1439,6 +1450,19 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
+         }
+     }
+ 
++    private Integer parsePositiveInteger(Source source, String value, String parameterName) {
++        int parsedValue;
++        try {
++            parsedValue = Integer.parseInt(value);
++        } catch (NumberFormatException e) {
++            throw new ParsingException(source, "Invalid value [{}] for parameter [{}], expected a positive integer", value, parameterName);
++        }
++        if (parsedValue <= 0) {
++            throw new ParsingException(source, "Invalid value [{}] for parameter [{}], expected a positive integer", value, parameterName);
++        }
++        return parsedValue;
++    }
++
+     public PlanFactory visitMmrCommand(EsqlBaseParser.MmrCommandContext ctx) {
+         Source source = source(ctx);
+ 
+@@ -1485,7 +1509,7 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
+      *
+      * @see <a href="https://prometheus.io/docs/prometheus/latest/querying/api/#expression-queries">PromQL API documentation</a>
+      */
+-    public record PromqlParams(Source source, Instant start, Instant end, Duration step, IndexPattern indexPattern) {
++    public record PromqlParams(Source source, Instant start, Instant end, Duration step, Integer buckets, IndexPattern indexPattern) {
+ 
+         public Literal startLiteral() {
+             if (start == null) {
+@@ -1507,5 +1531,12 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
+             }
+             return Literal.timeDuration(source, step);
+         }
++
++        public Literal bucketsLiteral() {
++            if (buckets == null) {
++                return Literal.NULL;
++            }
++            return Literal.integer(source, buckets);
++        }
+     }
+ }
+diff --git a/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/plan/logical/promql/PromqlCommand.java b/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/plan/logical/promql/PromqlCommand.java
+index 1d6e8e713c2..ed124a4bfbc 100644
+--- a/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/plan/logical/promql/PromqlCommand.java
++++ b/x-pack/plugin/esql/src/main/java/org/elasticsearch/xpack/esql/plan/logical/promql/PromqlCommand.java
+@@ -55,6 +55,7 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+     private final Literal start;
+     private final Literal end;
+     private final Literal step;
++    private final Literal buckets;
+     // TODO: this should be made available through the planner
+     private final Expression timestamp;
+     private final String valueColumnName;
+@@ -70,10 +71,11 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+         Literal start,
+         Literal end,
+         Literal step,
++        Literal buckets,
+         String valueColumnName,
+         Expression timestamp
+     ) {
+-        this(source, child, promqlPlan, start, end, step, valueColumnName, new NameId(), new NameId(), timestamp);
++        this(source, child, promqlPlan, start, end, step, buckets, valueColumnName, new NameId(), new NameId(), timestamp);
+     }
+ 
+     // Range query constructor
+@@ -84,6 +86,7 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+         Literal start,
+         Literal end,
+         Literal step,
++        Literal buckets,
+         String valueColumnName,
+         NameId valueId,
+         NameId stepId,
+@@ -94,6 +97,7 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+         this.start = start;
+         this.end = end;
+         this.step = step;
++        this.buckets = buckets;
+         this.valueColumnName = valueColumnName;
+         this.valueId = valueId;
+         this.stepId = stepId;
+@@ -110,6 +114,7 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+             start(),
+             end(),
+             step(),
++            buckets(),
+             valueColumnName(),
+             valueId(),
+             stepId(),
+@@ -126,6 +131,7 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+             start(),
+             end(),
+             step(),
++            buckets(),
+             valueColumnName(),
+             valueId(),
+             stepId(),
+@@ -141,6 +147,7 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+             start(),
+             end(),
+             step(),
++            buckets(),
+             valueColumnName(),
+             valueId(),
+             stepId(),
+@@ -184,12 +191,16 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+         return step;
+     }
+ 
++    public Literal buckets() {
++        return buckets;
++    }
++
+     public boolean isInstantQuery() {
+-        return step.value() == null;
++        return step.value() == null && buckets.value() == null;
+     }
+ 
+     public boolean isRangeQuery() {
+-        return step.value() != null;
++        return isInstantQuery() == false;
+     }
+ 
+     public String valueColumnName() {
+@@ -223,7 +234,7 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+ 
+     @Override
+     public int hashCode() {
+-        return Objects.hash(child(), promqlPlan, start, end, step, valueColumnName, valueId, stepId, timestamp);
++        return Objects.hash(child(), promqlPlan, start, end, step, buckets, valueColumnName, valueId, stepId, timestamp);
+     }
+ 
+     @Override
+@@ -236,6 +247,7 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+                 && Objects.equals(start, other.start)
+                 && Objects.equals(end, other.end)
+                 && Objects.equals(step, other.step)
++                && Objects.equals(buckets, other.buckets)
+                 && Objects.equals(valueColumnName, other.valueColumnName)
+                 && Objects.equals(valueId, other.valueId)
+                 && Objects.equals(stepId, other.stepId)
+@@ -252,6 +264,7 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+         sb.append(" start=[").append(start);
+         sb.append("] end=[").append(end);
+         sb.append("] step=[").append(step);
++        sb.append("] buckets=[").append(buckets);
+         sb.append("] valueColumnName=[").append(valueColumnName);
+         sb.append("] promql=[<>\n");
+         sb.append(promqlPlan.toString());
+@@ -270,6 +283,22 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, PostAnal
+     @Override
+     public void postAnalysisVerification(Failures failures) {
+         LogicalPlan p = promqlPlan();
++        boolean hasStep = step.value() != null;
++        boolean hasRangeAndBuckets = start.value() != null && end.value() != null && buckets.value() != null;
++        if (hasStep == false && hasRangeAndBuckets == false) {
++            failures.add(
++                fail(
++                    this,
++                    "unable to create a bucket; provide either [{}] or all of [{}], [{}], and [{}] [{}]",
++                    "step",
++                    "start",
++                    "end",
++                    "buckets",
++                    sourceText()
++                )
++            );
++            return;
++        }
+         // TODO(sidosera): Remove once instant query support is added.
+         if (isInstantQuery()) {
+             failures.add(fail(p, "instant queries are not supported at this time [{}]", sourceText()));

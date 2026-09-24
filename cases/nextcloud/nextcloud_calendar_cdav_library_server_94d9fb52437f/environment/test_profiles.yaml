@@ -1,0 +1,45 @@
+profiles:
+  calendar-hidden:
+    repo: calendar
+    workdir: repos/nextcloud/calendar
+    evaluator_node_modules_mode: persistent
+    command: ./environment/run_profile.sh calendar-hidden
+    status: implemented
+    image: ecosyncbench/base/node:24-bookworm + ecosyncbench/deps/nextcloud-php:8.4-gd-apcu-v1
+    test_files:
+    - tests/javascript/unit/defaults/defaultAlarmProvider.test.js
+    - tests/javascript/unit/models/calendar.test.js
+    - tests/javascript/unit/store/settings.test.js
+    - tests/php/unit/Controller/SettingsControllerTest.php
+    - tests/php/unit/Service/CalendarInitialStateServiceTest.php
+    patched_files:
+    - tests/javascript/unit/defaults/defaultAlarmProvider.test.js
+    - tests/javascript/unit/models/calendar.test.js
+    - tests/javascript/unit/store/settings.test.js
+    - tests/php/unit/Controller/SettingsControllerTest.php
+    - tests/php/unit/Service/CalendarInitialStateServiceTest.php
+  cdav_library-hidden:
+    repo: cdav-library
+    workdir: repos/nextcloud/cdav-library
+    evaluator_node_modules_mode: persistent
+    command: ./environment/run_profile.sh cdav_library-hidden
+    status: implemented
+    image: ecosyncbench/base/node:24-bookworm
+    test_files:
+    - test/unit/models/calendarTest.js
+    - test/unit/parserTest.js
+    - test/unit/propset/calendarPropSetTest.js
+    patched_files:
+    - test/unit/models/calendarTest.js
+    - test/unit/parserTest.js
+    - test/unit/propset/calendarPropSetTest.js
+  server-hidden:
+    repo: server
+    workdir: repos/nextcloud/server
+    command: ./environment/run_profile.sh server-hidden
+    status: implemented
+    image: ecosyncbench/deps/nextcloud-php:8.4-gd-apcu-v1
+    test_files:
+    - apps/dav/tests/unit/CalDAV/CalDavBackendTest.php
+    patched_files:
+    - apps/dav/tests/unit/CalDAV/CalDavBackendTest.php

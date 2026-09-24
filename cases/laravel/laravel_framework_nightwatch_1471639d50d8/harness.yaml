@@ -1,0 +1,35 @@
+task_id: laravel_framework_nightwatch_1471639d50d8
+hidden_test_patches:
+- repo: framework
+  patch: hidden/patches/framework-hidden-tests.patch
+  test_profile: framework-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/Integration/Database/DatabaseConnectionsTest.php
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from laravel/framework PR(s) 58156
+- repo: nightwatch
+  patch: hidden/patches/nightwatch-hidden-tests.patch
+  test_profile: nightwatch-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/Feature/Sensors/QuerySensorTest.php
+  - tests/Unit/ArchitectureTest.php
+  hidden_file: *id002
+  semantic_changes:
+  - Version capability is detected from the public Laravel application version instead
+    of a Nightwatch Compatibility implementation property; the Nightwatch test fixture
+    runs against the first supported framework version, 12.45.0.
+  source: upstream test changes from laravel/nightwatch PR(s) 318
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - framework-hidden
+    - nightwatch-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

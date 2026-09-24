@@ -1,0 +1,625 @@
+diff --git a/tests/javascript/unit/models/calendar.test.js b/tests/javascript/unit/models/calendar.test.js
+index 16474746..976de663 100644
+--- a/tests/javascript/unit/models/calendar.test.js
++++ b/tests/javascript/unit/models/calendar.test.js
+@@ -16,7 +16,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 	})
+ 
+ 	it('should provide an empty skeleton for calendar', () => {
+-		expect(getDefaultCalendarObject()).toEqual({
++		expect(getDefaultCalendarObject()).toMatchObject({
+ 			id: '',
+ 			displayName: '',
+ 			color: '#0082C9',
+@@ -42,7 +42,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			transparency: 'opaque',
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 	})
+ 
+@@ -51,7 +52,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			id: '123',
+ 			displayName: 'Foo',
+ 			loading: true
+-		})).toEqual({
++		})).toMatchObject({
+ 			id: '123',
+ 			displayName: 'Foo',
+ 			color: '#0082C9',
+@@ -77,7 +78,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			transparency: 'opaque',
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 	})
+ 
+@@ -101,7 +103,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/admin/'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -127,7 +129,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -153,7 +156,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/admin/'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -179,7 +182,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -203,7 +207,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/admin/'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -229,7 +233,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -253,7 +258,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/user123/'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -279,7 +284,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -303,7 +309,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/admin/'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -329,7 +335,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -353,7 +360,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/admin/'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -379,7 +386,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -403,7 +411,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/admin/'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -429,7 +437,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -453,7 +462,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/admin/'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#499AA2',
+@@ -479,7 +488,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -554,7 +564,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/admin/',
+ 			principalScheme: 'principal:principals/users/admin'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -585,7 +595,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(4)
+@@ -681,7 +692,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			currentUserPrivilegeSet: [],
+ 		}
+ 
+-		expect(mapDavCollectionToCalendar(cdavObject)).toEqual({
++		expect(mapDavCollectionToCalendar(cdavObject)).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -707,7 +718,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -732,7 +744,7 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 
+ 		expect(mapDavCollectionToCalendar(cdavObject, {
+ 			url: '/remote.php/dav/principals/users/admin/'
+-		})).toEqual({
++		})).toMatchObject({
+ 			canBePublished: true,
+ 			canBeShared: true,
+ 			color: '#FF00FF',
+@@ -758,7 +770,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 	})
+ 
+diff --git a/tests/javascript/unit/store/settings.test.js b/tests/javascript/unit/store/settings.test.js
+index adbd940c..5d12885f 100644
+--- a/tests/javascript/unit/store/settings.test.js
++++ b/tests/javascript/unit/store/settings.test.js
+@@ -49,6 +49,8 @@ describe('store/settings test suite', () => {
+ 			skipPopover: null,
+ 			slotDuration: null,
+ 			defaultReminder: null,
++			defaultReminderPartDay: null,
++			defaultReminderFullDay: null,
+ 			tasksEnabled: false,
+ 			tasksSidebar: true,
+ 			timezone: 'automatic',
+@@ -76,6 +78,8 @@ describe('store/settings test suite', () => {
+ 			skipPopover: null,
+ 			slotDuration: null,
+ 			defaultReminder: null,
++			defaultReminderPartDay: null,
++			defaultReminderFullDay: null,
+ 			tasksEnabled: false,
+ 			tasksSidebar: true,
+ 			timezone: 'automatic',
+@@ -102,6 +106,8 @@ describe('store/settings test suite', () => {
+ 			skipPopover: true,
+ 			slotDuration: '00:30:00',
+ 			defaultReminder: '-600',
++			defaultReminderPartDay: undefined,
++			defaultReminderFullDay: undefined,
+ 			talkEnabled: false,
+ 			tasksEnabled: true,
+ 			tasksSidebar: false,
+@@ -119,29 +125,6 @@ describe('store/settings test suite', () => {
+ 		settingsStore.loadSettingsFromServer(settings)
+ 
+ 		expect(logInfo).toHaveBeenCalledTimes(1)
+-		expect(logInfo).toHaveBeenNthCalledWith(1, `
+-Initial settings:
+-	- AppVersion: 2.1.0
+-	- EventLimit: false
+-	- FirstRun: true
+-	- ShowWeekNumbers: true
+-	- ShowTasks: false
+-	- ShowWeekends: true
+-	- SkipPopover: true
+-	- SlotDuration: 00:30:00
+-	- DefaultReminder: -600
+-	- TalkEnabled: false
+-	- TasksEnabled: true
+-	- TasksSidebar: false
+-	- Timezone: Europe/Berlin
+-	- HideEventExport: false
+-	- ForceEventAlarmType: false
+-	- disableAppointments: false
+-	- CanSubscribeLink: true
+-	- attachmentsFolder: /Attachments
+-	- ShowResources: true
+-	- PublicCalendars: null
+-`)
+ 		expect(settingsStore.$state).toEqual({
+ 			appVersion: '2.1.0',
+ 			eventLimit: false,
+@@ -152,6 +135,8 @@ Initial settings:
+ 			skipPopover: true,
+ 			slotDuration: '00:30:00',
+ 			defaultReminder: '-600',
++			defaultReminderPartDay: '-600',
++			defaultReminderFullDay: '-600',
+ 			talkEnabled: false,
+ 			tasksEnabled: true,
+ 			tasksSidebar: false,
+diff --git a/tests/php/unit/Controller/SettingsControllerTest.php b/tests/php/unit/Controller/SettingsControllerTest.php
+index 5f05c237..d8f8275d 100755
+--- a/tests/php/unit/Controller/SettingsControllerTest.php
++++ b/tests/php/unit/Controller/SettingsControllerTest.php
+@@ -406,6 +406,92 @@ class SettingsControllerTest extends TestCase {
+ 		$this->assertEquals(500, $actual->getStatus());
+ 	}
+ 
++	/**
++	 * @param string $value
++	 * @param int $expectedStatusCode
++	 *
++	 * @dataProvider setDefaultReminderPartDayWithAllowedValueDataProvider
++	 */
++	public function testSetDefaultReminderPartDayWithAllowedValue(string $value,
++		int $expectedStatusCode):void {
++		if ($expectedStatusCode === 200) {
++			$this->config->expects($this->once())
++				->method('setUserValue')
++				->with('user123', $this->appName, 'defaultReminderPartDay', $value);
++		}
++
++		$actual = $this->controller->setConfig('defaultReminderPartDay', $value);
++
++		$this->assertInstanceOf('OCP\AppFramework\Http\JSONResponse', $actual);
++		$this->assertEquals([], $actual->getData());
++		$this->assertEquals($expectedStatusCode, $actual->getStatus());
++	}
++
++	public function setDefaultReminderPartDayWithAllowedValueDataProvider():array {
++		return array_slice($this->setDefaultReminderWithAllowedValueDataProvider(), 0, 12);
++	}
++
++	public function testSetDefaultReminderPartDayWithException():void {
++		$this->config->expects($this->once())
++			->method('setUserValue')
++			->with('user123', $this->appName, 'defaultReminderPartDay', 'none')
++			->will($this->throwException(new \Exception));
++
++		$actual = $this->controller->setConfig('defaultReminderPartDay', 'none');
++
++		$this->assertInstanceOf('OCP\AppFramework\Http\JSONResponse', $actual);
++		$this->assertEquals([], $actual->getData());
++		$this->assertEquals(500, $actual->getStatus());
++	}
++
++	/**
++	 * @param string $value
++	 * @param int $expectedStatusCode
++	 *
++	 * @dataProvider setDefaultReminderFullDayWithAllowedValueDataProvider
++	 */
++	public function testSetDefaultReminderFullDayWithAllowedValue(string $value,
++		int $expectedStatusCode):void {
++		if ($expectedStatusCode === 200) {
++			$this->config->expects($this->once())
++				->method('setUserValue')
++				->with('user123', $this->appName, 'defaultReminderFullDay', $value);
++		}
++
++		$actual = $this->controller->setConfig('defaultReminderFullDay', $value);
++
++		$this->assertInstanceOf('OCP\AppFramework\Http\JSONResponse', $actual);
++		$this->assertEquals([], $actual->getData());
++		$this->assertEquals($expectedStatusCode, $actual->getStatus());
++	}
++
++	public function setDefaultReminderFullDayWithAllowedValueDataProvider():array {
++		return [
++			['none', 200],
++			['-0', 200],
++			['0', 200],
++			['32400', 200],
++			['-54000', 200],
++			['-140400', 200],
++			['not-none', 422],
++			['NaN', 422],
++			['0.1', 422],
++		];
++	}
++
++	public function testSetDefaultReminderFullDayWithException():void {
++		$this->config->expects($this->once())
++			->method('setUserValue')
++			->with('user123', $this->appName, 'defaultReminderFullDay', 'none')
++			->will($this->throwException(new \Exception));
++
++		$actual = $this->controller->setConfig('defaultReminderFullDay', 'none');
++
++		$this->assertInstanceOf('OCP\AppFramework\Http\JSONResponse', $actual);
++		$this->assertEquals([], $actual->getData());
++		$this->assertEquals(500, $actual->getStatus());
++	}
++
+ 	public function testSetNotExistingConfig():void {
+ 		$actual = $this->controller->setConfig('foo', 'bar');
+ 
+diff --git a/tests/php/unit/Service/CalendarInitialStateServiceTest.php b/tests/php/unit/Service/CalendarInitialStateServiceTest.php
+index 99dcc4fd..cb1d66bd 100755
+--- a/tests/php/unit/Service/CalendarInitialStateServiceTest.php
++++ b/tests/php/unit/Service/CalendarInitialStateServiceTest.php
+@@ -21,6 +21,7 @@ use OCP\Calendar\Room\IManager as IRoomManager;
+ use OCP\IAppConfig;
+ use OCP\IConfig;
+ use OCP\IGroupManager;
++use OCP\IUser;
+ use OCP\IUserManager;
+ use PHPUnit\Framework\MockObject\MockObject;
+ 
+@@ -77,6 +78,13 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 		}
+ 		$this->groupManager = $this->createMock(IGroupManager::class);
+ 		$this->userManager = $this->createMock(IUserManager::class);
++
++		$user = $this->createMock(IUser::class);
++		$this->userManager->method('get')
++			->willReturn($user);
++		$this->groupManager->method('getUserGroupIds')
++			->with($user)
++			->willReturn([]);
+ 	}
+ 
+ 	public function testRun(): void {
+@@ -95,8 +103,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 			$this->groupManager,
+ 			$this->userManager,
+ 		);
+-		$this->config->expects(self::exactly(17))
+-			->method('getAppValue')
++		$this->config->method('getAppValue')
+ 			->willReturnMap([
+ 				['calendar', 'eventLimit', 'yes', 'defaultEventLimit'],
+ 				['calendar', 'currentView', 'dayGridMonth', 'defaultCurrentView'],
+@@ -106,6 +113,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['calendar', 'timezone', 'automatic', 'defaultTimezone'],
+ 				['calendar', 'slotDuration', '00:30:00', 'defaultSlotDuration'],
+ 				['calendar', 'defaultReminder', 'none', 'defaultDefaultReminder'],
++				['calendar', 'defaultReminderPartDay', 'defaultDefaultReminder', 'defaultDefaultReminderPartDay'],
++				['calendar', 'defaultReminderFullDay', 'defaultDefaultReminder', 'defaultDefaultReminderFullDay'],
+ 				['calendar', 'showTasks', 'yes', 'defaultShowTasks'],
+ 				['calendar', 'tasksSidebar', 'yes', 'defaultTasksSidebar'],
+ 				['calendar', 'installed_version', '', '1.0.0'],
+@@ -115,9 +124,10 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['dav', 'allow_calendar_link_subscriptions', 'yes', 'no'],
+ 				['calendar', 'showResources', 'yes', 'yes'],
+ 				['calendar', 'publicCalendars', ''],
++				['spreed', 'start_conversations', '[]', '[]'],
++				['spreed', 'allowed_groups', '[]', '[]'],
+ 			]);
+-		$this->config->expects(self::exactly(12))
+-			->method('getUserValue')
++		$this->config->method('getUserValue')
+ 			->willReturnMap([
+ 				['user123', 'calendar', 'eventLimit', 'defaultEventLimit', 'yes'],
+ 				['user123', 'calendar', 'firstRun', 'yes', 'yes'],
+@@ -129,6 +139,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['user123', 'dav', 'attachmentsFolder', '/Calendar', '/Calendar'],
+ 				['user123', 'calendar', 'slotDuration', 'defaultSlotDuration', '00:15:00'],
+ 				['user123', 'calendar', 'defaultReminder', 'defaultDefaultReminder', '00:10:00'],
++				['user123', 'calendar', 'defaultReminderPartDay', '00:10:00', '-900'],
++				['user123', 'calendar', 'defaultReminderFullDay', '00:10:00', '32400'],
+ 				['user123', 'calendar', 'showTasks', 'defaultShowTasks', '00:15:00'],
+ 				['user123', 'calendar', 'tasksSidebar', 'defaultTasksSidebar', 'yes'],
+ 			]);
+@@ -159,7 +171,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 			->willReturn([$this->createMock(IResourceBackend::class)]);
+ 		$this->roomManager->expects(self::never())
+ 			->method('getBackends');
+-		$this->initialStateService->expects(self::exactly(27))
++		$this->initialStateService->expects(self::exactly(29))
+ 			->method('provideInitialState')
+ 			->willReturnMap([
+ 				['app_version', '1.0.0'],
+@@ -175,6 +187,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['attachments_folder', '/Calendar'],
+ 				['slot_duration', '00:15:00'],
+ 				['default_reminder', '00:10:00'],
++				['default_reminder_part_day', '-900'],
++				['default_reminder_full_day', '32400'],
+ 				['show_tasks', false],
+ 				['tasks_sidebar', true],
+ 				['tasks_enabled', true],
+@@ -210,8 +224,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 			$this->groupManager,
+ 			$this->userManager,
+ 		);
+-		$this->config->expects(self::exactly(17))
+-			->method('getAppValue')
++		$this->config->method('getAppValue')
+ 			->willReturnMap([
+ 				['calendar', 'eventLimit', 'yes', 'defaultEventLimit'],
+ 				['calendar', 'currentView', 'dayGridMonth', 'defaultCurrentView'],
+@@ -221,6 +234,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['calendar', 'timezone', 'automatic', 'defaultTimezone'],
+ 				['calendar', 'slotDuration', '00:30:00', 'defaultSlotDuration'],
+ 				['calendar', 'defaultReminder', 'none', 'defaultDefaultReminder'],
++				['calendar', 'defaultReminderPartDay', 'defaultDefaultReminder', 'defaultDefaultReminderPartDay'],
++				['calendar', 'defaultReminderFullDay', 'defaultDefaultReminder', 'defaultDefaultReminderFullDay'],
+ 				['calendar', 'showTasks', 'yes', 'defaultShowTasks'],
+ 				['calendar', 'tasksSidebar', 'yes', 'defaulttasksSidebar'],
+ 				['calendar', 'installed_version', '', '1.0.0'],
+@@ -230,15 +245,13 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['dav', 'allow_calendar_link_subscriptions', 'yes', 'no'],
+ 				['calendar', 'showResources', 'yes', 'yes'],
+ 				['calendar', 'publicCalendars', ''],
+-				['calendar', 'publicCalendars', ''],
+ 			]);
+ 		$this->appConfig->expects(self::once())
+ 			->method('getValueBool')
+ 			->willReturnMap([
+ 				['dav', 'enableCalendarFederation', true, false, false],
+ 			]);
+-		$this->config->expects(self::exactly(12))
+-			->method('getUserValue')
++		$this->config->method('getUserValue')
+ 			->willReturnMap([
+ 				[null, 'calendar', 'eventLimit', 'defaultEventLimit', 'yes'],
+ 				[null, 'calendar', 'firstRun', 'yes', 'yes'],
+@@ -250,6 +263,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				[null, 'dav', 'attachmentsFolder', '/Calendar', '/Calendar'],
+ 				[null, 'calendar', 'slotDuration', 'defaultSlotDuration', '00:15:00'],
+ 				[null, 'calendar', 'defaultReminder', 'defaultDefaultReminder', '00:10:00'],
++				[null, 'calendar', 'defaultReminderPartDay', '00:10:00', '-900'],
++				[null, 'calendar', 'defaultReminderFullDay', '00:10:00', '32400'],
+ 				[null, 'calendar', 'showTasks', 'defaultShowTasks', '00:15:00'],
+ 				[null, 'calendar', 'tasksSidebar', 'defaultTasksSidebar', 'yes'],
+ 			]);
+@@ -271,7 +286,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 		$this->roomManager->expects(self::once())
+ 			->method('getBackends')
+ 			->willReturn([]);
+-		$this->initialStateService->expects(self::exactly(26))
++		$this->initialStateService->expects(self::exactly(28))
+ 			->method('provideInitialState')
+ 			->willReturnMap([
+ 				['app_version', '1.0.0'],
+@@ -287,6 +302,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['attachments_folder', '/Calendar'],
+ 				['slot_duration', '00:15:00'],
+ 				['default_reminder', '00:10:00'],
++				['default_reminder_part_day', '-900'],
++				['default_reminder_full_day', '32400'],
+ 				['show_tasks', false],
+ 				['tasks_sidebar', false],
+ 				['tasks_enabled', true],
+@@ -327,8 +344,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 			$this->groupManager,
+ 			$this->userManager,
+ 		);
+-		$this->config->expects(self::exactly(17))
+-			->method('getAppValue')
++		$this->config->method('getAppValue')
+ 			->willReturnMap([
+ 				['calendar', 'eventLimit', 'yes', 'defaultEventLimit'],
+ 				['calendar', 'currentView', 'dayGridMonth', 'defaultCurrentView'],
+@@ -338,6 +354,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['calendar', 'timezone', 'automatic', 'defaultTimezone'],
+ 				['calendar', 'slotDuration', '00:30:00', 'defaultSlotDuration'],
+ 				['calendar', 'defaultReminder', 'none', 'defaultDefaultReminder'],
++				['calendar', 'defaultReminderPartDay', 'defaultDefaultReminder', 'defaultDefaultReminderPartDay'],
++				['calendar', 'defaultReminderFullDay', 'defaultDefaultReminder', 'defaultDefaultReminderFullDay'],
+ 				['calendar', 'showTasks', 'yes', 'defaultShowTasks'],
+ 				['calendar', 'tasksSidebar', 'yes', 'defaulttasksSidebar'],
+ 				['calendar', 'installed_version', '', '1.0.0'],
+@@ -347,9 +365,10 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['dav', 'allow_calendar_link_subscriptions', 'yes', 'no'],
+ 				['calendar', 'showResources', 'yes', 'yes'],
+ 				['calendar', 'publicCalendars', ''],
++				['spreed', 'start_conversations', '[]', '[]'],
++				['spreed', 'allowed_groups', '[]', '[]'],
+ 			]);
+-		$this->config->expects(self::exactly(12))
+-			->method('getUserValue')
++		$this->config->method('getUserValue')
+ 			->willReturnMap([
+ 				['user123', 'calendar', 'eventLimit', 'defaultEventLimit', 'yes'],
+ 				['user123', 'calendar', 'firstRun', 'yes', 'yes'],
+@@ -361,6 +380,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['user123', 'dav', 'attachmentsFolder', '/Calendar', '/Calendar'],
+ 				['user123', 'calendar', 'slotDuration', 'defaultSlotDuration', '00:15:00'],
+ 				['user123', 'calendar', 'defaultReminder', 'defaultDefaultReminder', '00:10:00'],
++				['user123', 'calendar', 'defaultReminderPartDay', '00:10:00', '-900'],
++				['user123', 'calendar', 'defaultReminderFullDay', '00:10:00', '32400'],
+ 				['user123', 'calendar', 'showTasks', 'defaultShowTasks', '00:15:00'],
+ 				['user123', 'calendar', 'tasksSidebar', 'defaultTasksSidebar', 'yes'],
+ 			]);
+@@ -392,7 +413,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 		$this->roomManager->expects(self::once())
+ 			->method('getBackends')
+ 			->willReturn([$this->createMock(IRoomBackend::class)]);
+-		$this->initialStateService->expects(self::exactly(27))
++		$this->initialStateService->expects(self::exactly(29))
+ 			->method('provideInitialState')
+ 			->willReturnMap([
+ 				['app_version', '1.0.0'],
+@@ -408,6 +429,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['attachments_folder', '/Calendar'],
+ 				['slot_duration', '00:15:00'],
+ 				['default_reminder', '00:10:00'],
++				['default_reminder_part_day', '-900'],
++				['default_reminder_full_day', '32400'],
+ 				['show_tasks', false],
+ 				['tasks_sidebar', false],
+ 				['tasks_enabled', false],

@@ -1,0 +1,53 @@
+profiles:
+  sentry_javascript-hidden:
+    repo: sentry-javascript
+    workdir: repos/getsentry/sentry-javascript
+    command: yarn vitest run packages/react-router/test/client/sentryOnError.test.ts
+      --coverage=false --reporter=json
+    public_smoke_command: if [ ! -x ./node_modules/.bin/vitest ]; then yarn install
+      --frozen-lockfile --network-timeout 600000; fi; yarn build:dev:filter @sentry/core
+      @sentry/browser @sentry/react @sentry/node; yarn --cwd packages/react-router vitest
+      run test/client/sdk.test.ts --config vite.config.ts --coverage.enabled=false --reporter=verbose
+    status: implemented_manual_profile
+    dependency_image: ecosyncbench/base/node-getsentry:22
+    persist_node_modules: true
+    persist_node_modules_paths:
+    - .
+    test_files:
+    - dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/tests/errors/errors.client.test.ts
+    - dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/tests/errors/errors.client.test.ts
+    - dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/tests/errors/errors.client.test.ts
+    - dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/tests/errors/errors.client.test.ts
+    - dev-packages/e2e-tests/test-applications/react-router-7-framework/tests/errors/errors.client.test.ts
+    - packages/react-router/test/client/sentryOnError.test.ts
+  sentry_wizard-hidden:
+    repo: sentry-wizard
+    workdir: repos/getsentry/sentry-wizard
+    command: yarn vitest run test/react-router/codemods/client-entry.test.ts test/react-router/codemods/root.test.ts
+      test/react-router/react-router-wizard-on-error.test.ts test/react-router/sdk-setup.test.ts
+      test/react-router/templates.test.ts --coverage=false --reporter=json
+    status: implemented_manual_profile
+    dependency_image: ecosyncbench/base/node-getsentry:22
+    persist_node_modules: true
+    persist_node_modules_paths:
+    - .
+    test_files:
+    - e2e-tests/tests/react-router.test.ts
+    - test/react-router/codemods/client-entry.test.ts
+    - test/react-router/codemods/fixtures/root/fully-configured.tsx
+    - test/react-router/codemods/fixtures/root/function-declaration-separate-export.tsx
+    - test/react-router/codemods/fixtures/root/function-expression-error-boundary.tsx
+    - test/react-router/codemods/fixtures/root/no-error-boundary.tsx
+    - test/react-router/codemods/fixtures/root/no-isrouteerrorresponse.tsx
+    - test/react-router/codemods/fixtures/root/root-no-error-boundary.tsx
+    - test/react-router/codemods/fixtures/root/root-with-error-boundary.tsx
+    - test/react-router/codemods/fixtures/root/with-direct-capture-exception.tsx
+    - test/react-router/codemods/fixtures/root/with-existing-sentry.tsx
+    - test/react-router/codemods/fixtures/root/with-function-error-boundary.tsx
+    - test/react-router/codemods/fixtures/root/with-isrouteerrorresponse.tsx
+    - test/react-router/codemods/fixtures/root/with-sentry-error-boundary.tsx
+    - test/react-router/codemods/fixtures/root/with-variable-error-boundary.tsx
+    - test/react-router/codemods/root.test.ts
+    - test/react-router/react-router-wizard-on-error.test.ts
+    - test/react-router/sdk-setup.test.ts
+    - test/react-router/templates.test.ts

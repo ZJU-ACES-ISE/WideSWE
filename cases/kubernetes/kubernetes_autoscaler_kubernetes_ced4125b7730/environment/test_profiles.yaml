@@ -1,0 +1,33 @@
+profiles:
+  autoscaler-hidden:
+    repo: autoscaler
+    workdir: repos/kubernetes/autoscaler/vertical-pod-autoscaler/test
+    command: go test -json -count=1 ./integration/recommender
+    status: implemented
+    dependency_image: ecosyncbench/base/go:1.26-bookworm
+    test_files:
+    - vertical-pod-autoscaler/test/integration/recommender/recommender_test.go
+    patched_files:
+    - vertical-pod-autoscaler/test/integration/recommender/recommender_test.go
+  kubernetes-hidden:
+    repo: kubernetes
+    workdir: repos/kubernetes/kubernetes
+    command: hack/install-etcd.sh && go test -json -count=1 ./pkg/controller/podautoscaler
+      ./pkg/registry/autoscaling/horizontalpodautoscaler ./test/integration/apiserver/apidefinitions
+      ./pkg/apis/autoscaling/validation
+    status: implemented
+    dependency_image: ecosyncbench/base/go:1.26-bookworm
+    test_files:
+    - pkg/controller/podautoscaler/horizontal_test.go
+    - pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go
+    - test/compatibility_lifecycle/reference/feature_list.md
+    - test/compatibility_lifecycle/reference/versioned_feature_list.yaml
+    - test/integration/apiserver/apidefinitions/generation_test.go
+    - pkg/apis/autoscaling/validation/validation_test.go
+    patched_files:
+    - pkg/controller/podautoscaler/horizontal_test.go
+    - pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go
+    - test/compatibility_lifecycle/reference/feature_list.md
+    - test/compatibility_lifecycle/reference/versioned_feature_list.yaml
+    - test/integration/apiserver/apidefinitions/generation_test.go
+    - pkg/apis/autoscaling/validation/validation_test.go

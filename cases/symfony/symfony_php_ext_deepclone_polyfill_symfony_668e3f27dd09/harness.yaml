@@ -1,0 +1,42 @@
+task_id: symfony_php_ext_deepclone_polyfill_symfony_668e3f27dd09
+hidden_test_patches:
+- repo: php-ext-deepclone
+  patch: hidden/patches/php-ext-deepclone-hidden-tests.patch
+  test_profile: php_ext_deepclone-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/deepclone_hydrate.phpt
+  hidden_file: *id001
+  semantic_changes: validates documented exception types and malformed inputs without fixing implementation-specific error wording
+  source: upstream test changes from symfony/php-ext-deepclone PR(s) 6
+- repo: polyfill
+  patch: hidden/patches/polyfill-hidden-tests.patch
+  test_profile: polyfill-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/DeepClone/DeepCloneTest.php
+  - tests/DeepClone/fixtures.php
+  hidden_file: *id002
+  semantic_changes: validates documented exception types and malformed inputs without fixing implementation-specific error wording
+  source: upstream test changes from symfony/polyfill PR(s) 568
+- repo: symfony
+  patch: hidden/patches/symfony-hidden-tests.patch
+  test_profile: symfony-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - src/Symfony/Component/VarExporter/Tests/InstantiatorTest.php
+  hidden_file: *id003
+  semantic_changes: verifies the prompt-required direct delegation from the two public VarExporter entry points without fixing generated proxy text or internal cleanup layout
+  source: upstream test changes from symfony/symfony PR(s) 63935
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - php_ext_deepclone-hidden
+    - polyfill-hidden
+    - symfony-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

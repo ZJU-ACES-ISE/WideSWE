@@ -1,0 +1,37 @@
+task_id: getsentry_sentry_taskbroker_aa1864a8febd
+hidden_test_patches:
+- repo: sentry
+  patch: hidden/patches/sentry-hidden-tests.patch
+  test_profile: sentry-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/sentry/taskworker/test_adapters.py
+  hidden_file: *id001
+  semantic_changes: Tests exercise the hooks registered on the Sentry runtime app
+    and assert observable header/context behavior instead of importing the Gold-only
+    class location or requiring contextlib.nullcontext for unchanged-context cases.
+  source: upstream test changes from getsentry/sentry PR(s) 112217
+- repo: taskbroker
+  patch: hidden/patches/taskbroker-hidden-tests.patch
+  test_profile: taskbroker-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - clients/python/tests/test_task.py
+  - clients/python/tests/worker/test_worker.py
+  hidden_file: *id002
+  semantic_changes: The worker execution fixture accepts either context-manager or
+    callable-wrapper hook composition, since the prompt does not prescribe the
+    on_execute return shape, and does not require the registered hook collection
+    to be mutable; header propagation and task execution remain required.
+  source: upstream test changes from getsentry/taskbroker PR(s) 587
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - sentry-hidden
+    - taskbroker-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

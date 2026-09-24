@@ -1,0 +1,1463 @@
+diff --git a/code/addons/a11y/build-config.ts b/code/addons/a11y/build-config.ts
+index 318e527e34..6313a6e261 100644
+--- a/code/addons/a11y/build-config.ts
++++ b/code/addons/a11y/build-config.ts
+@@ -23,6 +23,11 @@ const config: BuildEntries = {
+         entryPoint: './src/postinstall.ts',
+         dts: false,
+       },
++      {
++        exportEntries: ['./preset'],
++        entryPoint: './src/preset.ts',
++        dts: false,
++      },
+     ],
+   },
+ };
+diff --git a/code/addons/a11y/package.json b/code/addons/a11y/package.json
+index 4337551f2b..ec11c64e13 100644
+--- a/code/addons/a11y/package.json
++++ b/code/addons/a11y/package.json
+@@ -43,6 +43,7 @@
+     "./manager": "./dist/manager.js",
+     "./package.json": "./package.json",
+     "./postinstall": "./dist/postinstall.js",
++    "./preset": "./dist/preset.js",
+     "./preview": {
+       "types": "./dist/preview.d.ts",
+       "code": "./src/preview.tsx",
+diff --git a/code/addons/a11y/preset.js b/code/addons/a11y/preset.js
+new file mode 100644
+index 0000000000..4bd63d3240
+--- /dev/null
++++ b/code/addons/a11y/preset.js
+@@ -0,0 +1 @@
++export * from './dist/preset.js';
+diff --git a/code/addons/a11y/src/components/A11yContext.tsx b/code/addons/a11y/src/components/A11yContext.tsx
+index 48d43fa922..90c6f2f3f3 100644
+--- a/code/addons/a11y/src/components/A11yContext.tsx
++++ b/code/addons/a11y/src/components/A11yContext.tsx
+@@ -27,7 +27,7 @@ import { convert, themes } from 'storybook/theming';
+ import { getFriendlySummaryForAxeResult, getTitleForAxeResult } from '../axeRuleMappingHelper';
+ import { ADDON_ID, EVENTS, STATUS_TYPE_ID_A11Y, STATUS_TYPE_ID_COMPONENT_TEST } from '../constants';
+ import type { A11yParameters } from '../params';
+-import type { A11YReport, EnhancedResult, EnhancedResults, Status } from '../types';
++import type { A11yReport, EnhancedResult, EnhancedResults, Status } from '../types';
+ import { RuleType } from '../types';
+ import type { TestDiscrepancy } from './TestDiscrepancyMessage';
+ 
+@@ -244,7 +244,7 @@ export const A11yContextProvider: FC<PropsWithChildren> = (props) => {
+ 
+   const handleReport = useCallback(
+     ({ reporters }: StoryFinishedPayload) => {
+-      const a11yReport = reporters.find((r) => r.type === 'a11y') as Report<A11YReport> | undefined;
++      const a11yReport = reporters.find((r) => r.type === 'a11y') as Report<A11yReport> | undefined;
+ 
+       if (a11yReport) {
+         if ('error' in a11yReport.result) {
+diff --git a/code/addons/a11y/src/index.ts b/code/addons/a11y/src/index.ts
+index 5f447f93eb..d85e433a1f 100644
+--- a/code/addons/a11y/src/index.ts
++++ b/code/addons/a11y/src/index.ts
+@@ -5,6 +5,6 @@ import type { A11yTypes } from './types';
+ 
+ export { PARAM_KEY } from './constants';
+ export * from './params';
+-export type { A11yGlobals, A11yTypes } from './types';
++export type { A11yGlobals, A11yTypes, A11yReport } from './types';
+ 
+ export default () => definePreviewAddon<A11yTypes>(addonAnnotations);
+diff --git a/code/addons/a11y/src/preset.ts b/code/addons/a11y/src/preset.ts
+new file mode 100644
+index 0000000000..040808d5d5
+--- /dev/null
++++ b/code/addons/a11y/src/preset.ts
+@@ -0,0 +1,3 @@
++// enables other addons/presets to detect if a11y is enabled and adjust their behavior accordingly
++// using await presets.apply('isAddonA11yEnabled', false);
++export const isAddonA11yEnabled = true;
+diff --git a/code/addons/a11y/src/types.ts b/code/addons/a11y/src/types.ts
+index c8be7acf7d..73a010e481 100644
+--- a/code/addons/a11y/src/types.ts
++++ b/code/addons/a11y/src/types.ts
+@@ -2,7 +2,7 @@ import type { AxeResults, NodeResult, Result } from 'axe-core';
+ 
+ import type { A11yParameters as A11yParams } from './params';
+ 
+-export type A11YReport = EnhancedResults | { error: Error };
++export type A11yReport = EnhancedResults | { error: Error };
+ 
+ export interface A11yParameters {
+   /**
+diff --git a/code/addons/vitest/build-config.ts b/code/addons/vitest/build-config.ts
+index db187f4669..9e5f242e63 100644
+--- a/code/addons/vitest/build-config.ts
++++ b/code/addons/vitest/build-config.ts
+@@ -24,6 +24,10 @@ const config: BuildEntries = {
+       },
+     ],
+     node: [
++      {
++        exportEntries: ['./constants'],
++        entryPoint: './src/constants.ts',
++      },
+       {
+         exportEntries: ['./preset'],
+         entryPoint: './src/preset.ts',
+diff --git a/code/addons/vitest/package.json b/code/addons/vitest/package.json
+index 8358acdc5c..be2be1eea9 100644
+--- a/code/addons/vitest/package.json
++++ b/code/addons/vitest/package.json
+@@ -43,6 +43,11 @@
+       "code": "./src/index.ts",
+       "default": "./dist/index.js"
+     },
++    "./constants": {
++      "types": "./dist/constants.d.ts",
++      "code": "./src/constants.ts",
++      "default": "./dist/constants.js"
++    },
+     "./internal/coverage-reporter": "./dist/node/coverage-reporter.js",
+     "./internal/global-setup": "./dist/vitest-plugin/global-setup.js",
+     "./internal/setup-file": "./dist/vitest-plugin/setup-file.js",
+@@ -74,6 +79,7 @@
+     "@storybook/icons": "^2.0.1"
+   },
+   "devDependencies": {
++    "@storybook/addon-a11y": "workspace:*",
+     "@types/istanbul-lib-report": "^3.0.3",
+     "@types/micromatch": "^4.0.0",
+     "@types/node": "^22.19.1",
+diff --git a/code/addons/vitest/src/constants.ts b/code/addons/vitest/src/constants.ts
+index 0a8fb9d3a9..e49ef52803 100644
+--- a/code/addons/vitest/src/constants.ts
++++ b/code/addons/vitest/src/constants.ts
+@@ -1,6 +1,6 @@
+ import type { StoreOptions } from 'storybook/internal/types';
+ 
+-import type { RunTrigger, StoreState } from './types';
++import type { CurrentRun, RunTrigger, StoreState } from './types';
+ 
+ export { PANEL_ID as COMPONENT_TESTING_PANEL_ID } from '../../../core/src/component-testing/constants';
+ export {
+@@ -28,7 +28,7 @@ export const storeOptions = {
+     watching: false,
+     cancelling: false,
+     fatalError: undefined,
+-    indexUrl: undefined,
++    index: { entries: {}, v: 5 },
+     previewAnnotations: [],
+     currentRun: {
+       triggeredBy: undefined,
+@@ -36,6 +36,9 @@ export const storeOptions = {
+         coverage: false,
+         a11y: false,
+       },
++      componentTestStatuses: [],
++      a11yStatuses: [],
++      a11yReports: {},
+       componentTestCount: {
+         success: 0,
+         error: 0,
+@@ -63,3 +66,26 @@ export const TEST_PROVIDER_STORE_CHANNEL_EVENT_NAME = 'UNIVERSAL_STORE:storybook
+ 
+ export const STATUS_TYPE_ID_COMPONENT_TEST = 'storybook/component-test';
+ export const STATUS_TYPE_ID_A11Y = 'storybook/a11y';
++
++// Channel event names for programmatic test triggering
++export const TRIGGER_TEST_RUN_REQUEST = `${ADDON_ID}/trigger-test-run-request`;
++export const TRIGGER_TEST_RUN_RESPONSE = `${ADDON_ID}/trigger-test-run-response`;
++
++export type TriggerTestRunRequestPayload = {
++  requestId: string;
++  actor: string;
++  storyIds?: string[];
++  config?: Partial<StoreState['config']>;
++};
++
++export type TestRunResult = CurrentRun;
++
++export type TriggerTestRunResponsePayload = {
++  requestId: string;
++  status: 'completed' | 'error' | 'cancelled';
++  result?: TestRunResult;
++  error?: {
++    message: string;
++    error?: import('./types').ErrorLike;
++  };
++};
+diff --git a/code/addons/vitest/src/manager.tsx b/code/addons/vitest/src/manager.tsx
+index 14e4e0815f..1be9319fdc 100644
+--- a/code/addons/vitest/src/manager.tsx
++++ b/code/addons/vitest/src/manager.tsx
+@@ -42,14 +42,8 @@ addons.register(ADDON_ID, (api) => {
+         },
+       });
+     });
+-    store.untilReady().then(() => {
+-      store.setState((state) => ({
+-        ...state,
+-        indexUrl: new URL('index.json', window.location.href).toString(),
+-      }));
+-      store.subscribe('TEST_RUN_COMPLETED', ({ payload }) => {
+-        api.emit(STORYBOOK_ADDON_TEST_CHANNEL, { type: 'test-run-completed', payload });
+-      });
++    store.subscribe('TEST_RUN_COMPLETED', ({ payload }) => {
++      api.emit(STORYBOOK_ADDON_TEST_CHANNEL, { type: 'test-run-completed', payload });
+     });
+ 
+     addons.add(TEST_PROVIDER_ID, {
+diff --git a/code/addons/vitest/src/node/test-manager.ts b/code/addons/vitest/src/node/test-manager.ts
+index f66270dfc0..7f11a90f25 100644
+--- a/code/addons/vitest/src/node/test-manager.ts
++++ b/code/addons/vitest/src/node/test-manager.ts
+@@ -8,11 +8,20 @@ import type {
+   TestProviderStoreById,
+ } from 'storybook/internal/types';
+ 
++import type { A11yReport } from '@storybook/addon-a11y';
++
+ import { throttle } from 'es-toolkit/function';
+ import type { Report } from 'storybook/preview-api';
+ 
+ import { STATUS_TYPE_ID_A11Y, STATUS_TYPE_ID_COMPONENT_TEST, storeOptions } from '../constants';
+-import type { RunTrigger, StoreEvent, StoreState, TriggerRunEvent, VitestError } from '../types';
++import type {
++  CurrentRun,
++  RunTrigger,
++  StoreEvent,
++  StoreState,
++  TriggerRunEvent,
++  VitestError,
++} from '../types';
+ import { errorToErrorLike } from '../utils';
+ import { VitestManager } from './vitest-manager';
+ 
+@@ -82,6 +91,7 @@ export class TestManager {
+     await this.runTestsWithState({
+       storyIds: event.payload.storyIds,
+       triggeredBy: event.payload.triggeredBy,
++      configOverride: event.payload.configOverride,
+       callback: async () => {
+         try {
+           await this.vitestManager.vitestRestartPromise;
+@@ -114,15 +124,19 @@ export class TestManager {
+   async runTestsWithState({
+     storyIds,
+     triggeredBy,
++    configOverride,
+     callback,
+   }: {
+     storyIds?: string[];
+     triggeredBy: RunTrigger;
++    configOverride?: StoreState['config'];
+     callback: () => Promise<void>;
+   }) {
+     this.componentTestStatusStore.unset(storyIds);
+     this.a11yStatusStore.unset(storyIds);
+ 
++    const runConfig = configOverride ?? this.store.getState().config;
++
+     this.store.setState((s) => ({
+       ...s,
+       currentRun: {
+@@ -130,12 +144,12 @@ export class TestManager {
+         triggeredBy,
+         startedAt: Date.now(),
+         storyIds: storyIds,
+-        config: s.config,
++        config: runConfig,
+       },
+     }));
+     // set the config at the start of a test run,
+     // so that changing the config during the test run does not affect the currently running test run
+-    process.env.VITEST_STORYBOOK_CONFIG = JSON.stringify(this.store.getState().config);
++    process.env.VITEST_STORYBOOK_CONFIG = JSON.stringify(runConfig);
+ 
+     await this.testProviderStore.runWithState(async () => {
+       await callback();
+@@ -165,10 +179,26 @@ export class TestManager {
+       return;
+     }
+ 
++    const requestedStoryIds = this.store.getState().currentRun.storyIds;
++    if (requestedStoryIds && !this.isRequestedStoryOrChild(storyId, requestedStoryIds)) {
++      // In focused runs, Vitest name filtering can still pick up same-named tests in other files.
++      // Drop those results here so status stores and run summaries only reflect requested stories.
++      return;
++    }
++
+     this.batchedTestCaseResults.push({ storyId, testResult, reports });
+     this.throttledFlushTestCaseResults();
+   }
+ 
++  private isRequestedStoryOrChild(storyId: string, requestedStoryIds: string[]) {
++    if (requestedStoryIds.includes(storyId)) {
++      return true;
++    }
++
++    const entry = this.store.getState().index.entries[storyId];
++    return entry?.type === 'story' && !!entry.parent && requestedStoryIds.includes(entry.parent);
++  }
++
+   /**
+    * Throttled function to process batched test case results.
+    *
+@@ -187,6 +217,42 @@ export class TestManager {
+     const testCaseResultsToFlush = this.batchedTestCaseResults;
+     this.batchedTestCaseResults = [];
+ 
++    const componentTestStatuses = testCaseResultsToFlush.map(({ storyId, testResult }) => ({
++      storyId,
++      typeId: STATUS_TYPE_ID_COMPONENT_TEST,
++      value: testStateToStatusValueMap[testResult.state],
++      title: 'Component tests',
++      description: testResult.errors?.map((error) => error.stack || error.message).join('\n') ?? '',
++      sidebarContextMenu: false,
++    }));
++
++    this.componentTestStatusStore.set(componentTestStatuses);
++
++    const a11yReportsByStoryId: CurrentRun['a11yReports'] = {};
++    const a11yStatuses: typeof componentTestStatuses = [];
++
++    for (const { storyId, reports } of testCaseResultsToFlush) {
++      const storyA11yReports = reports?.filter((r) => r.type === 'a11y');
++      if (!storyA11yReports?.length) {
++        continue;
++      }
++      a11yReportsByStoryId[storyId] = storyA11yReports.map((r) => r.result) as A11yReport[];
++      for (const a11yReport of storyA11yReports) {
++        a11yStatuses.push({
++          storyId,
++          typeId: STATUS_TYPE_ID_A11Y,
++          value: testStateToStatusValueMap[a11yReport.status],
++          title: 'Accessibility tests',
++          description: '',
++          sidebarContextMenu: false,
++        });
++      }
++    }
++
++    if (a11yStatuses.length > 0) {
++      this.a11yStatusStore.set(a11yStatuses);
++    }
++
+     this.store.setState((s) => {
+       let { success: ctSuccess, error: ctError } = s.currentRun.componentTestCount;
+       let { success: a11ySuccess, warning: a11yWarning, error: a11yError } = s.currentRun.a11yCount;
+@@ -216,6 +282,12 @@ export class TestManager {
+           ...s.currentRun,
+           componentTestCount: { success: ctSuccess, error: ctError },
+           a11yCount: { success: a11ySuccess, warning: a11yWarning, error: a11yError },
++          componentTestStatuses: s.currentRun.componentTestStatuses.concat(componentTestStatuses),
++          a11yStatuses: s.currentRun.a11yStatuses.concat(a11yStatuses),
++          a11yReports: {
++            ...s.currentRun.a11yReports,
++            ...a11yReportsByStoryId,
++          },
+           // in some cases successes and errors can exceed the anticipated totalTestCount
+           // e.g. when testing more tests than the stories we know about upfront
+           // in those cases, we set the totalTestCount to the sum of successes and errors
+@@ -226,52 +298,26 @@ export class TestManager {
+         },
+       };
+     });
+-
+-    const componentTestStatuses = testCaseResultsToFlush.map(({ storyId, testResult }) => ({
+-      storyId,
+-      typeId: STATUS_TYPE_ID_COMPONENT_TEST,
+-      value: testStateToStatusValueMap[testResult.state],
+-      title: 'Component tests',
+-      description: testResult.errors?.map((error) => error.stack || error.message).join('\n') ?? '',
+-      sidebarContextMenu: false,
+-    }));
+-
+-    this.componentTestStatusStore.set(componentTestStatuses);
+-
+-    const a11yStatuses = testCaseResultsToFlush
+-      .flatMap(({ storyId, reports }) =>
+-        reports
+-          ?.filter((r) => r.type === 'a11y')
+-          .map((a11yReport) => ({
+-            storyId,
+-            typeId: STATUS_TYPE_ID_A11Y,
+-            value: testStateToStatusValueMap[a11yReport.status],
+-            title: 'Accessibility tests',
+-            description: '',
+-            sidebarContextMenu: false,
+-          }))
+-      )
+-      .filter((a11yStatus) => a11yStatus !== undefined);
+-
+-    if (a11yStatuses.length > 0) {
+-      this.a11yStatusStore.set(a11yStatuses);
+-    }
+   }, 500);
+ 
+   onTestRunEnd(endResult: { totalTestCount: number; unhandledErrors: VitestError[] }) {
+     this.throttledFlushTestCaseResults.flush();
+-    this.store.setState((s) => ({
+-      ...s,
+-      currentRun: {
+-        ...s.currentRun,
+-        // when the test run is finished, we can set the totalTestCount to the actual number of tests run
+-        // this number can be lower than the total number of tests we anticipated upfront
+-        // e.g. when some tests where skipped without us knowing about it upfront
+-        totalTestCount: endResult.totalTestCount,
+-        unhandledErrors: endResult.unhandledErrors,
+-        finishedAt: Date.now(),
+-      },
+-    }));
++    this.store.setState((s) => {
++      const focusedRunTotal =
++        s.currentRun.componentTestCount.success + s.currentRun.componentTestCount.error;
++
++      return {
++        ...s,
++        currentRun: {
++          ...s.currentRun,
++          // For focused runs, keep totals aligned with filtered case results.
++          // For full runs, use Vitest's reported total.
++          totalTestCount: s.currentRun.storyIds ? focusedRunTotal : endResult.totalTestCount,
++          unhandledErrors: endResult.unhandledErrors,
++          finishedAt: Date.now(),
++        },
++      };
++    });
+   }
+ 
+   onCoverageCollected(coverageSummary: StoreState['currentRun']['coverageSummary']) {
+diff --git a/code/addons/vitest/src/node/vitest-manager.ts b/code/addons/vitest/src/node/vitest-manager.ts
+index f787556ed4..018165da98 100644
+--- a/code/addons/vitest/src/node/vitest-manager.ts
++++ b/code/addons/vitest/src/node/vitest-manager.ts
+@@ -10,10 +10,11 @@ import type {
+ 
+ import { getProjectRoot, resolvePathInStorybookCache } from 'storybook/internal/common';
+ import { Tag } from 'storybook/internal/core-server';
+-import type { StoryId, StoryIndex, StoryIndexEntry } from 'storybook/internal/types';
++import type { StoryId, StoryIndexEntry } from 'storybook/internal/types';
+ 
+ import * as find from 'empathic/find';
+ import * as walk from 'empathic/walk';
++import { escapeRegExp } from 'es-toolkit/string';
+ import path, { dirname, join, normalize, resolve } from 'pathe';
+ // eslint-disable-next-line depend/ban-dependencies
+ import slash from 'slash';
+@@ -103,7 +104,7 @@ export class VitestManager {
+       for (const file of configFiles) {
+         const maybe = find.any([file], { cwd: location, last: getProjectRoot() });
+         if (maybe && existsSync(maybe)) {
+-          firstVitestConfig ??= maybe;
++          firstVitestConfig ??= dirname(maybe);
+           const content = readFileSync(maybe, 'utf8');
+           if (content.includes('storybookTest') || content.includes('@storybook/addon-vitest')) {
+             vitestWorkspaceConfig = dirname(maybe);
+@@ -218,24 +219,91 @@ export class VitestManager {
+     });
+   }
+ 
+-  private async fetchStories(requestStoryIds?: string[]): Promise<StoryIndexEntry[]> {
+-    const indexUrl = this.testManager.store.getState().indexUrl;
+-    if (!indexUrl) {
+-      throw new Error(
+-        'Tried to fetch stories to test, but the index URL was not set in the store yet.'
+-      );
++  private getStories(requestStoryIds?: string[]): StoryIndexEntry[] {
++    const index = this.testManager.store.getState().index;
++    if (requestStoryIds) {
++      const stories: StoryIndexEntry[] = [];
++      for (const id of requestStoryIds) {
++        const entry = index.entries[id];
++        if (entry?.type === 'story') {
++          stories.push(entry);
++        }
++      }
++      return stories;
+     }
+-    try {
+-      const index = (await Promise.race([
+-        fetch(indexUrl).then((res) => res.json()),
+-        new Promise((_, reject) => setTimeout(reject, 3000, new Error('Request took too long'))),
+-      ])) as StoryIndex;
+-      const storyIds = requestStoryIds || Object.keys(index.entries);
+-      return storyIds.map((id) => index.entries[id]).filter((story) => story.type === 'story');
+-    } catch (e: any) {
+-      log('Failed to fetch story index: ' + e.message);
+-      return [];
++    return Object.values(index.entries).filter((entry) => entry.type === 'story');
++  }
++
++  /**
++   * Builds the exact Vitest name-pattern fragment for one selected Storybook entry.
++   *
++   * The pattern differs by entry type:
++   *
++   * - Component entry (has child stories/tests): match the whole describe block prefix
++   * - Story-test entry (has parent): match "parent describe + test name" exactly
++   * - Regular story entry: match the story name exactly
++   */
++  private buildStoryTestNamePattern(
++    story: StoryIndexEntry,
++    allStories: StoryIndexEntry[],
++    storiesById: Record<StoryId, StoryIndexEntry>
++  ) {
++    const isParentStory = allStories.some((candidate) => story.id === candidate.parent);
++
++    if (isParentStory) {
++      return `^${escapeRegExp(getTestName(story.name))}`;
+     }
++
++    if (story.parent) {
++      const parentStory = storiesById[story.parent];
++      if (!parentStory) {
++        throw new Error(`Parent story not found for story ${story.id}`);
++      }
++
++      return `^${escapeRegExp(getTestName(parentStory.name))} ${escapeRegExp(story.name)}$`;
++    }
++
++    return `^${escapeRegExp(story.name)}$`;
++  }
++
++  /**
++   * Combines multiple per-story patterns into one global regex so Vitest can run an exact subset of
++   * tests across one or more files in a single invocation.
++   */
++  private buildTestNamePatternForStories(
++    selectedStories: StoryIndexEntry[],
++    allStories: StoryIndexEntry[]
++  ) {
++    const storiesById = Object.fromEntries(allStories.map((story) => [story.id, story])) as Record<
++      StoryId,
++      StoryIndexEntry
++    >;
++
++    const storyPatterns = [
++      ...new Set(
++        selectedStories.map((story) =>
++          this.buildStoryTestNamePattern(story, allStories, storiesById)
++        )
++      ),
++    ];
++
++    if (!storyPatterns.length) {
++      return undefined;
++    }
++
++    if (storyPatterns.length === 1) {
++      return new RegExp(storyPatterns[0]);
++    }
++
++    // Build one "OR" expression across all selected stories.
++    // Example when storyPatterns are "^One$" and "^Parent  Child$":
++    //   /(?:(?:^One$)|(?:^Parent  Child$))/
++    //
++    // Why wrap each pattern with (?:...)?
++    // - Keeps each full, already-anchored pattern isolated as one alternative.
++    // - Prevents precedence issues when joining with `|`.
++    // - Uses non-capturing groups to avoid unnecessary capture groups.
++    return new RegExp(`(?:${storyPatterns.map((pattern) => `(?:${pattern})`).join('|')})`);
+   }
+ 
+   private filterTestSpecifications(
+@@ -314,45 +382,17 @@ export class VitestManager {
+     await this.cancelCurrentRun();
+ 
+     const testSpecifications = await this.getStorybookTestSpecifications();
+-    const allStories = await this.fetchStories();
++    const allStories = this.getStories();
+ 
+     const filteredStories = runPayload.storyIds
+       ? allStories.filter((story) => runPayload.storyIds?.includes(story.id))
+       : allStories;
+ 
+-    const isSingleStoryRun = runPayload.storyIds?.length === 1;
+-    if (isSingleStoryRun) {
+-      const selectedStory = filteredStories.find((story) => story.id === runPayload.storyIds?.[0]);
+-      if (!selectedStory) {
+-        throw new Error(`Story ${runPayload.storyIds?.[0]} not found`);
+-      }
+-
+-      const storyName = selectedStory.name;
+-      let regex: RegExp;
+-
+-      const isParentStory = allStories.some((story) => selectedStory.id === story.parent);
+-      const hasParentStory = allStories.some((story) => selectedStory.parent === story.id);
+-
+-      if (isParentStory) {
+-        // Use case 1: "Single" story run on a story with tests
+-        // -> run all tests of that story, as storyName is a describe block
+-        const parentName = getTestName(selectedStory.name);
+-        regex = new RegExp(`^${parentName}`);
+-      } else if (hasParentStory) {
+-        // Use case 2: Single story run on a specific story test
+-        // in this case the regex pattern should be the story parentName + space + story.name
+-        const parentStory = allStories.find((story) => story.id === selectedStory.parent);
+-        if (!parentStory) {
+-          throw new Error(`Parent story not found for story ${selectedStory.id}`);
+-        }
+-
+-        const parentName = getTestName(parentStory.name);
+-        regex = new RegExp(`^${parentName} ${storyName}$`);
+-      } else {
+-        // Use case 3: Single story run on a story without tests, should be exact match of story name
+-        regex = new RegExp(`^${storyName}$`);
++    if (runPayload.storyIds?.length) {
++      const regex = this.buildTestNamePatternForStories(filteredStories, allStories);
++      if (regex) {
++        this.vitest!.setGlobalTestNamePattern(regex);
+       }
+-      this.vitest!.setGlobalTestNamePattern(regex);
+     }
+ 
+     const { filteredTestSpecifications, filteredStoryIds } = this.filterTestSpecifications(
+@@ -429,7 +469,7 @@ export class VitestManager {
+       previewAnnotationSpecifications.concat(setupFilesSpecifications);
+ 
+     const testSpecifications = await this.getStorybookTestSpecifications();
+-    const allStories = await this.fetchStories();
++    const allStories = this.getStories();
+ 
+     let affectsGlobalFiles = false;
+ 
+diff --git a/code/addons/vitest/src/preset.ts b/code/addons/vitest/src/preset.ts
+index c95d534cd9..bb0f035959 100644
+--- a/code/addons/vitest/src/preset.ts
++++ b/code/addons/vitest/src/preset.ts
+@@ -1,4 +1,3 @@
+-import { readFileSync } from 'node:fs';
+ import { mkdir } from 'node:fs/promises';
+ 
+ import type { Channel } from 'storybook/internal/channels';
+@@ -9,9 +8,11 @@ import {
+   resolvePathInStorybookCache,
+ } from 'storybook/internal/common';
+ import {
++  type StoryIndexGenerator,
+   experimental_UniversalStore,
+   experimental_getTestProviderStore,
+ } from 'storybook/internal/core-server';
++import { logger } from 'storybook/internal/node-logger';
+ import { cleanPaths, oneWayHash, sanitizeError, telemetry } from 'storybook/internal/telemetry';
+ import type {
+   Options,
+@@ -29,6 +30,10 @@ import {
+   COVERAGE_DIRECTORY,
+   STORE_CHANNEL_EVENT_NAME,
+   STORYBOOK_ADDON_TEST_CHANNEL,
++  TRIGGER_TEST_RUN_REQUEST,
++  TRIGGER_TEST_RUN_RESPONSE,
++  type TriggerTestRunRequestPayload,
++  type TriggerTestRunResponsePayload,
+   storeOptions,
+ } from './constants';
+ import { log } from './logger';
+@@ -77,6 +82,9 @@ export const experimental_serverChannel = async (channel: Channel, options: Opti
+     return channel;
+   }
+ 
++  const storyIndexGenerator =
++    await options.presets.apply<Promise<StoryIndexGenerator>>('storyIndexGenerator');
++
+   const fsCache = createFileSystemCache({
+     basePath: resolvePathInStorybookCache(ADDON_ID.replace('/', '-')),
+     ns: 'storybook',
+@@ -94,6 +102,7 @@ export const experimental_serverChannel = async (channel: Channel, options: Opti
+     initialState: {
+       ...storeOptions.initialState,
+       previewAnnotations: (previewAnnotations ?? []).concat(previewPath ?? []),
++      index: await storyIndexGenerator.getIndex(),
+       ...selectCachedState(cachedState),
+     },
+     leader: true,
+@@ -105,6 +114,16 @@ export const experimental_serverChannel = async (channel: Channel, options: Opti
+   });
+   const testProviderStore = experimental_getTestProviderStore(ADDON_ID);
+ 
++  storyIndexGenerator.onInvalidated(async () => {
++    try {
++      const index = await storyIndexGenerator.getIndex();
++      store.setState((s) => ({ ...s, index }));
++    } catch (error) {
++      logger.debug('Failed to update story index after invalidation, Error:');
++      logger.debug(error);
++    }
++  });
++
+   store.subscribe('TRIGGER_RUN', (event, eventInfo) => {
+     testProviderStore.setState('test-provider-state:running');
+     store.setState((s) => ({
+@@ -184,6 +203,60 @@ export const experimental_serverChannel = async (channel: Channel, options: Opti
+     }));
+   });
+ 
++  // Programmatic test run trigger API
++  channel.on(TRIGGER_TEST_RUN_REQUEST, async (payload: TriggerTestRunRequestPayload) => {
++    const { requestId, actor, storyIds, config: configOverride } = payload;
++
++    const sendResponse = (response: Omit<TriggerTestRunResponsePayload, 'requestId'>) => {
++      channel.emit(TRIGGER_TEST_RUN_RESPONSE, { requestId, ...response });
++    };
++
++    await store.untilReady();
++
++    const {
++      currentRun: { startedAt, finishedAt },
++      config,
++    } = store.getState();
++    if (startedAt && !finishedAt) {
++      sendResponse({
++        status: 'error',
++        error: { message: 'Tests are already running' },
++      });
++      return;
++    }
++
++    store.send({
++      type: 'TRIGGER_RUN',
++      payload: {
++        storyIds,
++        triggeredBy: `external:${actor}`,
++        ...(configOverride && {
++          configOverride: { ...config, ...configOverride },
++        }),
++      },
++    });
++
++    const unsubscribe = store.subscribe((event) => {
++      switch (event.type) {
++        case 'TEST_RUN_COMPLETED': {
++          unsubscribe();
++          sendResponse({ status: 'completed', result: event.payload });
++          return;
++        }
++        case 'FATAL_ERROR': {
++          unsubscribe();
++          sendResponse({ status: 'error', error: event.payload });
++          return;
++        }
++        case 'CANCEL_RUN': {
++          unsubscribe();
++          sendResponse({ status: 'cancelled' });
++          return;
++        }
++      }
++    });
++  });
++
+   if (!core.disableTelemetry) {
+     const enableCrashReports = core.enableCrashReports || options.enableCrashReports;
+ 
+diff --git a/code/addons/vitest/src/types.ts b/code/addons/vitest/src/types.ts
+index b6eca96f92..e1f4d64ccd 100644
+--- a/code/addons/vitest/src/types.ts
++++ b/code/addons/vitest/src/types.ts
+@@ -1,7 +1,11 @@
+ import type { experimental_UniversalStore } from 'storybook/internal/core-server';
+-import type { PreviewAnnotation, StoryId } from 'storybook/internal/types';
++import type { PreviewAnnotation, Status, StoryId, StoryIndex } from 'storybook/internal/types';
+ import type { API_HashEntry } from 'storybook/internal/types';
+ 
++// import type { A11yReport } from '@storybook/addon-a11y';
++// TODO: There's a type error in axe-core that makes this error during production builds
++type A11yReport = any;
++
+ export interface VitestError extends Error {
+   VITEST_TEST_PATH?: string;
+   VITEST_TEST_NAME?: string;
+@@ -20,7 +24,40 @@ export type ErrorLike = {
+   cause?: ErrorLike;
+ };
+ 
+-export type RunTrigger = 'run-all' | 'global' | 'watch' | Extract<API_HashEntry['type'], string>;
++export type RunTrigger =
++  | 'run-all'
++  | 'global'
++  | 'watch'
++  | Extract<API_HashEntry['type'], string>
++  | `external:${string}`;
++
++export type CurrentRun = {
++  triggeredBy: RunTrigger | undefined;
++  config: StoreState['config'];
++  componentTestStatuses: Status[];
++  a11yStatuses: Status[];
++  componentTestCount: {
++    success: number;
++    error: number;
++  };
++  a11yCount: {
++    success: number;
++    warning: number;
++    error: number;
++  };
++  a11yReports: Record<StoryId, A11yReport[]>;
++  totalTestCount: number | undefined;
++  storyIds: StoryId[] | undefined;
++  startedAt: number | undefined;
++  finishedAt: number | undefined;
++  unhandledErrors: VitestError[];
++  coverageSummary:
++    | {
++        status: 'positive' | 'warning' | 'negative' | 'unknown';
++        percentage: number;
++      }
++    | undefined;
++};
+ 
+ export type StoreState = {
+   config: {
+@@ -29,9 +66,7 @@ export type StoreState = {
+   };
+   watching: boolean;
+   cancelling: boolean;
+-  // TODO: Avoid needing to do a fetch request server-side to retrieve the index
+-  // e.g. http://localhost:6006/index.json
+-  indexUrl: string | undefined;
++  index: StoryIndex;
+   previewAnnotations: PreviewAnnotation[];
+   fatalError:
+     | {
+@@ -39,30 +74,7 @@ export type StoreState = {
+         error: ErrorLike;
+       }
+     | undefined;
+-  currentRun: {
+-    triggeredBy: RunTrigger | undefined;
+-    config: StoreState['config'];
+-    componentTestCount: {
+-      success: number;
+-      error: number;
+-    };
+-    a11yCount: {
+-      success: number;
+-      warning: number;
+-      error: number;
+-    };
+-    totalTestCount: number | undefined;
+-    storyIds: StoryId[] | undefined;
+-    startedAt: number | undefined;
+-    finishedAt: number | undefined;
+-    unhandledErrors: VitestError[];
+-    coverageSummary:
+-      | {
+-          status: 'positive' | 'warning' | 'negative' | 'unknown';
+-          percentage: number;
+-        }
+-      | undefined;
+-  };
++  currentRun: CurrentRun;
+ };
+ 
+ export type CachedState = Pick<StoreState, 'config'>;
+@@ -72,6 +84,7 @@ export type TriggerRunEvent = {
+   payload: {
+     storyIds?: string[] | undefined;
+     triggeredBy: RunTrigger;
++    configOverride?: StoreState['config'];
+   };
+ };
+ 
+diff --git a/code/core/src/channels/index.ts b/code/core/src/channels/index.ts
+index c6979045e6..f7a36226ee 100644
+--- a/code/core/src/channels/index.ts
++++ b/code/core/src/channels/index.ts
+@@ -50,4 +50,10 @@ export function createBrowserChannel({ page, extraTransports = [] }: Options): C
+   return channel;
+ }
+ 
+-export type { Listener, ChannelEvent, ChannelTransport, ChannelHandler } from './types';
++export type {
++  Listener,
++  ChannelEvent,
++  ChannelTransport,
++  ChannelHandler,
++  ChannelLike,
++} from './types';
+diff --git a/code/core/src/channels/main.ts b/code/core/src/channels/main.ts
+index 62bebb4dd5..ec4119b3c7 100644
+--- a/code/core/src/channels/main.ts
++++ b/code/core/src/channels/main.ts
+@@ -3,6 +3,7 @@ import type {
+   ChannelArgsMulti,
+   ChannelArgsSingle,
+   ChannelEvent,
++  ChannelLike,
+   ChannelTransport,
+   EventsKeyValue,
+   Listener,
+@@ -18,7 +19,7 @@ const generateRandomId = () => {
+   return Math.random().toString(16).slice(2);
+ };
+ 
+-export class Channel {
++export class Channel implements ChannelLike {
+   readonly isAsync: boolean;
+ 
+   private sender = generateRandomId();
+diff --git a/code/core/src/channels/types.ts b/code/core/src/channels/types.ts
+index f2904700cf..49ba640a06 100644
+--- a/code/core/src/channels/types.ts
++++ b/code/core/src/channels/types.ts
+@@ -29,6 +29,25 @@ export interface EventsKeyValue {
+   [key: string]: Listener[];
+ }
+ 
++/**
++ * Structural interface for Channel, used in type declarations to avoid nominal incompatibility
++ * between source and dist Channel class declarations.
++ */
++export interface ChannelLike {
++  readonly isAsync: boolean;
++  readonly hasTransport: boolean;
++  addListener(eventName: string, listener: Listener): void;
++  emit(eventName: string, ...args: any): void;
++  last(eventName: string): any;
++  eventNames(): string[];
++  listenerCount(eventName: string): number;
++  listeners(eventName: string): Listener[] | undefined;
++  once(eventName: string, listener: Listener): void;
++  removeAllListeners(eventName?: string): void;
++  removeListener(eventName: string, listener: Listener): void;
++  on(eventName: string, listener: Listener): void;
++  off(eventName: string, listener: Listener): void;
++}
+ export type ChannelArgs = ChannelArgsSingle | ChannelArgsMulti;
+ export interface ChannelArgsSingle {
+   transport?: ChannelTransport;
+diff --git a/code/core/src/cli/buildIndex.ts b/code/core/src/cli/buildIndex.ts
+index 890cf3b562..7cb6cd5a7c 100644
+--- a/code/core/src/cli/buildIndex.ts
++++ b/code/core/src/cli/buildIndex.ts
+@@ -1,3 +1,4 @@
++import { Channel } from 'storybook/internal/channels';
+ import { cache } from 'storybook/internal/common';
+ import { buildIndexStandalone, withTelemetry } from 'storybook/internal/core-server';
+ import type { BuilderOptions, CLIBaseOptions } from 'storybook/internal/types';
+@@ -23,6 +24,7 @@ export const buildIndex = async (
+     ...options,
+     corePresets: [],
+     overridePresets: [],
+-  };
++    channel: new Channel({}),
++  } as unknown as Parameters<typeof withTelemetry>[1]['presetOptions'];
+   await withTelemetry('index', { cliOptions, presetOptions }, () => buildIndexStandalone(options));
+ };
+diff --git a/code/core/src/common/presets.ts b/code/core/src/common/presets.ts
+index cb340f7cb6..38298c4b22 100644
+--- a/code/core/src/common/presets.ts
++++ b/code/core/src/common/presets.ts
+@@ -15,6 +15,7 @@ import type {
+ import { join, parse, resolve } from 'pathe';
+ import { dedent } from 'ts-dedent';
+ 
++import type { ChannelLike } from '../channels';
+ import { importModule, safeResolveModule } from '../shared/utils/module';
+ import { getInterpretedFile } from './utils/interpret-files';
+ import { stripAbsNodeModulesPath } from './utils/strip-abs-node-modules-path';
+@@ -335,6 +336,7 @@ export async function loadAllPresets(
+       /** Whether preset failures should be critical or not */
+       isCritical?: boolean;
+       build?: StorybookConfigRaw['build'];
++      channel: ChannelLike;
+     }
+ ) {
+   const { corePresets = [], overridePresets = [], ...restOptions } = options;
+diff --git a/code/core/src/core-server/build-dev.ts b/code/core/src/core-server/build-dev.ts
+index 2f9f02502a..27fbd87539 100644
+--- a/code/core/src/core-server/build-dev.ts
++++ b/code/core/src/core-server/build-dev.ts
+@@ -26,11 +26,14 @@ import { dedent } from 'ts-dedent';
+ import { detectPnp } from '../cli/detect';
+ import { resolvePackageDir } from '../shared/utils/module';
+ import { storybookDevServer } from './dev-server';
++import { getWsToken } from './presets/wsToken';
+ import { buildOrThrow } from './utils/build-or-throw';
+ import { getManagerBuilder, getPreviewBuilder } from './utils/get-builders';
++import { getServerChannel } from './utils/get-server-channel';
+ import { outputStartupInformation } from './utils/output-startup-information';
+ import { outputStats } from './utils/output-stats';
+ import { getServerChannelUrl, getServerPort } from './utils/server-address';
++import { getServer } from './utils/server-init';
+ import { stripCommentsAndStrings } from './utils/strip-comments-and-strings';
+ import { updateCheck } from './utils/update-check';
+ import { warnOnIncompatibleAddons } from './utils/warnOnIncompatibleAddons';
+@@ -142,6 +145,9 @@ export async function buildDevStandalone(
+     await warnWhenUsingArgTypesRegex(previewConfigPath, config);
+   } catch (e) {}
+ 
++  const server = await getServer(options);
++  const channel = getServerChannel(server, getWsToken());
++
+   // Load first pass: We need to determine the builder
+   // We need to do this because builders might introduce 'overridePresets' which we need to take into account
+   // We hope to remove this in SB8
+@@ -152,6 +158,7 @@ export async function buildDevStandalone(
+     ],
+     ...options,
+     isCritical: true,
++    channel,
+   });
+ 
+   const { renderer, builder, disableTelemetry } = await presets.apply('core', {});
+@@ -209,19 +216,22 @@ export async function buildDevStandalone(
+       import.meta.resolve('storybook/internal/core-server/presets/common-override-preset'),
+     ],
+     ...options,
++    channel,
+   });
+ 
+   const features = await presets.apply('features');
+   global.FEATURES = features;
++  await presets.apply('experimental_serverChannel', channel);
+ 
+   const fullOptions: Options = {
+     ...options,
+     presets,
+     features,
++    channel,
+   };
+ 
+   const { address, networkAddress, managerResult, previewResult } = await buildOrThrow(async () =>
+-    storybookDevServer(fullOptions)
++    storybookDevServer(fullOptions, server)
+   );
+ 
+   const previewTotalTime = previewResult?.totalTime;
+diff --git a/code/core/src/core-server/build-static.ts b/code/core/src/core-server/build-static.ts
+index 3375f84edc..8feef56617 100644
+--- a/code/core/src/core-server/build-static.ts
++++ b/code/core/src/core-server/build-static.ts
+@@ -1,11 +1,11 @@
+ import { cp, mkdir } from 'node:fs/promises';
+ import { rm } from 'node:fs/promises';
+ 
++import { Channel } from 'storybook/internal/channels';
+ import {
+   loadAllPresets,
+   loadMainConfig,
+   logConfig,
+-  normalizeStories,
+   resolveAddonName,
+ } from 'storybook/internal/common';
+ import { logger } from 'storybook/internal/node-logger';
+@@ -68,16 +68,25 @@ export async function buildStaticStandalone(options: BuildStaticStandaloneOption
+     .resolve('storybook/internal/core-server/presets/common-override-preset');
+ 
+   logger.step('Loading presets');
++
++  // no-op channel, as it's only relevant in dev mode
++  const channel = new Channel({});
+   let presets = await loadAllPresets({
+     corePresets: [commonPreset, ...corePresets],
+     overridePresets: [commonOverridePreset],
+     isCritical: true,
++    channel,
+     ...options,
+   });
+ 
+   const { renderer } = await presets.apply('core', {});
+   const build = await presets.apply('build', {});
+-  const [previewBuilder, managerBuilder] = await getBuilders({ ...options, presets, build });
++  const [previewBuilder, managerBuilder] = await getBuilders({
++    ...options,
++    presets,
++    build,
++    channel,
++  });
+ 
+   const resolvedRenderer = renderer
+     ? resolveAddonName(options.configDir, renderer, options)
+@@ -91,8 +100,9 @@ export async function buildStaticStandalone(options: BuildStaticStandaloneOption
+       ...corePresets,
+     ],
+     overridePresets: [...(previewBuilder.overridePresets || []), commonOverridePreset],
+-    ...options,
+     build,
++    channel,
++    ...options,
+   });
+ 
+   const [features, core, staticDirs] = await Promise.all([
+@@ -110,6 +120,7 @@ export async function buildStaticStandalone(options: BuildStaticStandaloneOption
+ 
+   const fullOptions: Options = {
+     ...options,
++    channel,
+     presets,
+     features,
+     build,
+diff --git a/code/core/src/core-server/dev-server.ts b/code/core/src/core-server/dev-server.ts
+index 1f3d5329fc..accc93fdcc 100644
+--- a/code/core/src/core-server/dev-server.ts
++++ b/code/core/src/core-server/dev-server.ts
+@@ -4,7 +4,6 @@ import { MissingBuilderError } from 'storybook/internal/server-errors';
+ import type { Options } from 'storybook/internal/types';
+ 
+ import compression from '@polka/compression';
+-import assert from 'assert';
+ import polka from 'polka';
+ import invariant from 'tiny-invariant';
+ 
+@@ -13,7 +12,6 @@ import { type StoryIndexGenerator } from './utils/StoryIndexGenerator';
+ import { doTelemetry } from './utils/doTelemetry';
+ import { getManagerBuilder, getPreviewBuilder } from './utils/get-builders';
+ import { getCachingMiddleware } from './utils/get-caching-middleware';
+-import { getServerChannel } from './utils/get-server-channel';
+ import { getAccessControlMiddleware } from './utils/getAccessControlMiddleware';
+ import { registerIndexJsonRoute } from './utils/index-json';
+ import { registerManifests } from './utils/manifests/manifests';
+@@ -21,20 +19,17 @@ import { useStorybookMetadata } from './utils/metadata';
+ import { getMiddleware } from './utils/middleware';
+ import { openInBrowser } from './utils/open-browser/open-in-browser';
+ import { getServerAddresses } from './utils/server-address';
+-import { getServer } from './utils/server-init';
++import type { getServer } from './utils/server-init';
+ import { useStatics } from './utils/server-statics';
+ import { summarizeIndex } from './utils/summarizeIndex';
+ 
+-export async function storybookDevServer(options: Options) {
+-  const [server, core] = await Promise.all([getServer(options), options.presets.apply('core')]);
+-  const app = polka({ server });
+-
+-  assert(core?.channelOptions?.wsToken, 'wsToken is required for securing the server channel');
++export async function storybookDevServer(
++  options: Options,
++  server: Awaited<ReturnType<typeof getServer>>
++) {
++  const core = await options.presets.apply('core');
+ 
+-  const serverChannel = await options.presets.apply(
+-    'experimental_serverChannel',
+-    getServerChannel(server, core.channelOptions.wsToken)
+-  );
++  const app = polka({ server });
+ 
+   const workingDir = process.cwd();
+   const configDir = options.configDir;
+@@ -62,7 +57,7 @@ export async function storybookDevServer(options: Options) {
+     app,
+     storyIndexGeneratorPromise,
+     normalizedStories,
+-    serverChannel,
++    channel: options.channel,
+     workingDir,
+     configDir,
+   });
+@@ -110,7 +105,7 @@ export async function storybookDevServer(options: Options) {
+         options,
+         router: app,
+         server,
+-        channel: serverChannel,
++        channel: options.channel,
+       });
+ 
+   let previewResult: Awaited<ReturnType<(typeof previewBuilder)['start']>> =
+@@ -124,7 +119,7 @@ export async function storybookDevServer(options: Options) {
+         options,
+         router: app,
+         server,
+-        channel: serverChannel,
++        channel: options.channel,
+       })
+       .catch(async (e: any) => {
+         logger.error('Failed to build the preview');
+diff --git a/code/core/src/core-server/load.ts b/code/core/src/core-server/load.ts
+index 8ac8ca7d19..0c0d716dce 100644
+--- a/code/core/src/core-server/load.ts
++++ b/code/core/src/core-server/load.ts
+@@ -1,3 +1,4 @@
++import { Channel } from 'storybook/internal/channels';
+ import {
+   getProjectRoot,
+   loadAllPresets,
+@@ -48,6 +49,9 @@ export async function loadStorybook(
+   // We need to do this because builders might introduce 'overridePresets' which we need to take into account
+   // We hope to remove this in SB8
+ 
++  // no-op channel, as it's only relevant in dev mode
++  const channel = new Channel({});
++
+   let presets = await loadAllPresets({
+     corePresets,
+     overridePresets: [
+@@ -55,6 +59,7 @@ export async function loadStorybook(
+     ],
+     ...options,
+     isCritical: true,
++    channel,
+   });
+ 
+   const { renderer, builder } = await presets.apply('core', {});
+@@ -77,6 +82,7 @@ export async function loadStorybook(
+     overridePresets: [
+       import.meta.resolve('storybook/internal/core-server/presets/common-override-preset'),
+     ],
++    channel,
+     ...options,
+   });
+ 
+diff --git a/code/core/src/core-server/presets/common-preset.ts b/code/core/src/core-server/presets/common-preset.ts
+index bc1e172fa3..2238794561 100644
+--- a/code/core/src/core-server/presets/common-preset.ts
++++ b/code/core/src/core-server/presets/common-preset.ts
+@@ -1,4 +1,3 @@
+-import { randomUUID } from 'node:crypto';
+ import { existsSync } from 'node:fs';
+ import { readFile } from 'node:fs/promises';
+ 
+@@ -41,6 +40,7 @@ import { defaultFavicon, defaultStaticDirs } from '../utils/constants';
+ import { initializeSaveStory } from '../utils/save-story/save-story';
+ import { parseStaticDir } from '../utils/server-statics';
+ import { type OptionsWithRequiredCache, initializeWhatsNew } from '../utils/whats-new';
++import { getWsToken } from './wsToken';
+ 
+ const interpolate = (string: string, data: Record<string, string> = {}) =>
+   Object.entries(data).reduce((acc, [k, v]) => acc.replace(new RegExp(`%${k}%`, 'g'), v), string);
+@@ -191,12 +191,11 @@ export const experimental_serverAPI = (extension: Record<string, Function>, opti
+  * ...existing, someConfig })`, just overwriting everything and not merging with the existing
+  * values.
+  */
+-const wsToken = randomUUID();
+ export const core = async (existing: CoreConfig, options: Options): Promise<CoreConfig> => ({
+   ...existing,
+   channelOptions: {
+     ...(existing?.channelOptions ?? {}),
+-    ...(options.configType === 'DEVELOPMENT' ? { wsToken } : {}),
++    ...(options.configType === 'DEVELOPMENT' ? { wsToken: getWsToken() } : {}),
+   },
+   disableTelemetry: options.disableTelemetry === true,
+   enableCrashReports:
+diff --git a/code/core/src/core-server/presets/wsToken.ts b/code/core/src/core-server/presets/wsToken.ts
+new file mode 100644
+index 0000000000..16491ee498
+--- /dev/null
++++ b/code/core/src/core-server/presets/wsToken.ts
+@@ -0,0 +1,22 @@
++import { randomUUID } from 'crypto';
++
++/**
++ * This function generates a WebSocket token and stores it in the global scope, ensuring it is a
++ * singleton.
++ *
++ * This is because otherwise there is a cyclical dependency between the server channel and the
++ * presets:
++ *
++ * 1. Token is needed to create the server channel
++ * 2. Initial loading of all presets needs the server channel
++ * 3. Core preset needs to have the token in its channel options
++ *
++ * By making the token a shared singleton, we can ensure that both the server channel and the
++ * presets have access to the same token without creating this circular dependency.
++ */
++export const getWsToken = () => {
++  if (!globalThis.STORYBOOK_WEBSOCKET_TOKEN) {
++    globalThis.STORYBOOK_WEBSOCKET_TOKEN = randomUUID();
++  }
++  return globalThis.STORYBOOK_WEBSOCKET_TOKEN;
++};
+diff --git a/code/core/src/core-server/utils/doTelemetry.ts b/code/core/src/core-server/utils/doTelemetry.ts
+index 2e6464dcfb..447a96a696 100644
+--- a/code/core/src/core-server/utils/doTelemetry.ts
++++ b/code/core/src/core-server/utils/doTelemetry.ts
+@@ -28,7 +28,11 @@ export async function doTelemetry(
+       }
+       sendTelemetryError(err, 'dev', {
+         cliOptions: options,
+-        presetOptions: { ...options, corePresets: [], overridePresets: [] },
++        presetOptions: {
++          ...options,
++          corePresets: [],
++          overridePresets: [],
++        },
+       });
+       return;
+     }
+diff --git a/code/core/src/core-server/utils/index-json.ts b/code/core/src/core-server/utils/index-json.ts
+index 5c098805db..daf33d195a 100644
+--- a/code/core/src/core-server/utils/index-json.ts
++++ b/code/core/src/core-server/utils/index-json.ts
+@@ -1,6 +1,7 @@
+ import { writeFile } from 'node:fs/promises';
+ import { basename } from 'node:path';
+ 
++import type { ChannelLike } from 'storybook/internal/channels';
+ import { STORY_INDEX_INVALIDATED } from 'storybook/internal/core-events';
+ import type { NormalizedStoriesSpecifier } from 'storybook/internal/types';
+ 
+@@ -8,7 +9,6 @@ import { debounce } from 'es-toolkit/function';
+ import type { Polka } from 'polka';
+ 
+ import type { StoryIndexGenerator } from './StoryIndexGenerator';
+-import type { ServerChannel } from './get-server-channel';
+ import { watchStorySpecifiers } from './watch-story-specifiers';
+ import { watchConfig } from './watchConfig';
+ 
+@@ -28,17 +28,17 @@ export function registerIndexJsonRoute({
+   storyIndexGeneratorPromise,
+   workingDir = process.cwd(),
+   configDir,
+-  serverChannel,
++  channel,
+   normalizedStories,
+ }: {
+   app: Polka;
+   storyIndexGeneratorPromise: Promise<StoryIndexGenerator>;
+-  serverChannel: ServerChannel;
++  channel: ChannelLike;
+   workingDir?: string;
+   configDir?: string;
+   normalizedStories: NormalizedStoriesSpecifier[];
+ }) {
+-  const maybeInvalidate = debounce(() => serverChannel.emit(STORY_INDEX_INVALIDATED), DEBOUNCE, {
++  const maybeInvalidate = debounce(() => channel.emit(STORY_INDEX_INVALIDATED), DEBOUNCE, {
+     edges: ['leading', 'trailing'],
+   });
+   watchStorySpecifiers(normalizedStories, { workingDir }, async (path, removed) => {
+diff --git a/code/core/src/core-server/utils/whats-new.ts b/code/core/src/core-server/utils/whats-new.ts
+index c63bf60086..b9ab06edd2 100644
+--- a/code/core/src/core-server/utils/whats-new.ts
++++ b/code/core/src/core-server/utils/whats-new.ts
+@@ -101,7 +101,11 @@ export function initializeWhatsNew(
+         if (isTelemetryEnabled) {
+           await sendTelemetryError(error, 'core-config', {
+             cliOptions: options,
+-            presetOptions: { ...options, corePresets: [], overridePresets: [] },
++            presetOptions: {
++              ...options,
++              corePresets: [],
++              overridePresets: [],
++            },
+             skipPrompt: true,
+           });
+         }
+@@ -115,7 +119,11 @@ export function initializeWhatsNew(
+     if (isTelemetryEnabled) {
+       await sendTelemetryError(error, 'browser', {
+         cliOptions: options,
+-        presetOptions: { ...options, corePresets: [], overridePresets: [] },
++        presetOptions: {
++          ...options,
++          corePresets: [],
++          overridePresets: [],
++        },
+         skipPrompt: true,
+       });
+     }
+diff --git a/code/core/src/types/modules/core-common.ts b/code/core/src/types/modules/core-common.ts
+index 2f9330515d..582966f5bf 100644
+--- a/code/core/src/types/modules/core-common.ts
++++ b/code/core/src/types/modules/core-common.ts
+@@ -1,4 +1,5 @@
+ // should be node:http, but that caused the ui/manager to fail to build, might be able to switch this back once ui/manager is in the core
++import type { ChannelLike } from 'storybook/internal/channels';
+ import type { FileSystemCache } from 'storybook/internal/common';
+ import { type StoryIndexGenerator } from 'storybook/internal/core-server';
+ import { type CsfFile } from 'storybook/internal/csf-tools';
+@@ -19,10 +20,6 @@ import type { SupportedRenderer } from './renderers';
+ export type BuilderName = 'webpack5' | '@storybook/builder-webpack5' | string;
+ export type RendererName = string;
+ 
+-interface ServerChannel {
+-  emit(type: string, args?: any): void;
+-}
+-
+ export interface CoreConfig {
+   builder?:
+     | BuilderName
+@@ -221,6 +218,7 @@ export interface BuilderOptions {
+ export interface StorybookConfigOptions {
+   presets: Presets;
+   presetsList?: LoadedPreset[];
++  channel: ChannelLike;
+ }
+ 
+ export type Options = LoadOptions &
+@@ -259,7 +257,7 @@ export interface Builder<Config, BuilderStats extends Stats = Stats> {
+     startTime: ReturnType<typeof process.hrtime>;
+     router: ServerApp;
+     server: HttpServer;
+-    channel: ServerChannel;
++    channel: ChannelLike;
+   }) => Promise<void | {
+     stats?: BuilderStats;
+     totalTime: ReturnType<typeof process.hrtime>;
+diff --git a/code/core/src/typings.d.ts b/code/core/src/typings.d.ts
+index b82e449d0c..512933868d 100644
+--- a/code/core/src/typings.d.ts
++++ b/code/core/src/typings.d.ts
+@@ -6,6 +6,8 @@ declare var LOGLEVEL: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent' |
+ declare var REFS: any;
+ declare var VERSIONCHECK: any;
+ 
++declare var STORYBOOK_WEBSOCKET_TOKEN: string;
++
+ declare var STORYBOOK_ADDON_STATE: Record<string, any>;
+ declare var STORYBOOK_BUILDER: import('./types/modules/builders').SupportedBuilder | undefined;
+ declare var STORYBOOK_FRAMEWORK:
+diff --git a/code/frameworks/angular/src/builders/build-storybook/index.ts b/code/frameworks/angular/src/builders/build-storybook/index.ts
+index 2f34d7bc3a..3401d2aaea 100644
+--- a/code/frameworks/angular/src/builders/build-storybook/index.ts
++++ b/code/frameworks/angular/src/builders/build-storybook/index.ts
+@@ -31,6 +31,7 @@ import { errorSummary, printErrorDetails } from '../utils/error-handler';
+ import { runCompodoc } from '../utils/run-compodoc';
+ import type { StandaloneOptions } from '../utils/standalone-options';
+ import { VERSION } from '@angular/core';
++import { Channel } from 'storybook/internal/channels';
+ 
+ addToGlobalContext('cliVersion', versions.storybook);
+ 
+@@ -192,7 +193,12 @@ async function runInstance(options: StandaloneBuildOptions) {
+       'build',
+       {
+         cliOptions: options,
+-        presetOptions: { ...options, corePresets: [], overridePresets: [] },
++        presetOptions: {
++          ...options,
++          corePresets: [],
++          overridePresets: [],
++          channel: new Channel({}),
++        },
+         printError: printErrorDetails,
+       },
+       async () => {
+diff --git a/code/frameworks/angular/src/builders/start-storybook/index.ts b/code/frameworks/angular/src/builders/start-storybook/index.ts
+index 977dd4cc71..b790027088 100644
+--- a/code/frameworks/angular/src/builders/start-storybook/index.ts
++++ b/code/frameworks/angular/src/builders/start-storybook/index.ts
+@@ -32,6 +32,7 @@ import { errorSummary, printErrorDetails } from '../utils/error-handler';
+ import { runCompodoc } from '../utils/run-compodoc';
+ import type { StandaloneOptions } from '../utils/standalone-options';
+ import { VERSION } from '@angular/core';
++import { Channel } from 'storybook/internal/channels';
+ 
+ addToGlobalContext('cliVersion', versions.storybook);
+ 
+@@ -238,7 +239,12 @@ async function runInstance(options: StandaloneOptions) {
+       'dev',
+       {
+         cliOptions: options,
+-        presetOptions: { ...options, corePresets: [], overridePresets: [] },
++        presetOptions: {
++          ...options,
++          corePresets: [],
++          overridePresets: [],
++          channel: new Channel({}),
++        },
+         printError: printErrorDetails,
+       },
+       () => {
+diff --git a/yarn.lock b/yarn.lock
+index ab9fa385db..60717fa425 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -7728,6 +7728,7 @@ __metadata:
+   version: 0.0.0-use.local
+   resolution: "@storybook/addon-vitest@workspace:code/addons/vitest"
+   dependencies:
++    "@storybook/addon-a11y": "workspace:*"
+     "@storybook/global": "npm:^5.0.0"
+     "@storybook/icons": "npm:^2.0.1"
+     "@types/istanbul-lib-report": "npm:^3.0.3"

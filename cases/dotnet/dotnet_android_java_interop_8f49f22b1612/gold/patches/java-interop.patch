@@ -1,0 +1,165 @@
+diff --git a/src/Java.Interop/GlobalSuppressions.cs b/src/Java.Interop/GlobalSuppressions.cs
+index e5cc3b53..810bbb22 100644
+--- a/src/Java.Interop/GlobalSuppressions.cs
++++ b/src/Java.Interop/GlobalSuppressions.cs
+@@ -67,6 +67,7 @@ using System.Diagnostics.CodeAnalysis;
+ [assembly: SuppressMessage ("Performance", "CA1813:Avoid unsealed attributes", Justification = "Can't break public API", Scope = "type", Target = "~T:Java.Interop.JniValueMarshalerAttribute")]
+ 
+ [assembly: SuppressMessage ("Performance", "CA1815:Override equals and operator equals on value types", Justification = "<Pending>", Scope = "type", Target = "~T:Java.Interop.JniNativeMethodRegistration")]
++[assembly: SuppressMessage ("Performance", "CA1815:Override equals and operator equals on value types", Justification = "<Pending>", Scope = "type", Target = "~T:Java.Interop.JniNativeMethod")]
+ [assembly: SuppressMessage ("Performance", "CA1815:Override equals and operator equals on value types", Justification = "<Pending>", Scope = "type", Target = "~T:Java.Interop.JniNativeMethodRegistrationArguments")]
+ [assembly: SuppressMessage ("Performance", "CA1815:Override equals and operator equals on value types", Justification = "<Pending>", Scope = "type", Target = "~T:Java.Interop.JniTransition")]
+ 
+diff --git a/src/Java.Interop/Java.Interop/JniEnvironment.Types.cs b/src/Java.Interop/Java.Interop/JniEnvironment.Types.cs
+index 1f9391e9..669e509f 100644
+--- a/src/Java.Interop/Java.Interop/JniEnvironment.Types.cs
++++ b/src/Java.Interop/Java.Interop/JniEnvironment.Types.cs
+@@ -276,6 +276,29 @@ namespace Java.Interop
+ 				}
+ 			}
+ 
++			/// <summary>
++			/// Registers JNI native methods using blittable <see cref="JniNativeMethod"/> structs
++			/// with raw function pointers and UTF-8 name/signature pointers.
++			/// Calls the JNI RegisterNatives function directly without delegate marshaling.
++			/// </summary>
++			public static unsafe void RegisterNatives (JniObjectReference type, ReadOnlySpan<JniNativeMethod> methods)
++			{
++				IntPtr env = JniEnvironment.EnvironmentPointer;
++				fixed (JniNativeMethod* methodsPtr = methods) {
++#if FEATURE_JNIENVIRONMENT_JI_FUNCTION_POINTERS
++					var registerNatives = (delegate* unmanaged<IntPtr, IntPtr, JniNativeMethod*, int, int>)
++						(void*) (*((JNIEnv**)env))->RegisterNatives;
++#else
++					var registerNatives = (delegate* unmanaged<IntPtr, IntPtr, JniNativeMethod*, int, int>)
++						JniEnvironment.CurrentInfo.Invoker.env.RegisterNatives;
++#endif
++					int r = registerNatives (env, type.Handle, methodsPtr, methods.Length);
++					if (r != 0) {
++						throw new InvalidOperationException ($"Could not register native methods for class '{GetJniTypeNameFromClass (type)}'; JNIEnv::RegisterNatives() returned {r}.");
++					}
++				}
++			}
++
+ 			public static void UnregisterNatives (JniObjectReference type)
+ 			{
+ 				int r   = _UnregisterNatives (type);
+diff --git a/src/Java.Interop/Java.Interop/JniNativeMethodRegistration.cs b/src/Java.Interop/Java.Interop/JniNativeMethodRegistration.cs
+index 20f99f94..212b8b48 100644
+--- a/src/Java.Interop/Java.Interop/JniNativeMethodRegistration.cs
++++ b/src/Java.Interop/Java.Interop/JniNativeMethodRegistration.cs
+@@ -1,6 +1,7 @@
+ #nullable enable
+ 
+ using System;
++using System.Runtime.InteropServices;
+ using System.Threading;
+ 
+ using Java.Interop;
+@@ -20,4 +21,23 @@ namespace Java.Interop {
+ 			Marshaler   = marshaler ?? throw new ArgumentNullException (nameof (marshaler));
+ 		}
+ 	}
++
++	/// <summary>
++	/// Blittable JNI native method registration for use with raw function pointers.
++	/// Layout matches JNI's <c>JNINativeMethod</c> struct exactly.
++	/// </summary>
++	[StructLayout (LayoutKind.Sequential)]
++	public unsafe struct JniNativeMethod
++	{
++		byte* name;
++		byte* signature;
++		IntPtr functionPointer;
++
++		public JniNativeMethod (byte* name, byte* signature, IntPtr functionPointer)
++		{
++			this.name = name;
++			this.signature = signature;
++			this.functionPointer = functionPointer;
++		}
++	}
+ }
+diff --git a/src/Java.Interop/PublicAPI.Unshipped.txt b/src/Java.Interop/PublicAPI.Unshipped.txt
+index 90fda8ff..5b91a972 100644
+--- a/src/Java.Interop/PublicAPI.Unshipped.txt
++++ b/src/Java.Interop/PublicAPI.Unshipped.txt
+@@ -12,3 +12,7 @@ Java.Interop.JniRuntime.JniValueManager.GetPeer(Java.Interop.JniObjectReference
+ Java.Interop.JniTypeSignatureAttribute.InvokerType.get -> System.Type?
+ Java.Interop.JniTypeSignatureAttribute.InvokerType.set -> void
+ Java.Interop.IJavaPeerable.JniObjectReferenceControlBlock.get -> nint
++Java.Interop.JniNativeMethod
++Java.Interop.JniNativeMethod.JniNativeMethod() -> void
++Java.Interop.JniNativeMethod.JniNativeMethod(byte* name, byte* signature, nint functionPointer) -> void
++static Java.Interop.JniEnvironment.Types.RegisterNatives(Java.Interop.JniObjectReference type, System.ReadOnlySpan<Java.Interop.JniNativeMethod> methods) -> void
+diff --git a/tests/Java.Interop-Tests/Java.Interop-Tests.csproj b/tests/Java.Interop-Tests/Java.Interop-Tests.csproj
+index b4ae9949..8e3c94ed 100644
+--- a/tests/Java.Interop-Tests/Java.Interop-Tests.csproj
++++ b/tests/Java.Interop-Tests/Java.Interop-Tests.csproj
+@@ -53,6 +53,7 @@
+     <JavaInteropTestJar Include="$(MSBuildThisFileDirectory)java\net\dot\jni\test\RenameClassDerived.java" />
+     <JavaInteropTestJar Include="$(MSBuildThisFileDirectory)java\net\dot\jni\test\AndroidInterface.java" />
+     <JavaInteropTestJar Include="$(MSBuildThisFileDirectory)java\net\dot\jni\test\DesugarAndroidInterface$_CC.java" />
++    <JavaInteropTestJar Include="$(MSBuildThisFileDirectory)java\net\dot\jni\test\RegisterNativesTestType.java" />
+     <JavaInteropTestJar Include="$(MSBuildThisFileDirectory)java\net\dot\jni\test\SelfRegistration.java" />
+     <JavaInteropTestJar Include="$(MSBuildThisFileDirectory)java\net\dot\jni\test\TestType.java" />
+   </ItemGroup>
+diff --git a/tests/Java.Interop-Tests/Java.Interop/JniTypeTest.cs b/tests/Java.Interop-Tests/Java.Interop/JniTypeTest.cs
+index f5600283..fe14270c 100644
+--- a/tests/Java.Interop-Tests/Java.Interop/JniTypeTest.cs
++++ b/tests/Java.Interop-Tests/Java.Interop/JniTypeTest.cs
+@@ -1,4 +1,5 @@
+ using System;
++using System.Runtime.InteropServices;
+ 
+ using Java.Interop;
+ 
+@@ -182,6 +183,37 @@ namespace Java.InteropTests
+ 				Assert.AreEqual (JniObjectReferenceType.Global, TestType_class.PeerReference.Type);
+ 			}
+ 		}
++
++		[Test]
++		public unsafe void RegisterNativeMethods_JniNativeMethod ()
++		{
++			using (var nativeClass = new JniType ("net/dot/jni/test/RegisterNativesTestType")) {
++				Span<JniNativeMethod> methods = stackalloc JniNativeMethod [1];
++				fixed (byte* namePtr = "add"u8)
++				fixed (byte* sigPtr = "(II)I"u8) {
++					methods [0] = new JniNativeMethod (namePtr, sigPtr,
++						(IntPtr) (delegate* unmanaged<IntPtr, IntPtr, int, int, int>) &NativeAdd);
++					JniEnvironment.Types.RegisterNatives (nativeClass.PeerReference, methods);
++				}
++
++				// Call the native method from Java to verify registration worked
++				var ctor = JniEnvironment.InstanceMethods.GetMethodID (nativeClass.PeerReference, "<init>", "()V");
++				var obj = JniEnvironment.Object.NewObject (nativeClass.PeerReference, ctor);
++				try {
++					var addMethod = JniEnvironment.InstanceMethods.GetMethodID (nativeClass.PeerReference, "add", "(II)I");
++					var args = stackalloc JniArgumentValue [2];
++					args [0] = new JniArgumentValue (3);
++					args [1] = new JniArgumentValue (4);
++					int result = JniEnvironment.InstanceMethods.CallIntMethod (obj, addMethod, args);
++					Assert.AreEqual (7, result);
++				} finally {
++					JniObjectReference.Dispose (ref obj);
++				}
++			}
++		}
++
++		[UnmanagedCallersOnly]
++		static int NativeAdd (IntPtr jnienv, IntPtr self, int a, int b) => a + b;
+ 	}
+ }
+ 
+diff --git a/tests/Java.Interop-Tests/java/net/dot/jni/test/RegisterNativesTestType.java b/tests/Java.Interop-Tests/java/net/dot/jni/test/RegisterNativesTestType.java
+new file mode 100644
+index 00000000..e4d51a2c
+--- /dev/null
++++ b/tests/Java.Interop-Tests/java/net/dot/jni/test/RegisterNativesTestType.java
+@@ -0,0 +1,5 @@
++package net.dot.jni.test;
++
++public class RegisterNativesTestType {
++	public native int add (int a, int b);
++}

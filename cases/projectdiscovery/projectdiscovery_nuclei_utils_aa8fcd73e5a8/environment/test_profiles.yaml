@@ -1,0 +1,18 @@
+profiles:
+  nuclei-hidden:
+    repo: nuclei
+    workdir: repos/projectdiscovery/nuclei
+    command: go test -vet=off -count=1 -json ./pkg/fuzz/component
+    dependency_image: ecosyncbench/base/go:1.26-bookworm
+    status: implemented
+    test_files:
+    - pkg/fuzz/component/path_contract_test.go
+  utils-hidden:
+    repo: utils
+    workdir: repos/projectdiscovery/utils
+    command: go run ./url/path_contract_generator.go ./url ./url/path_contract_candidates_test.go && go test -vet=off -count=1 -json ./url
+    dependency_image: ecosyncbench/base/go:1.26-bookworm
+    status: implemented
+    test_files:
+    - url/path_contract_generator.go
+    - url/path_contract_test.go

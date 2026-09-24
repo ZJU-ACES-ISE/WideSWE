@@ -1,0 +1,589 @@
+diff --git a/README.md b/README.md
+index 7058e72..ceade5b 100644
+--- a/README.md
++++ b/README.md
+@@ -199,8 +199,41 @@ Configured in `volumeAttributes` of the PV's CSI section:
+ | `cacheSize` | no | `10000000000` | Max cache size in bytes |
+ | `pollIntervalSecs` | no | `30` | Remote change polling interval |
+ | `metadataTtlMs` | no | `10000` | Kernel metadata cache TTL in milliseconds |
++| `inodeSoftLimit` | no | `0` | Soft cap on in-memory inode table size (0 disables). When exceeded, `hf-mount` evicts the oldest untouched entries before inserting new ones, putting backpressure on the workload instead of letting the sidecar OOM. |
++| `lruSweepIntervalMs` | no | `5000` | Interval between background LRU sweeps that ask the kernel to drop dentries whose inode still has positive refcount. Only consulted when `inodeSoftLimit > 0`. |
+ | `tokenKey` | no | `token` | Key in the Secret to use as the HF token |
+ | `mountFlags` | no | | Comma-separated hf-mount flags for inline ephemeral volumes (e.g. `advanced-writes,uid=1000`) |
++| `memoryLimit` | no | | Memory limit for the injected `hf-mount` sidecar (e.g. `2Gi`). Requires the admission webhook. |
++| `memoryRequest` | no | `32Mi` | Memory request for the injected `hf-mount` sidecar (e.g. `128Mi`). Requires the admission webhook. |
++| `cpuLimit` | no | | CPU limit for the injected `hf-mount` sidecar (e.g. `1`, `500m`). Requires the admission webhook. |
++| `cpuRequest` | no | `10m` | CPU request for the injected `hf-mount` sidecar (e.g. `100m`). Requires the admission webhook. |
++
++### Sidecar resources
++
++When the admission webhook is enabled, the `hf-mount` FUSE sidecar is injected
++into every pod using an HF CSI volume. By default it ships with modest
++requests (`cpu: 10m`, `memory: 32Mi`) and **no limits**, which can let the
++cache grow unbounded and trigger node memory pressure under heavy traffic. Use
++the `memoryLimit` / `memoryRequest` / `cpuLimit` / `cpuRequest`
++`volumeAttributes` to cap it — values are standard Kubernetes quantity strings
++(e.g. `"2Gi"`, `"500m"`).
++
++```yaml
++volumes:
++  - name: hf-data
++    csi:
++      driver: hf.csi.huggingface.co
++      volumeAttributes:
++        sourceType: bucket
++        sourceId: username/my-bucket
++        memoryLimit: 2Gi
++        memoryRequest: 256Mi
++```
++
++The sidecar is a single container shared across every HF CSI volume in the
++pod. If multiple volumes set the same resource attribute with different
++values, the first volume (in `pod.spec.volumes` order) wins; invalid quantity
++strings are logged and ignored so a typo never blocks pod admission.
+ 
+ ## Mount options
+ 
+diff --git a/pkg/driver/mounter.go b/pkg/driver/mounter.go
+index 08124a7..182493c 100644
+--- a/pkg/driver/mounter.go
++++ b/pkg/driver/mounter.go
+@@ -11,17 +11,19 @@ const (
+ )
+ 
+ type MountOptions struct {
+-	Revision         string
+-	HubEndpoint      string
+-	CacheDir         string
+-	CacheSize        string
+-	PollIntervalSecs string
+-	MetadataTtlMs    string
+-	ReadOnly         bool
+-	ExtraArgs        []string // passthrough flags from PV mountOptions
+-	TokenFile        string   // path to a file where the token is written for live refresh
+-	WorkloadPodUID   string   // UID of the workload pod consuming this volume
+-	VolumeMountGroup string   // fsGroup from pod security context, passed via CSI VOLUME_MOUNT_GROUP
++	Revision           string
++	HubEndpoint        string
++	CacheDir           string
++	CacheSize          string
++	PollIntervalSecs   string
++	MetadataTtlMs      string
++	InodeSoftLimit     string
++	LruSweepIntervalMs string
++	ReadOnly           bool
++	ExtraArgs          []string // passthrough flags from PV mountOptions
++	TokenFile          string   // path to a file where the token is written for live refresh
++	WorkloadPodUID     string   // UID of the workload pod consuming this volume
++	VolumeMountGroup   string   // fsGroup from pod security context, passed via CSI VOLUME_MOUNT_GROUP
+ }
+ 
+ type Mounter interface {
+@@ -64,6 +66,12 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
+ 	if opts.MetadataTtlMs != "" {
+ 		args = append(args, "--metadata-ttl-ms", opts.MetadataTtlMs)
+ 	}
++	if opts.InodeSoftLimit != "" {
++		args = append(args, "--inode-soft-limit", opts.InodeSoftLimit)
++	}
++	if opts.LruSweepIntervalMs != "" {
++		args = append(args, "--lru-sweep-interval-ms", opts.LruSweepIntervalMs)
++	}
+ 	if opts.ReadOnly {
+ 		args = append(args, "--read-only")
+ 	}
+diff --git a/pkg/driver/node.go b/pkg/driver/node.go
+index f6a4417..7f66443 100644
+--- a/pkg/driver/node.go
++++ b/pkg/driver/node.go
+@@ -18,17 +18,19 @@ const (
+ 	defaultRevision = "main"
+ 	defaultTokenKey = "token"
+ 
+-	volumeCtxSourceType   = "sourceType"
+-	volumeCtxSourceID     = "sourceId"
+-	volumeCtxRevision     = "revision"
+-	volumeCtxHubEndpoint  = "hubEndpoint"
+-	volumeCtxCacheDir     = "cacheDir"
+-	volumeCtxCacheSize    = "cacheSize"
+-	volumeCtxPollInterval = "pollIntervalSecs"
+-	volumeCtxMetadataTtl  = "metadataTtlMs"
+-	volumeCtxTokenKey     = "tokenKey"
+-	volumeCtxMountFlags   = "mountFlags"
+-	volumeCtxPodUID       = "csi.storage.k8s.io/pod.uid"
++	volumeCtxSourceType         = "sourceType"
++	volumeCtxSourceID           = "sourceId"
++	volumeCtxRevision           = "revision"
++	volumeCtxHubEndpoint        = "hubEndpoint"
++	volumeCtxCacheDir           = "cacheDir"
++	volumeCtxCacheSize          = "cacheSize"
++	volumeCtxPollInterval       = "pollIntervalSecs"
++	volumeCtxMetadataTtl        = "metadataTtlMs"
++	volumeCtxInodeSoftLimit     = "inodeSoftLimit"
++	volumeCtxLruSweepIntervalMs = "lruSweepIntervalMs"
++	volumeCtxTokenKey           = "tokenKey"
++	volumeCtxMountFlags         = "mountFlags"
++	volumeCtxPodUID             = "csi.storage.k8s.io/pod.uid"
+ )
+ 
+ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
+@@ -127,15 +129,17 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
+ 
+ 	// Build mount options.
+ 	opts := MountOptions{
+-		Revision:         getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
+-		HubEndpoint:      volCtx[volumeCtxHubEndpoint],
+-		CacheDir:         getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID))),
+-		CacheSize:        volCtx[volumeCtxCacheSize],
+-		PollIntervalSecs: volCtx[volumeCtxPollInterval],
+-		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
+-		ReadOnly:         req.GetReadonly(),
+-		WorkloadPodUID:   volCtx[volumeCtxPodUID],
+-		VolumeMountGroup: volumeMountGroup,
++		Revision:           getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
++		HubEndpoint:        volCtx[volumeCtxHubEndpoint],
++		CacheDir:           getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID))),
++		CacheSize:          volCtx[volumeCtxCacheSize],
++		PollIntervalSecs:   volCtx[volumeCtxPollInterval],
++		MetadataTtlMs:      volCtx[volumeCtxMetadataTtl],
++		InodeSoftLimit:     volCtx[volumeCtxInodeSoftLimit],
++		LruSweepIntervalMs: volCtx[volumeCtxLruSweepIntervalMs],
++		ReadOnly:           req.GetReadonly(),
++		WorkloadPodUID:     volCtx[volumeCtxPodUID],
++		VolumeMountGroup:   volumeMountGroup,
+ 	}
+ 
+ 	// When the pod specifies an fsGroup, pass --uid and --gid to hf-mount-fuse
+diff --git a/pkg/webhook/handler.go b/pkg/webhook/handler.go
+index b195438..fd1913b 100644
+--- a/pkg/webhook/handler.go
++++ b/pkg/webhook/handler.go
+@@ -8,6 +8,7 @@ import (
+ 	"net/http"
+ 
+ 	corev1 "k8s.io/api/core/v1"
++	"k8s.io/apimachinery/pkg/api/resource"
+ 	"k8s.io/klog/v2"
+ 	"sigs.k8s.io/controller-runtime/pkg/client"
+ 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+@@ -25,8 +26,77 @@ const (
+ 
+ 	// TmpVolumeMountPath is the mount path of the tmp volume inside the sidecar.
+ 	TmpVolumeMountPath = "/hf-csi-tmp"
++
++	// volumeAttribute keys recognised by the injector to configure the
++	// resource requests/limits of the injected hf-mount sidecar. Values are
++	// standard Kubernetes quantity strings (e.g. "2Gi", "500m").
++	volumeAttrMemoryLimit   = "memoryLimit"
++	volumeAttrMemoryRequest = "memoryRequest"
++	volumeAttrCPULimit      = "cpuLimit"
++	volumeAttrCPURequest    = "cpuRequest"
+ )
+ 
++// sidecarResources holds the already-parsed quantities collected from
++// volumeAttributes to apply to the injected hf-mount sidecar container.
++// A nil field means "no user override for this field".
++type sidecarResources struct {
++	MemoryLimit   *resource.Quantity
++	MemoryRequest *resource.Quantity
++	CPULimit      *resource.Quantity
++	CPURequest    *resource.Quantity
++}
++
++// mergeMax combines another per-volume hint into r by taking, per field, the
++// larger of the two quantities. The sidecar is a single container shared by
++// every HF CSI volume in the pod, so conflicting per-volume hints cannot
++// both be honoured; picking the max is order-independent and biases toward
++// the most generous hint, which is safe for a shared FUSE process.
++func (r *sidecarResources) mergeMax(other sidecarResources) {
++	r.MemoryLimit = maxQuantity(r.MemoryLimit, other.MemoryLimit)
++	r.MemoryRequest = maxQuantity(r.MemoryRequest, other.MemoryRequest)
++	r.CPULimit = maxQuantity(r.CPULimit, other.CPULimit)
++	r.CPURequest = maxQuantity(r.CPURequest, other.CPURequest)
++}
++
++// maxQuantity returns the larger of a and b, treating nil as "not set".
++func maxQuantity(a, b *resource.Quantity) *resource.Quantity {
++	switch {
++	case a == nil:
++		return b
++	case b == nil:
++		return a
++	case a.Cmp(*b) < 0:
++		return b
++	default:
++		return a
++	}
++}
++
++// resourcesFromVolumeAttrs parses each resource field from volumeAttributes
++// up front. Invalid quantity strings are dropped (with a klog warning) and
++// treated as "not set" — this guarantees that an invalid early-volume hint
++// cannot shadow a valid later-volume hint in mergeMax.
++func resourcesFromVolumeAttrs(attrs map[string]string) sidecarResources {
++	return sidecarResources{
++		MemoryLimit:   parseQuantityAttr(volumeAttrMemoryLimit, attrs[volumeAttrMemoryLimit]),
++		MemoryRequest: parseQuantityAttr(volumeAttrMemoryRequest, attrs[volumeAttrMemoryRequest]),
++		CPULimit:      parseQuantityAttr(volumeAttrCPULimit, attrs[volumeAttrCPULimit]),
++		CPURequest:    parseQuantityAttr(volumeAttrCPURequest, attrs[volumeAttrCPURequest]),
++	}
++}
++
++func parseQuantityAttr(field, raw string) *resource.Quantity {
++	if raw == "" {
++		return nil
++	}
++	q, err := resource.ParseQuantity(raw)
++	if err != nil {
++		klog.Warningf("Webhook: ignoring invalid %s=%q in volumeAttributes: %v", field, raw, err)
++		return nil
++	}
++	return &q
++}
++
+ // Config holds the webhook configuration.
+ type Config struct {
+ 	// SidecarImage is the container image for the sidecar mounter.
+@@ -58,8 +128,9 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
+ 		return admission.Allowed("not a create")
+ 	}
+ 
+-	// Count HF CSI volumes (inline or PV-backed).
+-	volumeCount := i.countHFCSIVolumes(ctx, pod, req.Namespace)
++	// Count HF CSI volumes (inline or PV-backed) and collect resource hints
++	// from their volumeAttributes.
++	volumeCount, resources := i.scanHFCSIVolumes(ctx, pod, req.Namespace)
+ 	if volumeCount == 0 {
+ 		return admission.Allowed("no HF CSI volumes")
+ 	}
+@@ -72,7 +143,7 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
+ 	klog.Infof("Injecting sidecar into pod %s/%s", req.Namespace, pod.GenerateName)
+ 
+ 	// Inject the sidecar container and shared volume.
+-	injectSidecar(pod, i.Config, volumeCount)
++	injectSidecar(pod, i.Config, volumeCount, resources)
+ 
+ 	marshaledPod, err := json.Marshal(pod)
+ 	if err != nil {
+@@ -82,39 +153,48 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
+ 	return admission.PatchResponseFromRaw(req.Object.Raw, marshaledPod)
+ }
+ 
+-// countHFCSIVolumes returns the number of HF CSI volumes in the pod,
+-// including both inline ephemeral and PV-backed via PVC.
+-func (i *Injector) countHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namespace string) int {
++// scanHFCSIVolumes returns the number of HF CSI volumes in the pod
++// (inline ephemeral or PV-backed via PVC) and the merged sidecar resource
++// hints collected from their volumeAttributes.
++func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namespace string) (int, sidecarResources) {
+ 	count := 0
++	var resources sidecarResources
+ 	for _, vol := range pod.Spec.Volumes {
+-		if vol.CSI != nil && vol.CSI.Driver == CSIDriverName {
++		switch {
++		case vol.CSI != nil && vol.CSI.Driver == CSIDriverName:
+ 			count++
+-		} else if vol.PersistentVolumeClaim != nil {
+-			if i.isPVCBackedByHFCSI(ctx, vol.PersistentVolumeClaim.ClaimName, namespace) {
++			resources.mergeMax(resourcesFromVolumeAttrs(vol.CSI.VolumeAttributes))
++		case vol.PersistentVolumeClaim != nil:
++			if pv := i.resolvePVFromPVC(ctx, vol.PersistentVolumeClaim.ClaimName, namespace); pv != nil {
+ 				count++
++				resources.mergeMax(resourcesFromVolumeAttrs(pv.Spec.CSI.VolumeAttributes))
+ 			}
+ 		}
+ 	}
+-	return count
++	return count, resources
+ }
+ 
+-// isPVCBackedByHFCSI resolves a PVC to its PV and checks if the PV uses the HF CSI driver.
+-func (i *Injector) isPVCBackedByHFCSI(ctx context.Context, pvcName, namespace string) bool {
++// resolvePVFromPVC returns the PV backing the given PVC if (and only if) it
++// uses the HF CSI driver, otherwise nil.
++func (i *Injector) resolvePVFromPVC(ctx context.Context, pvcName, namespace string) *corev1.PersistentVolume {
+ 	pvc := &corev1.PersistentVolumeClaim{}
+ 	if err := i.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: pvcName}, pvc); err != nil {
+ 		klog.V(4).Infof("Webhook: cannot resolve PVC %s/%s: %v", namespace, pvcName, err)
+-		return false
++		return nil
+ 	}
+ 	pvName := pvc.Spec.VolumeName
+ 	if pvName == "" {
+-		return false
++		return nil
+ 	}
+ 	pv := &corev1.PersistentVolume{}
+ 	if err := i.client.Get(ctx, client.ObjectKey{Name: pvName}, pv); err != nil {
+ 		klog.V(4).Infof("Webhook: cannot resolve PV %s: %v", pvName, err)
+-		return false
++		return nil
++	}
++	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != CSIDriverName {
++		return nil
+ 	}
+-	return pv.Spec.CSI != nil && pv.Spec.CSI.Driver == CSIDriverName
++	return pv
+ }
+ 
+ // hasSidecar returns true if the sidecar is already injected.
+diff --git a/pkg/webhook/sidecar.go b/pkg/webhook/sidecar.go
+index 5665732..05a58e9 100644
+--- a/pkg/webhook/sidecar.go
++++ b/pkg/webhook/sidecar.go
+@@ -5,14 +5,84 @@ import (
+ 
+ 	corev1 "k8s.io/api/core/v1"
+ 	"k8s.io/apimachinery/pkg/api/resource"
++	"k8s.io/klog/v2"
+ 	"k8s.io/utils/ptr"
+ )
+ 
++var (
++	defaultSidecarCPURequest    = resource.MustParse("10m")
++	defaultSidecarMemoryRequest = resource.MustParse("32Mi")
++)
++
++// buildSidecarResources produces the ResourceRequirements for the injected
++// hf-mount container, applying the already-parsed user overrides on top of
++// the built-in defaults. If a user override results in request > limit for a
++// given resource (e.g. default 32Mi request + memoryLimit: 16Mi), the
++// request is clamped down to the limit so the apiserver never rejects the
++// pod because of a conflicting per-volume hint.
++func buildSidecarResources(overrides sidecarResources) corev1.ResourceRequirements {
++	req := corev1.ResourceRequirements{
++		Requests: corev1.ResourceList{
++			corev1.ResourceCPU:    defaultSidecarCPURequest,
++			corev1.ResourceMemory: defaultSidecarMemoryRequest,
++		},
++	}
++
++	if overrides.CPURequest != nil {
++		req.Requests[corev1.ResourceCPU] = *overrides.CPURequest
++	}
++	if overrides.MemoryRequest != nil {
++		req.Requests[corev1.ResourceMemory] = *overrides.MemoryRequest
++	}
++	if overrides.CPULimit != nil {
++		if req.Limits == nil {
++			req.Limits = corev1.ResourceList{}
++		}
++		req.Limits[corev1.ResourceCPU] = *overrides.CPULimit
++	}
++	if overrides.MemoryLimit != nil {
++		if req.Limits == nil {
++			req.Limits = corev1.ResourceList{}
++		}
++		req.Limits[corev1.ResourceMemory] = *overrides.MemoryLimit
++	}
++
++	clampRequestToLimit(&req, corev1.ResourceCPU)
++	clampRequestToLimit(&req, corev1.ResourceMemory)
++
++	return req
++}
++
++// clampRequestToLimit ensures req.Requests[name] <= req.Limits[name].
++// Violations are clamped (not rejected) so a typo or an accidentally-small
++// limit in volumeAttributes never blocks pod admission.
++func clampRequestToLimit(req *corev1.ResourceRequirements, name corev1.ResourceName) {
++	if req.Limits == nil {
++		return
++	}
++	lim, hasLim := req.Limits[name]
++	if !hasLim {
++		return
++	}
++	rq, hasRq := req.Requests[name]
++	if !hasRq {
++		return
++	}
++	if rq.Cmp(lim) > 0 {
++		klog.Warningf("Webhook: %s request %s exceeds limit %s; clamping request to limit", name, rq.String(), lim.String())
++		req.Requests[name] = lim
++	}
++}
++
+ // injectSidecar adds the hf-mount native sidecar container and the shared
+ // emptyDir volume to the pod spec. The sidecar runs unprivileged: it receives
+ // the FUSE fd from the CSI driver via SCM_RIGHTS (the CSI driver does the
+ // kernel mount).
+-func injectSidecar(pod *corev1.Pod, config Config, volumeCount int) {
++//
++// resources carries optional per-pod resource overrides collected from
++// volumeAttributes. Invalid quantity strings are logged and dropped so a
++// typo never blocks pod admission.
++func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources sidecarResources) {
+ 	// Add the shared emptyDir volume for config + socket communication.
+ 	// Use tmpfs (Memory) because the args file may contain the HF token.
+ 	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+@@ -72,12 +142,7 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int) {
+ 			PeriodSeconds:    1,
+ 			FailureThreshold: 120,
+ 		},
+-		Resources: corev1.ResourceRequirements{
+-			Requests: corev1.ResourceList{
+-				corev1.ResourceCPU:    resource.MustParse("10m"),
+-				corev1.ResourceMemory: resource.MustParse("32Mi"),
+-			},
+-		},
++		Resources: buildSidecarResources(resources),
+ 	}
+ 
+ 	// Prepend as init container (native sidecar, KEP-753).
+diff --git a/pkg/webhook/sidecar_test.go b/pkg/webhook/sidecar_test.go
+new file mode 100644
+index 0000000..2917230
+--- /dev/null
++++ b/pkg/webhook/sidecar_test.go
+@@ -0,0 +1,150 @@
++package webhook
++
++import (
++	"testing"
++
++	corev1 "k8s.io/api/core/v1"
++	"k8s.io/apimachinery/pkg/api/resource"
++)
++
++// quantityPtr is a small helper to get a *resource.Quantity from a literal.
++func quantityPtr(s string) *resource.Quantity {
++	q := resource.MustParse(s)
++	return &q
++}
++
++func TestBuildSidecarResources_Defaults(t *testing.T) {
++	r := buildSidecarResources(sidecarResources{})
++
++	if got, want := r.Requests[corev1.ResourceCPU], resource.MustParse("10m"); got.Cmp(want) != 0 {
++		t.Fatalf("default cpu request: got %s, want %s", got.String(), want.String())
++	}
++	if got, want := r.Requests[corev1.ResourceMemory], resource.MustParse("32Mi"); got.Cmp(want) != 0 {
++		t.Fatalf("default memory request: got %s, want %s", got.String(), want.String())
++	}
++	if len(r.Limits) != 0 {
++		t.Fatalf("expected no default limits, got %#v", r.Limits)
++	}
++}
++
++func TestBuildSidecarResources_Overrides(t *testing.T) {
++	r := buildSidecarResources(sidecarResources{
++		CPURequest:    quantityPtr("250m"),
++		MemoryRequest: quantityPtr("128Mi"),
++		CPULimit:      quantityPtr("1"),
++		MemoryLimit:   quantityPtr("2Gi"),
++	})
++
++	if got, want := r.Requests[corev1.ResourceCPU], resource.MustParse("250m"); got.Cmp(want) != 0 {
++		t.Fatalf("cpu request: got %s, want %s", got.String(), want.String())
++	}
++	if got, want := r.Requests[corev1.ResourceMemory], resource.MustParse("128Mi"); got.Cmp(want) != 0 {
++		t.Fatalf("memory request: got %s, want %s", got.String(), want.String())
++	}
++	if got, want := r.Limits[corev1.ResourceCPU], resource.MustParse("1"); got.Cmp(want) != 0 {
++		t.Fatalf("cpu limit: got %s, want %s", got.String(), want.String())
++	}
++	if got, want := r.Limits[corev1.ResourceMemory], resource.MustParse("2Gi"); got.Cmp(want) != 0 {
++		t.Fatalf("memory limit: got %s, want %s", got.String(), want.String())
++	}
++}
++
++// A typo should not prevent pod admission: invalid quantity strings are
++// dropped at parse time (resourcesFromVolumeAttrs) and the field stays nil,
++// so buildSidecarResources falls back to the default.
++func TestResourcesFromVolumeAttrs_InvalidQuantityDropped(t *testing.T) {
++	r := resourcesFromVolumeAttrs(map[string]string{
++		"memoryLimit":   "not-a-quantity",
++		"memoryRequest": "64Mi",
++	})
++
++	if r.MemoryLimit != nil {
++		t.Fatalf("invalid memoryLimit should have parsed to nil, got %v", r.MemoryLimit)
++	}
++	if r.MemoryRequest == nil || r.MemoryRequest.String() != "64Mi" {
++		t.Fatalf("memoryRequest: want 64Mi, got %v", r.MemoryRequest)
++	}
++}
++
++// Regression: an invalid string in one volume's volumeAttributes must NOT
++// shadow a valid override from another volume. Before the fix, merge ran on
++// raw strings and the invalid (but non-empty) first value won, only to be
++// dropped at parse time, leaving the sidecar unbounded.
++func TestResourcesMergeMax_InvalidDoesNotShadowValid(t *testing.T) {
++	a := resourcesFromVolumeAttrs(map[string]string{
++		"memoryLimit": "not-a-quantity", // parses to nil
++	})
++	b := resourcesFromVolumeAttrs(map[string]string{
++		"memoryLimit": "2Gi",
++	})
++
++	a.mergeMax(b)
++
++	if a.MemoryLimit == nil || a.MemoryLimit.Cmp(resource.MustParse("2Gi")) != 0 {
++		t.Fatalf("want merged memoryLimit=2Gi, got %v", a.MemoryLimit)
++	}
++}
++
++// mergeMax must be order-independent and pick the larger value per field.
++func TestResourcesMergeMax_TakesMaxAndIsOrderIndependent(t *testing.T) {
++	a1 := resourcesFromVolumeAttrs(map[string]string{"memoryLimit": "2Gi"})
++	b1 := resourcesFromVolumeAttrs(map[string]string{"memoryLimit": "4Gi"})
++	a1.mergeMax(b1)
++
++	a2 := resourcesFromVolumeAttrs(map[string]string{"memoryLimit": "4Gi"})
++	b2 := resourcesFromVolumeAttrs(map[string]string{"memoryLimit": "2Gi"})
++	a2.mergeMax(b2)
++
++	want := resource.MustParse("4Gi")
++	if a1.MemoryLimit.Cmp(want) != 0 {
++		t.Fatalf("a.mergeMax(b): want 4Gi, got %s", a1.MemoryLimit.String())
++	}
++	if a2.MemoryLimit.Cmp(want) != 0 {
++		t.Fatalf("b.mergeMax(a): want 4Gi, got %s", a2.MemoryLimit.String())
++	}
++}
++
++// Clamp: a user-set limit smaller than the default request must not produce
++// request > limit (apiserver would reject the pod). We clamp request down
++// to the limit and log a warning.
++func TestBuildSidecarResources_RequestClampedToLimit(t *testing.T) {
++	// memoryLimit: 16Mi is smaller than the default 32Mi request.
++	r := buildSidecarResources(sidecarResources{
++		MemoryLimit: quantityPtr("16Mi"),
++	})
++
++	rq := r.Requests[corev1.ResourceMemory]
++	lim := r.Limits[corev1.ResourceMemory]
++	if rq.Cmp(lim) > 0 {
++		t.Fatalf("request %s must not exceed limit %s after clamp", rq.String(), lim.String())
++	}
++	if rq.Cmp(resource.MustParse("16Mi")) != 0 {
++		t.Fatalf("memory request: want clamped to 16Mi, got %s", rq.String())
++	}
++}
++
++// Clamp also applies when both request and limit are user-supplied but
++// request > limit (e.g. mergeMax pulled each from different volumes).
++func TestBuildSidecarResources_ClampUserProvidedRequestAboveLimit(t *testing.T) {
++	r := buildSidecarResources(sidecarResources{
++		MemoryRequest: quantityPtr("512Mi"),
++		MemoryLimit:   quantityPtr("256Mi"),
++	})
++
++	rq := r.Requests[corev1.ResourceMemory]
++	lim := r.Limits[corev1.ResourceMemory]
++	if rq.Cmp(lim) > 0 {
++		t.Fatalf("request %s must not exceed limit %s after clamp", rq.String(), lim.String())
++	}
++	if rq.Cmp(lim) != 0 {
++		t.Fatalf("clamped request should equal limit 256Mi, got %s", rq.String())
++	}
++}
++
++// Nil VolumeAttributes (possible on malformed PVs) must not panic.
++func TestResourcesFromVolumeAttrs_NilMap(t *testing.T) {
++	r := resourcesFromVolumeAttrs(nil)
++	if r.MemoryLimit != nil || r.MemoryRequest != nil || r.CPULimit != nil || r.CPURequest != nil {
++		t.Fatalf("nil attrs must yield all-nil resources, got %#v", r)
++	}
++}

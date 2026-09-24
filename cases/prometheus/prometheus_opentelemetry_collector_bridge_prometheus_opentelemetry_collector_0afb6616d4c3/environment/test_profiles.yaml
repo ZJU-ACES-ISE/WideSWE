@@ -1,0 +1,38 @@
+profiles:
+  opentelemetry_collector_bridge-hidden:
+    repo: opentelemetry-collector-bridge
+    workdir: repos/prometheus/opentelemetry-collector-bridge
+    command: hidden_tmp=$(mktemp -d) && for f in *_test.go; do [ "$f" = ecosync_contract_test.go
+      ] || mv "$f" "$hidden_tmp"/; done && trap 'mv "$hidden_tmp"/*_test.go . 2>/dev/null
+      || true; rm -rf "$hidden_tmp"' EXIT && go test -count=1 -json .
+    status: implemented
+    docker_service: go-1.25
+    test_files:
+    - ecosync_contract_test.go
+    patched_files:
+    - ecosync_contract_test.go
+  prometheus_opentelemetry_collector-hidden:
+    repo: prometheus-opentelemetry-collector
+    workdir: repos/prometheus/prometheus-opentelemetry-collector
+    command: go mod edit -replace github.com/prometheus/opentelemetry-collector-bridge=/workspace/repos/prometheus/opentelemetry-collector-bridge
+      && go mod edit -replace github.com/prometheus-community/stackdriver_exporter=/workspace/repos/prometheus-community/stackdriver_exporter
+      && cd receivers/stackdriver && hidden_tmp=$(mktemp -d) && for f in *_test.go;
+      do [ "$f" = ecosync_contract_test.go ] || mv "$f" "$hidden_tmp"/; done &&
+      trap 'mv "$hidden_tmp"/*_test.go . 2>/dev/null || true; rm -rf "$hidden_tmp"'
+      EXIT && go test -count=1 -json .
+    status: implemented
+    docker_service: go-1.25
+    test_files:
+    - receivers/stackdriver/ecosync_contract_test.go
+    patched_files:
+    - receivers/stackdriver/ecosync_contract_test.go
+  stackdriver_exporter-hidden:
+    repo: stackdriver_exporter
+    workdir: repos/prometheus-community/stackdriver_exporter
+    command: go test -count=1 -json ./ecosync_contract
+    status: implemented
+    docker_service: go-1.25
+    test_files:
+    - ecosync_contract/contract_test.go
+    patched_files:
+    - ecosync_contract/contract_test.go

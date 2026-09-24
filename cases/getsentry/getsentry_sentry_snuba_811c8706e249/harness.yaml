@@ -1,0 +1,31 @@
+task_id: getsentry_sentry_snuba_811c8706e249
+hidden_test_patches:
+- repo: sentry
+  patch: hidden/patches/sentry-hidden-tests.patch
+  test_profile: sentry-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/sentry/middleware/test_access_log_middleware.py
+  hidden_file: *id001
+  semantic_changes: Exercise a mocked Snuba 429 through the existing query and API access-log path, validating the prompt-visible log fields without requiring Gold exception constructor arguments or attribute layout. Keep Snuba-only fields out of the shared required-field list so unrelated access-log tests remain P2P.
+  source: upstream test changes from getsentry/sentry PR(s) 96151
+- repo: snuba
+  patch: hidden/patches/snuba-hidden-tests.patch
+  test_profile: snuba-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/test_snql_api.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from getsentry/snuba PR(s) 7392
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - sentry-hidden
+    - snuba-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

@@ -1,0 +1,38 @@
+task_id: elastic_elasticsearch_kibana_c12c4664dad1
+hidden_test_patches:
+- repo: elasticsearch
+  patch: hidden/patches/elasticsearch-hidden-tests.patch
+  test_profile: elasticsearch-hidden
+  origin: independent_behavior_contract
+  source_file: &elasticsearch_test_files
+  - x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/planner/LocalExecutionPlannerTests.java
+  hidden_file: *elasticsearch_test_files
+  semantic_changes: Validate CHANGE_POINT BY through the production ES|QL parse,
+    plan, and local execution path, including
+    single, multiple, and expression groupings plus the per-group minimum and
+    first-1000 limits, without requiring Gold operator constructors, optimizer
+    classes, or generated plans.
+  source: prompt-visible behavior derived from elastic/elasticsearch PR 145210
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: independent_behavior_contract
+  source_file: &kibana_test_files
+  - src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_change_point_profile.ecosync.test.ts
+  hidden_file: *kibana_test_files
+  semantic_changes: Validate Discover chart availability through the existing
+    profile registration and resolution API for ungrouped, grouped,
+    multi-grouped, and TS queries, without requiring Gold package names,
+    helper names, or file layout.
+  source: prompt-visible behavior derived from elastic/kibana PR 265331
+profile_sets:
+  linux-docker:
+    description: Contract-aligned integration tests for CHANGE_POINT BY and the
+      Discover change point view.
+    hidden_tests:
+    - elasticsearch-hidden
+    - kibana-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

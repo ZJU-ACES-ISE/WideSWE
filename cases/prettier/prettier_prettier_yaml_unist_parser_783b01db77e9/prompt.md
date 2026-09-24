@@ -1,0 +1,5 @@
+Upgrade the YAML parser stack to `yaml` v2.
+
+Upgrade the `yaml` package to v2 and handle the behavior differences introduced by the new parser version. Most of the issues are with node locations, but there are also differences in scalar values such as block literals and in the new parser options. Preserve the UNIST document, node, comment, anchor, tag, and source-position contracts; keep folded and literal block scalar values, chomping, and indentation semantics correct. Support the v2 `uniqueKeys` option so duplicate mapping keys are rejected by default and can be allowed explicitly.
+
+Expose YAML parse failures as `YAMLSyntaxError` with useful source positions and the underlying parser error as the cause. Update the Prettier YAML integration to consume the `yaml-unist-parser` migration to `yaml@2`, parse with duplicate keys allowed, convert `YAMLSyntaxError` into Prettier parser errors with location and cause, and preserve formatting for block scalars, whitespace, comments, directives, and multi-document YAML.

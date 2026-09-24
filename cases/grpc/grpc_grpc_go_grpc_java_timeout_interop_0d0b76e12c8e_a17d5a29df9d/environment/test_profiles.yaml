@@ -1,0 +1,19 @@
+profiles:
+  grpc_go-hidden:
+    repo: grpc-go
+    workdir: repos/grpc/grpc-go
+    command: go test -json ./internal/transport
+    status: implemented
+    dependency_image: ecosyncbench/base/go:1.26-bookworm
+    test_files:
+    - internal/transport/http_util_test.go
+  grpc_java-hidden:
+    repo: grpc-java
+    workdir: repos/grpc/grpc-java
+    command: ./gradlew --no-daemon -PskipAndroid=true :grpc-core:test --tests io.grpc.internal.AbstractClientStreamTest --tests io.grpc.internal.GrpcUtilTest --tests io.grpc.internal.ServerImplTest --continue
+    status: implemented
+    dependency_image: ecosyncbench/base/java-maven:21-ubuntu
+    test_files:
+    - core/src/test/java/io/grpc/internal/AbstractClientStreamTest.java
+    - core/src/test/java/io/grpc/internal/GrpcUtilTest.java
+    - core/src/test/java/io/grpc/internal/ServerImplTest.java

@@ -1,0 +1,26 @@
+profiles:
+  expo-hidden:
+    repo: expo
+    workdir: repos/expo/expo
+    command: corepack yarn --cwd packages/@expo/cli jest src/start/server/__tests__/MCP-test.ts src/start/server/__tests__/MCP-lifecycle-test.ts --runInBand --ci --json --outputFile=/workspace/.ecosyncbench/test-reports/expo-cli-mcp.json
+    status: implemented
+    image: ecosyncbench/deps/expo-node-bun:22-bun1.3
+    evaluator_node_modules_mode: persistent
+    evaluator_cache_revision: yarn-1.22.22-v1
+    test_files:
+    - packages/@expo/cli/src/start/server/__tests__/MCP-test.ts
+    - packages/@expo/cli/src/start/server/__tests__/MCP-lifecycle-test.ts
+  expo_mcp-hidden:
+    repo: expo-mcp
+    workdir: repos/expo/expo-mcp
+    command: bun install --frozen-lockfile --ignore-scripts && bun test packages/mcp-tunnel/src/__tests__/ReverseTunnelClientTransport.test.ts --reporter=junit --reporter-outfile=/workspace/.ecosyncbench/test-reports/expo-mcp-tunnel.xml
+    status: implemented
+    image: ecosyncbench/deps/expo-node-bun:22-bun1.3
+    evaluator_node_modules_mode: persistent
+    preflight_hidden_test_patch: expo-mcp-hidden-tests.patch
+    preflight_expected_failure_patterns:
+    - '^bun test v'
+    - '^Ran [1-9][0-9]* tests? across'
+    test_files:
+    - packages/mcp-tunnel/src/__tests__/MockWebSocket.ts
+    - packages/mcp-tunnel/src/__tests__/ReverseTunnelClientTransport.test.ts

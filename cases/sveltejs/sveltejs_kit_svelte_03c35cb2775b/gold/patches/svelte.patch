@@ -1,0 +1,28 @@
+diff --git a/.changeset/true-berries-behave.md b/.changeset/true-berries-behave.md
+new file mode 100644
+index 000000000..0b9df87c4
+--- /dev/null
++++ b/.changeset/true-berries-behave.md
+@@ -0,0 +1,5 @@
++---
++'svelte': patch
++---
++
++fix: avoid duplicating escaped characters in CSS AST
+diff --git a/packages/svelte/src/compiler/phases/1-parse/read/style.js b/packages/svelte/src/compiler/phases/1-parse/read/style.js
+index c88a3707c..55647b2c9 100644
+--- a/packages/svelte/src/compiler/phases/1-parse/read/style.js
++++ b/packages/svelte/src/compiler/phases/1-parse/read/style.js
+@@ -508,8 +508,12 @@ function read_value(parser) {
+ 		if (escaped) {
+ 			value += '\\' + char;
+ 			escaped = false;
++			parser.index++;
++			continue;
+ 		} else if (char === '\\') {
+ 			escaped = true;
++			parser.index++;
++			continue;
+ 		} else if (char === quote_mark) {
+ 			quote_mark = null;
+ 		} else if (char === ')') {

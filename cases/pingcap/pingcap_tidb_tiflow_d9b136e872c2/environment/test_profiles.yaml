@@ -1,0 +1,30 @@
+profiles:
+  tidb-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: tidb
+    workdir: repos/pingcap/tidb
+    command: >-
+      go test -json -count=1 -tags=intest -run
+      '^(TestCheckpointCheckItemCheck|TestCheckpointStatus_String|TestExternalIDCompatibilityCanBeEnabledThroughConfig|TestExternalIDCompatibilityDisabledPreservesParameters|TestFileCheckpointManager|TestImporterClose|TestImporterNewImporter|TestImporterRun|TestJobMonitorWaitForJobs|TestJobOrchestratorCancel|TestJobOrchestratorCancelRetriesOnTaskNotFound|TestJobOrchestratorCancelWithoutActiveJobs|TestJobOrchestratorRecordSubmissionGetsFreshGraceTimeout|TestJobOrchestratorSubmissionErrorStillCancelsRunningCheckpointJobs|TestJobOrchestratorSubmissionErrorStillRecordsSubmittedJobs|TestJobOrchestratorSubmitAndWait|TestJobOrchestratorSubmitGraceStartsAfterContextCancel|TestJobProgressEstimator_GlobalSort|TestJobProgressEstimator_NonGlobalSort|TestJobSubmitterGetGroupKey|TestJobSubmitterSubmitTableLogRedaction|TestMySQLCheckpointManager|TestNoopCheckpointManager|TestPrecheckRunner)$'
+      ./lightning/pkg/importinto
+    docker_image: ecosyncbench/base/go-pingcap:1.25.10
+    status: manual_profile_ready
+    test_files:
+    - lightning/pkg/importinto/external_id_contract_hidden_test.go
+    patched_files:
+    - lightning/pkg/importinto/external_id_contract_hidden_test.go
+  tiflow-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: tiflow
+    workdir: repos/pingcap/tiflow
+    command: go test -json -count=1 ./dm/loader
+    docker_image: ecosyncbench/base/go-pingcap:1.25.10
+    status: manual_profile_ready
+    test_files:
+    - dm/loader/lightning_test.go
+    patched_files:
+    - dm/loader/lightning_test.go

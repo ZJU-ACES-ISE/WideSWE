@@ -1,0 +1,389 @@
+diff --git a/tests/deepclone_hydrate.phpt b/tests/deepclone_hydrate.phpt
+new file mode 100644
+index 0000000..cbe529e
+--- /dev/null
++++ b/tests/deepclone_hydrate.phpt
+@@ -0,0 +1,383 @@
++--TEST--
++deepclone_hydrate() instantiates and hydrates objects with scoped properties
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++class Base {
++    private string $secret = '';
++    public function getSecret(): string { return $this->secret; }
++}
++
++class Child extends Base {
++    protected int $num = 0;
++    public string $pub = '';
++    public function getNum(): int { return $this->num; }
++}
++
++class Foo {
++    protected $prot;
++    private $priv;
++    public readonly int $ro;
++}
++
++#[AllowDynamicProperties]
++class Bar extends Foo {
++    private $priv;
++}
++
++// === Scoped vars (2nd parameter) ===
++
++// Instantiate from class name
++$obj = deepclone_hydrate('Child', [
++    'Base' => ['secret' => 'hidden'],
++    'Child' => ['num' => 42],
++    'stdClass' => ['pub' => 'visible'],
++]);
++var_dump($obj instanceof Child);
++var_dump($obj->getSecret() === 'hidden');
++var_dump($obj->getNum() === 42);
++var_dump($obj->pub === 'visible');
++
++// Hydrate existing object
++$existing = new Child();
++$result = deepclone_hydrate($existing, [
++    'Base' => ['secret' => 'updated'],
++    'stdClass' => ['pub' => 'changed'],
++]);
++var_dump($result === $existing);
++var_dump($result->getSecret() === 'updated');
++var_dump($result->pub === 'changed');
++var_dump($result->getNum() === 0); // untouched
++
++// stdClass
++$o = deepclone_hydrate('stdClass', ['stdClass' => ['x' => 1, 'y' => 'hi']]);
++var_dump($o->x === 1);
++var_dump($o->y === 'hi');
++
++// SplObjectStorage — "\0" key convention
++$s = new SplObjectStorage();
++$o1 = new stdClass(); $o1->name = 'a';
++$o2 = new stdClass(); $o2->name = 'b';
++$result = deepclone_hydrate($s, ['stdClass' => ["\0" => [$o1, 'info1', $o2, 'info2']]]);
++var_dump($result === $s);
++var_dump($result->count() === 2);
++$result->rewind();
++var_dump($result->current() === $o1);
++var_dump($result->getInfo() === 'info1');
++
++// ArrayObject — "\0" key convention
++$ao = deepclone_hydrate('ArrayObject', [
++    'stdClass' => ["\0" => [['x' => 1, 'y' => 2], ArrayObject::ARRAY_AS_PROPS]],
++]);
++var_dump($ao instanceof ArrayObject);
++var_dump($ao['x'] === 1);
++var_dump($ao->getFlags() === ArrayObject::ARRAY_AS_PROPS);
++
++// ArrayIterator — "\0" key convention
++$ai = deepclone_hydrate('ArrayIterator', [
++    'stdClass' => ["\0" => [['a', 'b', 'c']]],
++]);
++var_dump($ai instanceof ArrayIterator);
++var_dump(count($ai) === 3);
++
++// === Mangled vars (3rd parameter) ===
++
++// stdClass with flat properties
++$o = deepclone_hydrate('stdClass', [], ['p' => 123]);
++var_dump($o->p === 123);
++
++// Case-insensitive class name
++$o = deepclone_hydrate('STDcLASS', [], ['p' => 123]);
++var_dump($o->p === 123);
++
++// ArrayObject via "\0" key in $mangled_vars
++$ao = deepclone_hydrate('ArrayObject', [], ["\0" => [[123]]]);
++var_dump($ao[0] === 123);
++
++// ArrayObject via "\0" key in $scoped_vars (own class as scope)
++$ao = deepclone_hydrate('ArrayObject', ['ArrayObject' => ["\0" => [[456]]]]);
++var_dump($ao[0] === 456);
++
++// SplObjectStorage via "\0" key in $mangled_vars
++$o1 = new stdClass();
++$s = deepclone_hydrate('SplObjectStorage', [], ["\0" => [$o1, 'data']]);
++var_dump($s->count() === 1);
++
++// SplObjectStorage via "\0" key in $scoped_vars
++$o1 = new stdClass();
++$s = deepclone_hydrate('SplObjectStorage', ['SplObjectStorage' => ["\0" => [$o1, 'info']]]);
++var_dump($s->count() === 1);
++
++// Inheritance with mixed $properties + $scopedProperties
++$actual = (array) deepclone_hydrate('Bar', [Foo::class => ['priv' => 234]], [
++    'dyn' => 456, 'ro' => 567, 'prot' => 345, 'priv' => 123,
++]);
++ksort($actual);
++$expected = [
++    "\0*\0prot" => 345,
++    "\0Bar\0priv" => 123,
++    "\0Foo\0priv" => 234,
++    'dyn' => 456,
++    'ro' => 567,
++];
++var_dump($actual === $expected);
++
++// Mangled key format in $properties
++$actual = (array) deepclone_hydrate('Bar', [], [
++    "\0*\0prot" => 345,
++    "\0Bar\0priv" => 123,
++    "\0Foo\0priv" => 234,
++    'dyn' => 456,
++    'ro' => 567,
++]);
++ksort($actual);
++var_dump($actual === $expected);
++
++// Exception trace (internal class hydration)
++$e = deepclone_hydrate('Exception', [], ['trace' => [234]]);
++var_dump($e->getTrace() === [234]);
++
++// Readonly: direct slot write overwrites even initialized readonly
++class ReadonlyClass {
++    public string $status = 'new';
++    private readonly int $value;
++    public function __construct(int $value) { $this->value = $value; }
++    public function getValue(): int { return $this->value; }
++}
++$obj = new ReadonlyClass(123);
++$obj = deepclone_hydrate($obj, [], ['value' => 456, 'status' => 'hydrated']);
++var_dump($obj->getValue() === 456);
++var_dump($obj->status === 'hydrated');
++
++// Readonly: uninitialized → sets value
++$obj = deepclone_hydrate('ReadonlyClass', ['ReadonlyClass' => ['value' => 456]]);
++var_dump($obj->getValue() === 456);
++
++// PHP references preservation
++$a = 1;
++$props = ['p1' => &$a, 'p2' => &$a];
++$obj = deepclone_hydrate('stdClass', [], $props);
++var_dump($obj->p1 === 1 && $obj->p2 === 1);
++$a = 2;
++var_dump($obj->p1 === 2 && $obj->p2 === 2);
++
++// References in scoped properties
++$v = 'hello';
++$obj = deepclone_hydrate('stdClass', ['stdClass' => ['x' => &$v, 'y' => &$v]]);
++$v = 'world';
++var_dump($obj->x === 'world' && $obj->y === 'world');
++
++// === Grandparent private (3-level inheritance) ===
++class GP { private string $secret = ''; public function getSecret(): string { return $this->secret; } }
++class P extends GP { private int $mid = 0; public function getMid(): int { return $this->mid; } }
++class C extends P { public string $pub = ''; }
++
++$o = deepclone_hydrate('C', [], ["\0GP\0secret" => 'gp_val', "\0P\0mid" => 42, 'pub' => 'hi']);
++var_dump($o->getSecret() === 'gp_val');
++var_dump($o->getMid() === 42);
++var_dump($o->pub === 'hi');
++
++// === Both $scopedProperties and $properties writing same property ===
++// $properties are resolved and merged into scopedProperties, overwriting same scope+name
++$o = deepclone_hydrate('stdClass', ['stdClass' => ['x' => 'from_scoped']], ['x' => 'from_flat']);
++var_dump($o->x === 'from_flat');
++
++// === Error cases ===
++
++// Unknown class
++try {
++    deepclone_hydrate('NoSuchClass99', []);
++} catch (\DeepClone\ClassNotFoundException $e) {
++    var_dump(true);
++}
++
++// Abstract class
++try {
++    deepclone_hydrate('SplHeap', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(true);
++}
++
++// Interface
++try {
++    deepclone_hydrate('Throwable', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(true);
++}
++
++// Enum
++enum HydrateColor { case Red; }
++try {
++    deepclone_hydrate('HydrateColor', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(true);
++}
++
++// Trait
++trait HydrateTrait {}
++try {
++    deepclone_hydrate('HydrateTrait', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(true);
++}
++
++// Reflector subclass (internal, cannot function without constructor)
++try {
++    deepclone_hydrate('ReflectionClass', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(true);
++}
++
++// Closure (internal final with create_object)
++try {
++    deepclone_hydrate('Closure', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(true);
++}
++
++// SplFileInfo (internal, serialize fails)
++try {
++    deepclone_hydrate('SplFileInfo', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(true);
++}
++
++// Bad type
++try {
++    deepclone_hydrate(123, []);
++} catch (\TypeError $e) {
++    var_dump(true);
++}
++
++// Integer key in $mangled_vars → ValueError
++try {
++    deepclone_hydrate('stdClass', [], [0 => 'val']);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// Non-array in $scoped_vars → ValueError
++try {
++    deepclone_hydrate('stdClass', ['stdClass' => 'not-array']);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// NUL byte in property name inside scoped array → ValueError
++try {
++    deepclone_hydrate('stdClass', ['stdClass' => ["foo\0bar" => 'val']]);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// NUL byte in mangled key property portion → ValueError
++try {
++    deepclone_hydrate('stdClass', [], ["\0*\0foo\0bar" => 'val']);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// Integer key inside scoped array → ValueError
++try {
++    deepclone_hydrate('stdClass', ['stdClass' => [0 => 'val']]);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// Mangled key inside scoped array → ValueError
++try {
++    deepclone_hydrate('stdClass', ['stdClass' => ["\0stdClass\0x" => 'val']]);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// Interface as scope → ValueError
++interface HydrateIface {}
++class HydrateImpl implements HydrateIface { public string $x = ''; }
++try {
++    deepclone_hydrate('HydrateImpl', ['HydrateIface' => ['x' => 'hello']]);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// Unrelated scope → ValueError
++try {
++    deepclone_hydrate('stdClass', ['SplHeap' => ['x' => 1]]);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// Non-existing scope → ValueError (no autoloader triggered)
++try {
++    deepclone_hydrate('stdClass', ['NonExistent' => ['x' => 1]]);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// No arguments (just instantiate)
++$o = deepclone_hydrate('stdClass');
++var_dump($o instanceof stdClass);
++
++echo "Done\n";
++?>
++--EXPECT--
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++Done

@@ -1,0 +1,29 @@
+profiles:
+  boxo-hidden:
+    repo: boxo
+    workdir: repos/ipfs/boxo
+    command: go test -count=1 -json ./pinning/pinner/dspinner
+    status: implemented
+    docker_service: boxo-hidden
+    dependency_image: ecosyncbench/deps/ipfs-boxo-go:75f413c3fb9f
+    test_files:
+    - pinning/pinner/dspinner/pin_test.go
+    test_packages:
+    - ./pinning/pinner/dspinner
+    patched_files:
+    - pinning/pinner/dspinner/pin_test.go
+  kubo-hidden:
+    repo: kubo
+    workdir: repos/ipfs/kubo
+    command: go build -o cmd/ipfs/ipfs ./cmd/ipfs && go test -count=1 -json ./test/cli -run "^TestProviderKeystoreSyncShutdownQuiet$"
+    status: implemented
+    docker_service: kubo-hidden
+    dependency_image: ecosyncbench/deps/ipfs-kubo-go:75f413c3fb9f
+    test_files:
+    - test/cli/provider_test.go
+    test_packages:
+    - ./test/cli
+    run_tests:
+    - TestProviderKeystoreSyncShutdownQuiet
+    patched_files:
+    - test/cli/provider_test.go

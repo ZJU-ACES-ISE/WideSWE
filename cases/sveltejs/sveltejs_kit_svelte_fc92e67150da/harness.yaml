@@ -1,0 +1,50 @@
+task_id: sveltejs_kit_svelte_fc92e67150da
+hidden_test_patches:
+- repo: kit
+  patch: hidden/patches/kit-contract-tests.patch
+  test_profile: kit-hidden
+  origin: upstream_test_diff
+  clean_overlay: true
+  source_file: &id001
+  - packages/kit/test/apps/async/src/routes/remote/+page.js
+  - packages/kit/test/apps/async/src/routes/remote/+page.svelte
+  - packages/kit/test/apps/async/src/routes/remote/batch-ssr/+page.svelte
+  - packages/kit/test/apps/async/src/routes/remote/batch-ssr/batch.remote.js
+  - packages/kit/test/apps/async/src/routes/remote/batch/+page.js
+  - packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
+  - packages/kit/test/apps/async/src/routes/remote/dev/preload/+page.svelte
+  - packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/+page.svelte
+  - packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/TrackedQuery.svelte
+  - packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/not-tracked/+page.svelte
+  - packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/run-in-render/+page.svelte
+  - packages/kit/test/apps/async/src/routes/remote/validation/+page.svelte
+  - packages/kit/test/apps/async/test/client.test.js
+  - packages/kit/test/apps/async/test/test.js
+  hidden_file: *id001
+  semantic_changes:
+  - Removes unrelated adapter-netlify and paths fixture changes that are not part of the Prompt contract.
+  - Runs Prompt-relevant navigation, hydration, cache lifecycle, tracking-context, and query.run browser scenarios in their applicable production or development mode.
+  - Requires guardrail errors without fixing their message wording.
+  source: prompt-visible behavior from sveltejs/kit PR 15533 and linked issues
+- repo: svelte
+  patch: hidden/patches/svelte-hidden-tests.patch
+  test_profile: svelte-hidden
+  origin: upstream_test_diff
+  clean_overlay: true
+  source_file: &id002
+  - packages/svelte/tests/signals/test.ts
+  hidden_file: *id002
+  semantic_changes:
+  - Preserves the derived lifecycle behavior and warning requirement without fixing the warning code or wording.
+  source: prompt-visible behavior from sveltejs/svelte PR 17921
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - kit-hidden
+    - svelte-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

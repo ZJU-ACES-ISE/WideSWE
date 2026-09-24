@@ -1,0 +1,373 @@
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/operators/handlers.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/operators/handlers.ts
+index 59d2785a7057..b1d7ac6730e5 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/operators/handlers.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/operators/handlers.ts
+@@ -7,12 +7,13 @@
+  * License v3.0 only", or the "Server Side Public License, v 1".
+  */
+ 
+-import { isColumn, isList } from '@elastic/esql';
++import { isColumn, isList, isSubQuery } from '@elastic/esql';
+ import type { ESQLColumn, ESQLFunction, ESQLSingleAstItem } from '@elastic/esql/types';
+ import type { ISuggestionItem } from '../../../../../registry/types';
+ import {
+   listCompleteItem,
+   commaCompleteItem,
++  buildSubqueryCompleteItem,
+   likePatternItems,
+   rlikePatternItems,
+ } from '../../../../../registry/complete_items';
+@@ -21,7 +22,7 @@ import type { ExpressionContext } from '../types';
+ import {
+   getLogicalContinuationSuggestions,
+   isOperandMissing,
+-  shouldSuggestOpenListForOperand,
++  shouldSuggestRightOperandStart,
+ } from './utils';
+ import { shouldSuggestComma } from '../comma_decision_engine';
+ import { SuggestionBuilder } from '../suggestion_builder';
+@@ -31,7 +32,7 @@ import { withAutoSuggest } from '../../helpers';
+ // eg. IN / NOT IN Operators
+ // ============================================================================
+ 
+-/** Handles IN and NOT IN operators with list syntax (e.g., field IN (1, 2, 3)) */
++/** Handles IN and NOT IN operators with list syntax or subquery syntax. */
+ export async function handleListOperator(ctx: ExpressionContext): Promise<ISuggestionItem[]> {
+   const { expressionRoot, innerText } = ctx;
+ 
+@@ -39,18 +40,34 @@ export async function handleListOperator(ctx: ExpressionContext): Promise<ISugge
+ 
+   // For IN/NOT IN, args are never arrays because the parser builds a single ESQLList node
+   // containing the values, not a JS array of values.
+-  const list = getBinaryExpressionOperand(fn, 'right') as ESQLSingleAstItem | undefined;
++  const rightOperand = getBinaryExpressionOperand(fn, 'right') as ESQLSingleAstItem | undefined;
+   const leftOperand = getBinaryExpressionOperand(fn, 'left') as ESQLSingleAstItem | undefined;
++  const allowSubqueryOperand = ctx.options.allowSubquery === true;
+ 
+   // No list yet: suggest opening parenthesis
+-  if (shouldSuggestOpenListForOperand(list)) {
++  if (shouldSuggestRightOperandStart(rightOperand)) {
++    if (allowSubqueryOperand) {
++      return [listCompleteItem, buildSubqueryCompleteItem()];
++    }
++
+     return [listCompleteItem];
+   }
+ 
++  // A subquery operand is already present; only suggest continuations after it.
++  if (isSubQuery(rightOperand)) {
++    const cursorAfterSubquery = innerText.length > rightOperand.location.max;
++
++    if (allowSubqueryOperand && cursorAfterSubquery) {
++      return getLogicalContinuationSuggestions();
++    }
++
++    return [];
++  }
++
+   // List exists
+-  if (isList(list)) {
++  if (isList(rightOperand)) {
+     // Cursor after closed list: suggest logical operators
+-    if (innerText.length > list.location.max) {
++    if (innerText.length > rightOperand.location.max) {
+       return getLogicalContinuationSuggestions();
+     }
+ 
+@@ -73,19 +90,21 @@ export async function handleListOperator(ctx: ExpressionContext): Promise<ISugge
+       shouldSuggestComma({
+         position: 'inside_list',
+         innerText,
+-        listHasValues: list.values && list.values.length > 0,
++        listHasValues: rightOperand.values && rightOperand.values.length > 0,
+       })
+     ) {
+       return [withAutoSuggest({ ...commaCompleteItem, text: ',' })];
+     }
+ 
+     // After comma or empty list: suggest values
+-    const isEmptyList = !list.values || list.values.length === 0;
++    const isEmptyList = !rightOperand.values || rightOperand.values.length === 0;
+     const ignoredColumns = isEmptyList
+       ? []
+       : [
+           ...(columnForType ? [columnForType.parts.join('.')] : []),
+-          ...(list.values || []).filter(isColumn).map((col: ESQLColumn) => col.parts.join('.')),
++          ...(rightOperand.values || [])
++            .filter(isColumn)
++            .map((col: ESQLColumn) => col.parts.join('.')),
+         ].filter(Boolean);
+ 
+     return getListValueSuggestions(ctx, columnForType, ignoredColumns);
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/operators/utils.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/operators/utils.ts
+index 707f85729f60..35390888590c 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/operators/utils.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/operators/utils.ts
+@@ -36,15 +36,15 @@ export function isOperandMissing(operand: ESQLSingleAstItem | undefined): boolea
+   return !operand || (operand?.type === 'unknown' && operand?.incomplete === true);
+ }
+ 
+-/** Returns true if we should suggest opening a list for the right operand */
+-export function shouldSuggestOpenListForOperand(operand: ESQLSingleAstItem | undefined): boolean {
++/** Returns true when the IN-family right operand can still be started. */
++export function shouldSuggestRightOperandStart(operand: ESQLSingleAstItem | undefined): boolean {
+   return (
+     isOperandMissing(operand) ||
+     (isList(operand) && operand.location.min === 0 && operand.location.max === 0)
+   );
+ }
+ 
+-/** Suggestions for logical continuations after a complete list or null-check operator */
++/** Suggestions for logical continuations after a complete boolean operator expression. */
+ export function getLogicalContinuationSuggestions(): ISuggestionItem[] {
+   return logicalOperators.map(getOperatorSuggestion);
+ }
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/types.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/types.ts
+index 75f8914297d8..1f540fde1585 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/types.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/autocomplete/expressions/types.ts
+@@ -63,6 +63,7 @@ export interface ExpressionContextOptions {
+   controlType?: ESQLVariableType; // Type of control variable (??/?) to suggest in empty expressions
+   addSpaceAfterOperator?: boolean; // Add a space after inserting operands or functions that follow an operator
+   openSuggestions?: boolean; // Reopen the suggestions popover after applying a completion
++  allowSubquery?: boolean; // Whether this expression context can suggest subquery operands
+   functionsToIgnore?: {
+     names: string[]; // Functions hidden for the current command/context
+     allowedInsideFunctions?: Record<string, string[]>; // Exceptions: keep fn visible when inside specific parent functions
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.test.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.test.ts
+index 8e60950a9e7a..dbeb69e8b6b6 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.test.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.test.ts
+@@ -311,6 +311,20 @@ describe('getExpressionType', () => {
+       expect(getExpressionType(getASTForExpression('COUNT(*)'))).toBe<SupportedDataType>('long');
+     });
+ 
++    it.each(['IN', 'NOT IN'])('returns boolean for %s subquery expressions', (operator) => {
++      const { root, errors } = Parser.parse(`FROM index | WHERE field ${operator} (FROM other)`);
++
++      if (errors.length > 0) {
++        throw new Error(
++          `Failed to parse expression "field ${operator} (FROM other)": ${errors
++            .map((e) => e.message)
++            .join(', ')}`
++        );
++      }
++
++      expect(getExpressionType(root.commands[1].args[0])).toBe('boolean');
++    });
++
+     it('accounts for the "any" parameter type', () => {
+       setTestFunctions([
+         {
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.ts
+index 45ba357ed7ba..b69165788c4b 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.ts
+@@ -13,6 +13,7 @@ import {
+   isInlineCast,
+   isLiteral,
+   isParamLiteral,
++  isSubQuery,
+   lastItem,
+   type PromQLAstExpression,
+ } from '@elastic/esql';
+@@ -23,6 +24,7 @@ import { getMatchingSignatures } from './signatures';
+ import { getColumnForASTNode } from './shared';
+ import type { ESQLColumnData } from '../../registry/types';
+ import { UnmappedFieldsStrategy } from '../../registry/types';
++import { inOperators } from '../all_operators';
+ import { TIME_SYSTEM_PARAMS } from './literals';
+ import { isMarkerNode } from './ast';
+ import { getUnmappedFieldType } from './settings';
+@@ -134,6 +136,15 @@ export function getExpressionType(
+       return getExpressionType(root.args[root.args.length - 1], columns, unmappedFieldsStrategy);
+     }
+ 
++    const rightArg = root.args[1];
++    if (
++      inOperators.some(({ name }) => name === fnDefinition.name) &&
++      !Array.isArray(rightArg) &&
++      isSubQuery(rightArg)
++    ) {
++      return 'boolean';
++    }
++
+     const { argTypes, literalMask } = resolveArgumentTypes(root.args, {
+       columns,
+       unmappedFieldsStrategy,
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/eval/autocomplete.test.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/eval/autocomplete.test.ts
+index bcde77dfed20..6306b421db21 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/eval/autocomplete.test.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/eval/autocomplete.test.ts
+@@ -171,6 +171,11 @@ describe('EVAL Autocomplete', () => {
+     ]);
+   });
+ 
++  test('does not suggest subqueries after IN', async () => {
++    await evalExpectSuggestions('from a | eval col = doubleField in ', ['($0)']);
++    await evalExpectSuggestions('from a | eval col = doubleField not in ', ['($0)']);
++  });
++
+   test('after column after assignment', async () => {
+     await evalExpectSuggestions('from a | eval col = doubleField ', [
+       ', ',
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/registry.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/registry.ts
+index 2f8366404c2c..26b002bd8596 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/registry.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/registry.ts
+@@ -97,6 +97,7 @@ export interface ICommandMetadata {
+   isTimeseries?: boolean; // Optional property to indicate if the command is a timeseries source command
+   requiresTimeseriesSource?: boolean; // Optional property to indicate the command is only available when the source command is TS
+   hiddenAfterCommands?: string[]; // Optional list of command names; this command is not suggested when any of them appear anywhere in the pipeline
++  subquerySupport?: boolean; // Temporary property to indicate if the command supports subquery suggestions.
+   subqueryRestrictions?: {
+     hideInside: boolean; // Command is hidden inside subqueries
+     hideOutside: boolean; // Command is hidden outside subqueries (at root level)
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/types.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/types.ts
+index 84cba6b70355..7366d7233c07 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/types.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/types.ts
+@@ -222,6 +222,7 @@ export interface ICommandContext {
+   supportsControls?: boolean;
+   histogramBarTarget?: number;
+   activeProduct?: PricingProduct | undefined;
++  subquerySupport?: boolean;
+   isCursorInSubquery?: boolean;
+   isFieldsBrowserEnabled?: boolean;
+   unmappedFieldsStrategy?: UnmappedFieldsStrategy;
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.test.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.test.ts
+index f1b0ce1a3533..9561734c9398 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.test.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.test.ts
+@@ -32,6 +32,11 @@ const allEvalFns = getFunctionSignaturesByReturnType(Location.WHERE, 'any', {
+   scalar: true,
+ });
+ 
++const whereContext = {
++  ...mockContext,
++  subquerySupport: true,
++};
++
+ export const EMPTY_WHERE_SUGGESTIONS = [...getFieldNamesByType('any'), ...allEvalFns];
+ 
+ export const EXPECTED_COMPARISON_WITH_TEXT_FIELD_SUGGESTIONS = [
+@@ -45,7 +50,7 @@ const whereExpectSuggestions = (
+   query: string,
+   expectedSuggestions: string[],
+   mockCallbacks?: ICommandCallbacks,
+-  context = mockContext,
++  context = whereContext,
+   offset?: number
+ ) => {
+   return expectSuggestions(
+@@ -297,8 +302,18 @@ describe('WHERE Autocomplete', () => {
+     });
+ 
+     test('suggestions after IN', async () => {
+-      await whereExpectSuggestions('from index | WHERE doubleField in ', ['($0)']);
+-      await whereExpectSuggestions('from index | WHERE doubleField not in ', ['($0)']);
++      await whereExpectSuggestions('from index | WHERE doubleField in ', ['($0)', '(FROM $0)']);
++      await whereExpectSuggestions('from index | WHERE doubleField not in ', ['($0)', '(FROM $0)']);
++
++      await whereExpectSuggestions(
++        'from index | WHERE doubleField in (FROM index | KEEP doubleField) ',
++        [...getOperatorSuggestions(logicalOperators), '| ']
++      );
++      await whereExpectSuggestions(
++        'from index | WHERE doubleField not in (FROM index | KEEP doubleField) ',
++        [...getOperatorSuggestions(logicalOperators), '| ']
++      );
++
+       const expectedFields = getFieldNamesByType(['double']);
+       mockFieldsWithTypes(mockCallbacks, expectedFields);
+       await whereExpectSuggestions(
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.ts
+index c0dfcc2f4fd4..c7b4dbcd9b01 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.ts
+@@ -35,6 +35,7 @@ export async function autocomplete(
+     callbacks,
+     options: {
+       preferredExpressionType: 'boolean',
++      allowSubquery: context?.subquerySupport === true,
+     },
+   });
+ 
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/index.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/index.ts
+index 2c6d8133f7e7..5a84889e50bc 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/index.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/index.ts
+@@ -22,6 +22,7 @@ export const whereCommand = {
+   name: Commands.WHERE,
+   methods: whereCommandMethods,
+   metadata: {
++    subquerySupport: process.env.NODE_ENV === 'test',
+     description: i18n.translate('kbn-esql-language.esql.definitions.whereDoc', {
+       defaultMessage:
+         'Uses "predicate-expressions" to filter search results. A predicate expression, when evaluated, returns TRUE or FALSE. The where command only returns the results that evaluate to TRUE. For example, to filter results for a specific field value',
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.test.ts b/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.test.ts
+index e7eb91bcb396..e066d85780c4 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.test.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.test.ts
+@@ -1144,6 +1144,11 @@ describe('autocomplete', () => {
+ 
+   describe('IN operator with lists', () => {
+     testSuggestions('FROM a | WHERE integerField IN (doubleField /', [{ text: ',' }]);
++
++    testSuggestions(
++      'FROM kibana_sample_data_logs | WHERE agent NOT IN (FROM kibana_sample_data_logs)/',
++      ['AND $0', 'OR $0', '| ']
++    );
+   });
+ 
+   describe('Replacement ranges are attached when needed', () => {
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.ts b/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.ts
+index e6edd141a91c..211fcb2bb91a 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.ts
+@@ -49,6 +49,13 @@ function isHeaderCommandSuggestion({ label }: { label: string }) {
+   return label === 'SET';
+ }
+ 
++function isFromSourceCommand(commands: ESQLAstAllCommands[]) {
++  const sourceCommandNames = new Set(esqlCommandRegistry.getSourceCommandNames());
++  const sourceCommand = commands.find(({ name }) => sourceCommandNames.has(name));
++
++  return sourceCommand?.name.toLowerCase() === 'from';
++}
++
+ const orderingEngine = new SuggestionOrderingEngine();
+ 
+ export async function suggest(
+@@ -308,11 +315,14 @@ async function getSuggestionsWithinCommandExpression(
+ 
+   const isInsideSubquery = astContext.isCursorInSubquery; // We only show resource browser suggestions in the main query
+   const canSuggestResourceBrowser = (await callbacks?.canSuggestResourceBrowser?.()) ?? false;
++  const subquerySupport =
++    commandDefinition.metadata.subquerySupport === true && isFromSourceCommand(commands);
+ 
+   const context = {
+     ...references,
+     ...additionalCommandContext,
+     activeProduct: callbacks?.getActiveProduct?.(),
++    subquerySupport,
+     isCursorInSubquery: astContext.isCursorInSubquery,
+     isFieldsBrowserEnabled: canSuggestResourceBrowser && !isInsideSubquery,
+     unmappedFieldsStrategy,
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/language/shared/subqueries_helpers.ts b/src/platform/packages/shared/kbn-esql-language/src/language/shared/subqueries_helpers.ts
+index 904e4ab2e7d9..77b65f00bec5 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/language/shared/subqueries_helpers.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/language/shared/subqueries_helpers.ts
+@@ -31,8 +31,11 @@ export function findSubquery(
+   Walker.walk(queryAst, {
+     visitParens: (node, parent) => {
+       const isForkBranch = parent?.type === 'command' && parent.name === 'fork';
++      const isNonBinaryRhsSubquery =
++        parent?.type === 'function' &&
++        !(parent.subtype === 'binary-expression' && parent.args[1] === node);
+ 
+-      if (isSubQuery(node) && within(offset, node) && !isForkBranch) {
++      if (isSubQuery(node) && within(offset, node) && !isForkBranch && !isNonBinaryRhsSubquery) {
+         const candidate = node.child;
+ 
+         // Skip non-ES|QL subqueries (e.g. PromQL nodes) which don't have commands.

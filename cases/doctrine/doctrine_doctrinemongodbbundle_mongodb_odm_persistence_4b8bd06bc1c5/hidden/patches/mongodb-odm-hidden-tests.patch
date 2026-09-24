@@ -1,0 +1,606 @@
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/BaseTestCase.php b/tests/Doctrine/ODM/MongoDB/Tests/BaseTestCase.php
+index 665f4ef..79fede0 100644
+--- a/tests/Doctrine/ODM/MongoDB/Tests/BaseTestCase.php
++++ b/tests/Doctrine/ODM/MongoDB/Tests/BaseTestCase.php
+@@ -20,6 +20,7 @@ use MongoDB\Driver\Server;
+ use MongoDB\Model\DatabaseInfo;
+ use PHPUnit\Framework\TestCase;
+ use ProxyManager\Proxy\LazyLoadingInterface;
++use ReflectionClass;
+ 
+ use function array_key_exists;
+ use function array_map;
+@@ -30,6 +31,7 @@ use function getenv;
+ use function implode;
+ use function in_array;
+ use function iterator_to_array;
++use function method_exists;
+ use function parse_url;
+ use function preg_match;
+ use function strlen;
+@@ -39,6 +41,7 @@ use function version_compare;
+ 
+ use const DOCTRINE_MONGODB_DATABASE;
+ use const DOCTRINE_MONGODB_SERVER;
++use const PHP_VERSION_ID;
+ 
+ abstract class BaseTestCase extends TestCase
+ {
+@@ -104,7 +107,12 @@ abstract class BaseTestCase extends TestCase
+         $config->setPersistentCollectionNamespace('PersistentCollections');
+         $config->setDefaultDB(DOCTRINE_MONGODB_DATABASE);
+         $config->setMetadataDriverImpl(static::createMetadataDriverImpl());
+-        $config->setUseLazyGhostObject((bool) $_ENV['USE_LAZY_GHOST_OBJECTS']);
++
++        if (method_exists($config, 'setUseNativeLazyObject')) {
++            $config->setUseNativeLazyObject(true);
++        } else {
++            $config->setUseLazyGhostObject((bool) $_ENV['USE_LAZY_GHOST_OBJECTS']);
++        }
+ 
+         $config->addFilter('testFilter', Filter::class);
+         $config->addFilter('testFilter2', Filter::class);
+@@ -134,6 +142,10 @@ abstract class BaseTestCase extends TestCase
+ 
+     public static function isLazyObject(object $document): bool
+     {
++        if (PHP_VERSION_ID >= 80400 && (new ReflectionClass($document))->isUninitializedLazyObject($document)) {
++            return true;
++        }
++
+         return $document instanceof InternalProxy || $document instanceof LazyLoadingInterface;
+     }
+ 
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/ConfigurationTest.php b/tests/Doctrine/ODM/MongoDB/Tests/ConfigurationTest.php
+index 6432494..8e1ce22 100644
+--- a/tests/Doctrine/ODM/MongoDB/Tests/ConfigurationTest.php
++++ b/tests/Doctrine/ODM/MongoDB/Tests/ConfigurationTest.php
+@@ -8,7 +8,9 @@ use Doctrine\ODM\MongoDB\Configuration;
+ use Doctrine\ODM\MongoDB\ConfigurationException;
+ use Doctrine\ODM\MongoDB\PersistentCollection\PersistentCollectionFactory;
+ use Doctrine\ODM\MongoDB\PersistentCollection\PersistentCollectionGenerator;
++use LogicException;
+ use MongoDB\Driver\Manager;
++use PHPUnit\Framework\Attributes\RequiresPhp;
+ use PHPUnit\Framework\TestCase;
+ use stdClass;
+ 
+@@ -17,6 +19,45 @@ use function str_repeat;
+ 
+ class ConfigurationTest extends TestCase
+ {
++    #[RequiresPhp('< 8.4')]
++    public function testUseNativeLazyObjectBeforePHP84(): void
++    {
++        $c = new Configuration();
++
++        self::expectException(LogicException::class);
++        self::expectExceptionMessage('Native lazy objects require PHP 8.4 or higher.');
++
++        $c->setUseNativeLazyObject(true);
++    }
++
++    public function testUseLazyGhostObject(): void
++    {
++        $c = new Configuration();
++
++        self::assertFalse($c->isLazyGhostObjectEnabled());
++        $c->setUseLazyGhostObject(true);
++        self::assertTrue($c->isLazyGhostObjectEnabled());
++        $c->setUseLazyGhostObject(false);
++        self::assertFalse($c->isLazyGhostObjectEnabled());
++    }
++
++    public function testNativeLazyObjectDeprecatedByDefault(): void
++    {
++        $c = new Configuration();
++
++        self::assertFalse($c->isNativeLazyObjectEnabled());
++    }
++
++    #[RequiresPhp('>= 8.4')]
++    public function testNativeAndLazyGhostObjectsCannotBothBeEnabled(): void
++    {
++        $c = new Configuration();
++        $c->setUseNativeLazyObject(true);
++
++        self::expectException(LogicException::class);
++        $c->setUseLazyGhostObject(true);
++    }
++
+     public function testDefaultPersistentCollectionFactory(): void
+     {
+         $c       = new Configuration();
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/Functional/PropertyHooksTest.php b/tests/Doctrine/ODM/MongoDB/Tests/Functional/PropertyHooksTest.php
+new file mode 100644
+index 0000000..bfc5591
+--- /dev/null
++++ b/tests/Doctrine/ODM/MongoDB/Tests/Functional/PropertyHooksTest.php
+@@ -0,0 +1,102 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Tests\Functional;
++
++require_once __DIR__ . '/../../../../../Documents84/PropertyHooks/MappingVirtualProperty.php';
++require_once __DIR__ . '/../../../../../Documents84/PropertyHooks/User.php';
++
++use Doctrine\ODM\MongoDB\Mapping\MappingException;
++use Doctrine\ODM\MongoDB\Tests\BaseTestCase;
++use Documents84\PropertyHooks\MappingVirtualProperty;
++use Documents84\PropertyHooks\User;
++use PHPUnit\Framework\Attributes\RequiresPhp;
++
++#[RequiresPhp('>= 8.4.0')]
++class PropertyHooksTest extends BaseTestCase
++{
++    protected function setUp(): void
++    {
++        parent::setUp();
++
++        if ($this->dm->getConfiguration()->isNativeLazyObjectEnabled()) {
++            return;
++        }
++
++        $this->markTestSkipped('Property hooks require native lazy objects to be enabled.');
++    }
++
++    public function testMapPropertyHooks(): void
++    {
++        $user           = new User();
++        $user->fullName = 'John Doe';
++        $user->language = 'EN';
++
++        $this->dm->persist($user);
++        $this->dm->flush();
++        $this->dm->clear();
++
++        $user = $this->dm->find(User::class, $user->id);
++
++        self::assertSame('John', $user->first);
++        self::assertSame('Doe', $user->last);
++        self::assertSame('John Doe', $user->fullName);
++        self::assertSame('EN', $user->language, 'The property hook uppercases the language.');
++
++        $document = $this->dm->createQueryBuilder()
++            ->find(User::class)
++            ->field('id')->equals($user->id)
++            ->select('language')
++            ->hydrate(false)
++            ->getQuery()
++            ->getSingleResult();
++
++        self::assertSame('en', $document['language'], 'Selecting a field without hydration does not go through the property hook, accessing raw data.');
++
++        $this->dm->clear();
++
++        $user = $this->dm->getRepository(User::class)->findOneBy(['language' => 'EN']);
++
++        self::assertNull($user);
++
++        $user = $this->dm->getRepository(User::class)->findOneBy(['language' => 'en']);
++
++        self::assertNotNull($user);
++    }
++
++    public function testTriggerLazyLoadingWhenAccessingPropertyHooks(): void
++    {
++        $user           = new User();
++        $user->fullName = 'Ludwig von Beethoven';
++        $user->language = 'DE';
++
++        $this->dm->persist($user);
++        $this->dm->flush();
++        $this->dm->clear();
++
++        $user = $this->dm->getReference(User::class, $user->id);
++
++        $this->assertTrue($this->dm->getUnitOfWork()->isUninitializedObject($user));
++
++        self::assertSame('Ludwig', $user->first);
++        self::assertSame('von Beethoven', $user->last);
++        self::assertSame('Ludwig von Beethoven', $user->fullName);
++        self::assertSame('DE', $user->language, 'The property hook uppercases the language.');
++
++        $this->assertFalse($this->dm->getUnitOfWork()->isUninitializedObject($user));
++
++        $this->dm->clear();
++
++        $user = $this->dm->getReference(User::class, $user->id);
++
++        self::assertSame('Ludwig von Beethoven', $user->fullName);
++    }
++
++    public function testMappingVirtualPropertyIsNotSupported(): void
++    {
++        $this->expectException(MappingException::class);
++
++        $this->dm->getClassMetadata(MappingVirtualProperty::class);
++    }
++}
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/Functional/ReferencesTest.php b/tests/Doctrine/ODM/MongoDB/Tests/Functional/ReferencesTest.php
+index 88cc979..88cfad3 100644
+--- a/tests/Doctrine/ODM/MongoDB/Tests/Functional/ReferencesTest.php
++++ b/tests/Doctrine/ODM/MongoDB/Tests/Functional/ReferencesTest.php
+@@ -523,6 +523,9 @@ class DocumentWithArrayId
+     /** @var array<string, int> */
+     #[ODM\Id(strategy: 'none', options: ['type' => 'hash'])]
+     public $id;
++
++    #[ODM\Field]
++    public string $name;
+ }
+ 
+ 
+@@ -544,6 +547,9 @@ class DocumentWithMongoBinDataId
+     /** @var string|null */
+     #[ODM\Id(strategy: 'none', options: ['type' => 'bin'])]
+     public $id;
++
++    #[ODM\Field]
++    public string $name;
+ }
+ 
+ class DocumentNotFoundListener
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/Functional/Ticket/GH852Test.php b/tests/Doctrine/ODM/MongoDB/Tests/Functional/Ticket/GH852Test.php
+index 3895f43..c704f80 100644
+--- a/tests/Doctrine/ODM/MongoDB/Tests/Functional/Ticket/GH852Test.php
++++ b/tests/Doctrine/ODM/MongoDB/Tests/Functional/Ticket/GH852Test.php
+@@ -14,6 +14,7 @@ use Doctrine\ODM\MongoDB\Tests\BaseTestCase;
+ use MongoDB\BSON\Binary;
+ use PHPUnit\Framework\Attributes\DataProvider;
+ 
++/** @see https://github.com/doctrine/mongodb-odm/pull/852 */
+ class GH852Test extends BaseTestCase
+ {
+     #[DataProvider('provideIdGenerators')]
+@@ -60,13 +61,11 @@ class GH852Test extends BaseTestCase
+         /* These proxies will be initialized when we first access the collection
+          * by DocumentPersister::loadReferenceManyCollectionOwningSide().
+          */
+-        self::assertTrue(self::isLazyObject($parent->refMany[0]));
+         self::assertInstanceOf(GH852Document::class, $parent->refMany[0]);
+         self::assertFalse($this->uow->isUninitializedObject($parent->refMany[0]));
+         self::assertEquals($idGenerator('childB'), $parent->refMany[0]->id);
+         self::assertEquals('childB', $parent->refMany[0]->name);
+ 
+-        self::assertTrue(self::isLazyObject($parent->refMany[1]));
+         self::assertInstanceOf(GH852Document::class, $parent->refMany[1]);
+         self::assertFalse($this->uow->isUninitializedObject($parent->refMany[1]));
+         self::assertEquals($idGenerator('childC'), $parent->refMany[1]->id);
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractAnnotationDriverTestCase.php b/tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractAnnotationDriverTestCase.php
+index be73863..d30aeeb 100644
+--- a/tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractAnnotationDriverTestCase.php
++++ b/tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractAnnotationDriverTestCase.php
+@@ -16,6 +16,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
+ use stdClass;
+ 
+ use function assert;
++use function class_exists;
+ 
+ abstract class AbstractAnnotationDriverTestCase extends AbstractMappingDriverTestCase
+ {
+@@ -118,6 +119,7 @@ abstract class AbstractAnnotationDriverTestCase extends AbstractMappingDriverTes
+     /** @group DDC-318 */
+     public function testGetAllClassNamesReturnsAlreadyLoadedClassesIfAppropriate(): void
+     {
++        self::assertTrue(class_exists(CmsUser::class), 'Pre-load the class');
+         $annotationDriver = $this->loadDriverForCMSDocuments();
+         $classes          = $annotationDriver->getAllClassNames();
+ 
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractMappingDriverTestCase.php b/tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractMappingDriverTestCase.php
+index c4a8be3..0864fe4 100644
+--- a/tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractMappingDriverTestCase.php
++++ b/tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractMappingDriverTestCase.php
+@@ -18,7 +18,6 @@ use Doctrine\ODM\MongoDB\Repository\ViewRepository;
+ use Doctrine\ODM\MongoDB\Tests\BaseTestCase;
+ use Doctrine\ODM\MongoDB\Types\Type;
+ use Doctrine\Persistence\Mapping\Driver\MappingDriver;
+-use Doctrine\Persistence\Reflection\EnumReflectionProperty;
+ use Documents\Card;
+ use Documents\CustomCollection;
+ use Documents\Suit;
+@@ -699,12 +698,10 @@ abstract class AbstractMappingDriverTestCase extends BaseTestCase
+         self::assertSame(Suit::class, $metadata->fieldMappings['suit']['enumType']);
+         self::assertSame('string', $metadata->fieldMappings['suit']['type']);
+         self::assertFalse($metadata->fieldMappings['suit']['nullable']);
+-        self::assertInstanceOf(EnumReflectionProperty::class, $metadata->reflFields['suit']);
+ 
+         self::assertSame(Suit::class, $metadata->fieldMappings['nullableSuit']['enumType']);
+         self::assertSame('string', $metadata->fieldMappings['nullableSuit']['type']);
+         self::assertTrue($metadata->fieldMappings['nullableSuit']['nullable']);
+-        self::assertInstanceOf(EnumReflectionProperty::class, $metadata->reflFields['nullableSuit']);
+     }
+ 
+     public function testTimeSeriesDocumentWithGranularity(): void
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/Mapping/ClassMetadataTest.php b/tests/Doctrine/ODM/MongoDB/Tests/Mapping/ClassMetadataTest.php
+index 5c8a780..29e493e 100644
+--- a/tests/Doctrine/ODM/MongoDB/Tests/Mapping/ClassMetadataTest.php
++++ b/tests/Doctrine/ODM/MongoDB/Tests/Mapping/ClassMetadataTest.php
+@@ -15,7 +15,6 @@ use Doctrine\ODM\MongoDB\Tests\BaseTestCase;
+ use Doctrine\ODM\MongoDB\Tests\ClassMetadataTestUtil;
+ use Doctrine\ODM\MongoDB\Types\Type;
+ use Doctrine\ODM\MongoDB\Utility\CollectionHelper;
+-use Doctrine\Persistence\Reflection\EnumReflectionProperty;
+ use DoctrineGlobal_Article;
+ use DoctrineGlobal_User;
+ use Documents\Account;
+@@ -208,12 +207,13 @@ class ClassMetadataTest extends BaseTestCase
+         $cm = new ClassMetadata(Card::class);
+ 
+         $cm->mapField(['fieldName' => 'suit']);
+-        self::assertInstanceOf(EnumReflectionProperty::class, $cm->reflFields['suit']);
++        self::assertSame(Suit::class, $cm->fieldMappings['suit']['enumType']);
+ 
+         $serialized = serialize($cm);
+         $cm         = unserialize($serialized);
+ 
+-        self::assertInstanceOf(EnumReflectionProperty::class, $cm->reflFields['suit']);
++        self::assertSame(Suit::class, $cm->fieldMappings['suit']['enumType']);
++        self::assertSame(Type::STRING, $cm->getTypeOfField('suit'));
+     }
+ 
+     public function testEnumTypeFromReflectionMustBeBacked(): void
+@@ -496,7 +496,6 @@ class ClassMetadataTest extends BaseTestCase
+         $metadata = $this->dm->getClassMetadata(Album::class);
+ 
+         self::assertEquals($document->getName(), $metadata->getFieldValue($proxy, 'name'));
+-        self::assertTrue(self::isLazyObject($proxy));
+         self::assertFalse($this->uow->isUninitializedObject($proxy));
+     }
+ 
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/Proxy/Factory/ProxyFactoryTest.php b/tests/Doctrine/ODM/MongoDB/Tests/Proxy/Factory/ProxyFactoryTest.php
+index 7941ff5..a25575f 100644
+--- a/tests/Doctrine/ODM/MongoDB/Tests/Proxy/Factory/ProxyFactoryTest.php
++++ b/tests/Doctrine/ODM/MongoDB/Tests/Proxy/Factory/ProxyFactoryTest.php
+@@ -89,6 +89,8 @@ class ProxyFactoryTest extends BaseTestCase
+             $proxy->__setInitialized(true);
+         } elseif ($proxy instanceof GhostObjectInterface) {
+             $proxy->setProxyInitializer(null);
++        } elseif ($this->dm->getConfiguration()->isNativeLazyObjectEnabled()) {
++            $this->dm->getClassMetadata($proxy::class)->getReflectionClass()->markLazyObjectAsInitialized($proxy);
+         }
+ 
+         self::assertSame('bar', $proxy->foo);
+diff --git a/tests/Doctrine/ODM/MongoDB/Tests/UnitOfWorkTest.php b/tests/Doctrine/ODM/MongoDB/Tests/UnitOfWorkTest.php
+index 55d61fe..177c6a9 100644
+--- a/tests/Doctrine/ODM/MongoDB/Tests/UnitOfWorkTest.php
++++ b/tests/Doctrine/ODM/MongoDB/Tests/UnitOfWorkTest.php
+@@ -20,6 +20,7 @@ use Documents\Address;
+ use Documents\File;
+ use Documents\FileWithoutMetadata;
+ use Documents\ForumAvatar;
++use Documents\ForumStar;
+ use Documents\ForumUser;
+ use Documents\Functional\NotSaved;
+ use Documents\User;
+@@ -497,6 +498,32 @@ class UnitOfWorkTest extends BaseTestCase
+         self::assertEquals([], $this->uow->getDocumentChangeSet($user->getAvatar()));
+     }
+ 
++    /**
++     * Native lazy ghosts objects are marked as initialized when the last property
++     * is set. It appends when the document class has only one property: the id.
++     */
++    public function testRecomputeChangesetForNativeLazyGhostWithOnlyIdDoesNotCreateChangeset(): void
++    {
++        $user           = new ForumUser();
++        $user->username = '12345';
++        $user->setStar(new ForumStar());
++
++        $this->dm->persist($user);
++        $this->dm->flush();
++
++        $id = $user->getId();
++        $this->dm->clear();
++
++        $user = $this->dm->find(ForumUser::class, $id);
++        self::assertInstanceOf(ForumUser::class, $user);
++
++        $classMetadata = $this->dm->getClassMetadata(ForumStar::class);
++
++        $this->uow->recomputeSingleDocumentChangeSet($classMetadata, $user->getStar());
++
++        self::assertEquals([], $this->uow->getDocumentChangeSet($user->getStar()));
++    }
++
+     public function testCommitsInProgressIsUpdatedOnException(): void
+     {
+         $this->dm->getEventManager()->addEventSubscriber(
+diff --git a/tests/Documents/BaseDocument.php b/tests/Documents/BaseDocument.php
+index b107762..0f9d335 100644
+--- a/tests/Documents/BaseDocument.php
++++ b/tests/Documents/BaseDocument.php
+@@ -15,7 +15,7 @@ abstract class BaseDocument
+ 
+     /** @var string|null */
+     #[ODM\Field(type: 'string')]
+-    protected $inheritedProperty;
++    private $inheritedProperty;
+ 
+     public function setInheritedProperty(string $value): void
+     {
+diff --git a/tests/Documents/ForumAvatar.php b/tests/Documents/ForumAvatar.php
+index 1dc18f2..c0187a6 100644
+--- a/tests/Documents/ForumAvatar.php
++++ b/tests/Documents/ForumAvatar.php
+@@ -9,7 +9,9 @@ use Doctrine\ODM\MongoDB\Mapping\Annotations as ODM;
+ #[ODM\Document]
+ class ForumAvatar
+ {
+-    /** @var string|null */
+     #[ODM\Id]
+-    public $id;
++    public ?string $id;
++
++    #[ODM\Field]
++    public ?string $url = null;
+ }
+diff --git a/tests/Documents/ForumStar.php b/tests/Documents/ForumStar.php
+new file mode 100644
+index 0000000..df3fb2a
+--- /dev/null
++++ b/tests/Documents/ForumStar.php
+@@ -0,0 +1,17 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Documents;
++
++use Doctrine\ODM\MongoDB\Mapping\Annotations as ODM;
++
++/**
++ * Special entity that only has the $id field.
++ */
++#[ODM\Document]
++class ForumStar
++{
++    #[ODM\Id]
++    public ?string $id;
++}
+diff --git a/tests/Documents/ForumUser.php b/tests/Documents/ForumUser.php
+index 292b842..aee26fa 100644
+--- a/tests/Documents/ForumUser.php
++++ b/tests/Documents/ForumUser.php
+@@ -22,6 +22,9 @@ class ForumUser
+     #[ODM\ReferenceOne(targetDocument: ForumAvatar::class, cascade: ['persist'])]
+     public $avatar;
+ 
++    #[ODM\ReferenceOne(targetDocument: ForumStar::class, cascade: ['persist'])]
++    public ?ForumStar $star;
++
+     /** @return int|ObjectId|null */
+     public function getId()
+     {
+@@ -42,4 +45,14 @@ class ForumUser
+     {
+         $this->avatar = $avatar;
+     }
++
++    public function getStar(): ForumStar
++    {
++        return $this->star;
++    }
++
++    public function setStar(ForumStar $star): void
++    {
++        $this->star = $star;
++    }
+ }
+diff --git a/tests/Documents/Tag.php b/tests/Documents/Tag.php
+index 4814a2a..5461d1d 100644
+--- a/tests/Documents/Tag.php
++++ b/tests/Documents/Tag.php
+@@ -10,13 +10,11 @@ use Doctrine\ODM\MongoDB\Mapping\Annotations as ODM;
+ #[ODM\Document]
+ class Tag
+ {
+-    /** @var string|null */
+     #[ODM\Id]
+-    public $id;
++    public ?string $id;
+ 
+-    /** @var string */
+-    #[ODM\Field(type: 'string')]
+-    public $name;
++    #[ODM\Field]
++    public readonly string $name;
+ 
+     /** @var Collection<int, BlogPost> */
+     #[ODM\ReferenceMany(targetDocument: BlogPost::class, mappedBy: 'tags')]
+diff --git a/tests/Documents84/PropertyHooks/MappingVirtualProperty.php b/tests/Documents84/PropertyHooks/MappingVirtualProperty.php
+new file mode 100644
+index 0000000..7a7a2b6
+--- /dev/null
++++ b/tests/Documents84/PropertyHooks/MappingVirtualProperty.php
+@@ -0,0 +1,28 @@
++<?php // phpcs:ignoreFile
++
++namespace Documents84\PropertyHooks;
++
++use Doctrine\ODM\MongoDB\Mapping\Annotations\Document;
++use Doctrine\ODM\MongoDB\Mapping\Annotations\Field;
++use Doctrine\ODM\MongoDB\Mapping\Annotations\Id;
++
++#[Document(collection: 'property_hooks_user')]
++class MappingVirtualProperty
++{
++    #[Id]
++    public ?string $id;
++
++    #[Field]
++    public string $first;
++
++    #[Field]
++    public string $last;
++
++    #[Field]
++    public string $fullName {
++        get => $this->first . " " . $this->last;
++        set {
++            [$this->first, $this->last] = explode(' ', $value, 2);
++        }
++    }
++}
+diff --git a/tests/Documents84/PropertyHooks/User.php b/tests/Documents84/PropertyHooks/User.php
+new file mode 100644
+index 0000000..cc251be
+--- /dev/null
++++ b/tests/Documents84/PropertyHooks/User.php
+@@ -0,0 +1,53 @@
++<?php // phpcs:ignoreFile
++
++namespace Documents84\PropertyHooks;
++
++use Doctrine\ODM\MongoDB\Mapping\Annotations\Document;
++use Doctrine\ODM\MongoDB\Mapping\Annotations\Field;
++use Doctrine\ODM\MongoDB\Mapping\Annotations\Id;
++use ValueError;
++
++#[Document(collection: 'property_hooks_user')]
++class User
++{
++    #[Id]
++    public ?string $id;
++
++    #[Field]
++    public string $first {
++        set {
++            if (strlen($value) === 0) {
++                throw new ValueError("Name must be non-empty");
++            }
++            $this->first = $value;
++        }
++    }
++
++    #[Field]
++    public string $last {
++        set {
++            if (strlen($value) === 0) {
++                throw new ValueError("Name must be non-empty");
++            }
++            $this->last = $value;
++        }
++    }
++
++    public string $fullName {
++        get => $this->first . " " . $this->last;
++        set {
++            [$this->first, $this->last] = explode(' ', $value, 2);
++        }
++    }
++
++    #[Field]
++    public string $language = 'de' {
++        // Override the "read" action with arbitrary logic.
++        get => strtoupper($this->language);
++
++        // Override the "write" action with arbitrary logic.
++        set {
++            $this->language = strtolower($value);
++        }
++    }
++}
+\ No newline at end of file

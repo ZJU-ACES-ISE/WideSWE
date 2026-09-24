@@ -1,0 +1,55 @@
+id: grpc_grpc_go_grpc_java_timeout_interop_0d0b76e12c8e_a17d5a29df9d
+benchmark: WIDESWE
+status: candidate_pending_environment
+ecosystem: grpc
+task_type: protocol_interop_bugfix
+repositories:
+- name: grpc-go
+  path: repos/grpc/grpc-go
+  role: source
+  base_commit: 7fb5738f9989442050d9c50dd36a150787c9a1b3
+  gold_commit: 30593589923ab367b7cc48bc5b5ccf972fe0725e
+  merge_commit: 12f9d9c0da5fe95ccb915054fde5ca406a2f2843
+  gold_patch: gold/patches/grpc-go.patch
+- name: grpc-java
+  path: repos/grpc/grpc-java
+  role: source
+  base_commit: 919370172d65a819bb1e7ccb47f2285b0ccfd17e
+  gold_commit: e22cb03b7a7241266dba5be015d470c35149962b
+  merge_commit: 6dfa03c51c0f67bde1db56a7c71cbd538aef6e82
+  gold_patch: gold/patches/grpc-java.patch
+source_prs:
+- repo: grpc/grpc-go
+  pr: 8290
+  title: 'transport: Reject non-positive timeout values in server'
+  url: https://github.com/grpc/grpc-go/pull/8290
+  merged_at: '2025-05-12T16:23:30Z'
+- repo: grpc/grpc-java
+  pr: 12201
+  title: 'core: grpc-timeout should always be positive'
+  url: https://github.com/grpc/grpc-java/pull/12201
+  merged_at: '2025-07-03T06:14:05Z'
+- repo: grpc/grpc-go
+  pr: 8439
+  title: 'server: allow 0s grpc-timeout header values, as java is known to be able
+    to send them'
+  url: https://github.com/grpc/grpc-go/pull/8439
+  merged_at: '2025-07-09T14:35:47Z'
+source_unit: pr_bundle
+source_provenance:
+  construction_method: manual_merge_of_upstream_pr_chain
+  data_collection_basis: manual_audit_since20250601 + pr_mining_all_repos_since2024
+  manual_audit_ids:
+  - 0d0b76e12c8e
+  - a17d5a29df9d
+  supersedes_candidate_ids:
+  - grpc_grpc_go_grpc_java_0d0b76e12c8e
+  - grpc_grpc_go_grpc_java_a17d5a29df9d
+  merge_reason: grpc-go#8290, grpc-java#12201, and grpc-go#8439 are one timeout-header
+    interoperability chain; keeping the two mined bundles separately duplicates the
+    same Java PR and splits the final Go behavior.
+evaluation:
+  harness: harness.yaml
+  gold: gold/patches/
+  hidden_tests: hidden/patches/
+  environment: environment/

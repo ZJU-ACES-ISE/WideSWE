@@ -1,0 +1,1377 @@
+diff --git a/receivers/stackdriver/config.go b/receivers/stackdriver/config.go
+index 5e14efd..af451d0 100644
+--- a/receivers/stackdriver/config.go
++++ b/receivers/stackdriver/config.go
+@@ -15,161 +15,119 @@ package otelcollector
+ 
+ import (
+ 	"fmt"
++	"reflect"
+ 	"slices"
++	"strings"
+ 	"time"
++	"unicode"
+ 
++	"github.com/mitchellh/mapstructure"
+ 	"github.com/prometheus-community/stackdriver_exporter/config"
+ 	prombridge "github.com/prometheus/opentelemetry-collector-bridge"
+ )
+ 
+-// Config maps stackdriver_exporter runtime settings into exporter_config.
+-type Config struct {
+-	ProjectIDs           []string `mapstructure:"project_ids"`
+-	ProjectsFilter       string   `mapstructure:"projects_filter"`
+-	UniverseDomain       string   `mapstructure:"universe_domain"`
+-	MaxRetries           int      `mapstructure:"max_retries"`
+-	HTTPTimeout          string   `mapstructure:"http_timeout"`
+-	MaxBackoff           string   `mapstructure:"max_backoff"`
+-	BackoffJitter        string   `mapstructure:"backoff_jitter"`
+-	RetryStatuses        []int    `mapstructure:"retry_statuses"`
+-	MetricsPrefixes      []string `mapstructure:"metrics_prefixes"`
+-	MetricsInterval      string   `mapstructure:"metrics_interval"`
+-	MetricsOffset        string   `mapstructure:"metrics_offset"`
+-	MetricsIngest        bool     `mapstructure:"metrics_ingest_delay"`
+-	FillMissing          bool     `mapstructure:"fill_missing_labels"`
+-	DropDelegated        bool     `mapstructure:"drop_delegated_projects"`
+-	Filters              []string `mapstructure:"filters"`
+-	AggregateDeltas      bool     `mapstructure:"aggregate_deltas"`
+-	DeltasTTL            string   `mapstructure:"aggregate_deltas_ttl"`
+-	DescriptorTTL        string   `mapstructure:"descriptor_cache_ttl"`
+-	DescriptorGoogleOnly bool     `mapstructure:"descriptor_cache_only_google"`
+-}
+-
+-var _ prombridge.Config = (*Config)(nil)
+-
+-func defaultConfig() *Config {
+-	return &Config{
+-		UniverseDomain:       config.DefaultUniverseDomain,
+-		MaxRetries:           config.DefaultMaxRetries,
+-		HTTPTimeout:          config.DefaultHTTPTimeout,
+-		MaxBackoff:           config.DefaultMaxBackoff,
+-		BackoffJitter:        config.DefaultBackoffJitter,
+-		RetryStatuses:        slices.Clone(config.DefaultRetryStatuses),
+-		MetricsInterval:      config.DefaultMetricsInterval,
+-		MetricsOffset:        config.DefaultMetricsOffset,
+-		MetricsIngest:        config.DefaultMetricsIngest,
+-		FillMissing:          config.DefaultFillMissing,
+-		DropDelegated:        config.DefaultDropDelegated,
+-		AggregateDeltas:      config.DefaultAggregateDeltas,
+-		DeltasTTL:            config.DefaultDeltasTTL,
+-		DescriptorTTL:        config.DefaultDescriptorTTL,
+-		DescriptorGoogleOnly: config.DefaultDescriptorGoogleOnly,
+-	}
+-}
+-
+-func defaultComponentDefaults() map[string]interface{} {
+-	return config.OTelComponentDefaults()
+-}
++var _ prombridge.ConfigDecoder = configDecoder{}
+ 
+-func (c *Config) Validate() error {
+-	if len(c.MetricsPrefixes) == 0 {
+-		return fmt.Errorf("metrics_prefixes must have at least one entry")
+-	}
++type configDecoder struct{}
+ 
+-	_, err := c.parsedDurations()
++func (configDecoder) DecodeConfig(raw map[string]interface{}) (any, error) {
++	cfg := defaultConfig()
++	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
++		Result:     cfg,
++		DecodeHook: mapstructure.StringToTimeDurationHookFunc(),
++		MatchName: func(yamlKey, goField string) bool {
++			return strings.EqualFold(strings.ReplaceAll(yamlKey, "_", ""), goField)
++		},
++		ErrorUnused: true,
++	})
+ 	if err != nil {
+-		return err
++		return nil, err
+ 	}
+-
+-	if err := config.ValidateRetryStatuses(c.RetryStatuses); err != nil {
+-		return err
++	if err := dec.Decode(raw); err != nil {
++		return nil, fmt.Errorf("decode receiver config: %w", err)
+ 	}
+-
+-	return nil
+-}
+-
+-type parsedConfig struct {
+-	HTTPTimeout     time.Duration
+-	MaxBackoff      time.Duration
+-	BackoffJitter   time.Duration
+-	MetricsInterval time.Duration
+-	MetricsOffset   time.Duration
+-	DeltasTTL       time.Duration
+-	DescriptorTTL   time.Duration
++	return cfg, nil
+ }
+ 
+-func (c *Config) parsedDurations() (parsedConfig, error) {
+-	httpTimeout, err := config.ParseDuration("http_timeout", c.HTTPTimeout)
+-	if err != nil {
+-		return parsedConfig{}, err
+-	}
+-	maxBackoff, err := config.ParseDuration("max_backoff", c.MaxBackoff)
+-	if err != nil {
+-		return parsedConfig{}, err
++func defaultConfig() *config.Config {
++	return &config.Config{
++		UniverseDomain:            config.DefaultUniverseDomain,
++		MaxRetries:                config.DefaultMaxRetries,
++		HTTPTimeout:               config.DefaultHTTPTimeout,
++		MaxBackoff:                config.DefaultMaxBackoff,
++		BackoffJitter:             config.DefaultBackoffJitter,
++		RetryStatuses:             slices.Clone(config.DefaultRetryStatuses),
++		MetricsInterval:           config.DefaultMetricsInterval,
++		MetricsOffset:             config.DefaultMetricsOffset,
++		MetricsIngestDelay:        config.DefaultMetricsIngest,
++		FillMissingLabels:         config.DefaultFillMissing,
++		DropDelegatedProjects:     config.DefaultDropDelegated,
++		AggregateDeltas:           config.DefaultAggregateDeltas,
++		AggregateDeltasTTL:        config.DefaultDeltasTTL,
++		DescriptorCacheTTL:        config.DefaultDescriptorTTL,
++		DescriptorCacheOnlyGoogle: config.DefaultDescriptorGoogleOnly,
+ 	}
+-	backoffJitter, err := config.ParseDuration("backoff_jitter", c.BackoffJitter)
+-	if err != nil {
+-		return parsedConfig{}, err
+-	}
+-	metricsInterval, err := config.ParseDuration("metrics_interval", c.MetricsInterval)
+-	if err != nil {
+-		return parsedConfig{}, err
+-	}
+-	metricsOffset, err := config.ParseDuration("metrics_offset", c.MetricsOffset)
+-	if err != nil {
+-		return parsedConfig{}, err
+-	}
+-	deltasTTL, err := config.ParseDuration("aggregate_deltas_ttl", c.DeltasTTL)
+-	if err != nil {
+-		return parsedConfig{}, err
+-	}
+-	descriptorTTL, err := config.ParseDuration("descriptor_cache_ttl", c.DescriptorTTL)
+-	if err != nil {
+-		return parsedConfig{}, err
+-	}
+-
+-	return parsedConfig{
+-		HTTPTimeout:     httpTimeout,
+-		MaxBackoff:      maxBackoff,
+-		BackoffJitter:   backoffJitter,
+-		MetricsInterval: metricsInterval,
+-		MetricsOffset:   metricsOffset,
+-		DeltasTTL:       deltasTTL,
+-		DescriptorTTL:   descriptorTTL,
+-	}, nil
+ }
+ 
+-func (c *Config) runtimeConfig() (config.RuntimeConfig, error) {
+-	parsed, err := c.parsedDurations()
+-	if err != nil {
+-		return config.RuntimeConfig{}, err
++// componentDefaults generates the OTel-framework defaults map by walking the typed
++// default Config. time.Duration fields are emitted as their .String() form to match
++// the YAML representation; everything else passes through.
++func componentDefaults() map[string]interface{} {
++	out := map[string]interface{}{}
++	rv := reflect.ValueOf(defaultConfig()).Elem()
++	rt := rv.Type()
++	for i := range rt.NumField() {
++		f := rt.Field(i)
++		if !f.IsExported() {
++			continue
++		}
++		key := snakeCase(f.Name)
++		v := rv.Field(i).Interface()
++		if d, ok := v.(time.Duration); ok {
++			out[key] = d.String()
++			continue
++		}
++		out[key] = v
+ 	}
+-
+-	return config.RuntimeConfig{
+-		ProjectIDs:           slices.Clone(c.ProjectIDs),
+-		ProjectsFilter:       c.ProjectsFilter,
+-		UniverseDomain:       c.UniverseDomain,
+-		MaxRetries:           c.MaxRetries,
+-		HTTPTimeout:          parsed.HTTPTimeout,
+-		MaxBackoff:           parsed.MaxBackoff,
+-		BackoffJitter:        parsed.BackoffJitter,
+-		RetryStatuses:        slices.Clone(c.RetryStatuses),
+-		MetricsPrefixes:      slices.Clone(c.MetricsPrefixes),
+-		MetricsInterval:      parsed.MetricsInterval,
+-		MetricsOffset:        parsed.MetricsOffset,
+-		MetricsIngest:        c.MetricsIngest,
+-		FillMissing:          c.FillMissing,
+-		DropDelegated:        c.DropDelegated,
+-		Filters:              slices.Clone(c.Filters),
+-		AggregateDeltas:      c.AggregateDeltas,
+-		DeltasTTL:            parsed.DeltasTTL,
+-		DescriptorTTL:        parsed.DescriptorTTL,
+-		DescriptorGoogleOnly: c.DescriptorGoogleOnly,
+-	}, nil
++	return out
+ }
+ 
+-type configUnmarshaler struct{}
+-
+-func (configUnmarshaler) GetConfigStruct() prombridge.Config {
+-	return defaultConfig()
++// snakeCase converts a PascalCase or camelCase Go identifier to snake_case,
++// handling acronyms (HTTPTimeout → http_timeout, ProjectIDs → project_ids,
++// AggregateDeltasTTL → aggregate_deltas_ttl).
++func snakeCase(name string) string {
++	runes := []rune(name)
++	var out []rune
++	for i, r := range runes {
++		if i == 0 {
++			out = append(out, unicode.ToLower(r))
++			continue
++		}
++		prev := runes[i-1]
++		if unicode.IsUpper(r) {
++			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
++				// lowercase→uppercase boundary: always split.
++				out = append(out, '_')
++			} else if unicode.IsUpper(prev) {
++				// Within an uppercase run: split before this letter only if the
++				// run has 3+ uppercase letters (i.e., two-back is also uppercase).
++				// This splits "HTTP"+"Timeout" but keeps "ID"+"s" together.
++				next := rune(0)
++				if i+1 < len(runes) {
++					next = runes[i+1]
++				}
++				if next != 0 && unicode.IsLower(next) {
++					prevPrev := rune(0)
++					if i >= 2 {
++						prevPrev = runes[i-2]
++					}
++					if unicode.IsUpper(prevPrev) {
++						out = append(out, '_')
++					}
++				}
++			}
++		}
++		out = append(out, unicode.ToLower(r))
++	}
++	return string(out)
+ }
+diff --git a/receivers/stackdriver/config_test.go b/receivers/stackdriver/config_test.go
+index f5b5242..26589f2 100644
+--- a/receivers/stackdriver/config_test.go
++++ b/receivers/stackdriver/config_test.go
+@@ -14,207 +14,204 @@
+ package otelcollector
+ 
+ import (
++	"maps"
+ 	"reflect"
++	"slices"
+ 	"testing"
+ 	"time"
+ 
+ 	"github.com/prometheus-community/stackdriver_exporter/config"
++	"github.com/stretchr/testify/require"
+ )
+ 
+-func TestConfig_Validate(t *testing.T) {
++func TestSnakeCase(t *testing.T) {
+ 	t.Parallel()
+ 
+-	tests := []struct {
+-		name    string
+-		cfg     Config
+-		wantErr bool
++	cases := []struct {
++		input string
++		want  string
+ 	}{
+-		{
+-			name: "valid with project IDs",
+-			cfg: Config{
+-				ProjectIDs:      []string{"my-project"},
+-				MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-				HTTPTimeout:     "10s",
+-				MaxBackoff:      "5s",
+-				BackoffJitter:   "1s",
+-				MetricsInterval: "5m",
+-				MetricsOffset:   "0s",
+-				DeltasTTL:       "30m",
+-				DescriptorTTL:   "0s",
+-			},
+-		},
+-		{
+-			name: "valid with projects filter",
+-			cfg: Config{
+-				ProjectsFilter:  "parent.type:folder parent.id:123",
+-				MetricsPrefixes: []string{"pubsub.googleapis.com/subscription"},
+-				HTTPTimeout:     "10s",
+-				MaxBackoff:      "5s",
+-				BackoffJitter:   "1s",
+-				MetricsInterval: "5m",
+-				MetricsOffset:   "0s",
+-				DeltasTTL:       "30m",
+-				DescriptorTTL:   "0s",
+-			},
+-		},
+-		{
+-			name: "valid with implicit default project discovery",
+-			cfg: Config{
+-				MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-				HTTPTimeout:     "10s",
+-				MaxBackoff:      "5s",
+-				BackoffJitter:   "1s",
+-				MetricsInterval: "5m",
+-				MetricsOffset:   "0s",
+-				DeltasTTL:       "30m",
+-				DescriptorTTL:   "0s",
+-			},
+-		},
+-		{
+-			name: "invalid without metrics prefixes",
+-			cfg: Config{
+-				ProjectIDs:    []string{"my-project"},
+-				HTTPTimeout:   "10s",
+-				MaxBackoff:    "5s",
+-				BackoffJitter: "1s",
+-			},
+-			wantErr: true,
+-		},
+-		{
+-			name: "invalid timeout",
+-			cfg: Config{
+-				ProjectIDs:      []string{"my-project"},
+-				MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-				HTTPTimeout:     "not-a-duration",
+-				MaxBackoff:      "5s",
+-				BackoffJitter:   "1s",
+-				MetricsInterval: "5m",
+-				MetricsOffset:   "0s",
+-				DeltasTTL:       "30m",
+-				DescriptorTTL:   "0s",
+-			},
+-			wantErr: true,
+-		},
+-		{
+-			name: "invalid retry status",
+-			cfg: Config{
+-				ProjectIDs:      []string{"my-project"},
+-				MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-				HTTPTimeout:     "10s",
+-				MaxBackoff:      "5s",
+-				BackoffJitter:   "1s",
+-				MetricsInterval: "5m",
+-				MetricsOffset:   "0s",
+-				DeltasTTL:       "30m",
+-				DescriptorTTL:   "0s",
+-				RetryStatuses:   []int{99},
+-			},
+-			wantErr: true,
+-		},
+-	}
+-
+-	for _, tt := range tests {
+-		tt := tt
+-		t.Run(tt.name, func(t *testing.T) {
++		{"ProjectIDs", "project_ids"},
++		{"HTTPTimeout", "http_timeout"},
++		{"MaxRetries", "max_retries"},
++		{"AggregateDeltasTTL", "aggregate_deltas_ttl"},
++		{"DescriptorCacheOnlyGoogle", "descriptor_cache_only_google"},
++		{"MetricsIngestDelay", "metrics_ingest_delay"},
++		{"ProjectsFilter", "projects_filter"},
++		{"UniverseDomain", "universe_domain"},
++	}
++
++	for _, tc := range cases {
++		tc := tc
++		t.Run(tc.input, func(t *testing.T) {
+ 			t.Parallel()
+-			err := tt.cfg.Validate()
+-			if (err != nil) != tt.wantErr {
+-				t.Fatalf("Validate() error = %v, wantErr = %v", err, tt.wantErr)
++			got := snakeCase(tc.input)
++			if got != tc.want {
++				t.Fatalf("snakeCase(%q) = %q, want %q", tc.input, got, tc.want)
+ 			}
+ 		})
+ 	}
+ }
+ 
+-func TestConfig_Durations(t *testing.T) {
++func TestComponentDefaultsKeysMirrorConfig(t *testing.T) {
++	t.Parallel()
++
++	want := []string{
++		"project_ids", "projects_filter", "universe_domain",
++		"max_retries", "http_timeout", "max_backoff", "backoff_jitter",
++		"retry_statuses", "metrics_prefixes", "metrics_interval",
++		"metrics_offset", "metrics_ingest_delay", "fill_missing_labels",
++		"drop_delegated_projects", "filters", "aggregate_deltas",
++		"aggregate_deltas_ttl", "descriptor_cache_ttl", "descriptor_cache_only_google",
++	}
++	got := slices.Sorted(maps.Keys(componentDefaults()))
++	slices.Sort(want)
++	require.Equal(t, want, got)
++}
++
++func TestDecodeConfig_DefaultsMatchDefaultConfig(t *testing.T) {
++	t.Parallel()
++
++	want := defaultConfig()
++
++	got, err := configDecoder{}.DecodeConfig(componentDefaults())
++	if err != nil {
++		t.Fatalf("DecodeConfig(componentDefaults()) error = %v", err)
++	}
++
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("DecodeConfig(componentDefaults()) = %#v, want %#v", got, want)
++	}
++}
++
++func TestDecodeConfig_FullRoundTrip(t *testing.T) {
+ 	t.Parallel()
+ 
+-	cfg := Config{
+-		ProjectIDs:      []string{"my-project"},
+-		MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-		HTTPTimeout:     "10s",
+-		MaxBackoff:      "5s",
+-		BackoffJitter:   "1s",
+-		MetricsInterval: "5m",
+-		MetricsOffset:   "2m",
+-		DeltasTTL:       "30m",
+-		DescriptorTTL:   "0s",
++	raw := map[string]interface{}{
++		"project_ids":                  []string{"proj-a", "proj-b"},
++		"projects_filter":              "parent.type:folder parent.id:123",
++		"universe_domain":              "example.com",
++		"max_retries":                  3,
++		"http_timeout":                 "30s",
++		"max_backoff":                  "10s",
++		"backoff_jitter":               "2s",
++		"retry_statuses":               []int{429, 503},
++		"metrics_prefixes":             []string{"compute.googleapis.com/instance"},
++		"metrics_interval":             "10m",
++		"metrics_offset":               "1m",
++		"metrics_ingest_delay":         true,
++		"fill_missing_labels":          false,
++		"drop_delegated_projects":      true,
++		"filters":                      []string{"compute.googleapis.com/instance:resource.labels.zone=us-central1-a"},
++		"aggregate_deltas":             true,
++		"aggregate_deltas_ttl":         "1h",
++		"descriptor_cache_ttl":         "15m",
++		"descriptor_cache_only_google": false,
+ 	}
+ 
+-	parsed, err := cfg.parsedDurations()
++	result, err := configDecoder{}.DecodeConfig(raw)
+ 	if err != nil {
+-		t.Fatalf("parsedDurations() error = %v", err)
++		t.Fatalf("DecodeConfig() error = %v", err)
++	}
++
++	cfg, ok := result.(*config.Config)
++	if !ok {
++		t.Fatalf("DecodeConfig() returned unexpected type %T", result)
+ 	}
+ 
+-	if parsed.HTTPTimeout != 10*time.Second {
+-		t.Fatalf("HTTPTimeout = %v, want %v", parsed.HTTPTimeout, 10*time.Second)
++	if !reflect.DeepEqual(cfg.ProjectIDs, []string{"proj-a", "proj-b"}) {
++		t.Errorf("ProjectIDs = %v, want [proj-a proj-b]", cfg.ProjectIDs)
++	}
++	if cfg.ProjectsFilter != "parent.type:folder parent.id:123" {
++		t.Errorf("ProjectsFilter = %q", cfg.ProjectsFilter)
++	}
++	if cfg.UniverseDomain != "example.com" {
++		t.Errorf("UniverseDomain = %q", cfg.UniverseDomain)
+ 	}
+-	if parsed.MaxBackoff != 5*time.Second {
+-		t.Fatalf("MaxBackoff = %v, want %v", parsed.MaxBackoff, 5*time.Second)
++	if cfg.MaxRetries != 3 {
++		t.Errorf("MaxRetries = %d, want 3", cfg.MaxRetries)
+ 	}
+-	if parsed.BackoffJitter != 1*time.Second {
+-		t.Fatalf("BackoffJitter = %v, want %v", parsed.BackoffJitter, 1*time.Second)
++	if cfg.HTTPTimeout != 30*time.Second {
++		t.Errorf("HTTPTimeout = %v, want 30s", cfg.HTTPTimeout)
+ 	}
+-	if parsed.MetricsInterval != 5*time.Minute {
+-		t.Fatalf("MetricsInterval = %v, want %v", parsed.MetricsInterval, 5*time.Minute)
++	if cfg.MaxBackoff != 10*time.Second {
++		t.Errorf("MaxBackoff = %v, want 10s", cfg.MaxBackoff)
+ 	}
+-	if parsed.MetricsOffset != 2*time.Minute {
+-		t.Fatalf("MetricsOffset = %v, want %v", parsed.MetricsOffset, 2*time.Minute)
++	if cfg.BackoffJitter != 2*time.Second {
++		t.Errorf("BackoffJitter = %v, want 2s", cfg.BackoffJitter)
+ 	}
+-	if parsed.DeltasTTL != 30*time.Minute {
+-		t.Fatalf("DeltasTTL = %v, want %v", parsed.DeltasTTL, 30*time.Minute)
++	if !reflect.DeepEqual(cfg.RetryStatuses, []int{429, 503}) {
++		t.Errorf("RetryStatuses = %v, want [429 503]", cfg.RetryStatuses)
+ 	}
+-	if parsed.DescriptorTTL != 0 {
+-		t.Fatalf("DescriptorTTL = %v, want %v", parsed.DescriptorTTL, 0*time.Second)
++	if !reflect.DeepEqual(cfg.MetricsPrefixes, []string{"compute.googleapis.com/instance"}) {
++		t.Errorf("MetricsPrefixes = %v", cfg.MetricsPrefixes)
++	}
++	if !reflect.DeepEqual(cfg.Filters, []string{"compute.googleapis.com/instance:resource.labels.zone=us-central1-a"}) {
++		t.Errorf("Filters = %v", cfg.Filters)
++	}
++	if cfg.MetricsInterval != 10*time.Minute {
++		t.Errorf("MetricsInterval = %v, want 10m", cfg.MetricsInterval)
++	}
++	if cfg.MetricsOffset != 1*time.Minute {
++		t.Errorf("MetricsOffset = %v, want 1m", cfg.MetricsOffset)
++	}
++	if !cfg.MetricsIngestDelay {
++		t.Errorf("MetricsIngestDelay = false, want true")
++	}
++	if cfg.FillMissingLabels {
++		t.Errorf("FillMissingLabels = true, want false")
++	}
++	if !cfg.DropDelegatedProjects {
++		t.Errorf("DropDelegatedProjects = false, want true")
++	}
++	if !cfg.AggregateDeltas {
++		t.Errorf("AggregateDeltas = false, want true")
++	}
++	if cfg.AggregateDeltasTTL != 1*time.Hour {
++		t.Errorf("AggregateDeltasTTL = %v, want 1h", cfg.AggregateDeltasTTL)
++	}
++	if cfg.DescriptorCacheTTL != 15*time.Minute {
++		t.Errorf("DescriptorCacheTTL = %v, want 15m", cfg.DescriptorCacheTTL)
++	}
++	if cfg.DescriptorCacheOnlyGoogle {
++		t.Errorf("DescriptorCacheOnlyGoogle = true, want false")
+ 	}
+ }
+ 
+-func TestDefaultComponentDefaultsMatchOptionDefaults(t *testing.T) {
++func TestDecodeConfig_DurationStringOverridesDefault(t *testing.T) {
+ 	t.Parallel()
+ 
+-	defaults := defaultComponentDefaults()
++	raw := map[string]interface{}{
++		"metrics_prefixes": []string{"compute.googleapis.com/instance"},
++		"http_timeout":     "45s",
++	}
+ 
+-	for _, option := range config.AllOptions {
+-		value, ok := defaults[option.OTelKey]
+-		if option.Default != nil {
+-			if !ok {
+-				t.Fatalf("defaultComponentDefaults() missing key %q", option.OTelKey)
+-			}
+-			if !reflect.DeepEqual(value, option.Default) {
+-				t.Fatalf("defaultComponentDefaults()[%q] = %#v, want %#v", option.OTelKey, value, option.Default)
+-			}
+-			continue
+-		}
++	result, err := configDecoder{}.DecodeConfig(raw)
++	if err != nil {
++		t.Fatalf("DecodeConfig() error = %v", err)
++	}
+ 
+-		if ok {
+-			t.Fatalf("defaultComponentDefaults() unexpectedly includes key %q", option.OTelKey)
+-		}
++	cfg := result.(*config.Config)
++	if cfg.HTTPTimeout != 45*time.Second {
++		t.Fatalf("HTTPTimeout = %v, want 45s", cfg.HTTPTimeout)
++	}
++	if cfg.FillMissingLabels != config.DefaultFillMissing {
++		t.Fatalf("FillMissingLabels = %v, want default %v", cfg.FillMissingLabels, config.DefaultFillMissing)
++	}
++	if cfg.MaxBackoff != config.DefaultMaxBackoff {
++		t.Fatalf("MaxBackoff = %v, want default %v", cfg.MaxBackoff, config.DefaultMaxBackoff)
+ 	}
+ }
+ 
+-func TestConfigMapstructureTagsMatchAllOptions(t *testing.T) {
++func TestDecodeConfig_UnknownKey(t *testing.T) {
+ 	t.Parallel()
+ 
+-	cfgType := reflect.TypeOf(Config{})
+-	tags := make(map[string]struct{}, cfgType.NumField())
+-	for i := 0; i < cfgType.NumField(); i++ {
+-		tag := cfgType.Field(i).Tag.Get("mapstructure")
+-		if tag == "" {
+-			continue
+-		}
+-		tags[tag] = struct{}{}
+-	}
+-
+-	optionKeys := make(map[string]struct{}, len(config.AllOptions))
+-	for _, option := range config.AllOptions {
+-		optionKeys[option.OTelKey] = struct{}{}
+-		if _, ok := tags[option.OTelKey]; !ok {
+-			t.Fatalf("Config is missing mapstructure tag %q", option.OTelKey)
+-		}
++	raw := map[string]interface{}{
++		"unknown_key": "value",
+ 	}
+ 
+-	for tag := range tags {
+-		if _, ok := optionKeys[tag]; !ok {
+-			t.Fatalf("AllOptions is missing config key %q", tag)
+-		}
++	_, err := configDecoder{}.DecodeConfig(raw)
++	if err == nil {
++		t.Fatal("DecodeConfig() expected error for unknown key, got nil")
+ 	}
+ }
+diff --git a/receivers/stackdriver/factory.go b/receivers/stackdriver/factory.go
+index 45c9a46..347965b 100644
+--- a/receivers/stackdriver/factory.go
++++ b/receivers/stackdriver/factory.go
+@@ -22,16 +22,10 @@ import (
+ var receiverType = component.MustNewType("stackdriver_exporter")
+ 
+ func NewFactory() receiver.Factory {
+-	return prombridge.NewFactory(
++	return prombridge.NewFactoryWithDecoder(
+ 		receiverType,
+ 		newLifecycleManager(),
+-		configUnmarshaler{},
+-		prombridge.WithComponentDefaults(defaultComponentDefaults()),
++		configDecoder{},
++		prombridge.WithComponentDefaults(componentDefaults()),
+ 	)
+ }
+-
+-// Keep compiler checks close to factory wiring.
+-var (
+-	_ prombridge.ExporterLifecycleManager = (*lifecycleManager)(nil)
+-	_ prombridge.ConfigUnmarshaler        = (configUnmarshaler{})
+-)
+diff --git a/receivers/stackdriver/go.mod b/receivers/stackdriver/go.mod
+index e69bae4..99a1aa5 100644
+--- a/receivers/stackdriver/go.mod
++++ b/receivers/stackdriver/go.mod
+@@ -3,16 +3,16 @@ module github.com/prometheus/prometheus-opentelemetry-collector/receivers/stackd
+ go 1.25.0
+ 
+ require (
+-	github.com/prometheus-community/stackdriver_exporter v0.18.1-0.20260423183840-730b0083f2bc
++	github.com/mitchellh/mapstructure v1.5.0
++	github.com/prometheus-community/stackdriver_exporter v0.18.1-0.20260527145757-ff409e69749b
+ 	github.com/prometheus/client_golang v1.23.2
+-	github.com/prometheus/opentelemetry-collector-bridge v0.0.0-20260423181221-8d9338897ca9
+-	go.opentelemetry.io/collector/component v1.56.0
+-	go.opentelemetry.io/collector/consumer/consumertest v0.150.0
+-	go.opentelemetry.io/collector/receiver v1.56.0
+-	go.opentelemetry.io/collector/receiver/receivertest v0.150.0
+-	go.uber.org/zap v1.27.1
++	github.com/prometheus/opentelemetry-collector-bridge v0.0.0-20260512202517-5008f6fde161
++	github.com/stretchr/testify v1.11.1
++	go.opentelemetry.io/collector/component v1.58.0
++	go.opentelemetry.io/collector/consumer/consumertest v0.152.0
++	go.opentelemetry.io/collector/receiver v1.58.0
++	go.opentelemetry.io/collector/receiver/receivertest v0.152.0
+ 	go.uber.org/zap/exp v0.3.0
+-	google.golang.org/api v0.251.0
+ )
+ 
+ require (
+@@ -33,7 +33,6 @@ require (
+ 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
+ 	github.com/hashicorp/go-version v1.9.0 // indirect
+ 	github.com/json-iterator/go v1.1.12 // indirect
+-	github.com/mitchellh/mapstructure v1.5.0 // indirect
+ 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+ 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
+ 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+@@ -41,22 +40,21 @@ require (
+ 	github.com/prometheus/client_model v0.6.2 // indirect
+ 	github.com/prometheus/common v0.67.5 // indirect
+ 	github.com/prometheus/procfs v0.20.1 // indirect
+-	github.com/stretchr/testify v1.11.1 // indirect
+ 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+-	go.opentelemetry.io/collector/component/componenttest v0.150.0 // indirect
+-	go.opentelemetry.io/collector/consumer v1.56.0 // indirect
+-	go.opentelemetry.io/collector/consumer/consumererror v0.150.0 // indirect
+-	go.opentelemetry.io/collector/consumer/xconsumer v0.150.0 // indirect
+-	go.opentelemetry.io/collector/featuregate v1.56.0 // indirect
+-	go.opentelemetry.io/collector/internal/componentalias v0.150.0 // indirect
+-	go.opentelemetry.io/collector/pdata v1.56.0 // indirect
+-	go.opentelemetry.io/collector/pdata/pprofile v0.150.0 // indirect
+-	go.opentelemetry.io/collector/pipeline v1.56.0 // indirect
+-	go.opentelemetry.io/collector/pipeline/xpipeline v0.150.0 // indirect
+-	go.opentelemetry.io/collector/receiver/receiverhelper v0.150.0 // indirect
+-	go.opentelemetry.io/collector/receiver/xreceiver v0.150.0 // indirect
+-	go.opentelemetry.io/collector/scraper v0.150.0 // indirect
+-	go.opentelemetry.io/collector/scraper/scraperhelper v0.150.0 // indirect
++	go.opentelemetry.io/collector/component/componenttest v0.152.0 // indirect
++	go.opentelemetry.io/collector/consumer v1.58.0 // indirect
++	go.opentelemetry.io/collector/consumer/consumererror v0.152.0 // indirect
++	go.opentelemetry.io/collector/consumer/xconsumer v0.152.0 // indirect
++	go.opentelemetry.io/collector/featuregate v1.58.0 // indirect
++	go.opentelemetry.io/collector/internal/componentalias v0.152.0 // indirect
++	go.opentelemetry.io/collector/pdata v1.58.0 // indirect
++	go.opentelemetry.io/collector/pdata/pprofile v0.152.0 // indirect
++	go.opentelemetry.io/collector/pipeline v1.58.0 // indirect
++	go.opentelemetry.io/collector/pipeline/xpipeline v0.152.0 // indirect
++	go.opentelemetry.io/collector/receiver/receiverhelper v0.152.0 // indirect
++	go.opentelemetry.io/collector/receiver/xreceiver v0.152.0 // indirect
++	go.opentelemetry.io/collector/scraper v0.152.0 // indirect
++	go.opentelemetry.io/collector/scraper/scraperhelper v0.152.0 // indirect
+ 	go.opentelemetry.io/contrib/bridges/prometheus v0.68.0 // indirect
+ 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
+ 	go.opentelemetry.io/otel v1.43.0 // indirect
+@@ -65,15 +63,16 @@ require (
+ 	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
+ 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
+ 	go.uber.org/multierr v1.11.0 // indirect
++	go.uber.org/zap v1.28.0 // indirect
+ 	go.yaml.in/yaml/v2 v2.4.4 // indirect
+-	golang.org/x/crypto v0.48.0 // indirect
+-	golang.org/x/net v0.51.0 // indirect
++	golang.org/x/crypto v0.51.0 // indirect
++	golang.org/x/net v0.54.0 // indirect
+ 	golang.org/x/oauth2 v0.36.0 // indirect
+-	golang.org/x/sys v0.42.0 // indirect
+-	golang.org/x/text v0.34.0 // indirect
+-	google.golang.org/genproto/googleapis/api v0.0.0-20260128011058-8636f8732409 // indirect
+-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260128011058-8636f8732409 // indirect
+-	google.golang.org/grpc v1.80.0 // indirect
++	golang.org/x/sys v0.44.0 // indirect
++	golang.org/x/text v0.37.0 // indirect
++	google.golang.org/api v0.251.0 // indirect
++	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
++	google.golang.org/grpc v1.81.0 // indirect
+ 	google.golang.org/protobuf v1.36.11 // indirect
+ 	gopkg.in/yaml.v3 v3.0.1 // indirect
+ )
+diff --git a/receivers/stackdriver/go.sum b/receivers/stackdriver/go.sum
+index 56fc80e..5679c63 100644
+--- a/receivers/stackdriver/go.sum
++++ b/receivers/stackdriver/go.sum
+@@ -68,16 +68,16 @@ github.com/onsi/gomega v1.38.2 h1:eZCjf2xjZAqe+LeWvKb5weQ+NcPwX84kqJ0cZNxok2A=
+ github.com/onsi/gomega v1.38.2/go.mod h1:W2MJcYxRGV63b418Ai34Ud0hEdTVXq9NW9+Sx6uXf3k=
+ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+-github.com/prometheus-community/stackdriver_exporter v0.18.1-0.20260423183840-730b0083f2bc h1:ts/gJASs5CAyFI98aEX8ctmERBdxj79T/fH+c22y2TM=
+-github.com/prometheus-community/stackdriver_exporter v0.18.1-0.20260423183840-730b0083f2bc/go.mod h1:EiuWGmdQwywTzkd2WD0Hst/Sejj1UHFBxvvb2zZZwmA=
++github.com/prometheus-community/stackdriver_exporter v0.18.1-0.20260527145757-ff409e69749b h1:PKop7kB4hItxQIFd0hUgnHBOyv3Nc2LAHd6b3FWjTbk=
++github.com/prometheus-community/stackdriver_exporter v0.18.1-0.20260527145757-ff409e69749b/go.mod h1:GTQJNZFvtWvPkYu/ydBqcjdc1hotlgejlBlyQLCE4Go=
+ github.com/prometheus/client_golang v1.23.2 h1:Je96obch5RDVy3FDMndoUsjAhG5Edi49h0RJWRi/o0o=
+ github.com/prometheus/client_golang v1.23.2/go.mod h1:Tb1a6LWHB3/SPIzCoaDXI4I8UHKeFTEQ1YCr+0Gyqmg=
+ github.com/prometheus/client_model v0.6.2 h1:oBsgwpGs7iVziMvrGhE53c/GrLUsZdHnqNwqPLxwZyk=
+ github.com/prometheus/client_model v0.6.2/go.mod h1:y3m2F6Gdpfy6Ut/GBsUqTWZqCUvMVzSfMLjcu6wAwpE=
+ github.com/prometheus/common v0.67.5 h1:pIgK94WWlQt1WLwAC5j2ynLaBRDiinoAb86HZHTUGI4=
+ github.com/prometheus/common v0.67.5/go.mod h1:SjE/0MzDEEAyrdr5Gqc6G+sXI67maCxzaT3A2+HqjUw=
+-github.com/prometheus/opentelemetry-collector-bridge v0.0.0-20260423181221-8d9338897ca9 h1:cjZ50T+ETG0OdZbnCOKNlQfPWWEqGd8ClJPgyZbd0HI=
+-github.com/prometheus/opentelemetry-collector-bridge v0.0.0-20260423181221-8d9338897ca9/go.mod h1:60zEYUglpm0QDYiGVOA1rf0kMQlRCs4xkpm7khDyBHQ=
++github.com/prometheus/opentelemetry-collector-bridge v0.0.0-20260512202517-5008f6fde161 h1:jAQx6QefQuazl/S1WmG/ZwFjbacyBMgPv7ku2G2UQ9E=
++github.com/prometheus/opentelemetry-collector-bridge v0.0.0-20260512202517-5008f6fde161/go.mod h1:BmrTGCw7Q5FLvT8BZlmpwTcoWEoVVQ8xoSPU1r1rUsU=
+ github.com/prometheus/procfs v0.20.1 h1:XwbrGOIplXW/AU3YhIhLODXMJYyC1isLFfYCsTEycfc=
+ github.com/prometheus/procfs v0.20.1/go.mod h1:o9EMBZGRyvDrSPH1RqdxhojkuXstoe4UlK79eF5TGGo=
+ github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
+@@ -89,46 +89,46 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
+ github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+ go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
+ go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
+-go.opentelemetry.io/collector/component v1.56.0 h1:fOCs36Dxg95w2RQCVI2i5IsHc5IbZ99vmbipK9FM7pQ=
+-go.opentelemetry.io/collector/component v1.56.0/go.mod h1:MkAjcSc2T0BiYf/uARZdTlfnxBB9BwmvY6v08D+qeY4=
+-go.opentelemetry.io/collector/component/componenttest v0.150.0 h1:pT7avT/Pfn8tAOOlmFWgtOaGvXY0nxSwrivnhOl/LH0=
+-go.opentelemetry.io/collector/component/componenttest v0.150.0/go.mod h1:D+7mfbcZ/TfneQRZNtVwH+/YKQdalc1joa9NhH1BGPk=
+-go.opentelemetry.io/collector/consumer v1.56.0 h1:olhuaTI3cic6VfcraXt3qqsv1v4Qxf55gHxOO1uIVXw=
+-go.opentelemetry.io/collector/consumer v1.56.0/go.mod h1:FpnfeTLQAdcOtzrkQ36Z+E5aconIymkv9xpJuAdLvy0=
+-go.opentelemetry.io/collector/consumer/consumererror v0.150.0 h1:DC4QGlGGU6HoPChbCzAlNzv/diLTlbrJ/q6+1P+35zQ=
+-go.opentelemetry.io/collector/consumer/consumererror v0.150.0/go.mod h1:rLkPStz81IOOMVzhmGiezt/Rf9l9jJg6bsCQ8Qbw6J0=
+-go.opentelemetry.io/collector/consumer/consumertest v0.150.0 h1:DQtVy0BUTQqHKKOyM0hYnxV8H2kKHjayc8aMMa2fow0=
+-go.opentelemetry.io/collector/consumer/consumertest v0.150.0/go.mod h1:2mgIllFOgoq+SQ7QfXzaZn65pa6OZWobcy3yj+Ik9Ug=
+-go.opentelemetry.io/collector/consumer/xconsumer v0.150.0 h1:URO73bAV00wTH9bJeloqaiLgS3Q80GNci+nm1iZ3W6Q=
+-go.opentelemetry.io/collector/consumer/xconsumer v0.150.0/go.mod h1:BMcOInfcRUpVZ2R4qa3vNglvU6mWL+0dhAayH87YSB8=
+-go.opentelemetry.io/collector/featuregate v1.56.0 h1:NjcbOZkdCSXddAJmFLdO+pv1gmAgrU6sC5PBga2KlKI=
+-go.opentelemetry.io/collector/featuregate v1.56.0/go.mod h1:4ga1QBMPEejXXmpyJS8lmaRpknJ3Lb9Bvk6e420bUFU=
+-go.opentelemetry.io/collector/internal/componentalias v0.150.0 h1:qvcJr0m/fFgsc3x6Oya3RNDOZp/WyfmOKIv9jtvoLYw=
+-go.opentelemetry.io/collector/internal/componentalias v0.150.0/go.mod h1:abuQP8ELgPpCSq6xbHM1b2hPOGqaKxUeLgHHdU/XGP0=
+-go.opentelemetry.io/collector/internal/testutil v0.150.0 h1:J4PLQGPfbLVaL5eI1aMc0m0TMixV9wzBhNhoHU00J0I=
+-go.opentelemetry.io/collector/internal/testutil v0.150.0/go.mod h1:Jkjs6rkqs973LqgZ0Fe3zrokQRKULYXPIf4HuqStiEE=
+-go.opentelemetry.io/collector/pdata v1.56.0 h1:W+QAfN2Iz8SNss1T5JNzRWFnw+7oP1vXBQH9ZuOJkXY=
+-go.opentelemetry.io/collector/pdata v1.56.0/go.mod h1:usR9utboXufbD1rp1oJy+3smQXXpZ+CsI3WN7QsiOs0=
+-go.opentelemetry.io/collector/pdata/pprofile v0.150.0 h1:Ae+FxmYXDdcqeLqIAdNSO3YGxco7RS2mIMTdjvavfso=
+-go.opentelemetry.io/collector/pdata/pprofile v0.150.0/go.mod h1:tEBeGysY/LpIh39NLoQQl3qmUBOF9wyH5p/fmn7smzM=
+-go.opentelemetry.io/collector/pdata/testdata v0.150.0 h1:nZE3UNuDYd9lfXTk/n5UplPwXBD4tptDIZH5PvWhHKQ=
+-go.opentelemetry.io/collector/pdata/testdata v0.150.0/go.mod h1:RPOOH2KNevfhu7adoEXVTNtPPZsHwbrSOQKeFZE/220=
+-go.opentelemetry.io/collector/pipeline v1.56.0 h1:KfyCes/EPC2hpBhU28z9WnJzSRlBYS5FfMHOYAXHbXw=
+-go.opentelemetry.io/collector/pipeline v1.56.0/go.mod h1:RD90NG3Jbk965Xaqym3JyHkuol4uZJjQVUkD9ddXJIs=
+-go.opentelemetry.io/collector/pipeline/xpipeline v0.150.0 h1:Bm+xm9vFRuW2kkdRj/iF8aIvCJCDsUHe59FP9FRwuSA=
+-go.opentelemetry.io/collector/pipeline/xpipeline v0.150.0/go.mod h1:iPY4PBBeih6Wn9SDbgHQY9FTx6WD5FvPLMhBmgsv1lI=
+-go.opentelemetry.io/collector/receiver v1.56.0 h1:xrLFO3g5/PWvHMG74li6a7Y3yT6B/OehgFsyZJmLII8=
+-go.opentelemetry.io/collector/receiver v1.56.0/go.mod h1:iOpgr7vRq8R+LXRr9bLQT0jADyPEqmdJWuZTlvARWgo=
+-go.opentelemetry.io/collector/receiver/receiverhelper v0.150.0 h1:8PBXFdWJ+q0XQzp0j8sDF9KbOxU+H6fNTyYHOs7yt4Q=
+-go.opentelemetry.io/collector/receiver/receiverhelper v0.150.0/go.mod h1:9kYAlW71t2nJqCNTVWJvgcbT+Ad6ue2wGO7UR6cPQnI=
+-go.opentelemetry.io/collector/receiver/receivertest v0.150.0 h1:D34dL/NxP+MTMWZsQCWHgAyKOUsEn1JtzU6gPmLk/oc=
+-go.opentelemetry.io/collector/receiver/receivertest v0.150.0/go.mod h1:/MWpPrRvljhZpbSTOHijr69Kg1A/MhUoKX0tLZpkhgE=
+-go.opentelemetry.io/collector/receiver/xreceiver v0.150.0 h1:UpgWq1saq6QWGawJzKpJfLmcv52qBLBRjsv3vcy5fLM=
+-go.opentelemetry.io/collector/receiver/xreceiver v0.150.0/go.mod h1:ltPXHfF5wjxmIti1GfGfAzOeBpovRMePdFj96kefsT0=
+-go.opentelemetry.io/collector/scraper v0.150.0 h1:Gmz2t282ZpMSWsWzGDWcG3Gy5vMVI2S1pZpRDt7YKCA=
+-go.opentelemetry.io/collector/scraper v0.150.0/go.mod h1:VjruTyDCZxc7H19UVMfQaZuVytWbsMYcwfNJwV/i6vA=
+-go.opentelemetry.io/collector/scraper/scraperhelper v0.150.0 h1:cpBVjmn6CBibAyeyvbBnrMKLu0X1NONCZCN+c8VTX6A=
+-go.opentelemetry.io/collector/scraper/scraperhelper v0.150.0/go.mod h1:hWOiRlYve6kwpiB0TqGKyoBV/eC4m+JVPO7TZlW8Iaw=
++go.opentelemetry.io/collector/component v1.58.0 h1:GLHxFfw8jw3lRVX/h09Cc3inoR+2+XY93VxnrwHxY8Q=
++go.opentelemetry.io/collector/component v1.58.0/go.mod h1:oAA7bLZUz/j1r16bQ9Cu/F+72xbQxlci8H2VmqtsAGE=
++go.opentelemetry.io/collector/component/componenttest v0.152.0 h1:4o44irB1ERGRk+J5WSBvvhM9DFmIiDfC19RhPacRhOE=
++go.opentelemetry.io/collector/component/componenttest v0.152.0/go.mod h1:+K7/zIUH9L6iE8mDOumJCBenPV6XxdyGIQPuvR6hIx4=
++go.opentelemetry.io/collector/consumer v1.58.0 h1:R9qWrp4xlZTrT+Ph10vgrjnaIzkW20/RAbXs2F7PhPA=
++go.opentelemetry.io/collector/consumer v1.58.0/go.mod h1:ptX5120b3Py+vqBUmjvl5VJ8yYpSQOto6Vv9b12f2d4=
++go.opentelemetry.io/collector/consumer/consumererror v0.152.0 h1:ymlWj9j9KbU+x1fbnpEOd0/XRek5zsLKpNkLdmrVkYo=
++go.opentelemetry.io/collector/consumer/consumererror v0.152.0/go.mod h1:snNSTrDfd8fgi1M1etHTzO3TnuqIXfuJcnRT8NUH08s=
++go.opentelemetry.io/collector/consumer/consumertest v0.152.0 h1:PDYdCdbZCDWRM/XsqFTsc6BKzXwKa6+tjGe209Gv4j0=
++go.opentelemetry.io/collector/consumer/consumertest v0.152.0/go.mod h1:duKfkI7aFLybPa0mFMcNtpvniZIOqIzl1CjToEJpzJU=
++go.opentelemetry.io/collector/consumer/xconsumer v0.152.0 h1:+tcm9JCiQki+EpdFGxN4G8Mt0aiSLkQHYqNEXsinHd8=
++go.opentelemetry.io/collector/consumer/xconsumer v0.152.0/go.mod h1:Efuqcxa8IEkXwHdwPAUYQprGWUpIO43QjoDSWKQFSiQ=
++go.opentelemetry.io/collector/featuregate v1.58.0 h1:Kh6Dpgbxywv/Q3D6qPehaSxNCxvr/U/ki7CL4y3udCo=
++go.opentelemetry.io/collector/featuregate v1.58.0/go.mod h1:4ga1QBMPEejXXmpyJS8lmaRpknJ3Lb9Bvk6e420bUFU=
++go.opentelemetry.io/collector/internal/componentalias v0.152.0 h1:5uwYJ+F37s882FLzcE8ZBvCyLtcGGQsRQrNkXxYMApk=
++go.opentelemetry.io/collector/internal/componentalias v0.152.0/go.mod h1:RPRS7z22S6yb+hTYzr67HoYyyB+qCKPXMaYafvdPb5s=
++go.opentelemetry.io/collector/internal/testutil v0.152.0 h1:8LGwekR7mLcUDhT1ofLmdnrHRFuUa3U7PBd95ZvJEjQ=
++go.opentelemetry.io/collector/internal/testutil v0.152.0/go.mod h1:Jkjs6rkqs973LqgZ0Fe3zrokQRKULYXPIf4HuqStiEE=
++go.opentelemetry.io/collector/pdata v1.58.0 h1:5Lxut3NxKp87066Pzt+3q7+JUuFI5B3teCyLZIF8wIs=
++go.opentelemetry.io/collector/pdata v1.58.0/go.mod h1:4vZtODINbC/JF3eGocnatdImzbRHseOywIcr+aULjCg=
++go.opentelemetry.io/collector/pdata/pprofile v0.152.0 h1:hXpfrauR0vw2VeiYj3AGv5IySbWz56zltUtzEsLf82s=
++go.opentelemetry.io/collector/pdata/pprofile v0.152.0/go.mod h1:+5gGwrj8zQuP7AGy1c8pfm8hSYTjPTdWqllZy/5rDyM=
++go.opentelemetry.io/collector/pdata/testdata v0.152.0 h1:FCPsXKQJQ5ftlfJze9vtsBcFQ5sEk9tmxeBMdf6dcE0=
++go.opentelemetry.io/collector/pdata/testdata v0.152.0/go.mod h1:Csws6zIBIRox4w0F4vMCPCytdN+4qg0Bdp10axC/8uw=
++go.opentelemetry.io/collector/pipeline v1.58.0 h1:jgSupJSxLDdpt4RqmG9eaibOzGIu3clSVe6q4H7tRJs=
++go.opentelemetry.io/collector/pipeline v1.58.0/go.mod h1:RD90NG3Jbk965Xaqym3JyHkuol4uZJjQVUkD9ddXJIs=
++go.opentelemetry.io/collector/pipeline/xpipeline v0.152.0 h1:HuAlUUwFxiTBJAaEmMZCi4Nx4p5eCe0SQoLMppkQkQ0=
++go.opentelemetry.io/collector/pipeline/xpipeline v0.152.0/go.mod h1:hNQRrBVEzWnDV1pSOXwagzEbqMNew4+cN6KDWbWTw4w=
++go.opentelemetry.io/collector/receiver v1.58.0 h1:0GT+JVJOegia6+A14EOyCJQhXK3+/NoS8bg7gqjOadM=
++go.opentelemetry.io/collector/receiver v1.58.0/go.mod h1:svgNcdk9hxFTvAPJYpydDUHx6AvCBYLjEhx0o+TabNA=
++go.opentelemetry.io/collector/receiver/receiverhelper v0.152.0 h1:26c3zF5gigaZT8jjwyd4AdXmHPbgixy+A34cpyzD4WI=
++go.opentelemetry.io/collector/receiver/receiverhelper v0.152.0/go.mod h1:3uBDKP5LAqzGIASltu5lzbvYrqVrAcYVMVPjTyW7Hos=
++go.opentelemetry.io/collector/receiver/receivertest v0.152.0 h1:aso81TPkHZtxZffCD+kY4RWCX3uHH8knJLq+6rWSEao=
++go.opentelemetry.io/collector/receiver/receivertest v0.152.0/go.mod h1:rBZkVFtjUy5pybspLnok28rPxtB5ljQS5TdcRrcd5PE=
++go.opentelemetry.io/collector/receiver/xreceiver v0.152.0 h1:Brz/xsi9NV2r3etNGxfe45b2c6YrQ7JTLCHvCwaquTo=
++go.opentelemetry.io/collector/receiver/xreceiver v0.152.0/go.mod h1:V6VMdl4T5QFr4hLn79iVHOC2v3dhQRJXGsVoxkB18tA=
++go.opentelemetry.io/collector/scraper v0.152.0 h1:fyjsoami97sEu3gkbut01IF1VMhbEvPk1BLITsrD3l8=
++go.opentelemetry.io/collector/scraper v0.152.0/go.mod h1:fMSUC0AbBCupYMpE0f6mSdnnBnuNQV8BCmUJFOj4VmQ=
++go.opentelemetry.io/collector/scraper/scraperhelper v0.152.0 h1:B+qgOHK2L7mr1fuzgb2vnK1xfrI6jT8aD7vZrpczBUc=
++go.opentelemetry.io/collector/scraper/scraperhelper v0.152.0/go.mod h1:cbcycm1A8GHm98/fSxRDszzGw053lLFxr1k/1g41FzQ=
+ go.opentelemetry.io/contrib/bridges/prometheus v0.68.0 h1:w3zlHYETbDwXyWHZlyyR58ZC39XGi8rAhkBgUgJ9d5w=
+ go.opentelemetry.io/contrib/bridges/prometheus v0.68.0/go.mod h1:GR/mClR2nn7vE8RLwxKjoBNg+QtgdDhRzxVa93koy5o=
+ go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 h1:F7Jx+6hwnZ41NSFTO5q4LYDtJRXBf2PD0rNBkeB/lus=
+@@ -153,31 +153,31 @@ go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
+ go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
+ go.uber.org/multierr v1.11.0 h1:blXXJkSxSSfBVBlC76pxqeO+LN3aDfLQo+309xJstO0=
+ go.uber.org/multierr v1.11.0/go.mod h1:20+QtiLqy0Nd6FdQB9TLXag12DsQkrbs3htMFfDN80Y=
+-go.uber.org/zap v1.27.1 h1:08RqriUEv8+ArZRYSTXy1LeBScaMpVSTBhCeaZYfMYc=
+-go.uber.org/zap v1.27.1/go.mod h1:GB2qFLM7cTU87MWRP2mPIjqfIDnGu+VIO4V/SdhGo2E=
++go.uber.org/zap v1.28.0 h1:IZzaP1Fv73/T/pBMLk4VutPl36uNC+OSUh3JLG3FIjo=
++go.uber.org/zap v1.28.0/go.mod h1:rDLpOi171uODNm/mxFcuYWxDsqWSAVkFdX4XojSKg/Q=
+ go.uber.org/zap/exp v0.3.0 h1:6JYzdifzYkGmTdRR59oYH+Ng7k49H9qVpWwNSsGJj3U=
+ go.uber.org/zap/exp v0.3.0/go.mod h1:5I384qq7XGxYyByIhHm6jg5CHkGY0nsTfbDLgDDlgJQ=
+ go.yaml.in/yaml/v2 v2.4.4 h1:tuyd0P+2Ont/d6e2rl3be67goVK4R6deVxCUX5vyPaQ=
+ go.yaml.in/yaml/v2 v2.4.4/go.mod h1:gMZqIpDtDqOfM0uNfy0SkpRhvUryYH0Z6wdMYcacYXQ=
+ go.yaml.in/yaml/v3 v3.0.4 h1:tfq32ie2Jv2UxXFdLJdh3jXuOzWiL1fo0bu/FbuKpbc=
+ go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=
+-golang.org/x/crypto v0.48.0 h1:/VRzVqiRSggnhY7gNRxPauEQ5Drw9haKdM0jqfcCFts=
+-golang.org/x/crypto v0.48.0/go.mod h1:r0kV5h3qnFPlQnBSrULhlsRfryS2pmewsg+XfMgkVos=
++golang.org/x/crypto v0.51.0 h1:IBPXwPfKxY7cWQZ38ZCIRPI50YLeevDLlLnyC5wRGTI=
++golang.org/x/crypto v0.51.0/go.mod h1:8AdwkbraGNABw2kOX6YFPs3WM22XqI4EXEd8g+x7Oc8=
+ golang.org/x/net v0.0.0-20210510120150-4163338589ed/go.mod h1:9nx3DQGgdP8bBQD5qxJ1jj9UTztislL4KSBs9R2vV5Y=
+-golang.org/x/net v0.51.0 h1:94R/GTO7mt3/4wIKpcR5gkGmRLOuE/2hNGeWq/GBIFo=
+-golang.org/x/net v0.51.0/go.mod h1:aamm+2QF5ogm02fjy5Bb7CQ0WMt1/WVM7FtyaTLlA9Y=
++golang.org/x/net v0.54.0 h1:2zJIZAxAHV/OHCDTCOHAYehQzLfSXuf/5SoL/Dv6w/w=
++golang.org/x/net v0.54.0/go.mod h1:Sj4oj8jK6XmHpBZU/zWHw3BV3abl4Kvi+Ut7cQcY+cQ=
+ golang.org/x/oauth2 v0.36.0 h1:peZ/1z27fi9hUOFCAZaHyrpWG5lwe0RJEEEeH0ThlIs=
+ golang.org/x/oauth2 v0.36.0/go.mod h1:YDBUJMTkDnJS+A4BP4eZBjCqtokkg1hODuPjwiGPO7Q=
+-golang.org/x/sync v0.19.0 h1:vV+1eWNmZ5geRlYjzm2adRgW2/mcpevXNg50YZtPCE4=
+-golang.org/x/sync v0.19.0/go.mod h1:9KTHXmSnoGruLpwFjVSX0lNNA75CykiMECbovNTZqGI=
++golang.org/x/sync v0.20.0 h1:e0PTpb7pjO8GAtTs2dQ6jYa5BWYlMuX047Dco/pItO4=
++golang.org/x/sync v0.20.0/go.mod h1:9xrNwdLfx4jkKbNva9FpL6vEN7evnE43NNNJQ2LF3+0=
+ golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20210423082822-04245dca01da/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+-golang.org/x/sys v0.42.0 h1:omrd2nAlyT5ESRdCLYdm3+fMfNFE/+Rf4bDIQImRJeo=
+-golang.org/x/sys v0.42.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
++golang.org/x/sys v0.44.0 h1:ildZl3J4uzeKP07r2F++Op7E9B29JRUy+a27EibtBTQ=
++golang.org/x/sys v0.44.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
+ golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
+ golang.org/x/text v0.3.6/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+-golang.org/x/text v0.34.0 h1:oL/Qq0Kdaqxa1KbNeMKwQq0reLCCaFtqu2eNuSeNHbk=
+-golang.org/x/text v0.34.0/go.mod h1:homfLqTYRFyVYemLBFl5GgL/DWEiH5wcsQ5gSh1yziA=
++golang.org/x/text v0.37.0 h1:Cqjiwd9eSg8e0QAkyCaQTNHFIIzWtidPahFWR83rTrc=
++golang.org/x/text v0.37.0/go.mod h1:a5sjxXGs9hsn/AJVwuElvCAo9v8QYLzvavO5z2PiM38=
+ golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+ gonum.org/v1/gonum v0.17.0 h1:VbpOemQlsSMrYmn7T2OUvQ4dqxQXU+ouZFQsZOx50z4=
+ gonum.org/v1/gonum v0.17.0/go.mod h1:El3tOrEuMpv2UdMrbNlKEh9vd86bmQ6vqIcDwxEOc1E=
+@@ -185,12 +185,12 @@ google.golang.org/api v0.251.0 h1:6lea5nHRT8RUmpy9kkC2PJYnhnDAB13LqrLSVQlMIE8=
+ google.golang.org/api v0.251.0/go.mod h1:Rwy0lPf/TD7+T2VhYcffCHhyyInyuxGjICxdfLqT7KI=
+ google.golang.org/genproto v0.0.0-20250603155806-513f23925822 h1:rHWScKit0gvAPuOnu87KpaYtjK5zBMLcULh7gxkCXu4=
+ google.golang.org/genproto v0.0.0-20250603155806-513f23925822/go.mod h1:HubltRL7rMh0LfnQPkMH4NPDFEWp0jw3vixw7jEM53s=
+-google.golang.org/genproto/googleapis/api v0.0.0-20260128011058-8636f8732409 h1:merA0rdPeUV3YIIfHHcH4qBkiQAc1nfCKSI7lB4cV2M=
+-google.golang.org/genproto/googleapis/api v0.0.0-20260128011058-8636f8732409/go.mod h1:fl8J1IvUjCilwZzQowmw2b7HQB2eAuYBabMXzWurF+I=
+-google.golang.org/genproto/googleapis/rpc v0.0.0-20260128011058-8636f8732409 h1:H86B94AW+VfJWDqFeEbBPhEtHzJwJfTbgE2lZa54ZAQ=
+-google.golang.org/genproto/googleapis/rpc v0.0.0-20260128011058-8636f8732409/go.mod h1:j9x/tPzZkyxcgEFkiKEEGxfvyumM01BEtsW8xzOahRQ=
+-google.golang.org/grpc v1.80.0 h1:Xr6m2WmWZLETvUNvIUmeD5OAagMw3FiKmMlTdViWsHM=
+-google.golang.org/grpc v1.80.0/go.mod h1:ho/dLnxwi3EDJA4Zghp7k2Ec1+c2jqup0bFkw07bwF4=
++google.golang.org/genproto/googleapis/api v0.0.0-20260226221140-a57be14db171 h1:tu/dtnW1o3wfaxCOjSLn5IRX4YDcJrtlpzYkhHhGaC4=
++google.golang.org/genproto/googleapis/api v0.0.0-20260226221140-a57be14db171/go.mod h1:M5krXqk4GhBKvB596udGL3UyjL4I1+cTbK0orROM9ng=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 h1:ggcbiqK8WWh6l1dnltU4BgWGIGo+EVYxCaAPih/zQXQ=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171/go.mod h1:4Hqkh8ycfw05ld/3BWL7rJOSfebL2Q+DVDeRgYgxUU8=
++google.golang.org/grpc v1.81.0 h1:W3G9N3KQf3BU+YuCtGKJk0CmxQNbAISICD/9AORxLIw=
++google.golang.org/grpc v1.81.0/go.mod h1:xGH9GfzOyMTGIOXBJmXt+BX/V0kcdQbdcuwQ/zNw42I=
+ google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
+ google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+diff --git a/receivers/stackdriver/lifecycle.go b/receivers/stackdriver/lifecycle.go
+index 992a989..fb4888b 100644
+--- a/receivers/stackdriver/lifecycle.go
++++ b/receivers/stackdriver/lifecycle.go
+@@ -18,90 +18,53 @@ import (
+ 	"fmt"
+ 	"io"
+ 	"log/slog"
+-	"time"
+ 
+ 	"github.com/prometheus-community/stackdriver_exporter/collectors"
+ 	"github.com/prometheus-community/stackdriver_exporter/config"
+ 	"github.com/prometheus-community/stackdriver_exporter/delta"
+-	"github.com/prometheus-community/stackdriver_exporter/utils"
+ 	"github.com/prometheus/client_golang/prometheus"
+ 	prombridge "github.com/prometheus/opentelemetry-collector-bridge"
+ 	"go.opentelemetry.io/collector/receiver"
+ 	"go.uber.org/zap/exp/zapslog"
+-	"google.golang.org/api/monitoring/v3"
+ )
+ 
+-type collectorFactoryFunc func(projectID string, service *monitoring.Service, opts collectors.MonitoringCollectorOptions, deltasTTL time.Duration, logger *slog.Logger) (prometheus.Collector, error)
++var _ prombridge.ExporterLifecycleManager = (*lifecycleManager)(nil)
+ 
+ type lifecycleManager struct {
+-	monitoringServiceFactory func(ctx context.Context, cfg config.RuntimeConfig) (*monitoring.Service, error)
+-	collectorFactory         collectorFactoryFunc
+-	filterProjectDiscoverer  func(ctx context.Context, filter string) ([]string, error)
+-	defaultProjectDiscoverer func(ctx context.Context) (string, error)
+-	loggerForSettings        func(set receiver.Settings) *slog.Logger
++	loggerFromSettings func(set receiver.Settings) *slog.Logger
+ }
+ 
+ func newLifecycleManager() *lifecycleManager {
+-	return &lifecycleManager{
+-		monitoringServiceFactory: func(ctx context.Context, cfg config.RuntimeConfig) (*monitoring.Service, error) {
+-			return cfg.CreateMonitoringService(ctx)
+-		},
+-		collectorFactory: func(projectID string, service *monitoring.Service, opts collectors.MonitoringCollectorOptions, deltasTTL time.Duration, logger *slog.Logger) (prometheus.Collector, error) {
+-			return collectors.NewMonitoringCollector(
+-				projectID,
+-				service,
+-				opts,
+-				logger,
+-				delta.NewInMemoryCounterStore(logger, deltasTTL),
+-				delta.NewInMemoryHistogramStore(logger, deltasTTL),
+-			)
+-		},
+-		filterProjectDiscoverer:  utils.GetProjectIDsFromFilter,
+-		defaultProjectDiscoverer: config.DiscoverDefaultProjectID,
+-		loggerForSettings:        collectorSlogLogger,
+-	}
++	return &lifecycleManager{loggerFromSettings: collectorSlogLogger}
+ }
+ 
+-func (m *lifecycleManager) Start(ctx context.Context, set receiver.Settings, exporterConfig prombridge.Config) (*prometheus.Registry, error) {
+-	cfg, ok := exporterConfig.(*Config)
++func (m *lifecycleManager) Start(ctx context.Context, set receiver.Settings, exporterCfg any) (*prometheus.Registry, error) {
++	cfg, ok := exporterCfg.(*config.Config)
+ 	if !ok {
+-		return nil, fmt.Errorf("invalid exporter config type: %T", exporterConfig)
++		return nil, fmt.Errorf("expected *config.Config, got %T", exporterCfg)
+ 	}
+ 
+-	runtimeCfg, err := cfg.runtimeConfig()
++	logger := m.loggerFromSettings(set)
++	runtime, err := collectors.NewRuntime(ctx, logger, cfg, delta.NewInMemoryCounterStore, delta.NewInMemoryHistogramStore)
+ 	if err != nil {
+-		return nil, err
++		return nil, fmt.Errorf("start stackdriver runtime: %w", err)
+ 	}
+ 
+-	projectIDs, err := m.resolveProjectIDs(ctx, cfg)
++	collectorList, err := runtime.Collectors()
+ 	if err != nil {
+-		return nil, err
+-	}
+-
+-	monitoringService, err := m.monitoringServiceFactory(ctx, runtimeCfg)
+-	if err != nil {
+-		return nil, err
++		return nil, fmt.Errorf("build collectors: %w", err)
+ 	}
+ 
+ 	registry := prometheus.NewRegistry()
+-	logger := m.loggerForSettings(set)
+-
+-	for _, projectID := range projectIDs {
+-		collector, err := m.collectorFactory(projectID, monitoringService, runtimeCfg.MonitoringCollectorOptions(), runtimeCfg.DeltasTTL, logger)
+-		if err != nil {
+-			return nil, fmt.Errorf("failed to create collector for project %q: %w", projectID, err)
+-		}
+-		if err := registry.Register(collector); err != nil {
+-			return nil, fmt.Errorf("failed to register collector for project %q: %w", projectID, err)
++	for _, c := range collectorList {
++		if err := registry.Register(c); err != nil {
++			return nil, fmt.Errorf("register collector: %w", err)
+ 		}
+ 	}
+-
+ 	return registry, nil
+ }
+ 
+-func (m *lifecycleManager) Shutdown(context.Context) error {
+-	return nil
+-}
++func (m *lifecycleManager) Shutdown(context.Context) error { return nil }
+ 
+ func collectorSlogLogger(set receiver.Settings) *slog.Logger {
+ 	if set.Logger == nil {
+@@ -110,27 +73,3 @@ func collectorSlogLogger(set receiver.Settings) *slog.Logger {
+ 
+ 	return slog.New(zapslog.NewHandler(set.Logger.Core()))
+ }
+-
+-func (m *lifecycleManager) resolveProjectIDs(ctx context.Context, cfg *Config) ([]string, error) {
+-	var projectIDs []string
+-
+-	if cfg.ProjectsFilter != "" {
+-		ids, err := m.filterProjectDiscoverer(ctx, cfg.ProjectsFilter)
+-		if err != nil {
+-			return nil, fmt.Errorf("failed to resolve project IDs from projects_filter: %w", err)
+-		}
+-		projectIDs = append(projectIDs, ids...)
+-	}
+-
+-	projectIDs = append(projectIDs, cfg.ProjectIDs...)
+-
+-	if len(projectIDs) == 0 {
+-		projectID, err := m.defaultProjectDiscoverer(ctx)
+-		if err != nil {
+-			return nil, fmt.Errorf("failed to discover default GCP project: %w", err)
+-		}
+-		projectIDs = append(projectIDs, projectID)
+-	}
+-
+-	return config.DeduplicateProjectIDs(projectIDs), nil
+-}
+diff --git a/receivers/stackdriver/lifecycle_test.go b/receivers/stackdriver/lifecycle_test.go
+index a16623c..7cd5f06 100644
+--- a/receivers/stackdriver/lifecycle_test.go
++++ b/receivers/stackdriver/lifecycle_test.go
+@@ -15,282 +15,23 @@ package otelcollector
+ 
+ import (
+ 	"context"
+-	"errors"
+-	"log/slog"
+-	"reflect"
+-	"strings"
+ 	"testing"
+-	"time"
+ 
+-	"github.com/prometheus-community/stackdriver_exporter/collectors"
+-	"github.com/prometheus-community/stackdriver_exporter/config"
+-	"github.com/prometheus/client_golang/prometheus"
+ 	"go.opentelemetry.io/collector/receiver/receivertest"
+-	"go.uber.org/zap"
+-	"go.uber.org/zap/zaptest/observer"
+-	"google.golang.org/api/monitoring/v3"
+ )
+ 
+-func TestLifecycleManager_Start(t *testing.T) {
+-	t.Parallel()
+-
+-	cfg := &Config{
+-		ProjectIDs:      []string{"project-a", "project-b"},
+-		MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-		HTTPTimeout:     "10s",
+-		MaxBackoff:      "5s",
+-		BackoffJitter:   "1s",
+-		MetricsInterval: "5m",
+-		MetricsOffset:   "0s",
+-		DeltasTTL:       "30m",
+-		DescriptorTTL:   "0s",
+-	}
+-
+-	var createdProjects []string
+-	var gotOpts collectors.MonitoringCollectorOptions
+-	var gotDeltasTTL time.Duration
+-	mgr := newLifecycleManager()
+-	mgr.monitoringServiceFactory = func(context.Context, config.RuntimeConfig) (*monitoring.Service, error) {
+-		return &monitoring.Service{}, nil
+-	}
+-	mgr.collectorFactory = func(projectID string, _ *monitoring.Service, opts collectors.MonitoringCollectorOptions, deltasTTL time.Duration, _ *slog.Logger) (prometheus.Collector, error) {
+-		createdProjects = append(createdProjects, projectID)
+-		gotOpts = opts
+-		gotDeltasTTL = deltasTTL
+-		return prometheus.NewGauge(prometheus.GaugeOpts{
+-			Name: "test_metric_" + strings.ReplaceAll(projectID, "-", "_"),
+-			Help: "test",
+-		}), nil
+-	}
+-
+-	reg, err := mgr.Start(context.Background(), receivertest.NewNopSettings(receiverType), cfg)
+-	if err != nil {
+-		t.Fatalf("Start() error = %v", err)
+-	}
+-	if reg == nil {
+-		t.Fatal("Start() returned nil registry")
+-	}
+-	if len(createdProjects) != 2 {
+-		t.Fatalf("collectorFactory called %d times, want 2", len(createdProjects))
+-	}
+-	wantOpts := collectors.MonitoringCollectorOptions{
+-		MetricTypePrefixes:        config.ParseMetricPrefixes(cfg.MetricsPrefixes),
+-		ExtraFilters:              config.ParseMetricFilters(cfg.Filters),
+-		RequestInterval:           5 * time.Minute,
+-		RequestOffset:             0,
+-		IngestDelay:               false,
+-		FillMissingLabels:         false,
+-		DropDelegatedProjects:     false,
+-		AggregateDeltas:           false,
+-		DescriptorCacheTTL:        0,
+-		DescriptorCacheOnlyGoogle: false,
+-	}
+-	if !reflect.DeepEqual(gotOpts, wantOpts) {
+-		t.Fatalf("collector options = %#v, want %#v", gotOpts, wantOpts)
+-	}
+-	if gotDeltasTTL != 30*time.Minute {
+-		t.Fatalf("deltas TTL = %v, want %v", gotDeltasTTL, 30*time.Minute)
+-	}
+-
+-	if _, err := reg.Gather(); err != nil {
+-		t.Fatalf("registry.Gather() error = %v", err)
+-	}
+-}
+-
+-func TestLifecycleManager_Start_UsesCollectorLogger(t *testing.T) {
+-	t.Parallel()
+-
+-	cfg := &Config{
+-		ProjectIDs:      []string{"project-a"},
+-		MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-		HTTPTimeout:     "10s",
+-		MaxBackoff:      "5s",
+-		BackoffJitter:   "1s",
+-		MetricsInterval: "5m",
+-		MetricsOffset:   "0s",
+-		DeltasTTL:       "30m",
+-		DescriptorTTL:   "0s",
+-	}
+-
+-	core, observed := observer.New(zap.DebugLevel)
+-	settings := receivertest.NewNopSettings(receiverType)
+-	settings.Logger = zap.New(core)
+-
+-	mgr := newLifecycleManager()
+-	mgr.monitoringServiceFactory = func(context.Context, config.RuntimeConfig) (*monitoring.Service, error) {
+-		return &monitoring.Service{}, nil
+-	}
+-	mgr.collectorFactory = func(projectID string, _ *monitoring.Service, _ collectors.MonitoringCollectorOptions, _ time.Duration, logger *slog.Logger) (prometheus.Collector, error) {
+-		logger.Info("using collector logger", "project_id", projectID)
+-		return prometheus.NewGauge(prometheus.GaugeOpts{Name: "collector_logger_metric", Help: "test"}), nil
+-	}
+-
+-	if _, err := mgr.Start(context.Background(), settings, cfg); err != nil {
+-		t.Fatalf("Start() error = %v", err)
+-	}
+-
+-	entries := observed.FilterMessage("using collector logger").AllUntimed()
+-	if len(entries) != 1 {
+-		t.Fatalf("logged entries = %d, want 1", len(entries))
+-	}
+-	if got := entries[0].ContextMap()["project_id"]; got != "project-a" {
+-		t.Fatalf("logged project_id = %#v, want %q", got, "project-a")
+-	}
+-}
+-
+-func TestLifecycleManager_Start_UsesDefaultProjectDiscovery(t *testing.T) {
+-	t.Parallel()
+-
+-	cfg := &Config{
+-		MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-		HTTPTimeout:     "10s",
+-		MaxBackoff:      "5s",
+-		BackoffJitter:   "1s",
+-		MetricsInterval: "5m",
+-		MetricsOffset:   "0s",
+-		DeltasTTL:       "30m",
+-		DescriptorTTL:   "0s",
+-	}
+-
+-	mgr := newLifecycleManager()
+-	mgr.defaultProjectDiscoverer = func(context.Context) (string, error) {
+-		return "auto-project", nil
+-	}
+-	mgr.monitoringServiceFactory = func(context.Context, config.RuntimeConfig) (*monitoring.Service, error) {
+-		return &monitoring.Service{}, nil
+-	}
+-	mgr.collectorFactory = func(projectID string, _ *monitoring.Service, _ collectors.MonitoringCollectorOptions, _ time.Duration, _ *slog.Logger) (prometheus.Collector, error) {
+-		if projectID != "auto-project" {
+-			t.Fatalf("projectID = %q, want %q", projectID, "auto-project")
+-		}
+-		return prometheus.NewGauge(prometheus.GaugeOpts{Name: "auto_project_metric", Help: "test"}), nil
+-	}
++type wrongConfig struct{}
+ 
+-	if _, err := mgr.Start(context.Background(), receivertest.NewNopSettings(receiverType), cfg); err != nil {
+-		t.Fatalf("Start() error = %v", err)
+-	}
+-}
++func (wrongConfig) Validate() error { return nil }
+ 
+-func TestLifecycleManager_StartsAndShutsDownMultipleInstancesIndependently(t *testing.T) {
++func TestLifecycleManager_Start_RejectsWrongConfigType(t *testing.T) {
+ 	t.Parallel()
+ 
+-	type instance struct {
+-		name                  string
+-		projectID             string
+-		metricName            string
+-		monitoringCreateCalls int
+-		collectorCreateCalls  int
+-		mgr                   *lifecycleManager
+-		cfg                   *Config
+-		registry              *prometheus.Registry
+-	}
+-
+-	instances := []*instance{
+-		{
+-			name:       "first",
+-			projectID:  "project-a",
+-			metricName: "first_stackdriver_instance_metric",
+-		},
+-		{
+-			name:       "second",
+-			projectID:  "project-b",
+-			metricName: "second_stackdriver_instance_metric",
+-		},
+-	}
+-
+-	for _, inst := range instances {
+-		inst.cfg = &Config{
+-			ProjectIDs:      []string{inst.projectID},
+-			MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-			HTTPTimeout:     "10s",
+-			MaxBackoff:      "5s",
+-			BackoffJitter:   "1s",
+-			MetricsInterval: "5m",
+-			MetricsOffset:   "0s",
+-			DeltasTTL:       "30m",
+-			DescriptorTTL:   "0s",
+-		}
+-
+-		inst.mgr = newLifecycleManager()
+-		inst.mgr.monitoringServiceFactory = func(context.Context, config.RuntimeConfig) (*monitoring.Service, error) {
+-			inst.monitoringCreateCalls++
+-			return &monitoring.Service{}, nil
+-		}
+-		inst.mgr.collectorFactory = func(projectID string, _ *monitoring.Service, _ collectors.MonitoringCollectorOptions, _ time.Duration, _ *slog.Logger) (prometheus.Collector, error) {
+-			inst.collectorCreateCalls++
+-			if projectID != inst.projectID {
+-				t.Fatalf("%s projectID = %q, want %q", inst.name, projectID, inst.projectID)
+-			}
+-			return prometheus.NewGauge(prometheus.GaugeOpts{Name: inst.metricName, Help: "test"}), nil
+-		}
+-	}
+-
+-	for _, inst := range instances {
+-		registry, err := inst.mgr.Start(context.Background(), receivertest.NewNopSettings(receiverType), inst.cfg)
+-		if err != nil {
+-			t.Fatalf("%s Start() error = %v", inst.name, err)
+-		}
+-		if registry == nil {
+-			t.Fatalf("%s Start() returned nil registry", inst.name)
+-		}
+-		inst.registry = registry
+-	}
+-
+-	for _, inst := range instances {
+-		if inst.monitoringCreateCalls != 1 {
+-			t.Fatalf("%s monitoringCreateCalls = %d, want 1", inst.name, inst.monitoringCreateCalls)
+-		}
+-		if inst.collectorCreateCalls != 1 {
+-			t.Fatalf("%s collectorCreateCalls = %d, want 1", inst.name, inst.collectorCreateCalls)
+-		}
+-		if !registryContainsMetric(t, inst.registry, inst.metricName) {
+-			t.Fatalf("%s registry does not contain metric %q", inst.name, inst.metricName)
+-		}
+-	}
+-
+-	if registryContainsMetric(t, instances[0].registry, instances[1].metricName) {
+-		t.Fatalf("%s registry unexpectedly contains metric %q", instances[0].name, instances[1].metricName)
+-	}
+-	if registryContainsMetric(t, instances[1].registry, instances[0].metricName) {
+-		t.Fatalf("%s registry unexpectedly contains metric %q", instances[1].name, instances[0].metricName)
+-	}
+-
+-	if err := instances[0].mgr.Shutdown(context.Background()); err != nil {
+-		t.Fatalf("%s Shutdown() error = %v", instances[0].name, err)
+-	}
+-	if !registryContainsMetric(t, instances[1].registry, instances[1].metricName) {
+-		t.Fatalf("%s registry lost metric %q after shutting down %s", instances[1].name, instances[1].metricName, instances[0].name)
+-	}
+-	if err := instances[1].mgr.Shutdown(context.Background()); err != nil {
+-		t.Fatalf("%s Shutdown() error = %v", instances[1].name, err)
+-	}
+-}
+-
+-func TestLifecycleManager_Start_ReturnsErrorFromCollectorFactory(t *testing.T) {
+-	t.Parallel()
+-
+-	cfg := &Config{
+-		ProjectIDs:      []string{"project-a"},
+-		MetricsPrefixes: []string{"compute.googleapis.com/instance"},
+-		HTTPTimeout:     "10s",
+-		MaxBackoff:      "5s",
+-		BackoffJitter:   "1s",
+-		MetricsInterval: "5m",
+-		MetricsOffset:   "0s",
+-		DeltasTTL:       "30m",
+-		DescriptorTTL:   "0s",
+-	}
+-
+ 	mgr := newLifecycleManager()
+-	mgr.monitoringServiceFactory = func(context.Context, config.RuntimeConfig) (*monitoring.Service, error) {
+-		return &monitoring.Service{}, nil
+-	}
+-	mgr.collectorFactory = func(string, *monitoring.Service, collectors.MonitoringCollectorOptions, time.Duration, *slog.Logger) (prometheus.Collector, error) {
+-		return nil, errors.New("boom")
+-	}
+ 
+-	if _, err := mgr.Start(context.Background(), receivertest.NewNopSettings(receiverType), cfg); err == nil {
+-		t.Fatal("Start() expected error, got nil")
++	_, err := mgr.Start(context.Background(), receivertest.NewNopSettings(receiverType), wrongConfig{})
++	if err == nil {
++		t.Fatal("Start() expected error for wrong config type, got nil")
+ 	}
+ }
+ 
+@@ -302,19 +43,3 @@ func TestLifecycleManager_Shutdown(t *testing.T) {
+ 		t.Fatalf("Shutdown() error = %v", err)
+ 	}
+ }
+-
+-func registryContainsMetric(t *testing.T, registry *prometheus.Registry, metricName string) bool {
+-	t.Helper()
+-
+-	metricFamilies, err := registry.Gather()
+-	if err != nil {
+-		t.Fatalf("registry.Gather() error = %v", err)
+-	}
+-
+-	for _, metricFamily := range metricFamilies {
+-		if metricFamily.GetName() == metricName {
+-			return true
+-		}
+-	}
+-	return false
+-}

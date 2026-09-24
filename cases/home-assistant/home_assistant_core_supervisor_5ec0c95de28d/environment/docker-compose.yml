@@ -1,0 +1,44 @@
+services:
+  core-hidden:
+    image: ecosyncbench/deps/home-assistant-core-py:4bf3a5b4bd96-paho
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/home-assistant-python/Dockerfile
+      args:
+        ECOSYNC_TASK_ID: home_assistant_core_supervisor_5ec0c95de28d
+        ECOSYNC_REPO: home-assistant/core
+        ECOSYNC_REPO_PATH: repos/home-assistant/core
+        ECOSYNC_BASE_COMMIT: 4bf3a5b4bd965005caa2f27a65316a9c38f206ef
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 4bf3a5b4bd96-paho
+        ECOSYNC_REQUIREMENTS_FILES: requirements.txt requirements_test.txt
+        ECOSYNC_EXTRA_PIP_PACKAGES: paho-mqtt==2.1.0
+    working_dir: /workspace/repos/home-assistant/core
+    volumes:
+    - ${ECOSYNC_WORKSPACE:?ECOSYNC_WORKSPACE required}:/workspace
+    command: >-
+      bash -lc 'mkdir -p /workspace/.ecosyncbench/test-reports &&
+      /opt/ecosync/venv/bin/python -m pytest -q -o addopts=""
+      tests/test_backup_restore.py
+      --junitxml=/workspace/.ecosyncbench/test-reports/core-hidden.xml'
+
+  supervisor-hidden:
+    image: ecosyncbench/deps/home-assistant-supervisor-py:da800b888974
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/home-assistant-python/Dockerfile
+      args:
+        ECOSYNC_TASK_ID: home_assistant_core_supervisor_5ec0c95de28d
+        ECOSYNC_REPO: home-assistant/supervisor
+        ECOSYNC_REPO_PATH: repos/home-assistant/supervisor
+        ECOSYNC_BASE_COMMIT: da800b888974258f4ed7b034642d7ecb64d75f5b
+        ECOSYNC_DEPENDENCY_FINGERPRINT: da800b888974
+        ECOSYNC_PYTHON_BASE_IMAGE: ecosyncbench/base/python:3.13-slim
+        ECOSYNC_REQUIREMENTS_FILES: requirements.txt requirements_tests.txt
+    working_dir: /workspace/repos/home-assistant/supervisor
+    volumes:
+    - ${ECOSYNC_WORKSPACE:?ECOSYNC_WORKSPACE required}:/workspace
+    command: >-
+      bash -lc 'mkdir -p /workspace/.ecosyncbench/test-reports &&
+      dbus-run-session -- /opt/ecosync/venv/bin/python -m pytest -q -o addopts=""
+      tests/backups/test_backup_security.py
+      --junitxml=/workspace/.ecosyncbench/test-reports/supervisor-hidden.xml'

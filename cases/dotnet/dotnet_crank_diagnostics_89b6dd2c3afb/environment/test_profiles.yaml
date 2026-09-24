@@ -1,0 +1,47 @@
+profiles:
+  crank-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: crank
+    workdir: repos/dotnet/crank
+    command: dotnet test test/Microsoft.Crank.UnitTests/Microsoft.Crank.UnitTests.csproj
+      --logger "trx;LogFileName=crank-hidden.trx" --results-directory /workspace/.ecosyncbench/test-reports
+      --filter "FullyQualifiedName~EcoSyncDotNetTraceContractTests"
+    public_smoke_command: >-
+      dotnet test test/Microsoft.Crank.RegressionBot.Tests/Microsoft.Crank.RegressionBot.Tests.csproj
+      --logger "trx;LogFileName=crank-public-smoke.trx"
+      --results-directory /workspace/.ecosyncbench/test-reports
+      --filter "FullyQualifiedName~TemplateTests"
+    docker_service: crank-hidden
+    dependency_image: ecosyncbench/base/dotnet-sdk:8.0
+    status: manual_profile_ready
+    test_files:
+    - test/Microsoft.Crank.UnitTests/EcoSyncDotNetTraceContractTests.cs
+    patched_files:
+    - test/Microsoft.Crank.UnitTests/EcoSyncDotNetTraceContractTests.cs
+  diagnostics-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: diagnostics
+    workdir: repos/dotnet/diagnostics
+    command: dotnet test src/tests/dotnet-trace/DotnetTrace.UnitTests.csproj --logger
+      "trx;LogFileName=diagnostics-hidden.trx" --results-directory /workspace/.ecosyncbench/test-reports
+      --filter "FullyQualifiedName~EcoSyncCollectLinuxRedirectedIoTests"
+    public_smoke_command: >-
+      export ECOSYNC_DOTNET_TEST_ROOT="${ECOSYNC_DOTNET_TEST_ROOT:-/workspace/.ecosyncbench/cache/dotnet-test}";
+      mkdir -p "$ECOSYNC_DOTNET_TEST_ROOT" artifacts;
+      rm -rf artifacts/dotnet-test;
+      ln -s "$ECOSYNC_DOTNET_TEST_ROOT" artifacts/dotnet-test;
+      dotnet test src/tests/Microsoft.FileFormats.UnitTests/Microsoft.FileFormats.UnitTests.csproj
+      --logger "trx;LogFileName=diagnostics-public-smoke.trx"
+      --results-directory /workspace/.ecosyncbench/test-reports
+      --filter "FullyQualifiedName~Microsoft.FileFormats"
+    docker_service: diagnostics-hidden
+    dependency_image: ecosyncbench/base/dotnet-sdk:10.0
+    status: manual_profile_ready
+    test_files:
+    - src/tests/dotnet-trace/EcoSyncCollectLinuxRedirectedIoTests.cs
+    patched_files:
+    - src/tests/dotnet-trace/EcoSyncCollectLinuxRedirectedIoTests.cs

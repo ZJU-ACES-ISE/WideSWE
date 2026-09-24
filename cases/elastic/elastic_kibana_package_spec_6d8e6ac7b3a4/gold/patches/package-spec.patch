@@ -1,0 +1,125 @@
+diff --git a/code/go/internal/validator/semantic/validate_input_dynamic_signal_types.go b/code/go/internal/validator/semantic/validate_input_dynamic_signal_types.go
+new file mode 100644
+index 00000000..8b379835
+--- /dev/null
++++ b/code/go/internal/validator/semantic/validate_input_dynamic_signal_types.go
+@@ -0,0 +1,69 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License;
++// you may not use this file except in compliance with the Elastic License.
++
++package semantic
++
++import (
++	"io/fs"
++
++	"gopkg.in/yaml.v3"
++
++	"github.com/elastic/package-spec/v3/code/go/internal/fspath"
++	"github.com/elastic/package-spec/v3/code/go/pkg/specerrors"
++)
++
++const (
++	otelcolInputType string = "otelcol"
++)
++
++type inputPolicyTemplateWithDynamic struct {
++	Name               string `yaml:"name"`
++	Input              string `yaml:"input"`
++	DynamicSignalTypes bool   `yaml:"dynamic_signal_types"` // true or false
++}
++
++type inputPackageManifestDynamic struct {
++	Type            string                           `yaml:"type"`
++	PolicyTemplates []inputPolicyTemplateWithDynamic `yaml:"policy_templates"`
++}
++
++// ValidateInputDynamicSignalTypes validates that dynamic_signal_types field is only used with otelcol input type
++func ValidateInputDynamicSignalTypes(fsys fspath.FS) specerrors.ValidationErrors {
++	var errs specerrors.ValidationErrors
++
++	manifestPath := "manifest.yml"
++	data, err := fs.ReadFile(fsys, manifestPath)
++	if err != nil {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("file \"%s\" is invalid: failed to read manifest: %w", fsys.Path(manifestPath), err)}
++	}
++
++	var manifest inputPackageManifestDynamic
++	err = yaml.Unmarshal(data, &manifest)
++	if err != nil {
++		return specerrors.ValidationErrors{
++			specerrors.NewStructuredErrorf("file \"%s\" is invalid: failed to parse manifest: %w", fsys.Path(manifestPath), err)}
++	}
++
++	for _, policyTemplate := range manifest.PolicyTemplates {
++		// Check if dynamic_signal_types is explicitly set
++		if policyTemplate.DynamicSignalTypes {
++			// Must be input package type
++			if manifest.Type != inputPackageType {
++				errs = append(errs, specerrors.NewStructuredErrorf(
++					"file \"%s\" is invalid: policy template \"%s\": dynamic_signal_types is only allowed for input type packages",
++					fsys.Path(manifestPath), policyTemplate.Name))
++				continue
++			}
++			// Must be otelcol input
++			if policyTemplate.Input != otelcolInputType {
++				errs = append(errs, specerrors.NewStructuredErrorf(
++					"file \"%s\" is invalid: policy template \"%s\": dynamic_signal_types is only allowed when input is 'otelcol', got '%s'",
++					fsys.Path(manifestPath), policyTemplate.Name, policyTemplate.Input))
++			}
++		}
++	}
++
++	return errs
++}
+diff --git a/code/go/internal/validator/spec.go b/code/go/internal/validator/spec.go
+index 7484e8df..dd8d3d59 100644
+--- a/code/go/internal/validator/spec.go
++++ b/code/go/internal/validator/spec.go
+@@ -222,6 +222,7 @@ func (s Spec) rules(pkgType string, rootSpec spectypes.ItemSpec) validationRules
+ 		{fn: semantic.ValidateDeploymentModes, types: []string{"integration"}},
+ 		{fn: semantic.ValidateDurationVariables, since: semver.MustParse("3.5.0")},
+ 		{fn: semantic.ValidateInputPackagesPolicyTemplates, types: []string{"input"}},
++		{fn: semantic.ValidateInputDynamicSignalTypes},
+ 		{fn: semantic.ValidateMinimumAgentVersion},
+ 		{fn: semantic.ValidateIntegrationPolicyTemplates, types: []string{"integration"}},
+ 		{fn: semantic.ValidatePipelineTags, types: []string{"integration"}, since: semver.MustParse("3.6.0")},
+diff --git a/spec/changelog.yml b/spec/changelog.yml
+index 2b1b8c5a..a6a18a3d 100644
+--- a/spec/changelog.yml
++++ b/spec/changelog.yml
+@@ -25,6 +25,9 @@
+     - description: Allow to set time series index mode in input packages.
+       type: enhancement
+       link: https://github.com/elastic/package-spec/pull/1066
++    - description: Add support for dynamic_signal_types field in input package policy templates for OTel input type.
++      type: enhancement
++      link: https://github.com/elastic/package-spec/pull/1067
+ - version: 3.5.6-next
+   changes:
+     - description: Add validation for Kibana tag duplicates.
+diff --git a/spec/input/manifest.spec.yml b/spec/input/manifest.spec.yml
+index eecb33d1..cd9e5d1b 100644
+--- a/spec/input/manifest.spec.yml
++++ b/spec/input/manifest.spec.yml
+@@ -88,6 +88,10 @@ spec:
+           template_path:
+             description: "Path to Elasticsearch index template for stream."
+             type: string
++          dynamic_signal_types:
++            description: "When enabled, decides the transforms and index templates that need to be created depending on the pipelines specified in the configuration."
++            type: boolean
++            default: false
+           deprecated:
+             $ref: "../integration/manifest.spec.yml#/definitions/deprecated"
+         required:
+@@ -131,6 +135,8 @@ spec:
+ versions:
+   - before: 3.6.0
+     patch:
++      - op: remove
++        path: "/properties/policy_templates/items/properties/dynamic_signal_types" # removes dynamic_signal_types field for policy templates
+       - op: remove
+         path: "/properties/elasticsearch/properties/index_mode" # Fleet needs to check that it is not enabled in non-metrics data streams
+       - op: remove

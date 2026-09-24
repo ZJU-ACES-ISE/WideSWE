@@ -1,0 +1,204 @@
+diff --git a/.changeset/silly-phones-follow.md b/.changeset/silly-phones-follow.md
+new file mode 100644
+index 000000000..c8671c6ab
+--- /dev/null
++++ b/.changeset/silly-phones-follow.md
+@@ -0,0 +1,5 @@
++---
++'svelte': patch
++---
++
++fix: freeze deriveds once their containing effects are destroyed
+diff --git a/documentation/docs/98-reference/.generated/client-warnings.md b/documentation/docs/98-reference/.generated/client-warnings.md
+index 7daf808d6..73c97c253 100644
+--- a/documentation/docs/98-reference/.generated/client-warnings.md
++++ b/documentation/docs/98-reference/.generated/client-warnings.md
+@@ -134,6 +134,14 @@ When logging a [proxy](https://developer.mozilla.org/en-US/docs/Web/JavaScript/R
+ 
+ The easiest way to log a value as it changes over time is to use the [`$inspect`](/docs/svelte/$inspect) rune. Alternatively, to log things on a one-off basis (for example, inside an event handler) you can use [`$state.snapshot`](/docs/svelte/$state#$state.snapshot) to take a snapshot of the current value.
+ 
++### derived_inert
++
++```
++Reading a derived belonging to a now-destroyed effect may result in stale values
++```
++
++A `$derived` value created inside an effect will stop updating when the effect is destroyed. You should create the `$derived` outside the effect, or inside an `$effect.root`.
++
+ ### event_handler_invalid
+ 
+ ```
+diff --git a/packages/svelte/messages/client-warnings/warnings.md b/packages/svelte/messages/client-warnings/warnings.md
+index 6998173a9..58d00f393 100644
+--- a/packages/svelte/messages/client-warnings/warnings.md
++++ b/packages/svelte/messages/client-warnings/warnings.md
+@@ -120,6 +120,12 @@ When logging a [proxy](https://developer.mozilla.org/en-US/docs/Web/JavaScript/R
+ 
+ The easiest way to log a value as it changes over time is to use the [`$inspect`](/docs/svelte/$inspect) rune. Alternatively, to log things on a one-off basis (for example, inside an event handler) you can use [`$state.snapshot`](/docs/svelte/$state#$state.snapshot) to take a snapshot of the current value.
+ 
++## derived_inert
++
++> Reading a derived belonging to a now-destroyed effect may result in stale values
++
++A `$derived` value created inside an effect will stop updating when the effect is destroyed. You should create the `$derived` outside the effect, or inside an `$effect.root`.
++
+ ## event_handler_invalid
+ 
+ > %handler% should be a function. Did you mean to %suggestion%?
+diff --git a/packages/svelte/src/internal/client/reactivity/deriveds.js b/packages/svelte/src/internal/client/reactivity/deriveds.js
+index 77acb2351..12dd7bf67 100644
+--- a/packages/svelte/src/internal/client/reactivity/deriveds.js
++++ b/packages/svelte/src/internal/client/reactivity/deriveds.js
+@@ -12,7 +12,8 @@ import {
+ 	WAS_MARKED,
+ 	DESTROYED,
+ 	CLEAN,
+-	REACTION_RAN
++	REACTION_RAN,
++	INERT
+ } from '#client/constants';
+ import {
+ 	active_reaction,
+@@ -67,10 +68,6 @@ export const recent_async_deriveds = new Set();
+ /*#__NO_SIDE_EFFECTS__*/
+ export function derived(fn) {
+ 	var flags = DERIVED | DIRTY;
+-	var parent_derived =
+-		active_reaction !== null && (active_reaction.f & DERIVED) !== 0
+-			? /** @type {Derived} */ (active_reaction)
+-			: null;
+ 
+ 	if (active_effect !== null) {
+ 		// Since deriveds are evaluated lazily, any effects created inside them are
+@@ -90,7 +87,7 @@ export function derived(fn) {
+ 		rv: 0,
+ 		v: /** @type {V} */ (UNINITIALIZED),
+ 		wv: 0,
+-		parent: parent_derived ?? active_effect,
++		parent: active_effect,
+ 		ac: null
+ 	};
+ 
+@@ -320,23 +317,6 @@ export function destroy_derived_effects(derived) {
+  */
+ let stack = [];
+ 
+-/**
+- * @param {Derived} derived
+- * @returns {Effect | null}
+- */
+-function get_derived_parent_effect(derived) {
+-	var parent = derived.parent;
+-	while (parent !== null) {
+-		if ((parent.f & DERIVED) === 0) {
+-			// The original parent effect might've been destroyed but the derived
+-			// is used elsewhere now - do not return the destroyed effect in that case
+-			return (parent.f & DESTROYED) === 0 ? /** @type {Effect} */ (parent) : null;
+-		}
+-		parent = parent.parent;
+-	}
+-	return null;
+-}
+-
+ /**
+  * @template T
+  * @param {Derived} derived
+@@ -345,8 +325,15 @@ function get_derived_parent_effect(derived) {
+ export function execute_derived(derived) {
+ 	var value;
+ 	var prev_active_effect = active_effect;
++	var parent = derived.parent;
++
++	if (!is_destroying_effect && parent !== null && (parent.f & (DESTROYED | INERT)) !== 0) {
++		w.derived_inert();
++
++		return derived.v;
++	}
+ 
+-	set_active_effect(get_derived_parent_effect(derived));
++	set_active_effect(parent);
+ 
+ 	if (DEV) {
+ 		let prev_eager_effects = eager_effects;
+diff --git a/packages/svelte/src/internal/client/reactivity/types.d.ts b/packages/svelte/src/internal/client/reactivity/types.d.ts
+index 847791799..0ee8570c3 100644
+--- a/packages/svelte/src/internal/client/reactivity/types.d.ts
++++ b/packages/svelte/src/internal/client/reactivity/types.d.ts
+@@ -57,8 +57,8 @@ export interface Derived<V = unknown> extends Value<V>, Reaction {
+ 	fn: () => V;
+ 	/** Effects created inside this signal. Used to destroy those effects when the derived reruns or is cleaned up */
+ 	effects: null | Effect[];
+-	/** Parent effect or derived */
+-	parent: Effect | Derived | null;
++	/** Parent effect */
++	parent: Effect | null;
+ }
+ 
+ export interface EffectNodes {
+diff --git a/packages/svelte/src/internal/client/warnings.js b/packages/svelte/src/internal/client/warnings.js
+index a9a50c57d..f4e605ac9 100644
+--- a/packages/svelte/src/internal/client/warnings.js
++++ b/packages/svelte/src/internal/client/warnings.js
+@@ -74,6 +74,17 @@ export function console_log_state(method) {
+ 	}
+ }
+ 
++/**
++ * Reading a derived belonging to a now-destroyed effect may result in stale values
++ */
++export function derived_inert() {
++	if (DEV) {
++		console.warn(`%c[svelte] derived_inert\n%cReading a derived belonging to a now-destroyed effect may result in stale values\nhttps://svelte.dev/e/derived_inert`, bold, normal);
++	} else {
++		console.warn(`https://svelte.dev/e/derived_inert`);
++	}
++}
++
+ /**
+  * %handler% should be a function. Did you mean to %suggestion%?
+  * @param {string} handler
+diff --git a/packages/svelte/tests/signals/test.ts b/packages/svelte/tests/signals/test.ts
+index 5486ccdb4..927ce2e66 100644
+--- a/packages/svelte/tests/signals/test.ts
++++ b/packages/svelte/tests/signals/test.ts
+@@ -1391,8 +1391,12 @@ describe('signals', () => {
+ 		};
+ 	});
+ 
+-	test('derived whose original parent effect has been destroyed keeps updating', () => {
++	test('derived whose original parent effect has been destroyed no longer updates', () => {
+ 		return () => {
++			const warn = console.warn;
++			const warnings: string[] = [];
++			console.warn = (...args) => warnings.push(...args);
++
+ 			let count: Source<number>;
+ 			let double: Derived<number>;
+ 			const destroy = effect_root(() => {
+@@ -1404,17 +1408,23 @@ describe('signals', () => {
+ 
+ 			flushSync();
+ 			assert.equal($.get(double!), 0);
+-
+-			destroy();
+ 			flushSync();
+ 
+ 			set(count!, 1);
+ 			flushSync();
+ 			assert.equal($.get(double!), 2);
+ 
++			destroy();
++
++			assert.equal($.get(double!), 2);
++			assert.equal(warnings.length, 0); // value is unchanged, no warning yet
++
+ 			set(count!, 2);
+ 			flushSync();
+-			assert.equal($.get(double!), 4);
++			assert.equal($.get(double!), 2);
++			assert.ok(warnings.some((str) => str.includes('derived_inert')));
++
++			console.warn = warn;
+ 		};
+ 	});
+ 

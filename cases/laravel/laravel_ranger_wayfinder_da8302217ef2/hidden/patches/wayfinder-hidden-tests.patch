@@ -1,0 +1,75 @@
+diff --git a/tests/CamelCaseRouteParameter.test.ts b/tests/CamelCaseRouteParameter.test.ts
+new file mode 100644
+index 0000000..c8f4132
+--- /dev/null
++++ b/tests/CamelCaseRouteParameter.test.ts
+@@ -0,0 +1,11 @@
++import { expect, test } from "vitest";
++import { show } from "../workbench/resources/js/actions/App/Http/Controllers/AuditEntryController";
++
++test("can resolve model binding keys for camelCase route handler parameters", () => {
++    expect(show.url({ audit_entry: { id: 1 } })).toBe("/audit-entries/1");
++    expect(show.url({ audit_entry: 1 })).toBe("/audit-entries/1");
++    expect(show.url({ id: 1 })).toBe("/audit-entries/1");
++    expect(show.url([1])).toBe("/audit-entries/1");
++    expect(show.url(1)).toBe("/audit-entries/1");
++    expect(show.url("some-slug")).toBe("/audit-entries/some-slug");
++});
+diff --git a/workbench/app/Http/Controllers/AuditEntryController.php b/workbench/app/Http/Controllers/AuditEntryController.php
+new file mode 100644
+index 0000000..236c605
+--- /dev/null
++++ b/workbench/app/Http/Controllers/AuditEntryController.php
+@@ -0,0 +1,13 @@
++<?php
++
++namespace App\Http\Controllers;
++
++use App\Models\AuditEntry;
++
++class AuditEntryController
++{
++    public function show(AuditEntry $auditEntry)
++    {
++        //
++    }
++}
+diff --git a/workbench/app/Models/AuditEntry.php b/workbench/app/Models/AuditEntry.php
+new file mode 100644
+index 0000000..c1ea76e
+--- /dev/null
++++ b/workbench/app/Models/AuditEntry.php
+@@ -0,0 +1,13 @@
++<?php
++
++namespace App\Models;
++
++use Illuminate\Database\Eloquent\Model;
++
++/**
++ * @property int $id
++ */
++class AuditEntry extends Model
++{
++    //
++}
+diff --git a/workbench/routes/web.php b/workbench/routes/web.php
+index 0c72b55..e74f9d5 100644
+--- a/workbench/routes/web.php
++++ b/workbench/routes/web.php
+@@ -1,6 +1,7 @@
+ <?php
+ 
+ use App\Http\Controllers\AnonymousMiddlewareController;
++use App\Http\Controllers\AuditEntryController;
+ use App\Http\Controllers\DisallowedMethodNameController;
+ use App\Http\Controllers\DomainController;
+ use App\Http\Controllers\InvokableController;
+@@ -53,6 +54,7 @@
+ Route::post('/many-optional/{one?}/{two?}/{three?}', [OptionalController::class, 'manyOptional']);
+ 
+ Route::get('/users/{user}', [ModelBindingController::class, 'show']);
++Route::get('/audit-entries/{audit_entry}', [AuditEntryController::class, 'show']);
+ 
+ Route::middleware(UrlDefaultsMiddleware::class)->post('/with-defaults/{locale}', [UrlDefaultsController::class, 'onlyDefaults']);
+ Route::middleware(UrlDefaultsMiddleware::class)->post('/with-defaults/{locale}/also/{timezone}', [UrlDefaultsController::class, 'mixedDefaults']);

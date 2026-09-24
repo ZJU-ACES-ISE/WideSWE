@@ -1,0 +1,251 @@
+diff --git a/.changelog/4408.txt b/.changelog/4408.txt
+new file mode 100644
+index 000000000..9e8d73fb0
+--- /dev/null
++++ b/.changelog/4408.txt
+@@ -0,0 +1,3 @@
++```release-note:bug
++resource/mongodbatlas_alert_configuration: Fix inconsistent state when creating OUTSIDE_STREAM_PROCESSOR_METRIC_THRESHOLD alerts
++```
+diff --git a/internal/service/alertconfiguration/model.go b/internal/service/alertconfiguration/model.go
+index 2eacc15f4..c32fb01f5 100644
+--- a/internal/service/alertconfiguration/model.go
++++ b/internal/service/alertconfiguration/model.go
+@@ -85,6 +85,10 @@ func NewMatcherList(list []TfMatcherModel) *[]admin.StreamsMatcher {
+ }
+ 
+ func NewTFAlertConfigurationModel(apiRespConfig *admin.GroupAlertsConfig, currState *TfAlertConfigurationRSModel) TfAlertConfigurationRSModel {
++	metricThresholdConfig, thresholdConfig := newTFThresholdModels(
++		apiRespConfig.MetricThreshold, apiRespConfig.Threshold, currState.MetricThresholdConfig, currState.ThresholdConfig,
++	)
++
+ 	return TfAlertConfigurationRSModel{
+ 		ID:                    currState.ID,
+ 		ProjectID:             currState.ProjectID,
+@@ -93,8 +97,8 @@ func NewTFAlertConfigurationModel(apiRespConfig *admin.GroupAlertsConfig, currSt
+ 		Created:               types.StringPointerValue(conversion.TimePtrToStringPtr(apiRespConfig.Created)),
+ 		Updated:               types.StringPointerValue(conversion.TimePtrToStringPtr(apiRespConfig.Updated)),
+ 		Enabled:               types.BoolPointerValue(apiRespConfig.Enabled),
+-		MetricThresholdConfig: NewTFMetricThresholdConfigModel(apiRespConfig.MetricThreshold, currState.MetricThresholdConfig),
+-		ThresholdConfig:       NewTFThresholdConfigModel(apiRespConfig.Threshold, currState.ThresholdConfig),
++		MetricThresholdConfig: metricThresholdConfig,
++		ThresholdConfig:       thresholdConfig,
+ 		Notification:          NewTFNotificationModelList(apiRespConfig.GetNotifications(), currState.Notification),
+ 		Matcher:               NewTFMatcherModelList(apiRespConfig.GetMatchers(), currState.Matcher),
+ 		SeverityOverride:      types.StringPointerValue(apiRespConfig.SeverityOverride),
+@@ -184,9 +188,6 @@ func NewTFNotificationModelList(n []admin.AlertsNotificationRootForGroup, currSt
+ }
+ 
+ func NewTFMetricThresholdConfigModel(t *admin.FlexClusterMetricThreshold, currStateSlice []TfMetricThresholdConfigModel) []TfMetricThresholdConfigModel {
+-	if t == nil {
+-		return []TfMetricThresholdConfigModel{}
+-	}
+ 	if len(currStateSlice) == 0 { // metric threshold was created elsewhere from terraform, or import statement is being called
+ 		return []TfMetricThresholdConfigModel{
+ 			{
+@@ -218,10 +219,6 @@ func NewTFMetricThresholdConfigModel(t *admin.FlexClusterMetricThreshold, currSt
+ }
+ 
+ func NewTFThresholdConfigModel(t *admin.StreamProcessorMetricThreshold, currStateSlice []TfThresholdConfigModel) []TfThresholdConfigModel {
+-	if t == nil {
+-		return []TfThresholdConfigModel{}
+-	}
+-
+ 	if len(currStateSlice) == 0 { // threshold was created elsewhere from terraform, or import statement is being called
+ 		return []TfThresholdConfigModel{
+ 			{
+@@ -275,6 +272,10 @@ func NewTFMatcherModelList(m []admin.StreamsMatcher, currStateSlice []TfMatcherM
+ }
+ 
+ func NewTfAlertConfigurationDSModel(apiRespConfig *admin.GroupAlertsConfig, projectID string) TFAlertConfigurationDSModel {
++	metricThresholdConfig, thresholdConfig := newTFThresholdModels(
++		apiRespConfig.MetricThreshold, apiRespConfig.Threshold, []TfMetricThresholdConfigModel{}, []TfThresholdConfigModel{},
++	)
++
+ 	return TFAlertConfigurationDSModel{
+ 		ID: types.StringValue(conversion.EncodeStateID(map[string]string{
+ 			EncodedIDKeyAlertID:   *apiRespConfig.Id,
+@@ -286,8 +287,8 @@ func NewTfAlertConfigurationDSModel(apiRespConfig *admin.GroupAlertsConfig, proj
+ 		Created:               types.StringPointerValue(conversion.TimePtrToStringPtr(apiRespConfig.Created)),
+ 		Updated:               types.StringPointerValue(conversion.TimePtrToStringPtr(apiRespConfig.Updated)),
+ 		Enabled:               types.BoolPointerValue(apiRespConfig.Enabled),
+-		MetricThresholdConfig: NewTFMetricThresholdConfigModel(apiRespConfig.MetricThreshold, []TfMetricThresholdConfigModel{}),
+-		ThresholdConfig:       NewTFThresholdConfigModel(apiRespConfig.Threshold, []TfThresholdConfigModel{}),
++		MetricThresholdConfig: metricThresholdConfig,
++		ThresholdConfig:       thresholdConfig,
+ 		Notification:          NewTFNotificationModelList(apiRespConfig.GetNotifications(), []TfNotificationModel{}),
+ 		Matcher:               NewTFMatcherModelList(apiRespConfig.GetMatchers(), []TfMatcherModel{}),
+ 		SeverityOverride:      types.StringPointerValue(apiRespConfig.SeverityOverride),
+@@ -315,3 +316,24 @@ func NewTFAlertConfigurationDSModelList(alerts []admin.GroupAlertsConfig, projec
+ 
+ 	return results
+ }
++
++// newTFThresholdModels returns metricThreshold and threshold models, giving precedence to metricThreshold when both are set.
++// This is necessary to avoid inconsistent applies for the OUTSIDE_STREAM_PROCESSOR_METRIC_THRESHOLD event type, for which
++// the API returns both metricThreshold and threshold in the response for backwards compatibility. See HELP-91242.
++// We apply this logic for all types to catch other inconsistencies if they come up, without requiring a new provider version.
++// If in the future a type that requires different logic is introduced, like threshold taking precedence over metricThreshold,
++// we will have to ensure both the new type and OUTSIDE_STREAM_PROCESSOR_METRIC_THRESHOLD are handled correctly.
++func newTFThresholdModels(
++	metricThreshold *admin.FlexClusterMetricThreshold,
++	threshold *admin.StreamProcessorMetricThreshold,
++	currMetricThreshold []TfMetricThresholdConfigModel,
++	currThreshold []TfThresholdConfigModel,
++) ([]TfMetricThresholdConfigModel, []TfThresholdConfigModel) {
++	if metricThreshold != nil {
++		return NewTFMetricThresholdConfigModel(metricThreshold, currMetricThreshold), []TfThresholdConfigModel{}
++	}
++	if threshold != nil {
++		return []TfMetricThresholdConfigModel{}, NewTFThresholdConfigModel(threshold, currThreshold)
++	}
++	return []TfMetricThresholdConfigModel{}, []TfThresholdConfigModel{}
++}
+diff --git a/internal/service/alertconfiguration/model_test.go b/internal/service/alertconfiguration/model_test.go
+index 15c06ab0f..0b605dffb 100644
+--- a/internal/service/alertconfiguration/model_test.go
++++ b/internal/service/alertconfiguration/model_test.go
+@@ -238,6 +238,61 @@ func TestAlertConfigurationSDKToTFModel(t *testing.T) {
+ 				Enabled:               types.BoolValue(true),
+ 			},
+ 		},
++		"Response with both threshold and metricThreshold sets only metric_threshold": {
++			SDKResp: &admin.GroupAlertsConfig{
++				Enabled:       new(true),
++				EventTypeName: new("OUTSIDE_STREAM_PROCESSOR_METRIC_THRESHOLD"),
++				GroupId:       new("projectId"),
++				Id:            new("alertConfigurationId"),
++				MetricThreshold: &admin.FlexClusterMetricThreshold{
++					MetricName: "STREAM_PROCESSOR_CHANGE_STREAM_LAG",
++					Operator:   new("GREATER_THAN"),
++					Threshold:  new(5.0),
++					Units:      new("NANOSECONDS"),
++					Mode:       new("AVERAGE"),
++				},
++				Threshold: &admin.StreamProcessorMetricThreshold{
++					Operator:  new("GREATER_THAN"),
++					Threshold: new(5.0),
++					Units:     new("NANOSECONDS"),
++				},
++			},
++			currentStateAlertConfiguration: &alertconfiguration.TfAlertConfigurationRSModel{
++				ID:        types.StringValue("id"),
++				ProjectID: types.StringValue("projectId"),
++				MetricThresholdConfig: []alertconfiguration.TfMetricThresholdConfigModel{
++					{
++						MetricName: types.StringValue("STREAM_PROCESSOR_CHANGE_STREAM_LAG"),
++						Operator:   types.StringValue("GREATER_THAN"),
++						Threshold:  types.Float64Value(5.0),
++						Units:      types.StringValue("NANOSECONDS"),
++						Mode:       types.StringValue("AVERAGE"),
++					},
++				},
++				ThresholdConfig: []alertconfiguration.TfThresholdConfigModel{},
++				Notification:    []alertconfiguration.TfNotificationModel{},
++				Matcher:         []alertconfiguration.TfMatcherModel{},
++			},
++			expectedTFModel: alertconfiguration.TfAlertConfigurationRSModel{
++				ID:        types.StringValue("id"),
++				ProjectID: types.StringValue("projectId"),
++				MetricThresholdConfig: []alertconfiguration.TfMetricThresholdConfigModel{
++					{
++						MetricName: types.StringValue("STREAM_PROCESSOR_CHANGE_STREAM_LAG"),
++						Operator:   types.StringValue("GREATER_THAN"),
++						Threshold:  types.Float64Value(5.0),
++						Units:      types.StringValue("NANOSECONDS"),
++						Mode:       types.StringValue("AVERAGE"),
++					},
++				},
++				ThresholdConfig:      []alertconfiguration.TfThresholdConfigModel{},
++				Notification:         []alertconfiguration.TfNotificationModel{},
++				Matcher:              []alertconfiguration.TfMatcherModel{},
++				EventType:            types.StringValue("OUTSIDE_STREAM_PROCESSOR_METRIC_THRESHOLD"),
++				AlertConfigurationID: types.StringValue("alertConfigurationId"),
++				Enabled:              types.BoolValue(true),
++			},
++		},
+ 		"Complete SDK response with SeverityOverride": {
+ 			SDKResp: &admin.GroupAlertsConfig{
+ 				Enabled:          new(true),
+diff --git a/internal/service/alertconfiguration/resource_test.go b/internal/service/alertconfiguration/resource_test.go
+index c49d72021..6075314c6 100644
+--- a/internal/service/alertconfiguration/resource_test.go
++++ b/internal/service/alertconfiguration/resource_test.go
+@@ -80,6 +80,39 @@ func TestAccConfigRSAlertConfiguration_basic(t *testing.T) {
+ 	})
+ }
+ 
++func TestAccConfigRSAlertConfiguration_outsideStreamProcessorMetricThreshold(t *testing.T) {
++	var (
++		projectID = acc.ProjectIDExecution(t)
++	)
++
++	resource.ParallelTest(t, resource.TestCase{
++		PreCheck:                 func() { acc.PreCheckBasic(t) },
++		ProtoV6ProviderFactories: acc.TestAccProviderV6Factories,
++		CheckDestroy:             checkDestroy(),
++		Steps: []resource.TestStep{
++			{
++				Config: configOutsideStreamProcessorMetricThresholdAlert(projectID),
++				Check: resource.ComposeAggregateTestCheckFunc(
++					checkExists(resourceName),
++					resource.TestCheckResourceAttr(resourceName, "event_type", "OUTSIDE_STREAM_PROCESSOR_METRIC_THRESHOLD"),
++					resource.TestCheckResourceAttr(resourceName, "metric_threshold_config.#", "1"),
++					resource.TestCheckResourceAttr(resourceName, "threshold_config.#", "0"),
++					checkExists(dataSourceName),
++					resource.TestCheckResourceAttr(dataSourceName, "metric_threshold_config.#", "1"),
++					resource.TestCheckResourceAttr(dataSourceName, "threshold_config.#", "0"),
++				),
++			},
++			{
++				ResourceName:            resourceName,
++				ImportStateIdFunc:       importStateProjectIDFunc(resourceName),
++				ImportState:             true,
++				ImportStateVerify:       true,
++				ImportStateVerifyIgnore: []string{"updated"},
++			},
++		},
++	})
++}
++
+ func TestAccConfigRSAlertConfiguration_withEmptyMetricThresholdConfig(t *testing.T) {
+ 	var (
+ 		projectID = acc.ProjectIDExecution(t)
+@@ -773,6 +806,37 @@ func configBasic(projectID string, enabled bool) string {
+ 	`, projectID, enabled)
+ }
+ 
++func configOutsideStreamProcessorMetricThresholdAlert(projectID string) string {
++	return fmt.Sprintf(`
++	resource "mongodbatlas_alert_configuration" "test" {
++		project_id = %[1]q
++		enabled    = true
++		event_type = "OUTSIDE_STREAM_PROCESSOR_METRIC_THRESHOLD"
++
++		notification {
++			type_name     = "GROUP"
++			interval_min  = 5
++			delay_min     = 0
++			sms_enabled   = false
++			email_enabled = true
++		}
++
++		metric_threshold_config {
++			metric_name = "STREAM_PROCESSOR_CHANGE_STREAM_LAG"
++			operator    = "GREATER_THAN"
++			threshold   = 0.0
++			units       = "NANOSECONDS"
++			mode        = "AVERAGE"
++		}
++	}
++
++	data "mongodbatlas_alert_configuration" "test" {
++		project_id             = mongodbatlas_alert_configuration.test.project_id
++		alert_configuration_id = mongodbatlas_alert_configuration.test.id
++	}
++	`, projectID)
++}
++
+ func configWithNotifications(projectID string, enabled, smsEnabled, emailEnabled bool) string {
+ 	return fmt.Sprintf(`
+ 		resource "mongodbatlas_alert_configuration" "test" {

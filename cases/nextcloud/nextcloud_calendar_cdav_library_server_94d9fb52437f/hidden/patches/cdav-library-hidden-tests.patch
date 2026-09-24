@@ -1,0 +1,130 @@
+diff --git a/test/unit/models/calendarTest.js b/test/unit/models/calendarTest.js
+index 89cf10a..6b68cc0 100644
+--- a/test/unit/models/calendarTest.js
++++ b/test/unit/models/calendarTest.js
+@@ -109,6 +109,26 @@ END:VCALENDAR
+ 		expect(calendar.components).toEqual(['VEVENT', 'VTODO']);
+ 	});
+ 
++	it('should inherit expose the property defaultAlarmPartDay', () => {
++		const parent = new DavCollectionMock();
++		const request = new RequestMock();
++		const url = '/foo/bar/folder';
++		const props = returnDefaultProps();
++
++		const calendar = new Calendar(parent, request, url, props);
++		expect(calendar.defaultAlarmPartDay).toEqual(32400);
++	});
++
++	it('should inherit expose the property defaultAlarmFullDay', () => {
++		const parent = new DavCollectionMock();
++		const request = new RequestMock();
++		const url = '/foo/bar/folder';
++		const props = returnDefaultProps();
++
++		const calendar = new Calendar(parent, request, url, props);
++		expect(calendar.defaultAlarmFullDay).toEqual(39600);
++	});
++
+ 	it('should find all VObjects', () => {
+ 		const parent = new DavCollectionMock();
+ 		const request = new RequestMock();
+@@ -446,6 +466,8 @@ function returnDefaultProps() {
+ 		],
+ 		"{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp" : "opaque",
+ 		"{http://owncloud.org/ns}calendar-enabled" : true,
++		"{http://nextcloud.com/ns}default-alarm-part-day" : 32400,
++		"{http://nextcloud.com/ns}default-alarm-full-day" : 39600,
+ 		"{http://nextcloud.com/ns}owner-displayname" : "admin"
+ 	};
+ }
+diff --git a/test/unit/parserTest.js b/test/unit/parserTest.js
+index 859c2bf..48d05a5 100644
+--- a/test/unit/parserTest.js
++++ b/test/unit/parserTest.js
+@@ -1885,6 +1885,50 @@ END:VALARM`);
+ 		expect(parser.parse(document, node, resolver)).toEqual(false);
+ 	});
+ 
++	it('should properly handle {http://nextcloud.com/ns}default-alarm-part-day', () => {
++		const parser = new Parser();
++
++		const xml = `<?xml version="1.0" encoding="utf-8" ?>
++<D:multistatus xmlns:D="DAV:" xmlns:nc="http://nextcloud.com/ns">
++	<D:response>
++		<D:href>/foo</D:href>
++		<D:propstat>
++			<D:prop>
++				<nc:default-alarm-part-day>32400</nc:default-alarm-part-day>
++			</D:prop>
++			<D:status>HTTP/1.1 200 OK</D:status>
++		</D:propstat>
++	</D:response>
++</D:multistatus>`;
++
++		const [document, node, resolver] = getDocumentNodeResolverFromXML(xml);
++
++		expect(parser.canParse('{http://nextcloud.com/ns}default-alarm-part-day')).toEqual(true);
++		expect(parser.parse(document, node, resolver)).toEqual(32400);
++	});
++
++	it('should properly handle {http://nextcloud.com/ns}default-alarm-full-day', () => {
++		const parser = new Parser();
++
++		const xml = `<?xml version="1.0" encoding="utf-8" ?>
++<D:multistatus xmlns:D="DAV:" xmlns:nc="http://nextcloud.com/ns">
++	<D:response>
++		<D:href>/foo</D:href>
++		<D:propstat>
++			<D:prop>
++				<nc:default-alarm-full-day>39600</nc:default-alarm-full-day>
++			</D:prop>
++			<D:status>HTTP/1.1 200 OK</D:status>
++		</D:propstat>
++	</D:response>
++</D:multistatus>`;
++
++		const [document, node, resolver] = getDocumentNodeResolverFromXML(xml);
++
++		expect(parser.canParse('{http://nextcloud.com/ns}default-alarm-full-day')).toEqual(true);
++		expect(parser.parse(document, node, resolver)).toEqual(39600);
++	});
++
+ 	it('should properly handle {http://nextcloud.com/ns}owner-displayname', () => {
+ 		const parser = new Parser();
+ 
+diff --git a/test/unit/propset/calendarPropSetTest.js b/test/unit/propset/calendarPropSetTest.js
+index 613a5e4..ae60dd1 100644
+--- a/test/unit/propset/calendarPropSetTest.js
++++ b/test/unit/propset/calendarPropSetTest.js
+@@ -107,6 +107,30 @@ describe('Calendar prop-set', () => {
+ 		]);
+ 	});
+ 
++	it('should serialize {http://nextcloud.com/ns}default-alarm-part-day correctly', () => {
++		expect(calendarPropSet({
++			'{Foo:}bar': 123,
++			'{http://nextcloud.com/ns}default-alarm-part-day': '32400'
++		})).toEqual([
++			{
++				name: ['http://nextcloud.com/ns', 'default-alarm-part-day'],
++				value: '32400'
++			}
++		]);
++	});
++
++	it('should serialize {http://nextcloud.com/ns}default-alarm-full-day correctly', () => {
++		expect(calendarPropSet({
++			'{Foo:}bar': 123,
++			'{http://nextcloud.com/ns}default-alarm-full-day': '39600'
++		})).toEqual([
++			{
++				name: ['http://nextcloud.com/ns', 'default-alarm-full-day'],
++				value: '39600'
++			}
++		]);
++	});
++
+ 	it('should serialize {urn:ietf:params:xml:ns:caldav}schedule-calendar-transp correctly - transparent', () => {
+ 		expect(calendarPropSet({
+ 			'{Foo:}bar': 123,

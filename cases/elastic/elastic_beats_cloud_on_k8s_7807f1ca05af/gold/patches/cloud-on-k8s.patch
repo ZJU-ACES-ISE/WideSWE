@@ -1,0 +1,344 @@
+diff --git a/pkg/controller/common/stackmon/config.go b/pkg/controller/common/stackmon/config.go
+index 735c3dda..ad33b2f7 100644
+--- a/pkg/controller/common/stackmon/config.go
++++ b/pkg/controller/common/stackmon/config.go
+@@ -201,7 +201,7 @@ func RenderTemplate(v semver.Version, configTemplate string, params any) (string
+ }
+ 
+ func TemplateFuncs(
+-	version semver.Version,
++	ver semver.Version,
+ ) template.FuncMap {
+ 	return template.FuncMap{
+ 		"sanitizeJSON": func(v any) (string, error) {
+@@ -216,7 +216,9 @@ func TemplateFuncs(
+ 			if err != nil {
+ 				return false, err
+ 			}
+-			return version.GTE(minAllowedSemver), nil
++			// Compare only Major.Minor.Patch, ignoring pre-release identifiers
++			// so that e.g. 9.4.0-SNAPSHOT is treated the same as 9.4.0.
++			return version.WithoutPre(ver).GTE(minAllowedSemver), nil
+ 		},
+ 		"CAPath": func(caVolume volume.VolumeLike) string {
+ 			if caVolume == nil {
+diff --git a/pkg/controller/common/stackmon/config_test.go b/pkg/controller/common/stackmon/config_test.go
+index 71e78fbc..adba89af 100644
+--- a/pkg/controller/common/stackmon/config_test.go
++++ b/pkg/controller/common/stackmon/config_test.go
+@@ -7,8 +7,11 @@ package stackmon
+ import (
+ 	"context"
+ 	"testing"
++	"text/template"
+ 
++	"github.com/blang/semver/v4"
+ 	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
+ 	corev1 "k8s.io/api/core/v1"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ 	"sigs.k8s.io/controller-runtime/pkg/client"
+@@ -133,3 +136,67 @@ param2: value2
+ 		})
+ 	}
+ }
++
++func TestIsVersionGTE(t *testing.T) {
++	tests := []struct {
++		name    string
++		version semver.Version
++		minVer  string
++		want    bool
++	}{
++		{
++			name:    "release equal to min",
++			version: semver.MustParse("9.4.0"),
++			minVer:  "9.4.0",
++			want:    true,
++		},
++		{
++			name:    "release above min",
++			version: semver.MustParse("9.5.0"),
++			minVer:  "9.4.0",
++			want:    true,
++		},
++		{
++			name:    "release below min",
++			version: semver.MustParse("9.3.0"),
++			minVer:  "9.4.0",
++			want:    false,
++		},
++		{
++			name:    "SNAPSHOT equal to min",
++			version: semver.MustParse("9.4.0-SNAPSHOT"),
++			minVer:  "9.4.0",
++			want:    true,
++		},
++		{
++			name:    "SNAPSHOT below min",
++			version: semver.MustParse("9.3.0-SNAPSHOT"),
++			minVer:  "9.4.0",
++			want:    false,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			funcs := TemplateFuncs(tt.version)
++			isGTE, ok := funcs["isVersionGTE"].(func(string) (bool, error))
++			require.True(t, ok, "isVersionGTE should be func(string) (bool, error)")
++			got, err := isGTE(tt.minVer)
++			require.NoError(t, err)
++			assert.Equal(t, tt.want, got)
++		})
++	}
++}
++
++func TestRenderTemplateWithSnapshot(t *testing.T) {
++	tpl := `{{- if isVersionGTE "9.4.0" }}querylog: true{{- end }}`
++	got, err := RenderTemplate(semver.MustParse("9.4.0-SNAPSHOT"), tpl, nil)
++	require.NoError(t, err)
++	assert.Equal(t, "querylog: true", got)
++}
++
++// Verify the isVersionGTE template function signature matches what template.FuncMap expects.
++func TestTemplateFuncsSignature(t *testing.T) {
++	funcs := TemplateFuncs(semver.MustParse("8.0.0"))
++	_, err := template.New("").Funcs(funcs).Parse(`{{ isVersionGTE "8.0.0" }}`)
++	require.NoError(t, err)
++}
+diff --git a/pkg/controller/elasticsearch/stackmon/__snapshots__/sidecar_test.snap b/pkg/controller/elasticsearch/stackmon/__snapshots__/sidecar_test.snap
+index dd0b79a6..80035654 100755
+--- a/pkg/controller/elasticsearch/stackmon/__snapshots__/sidecar_test.snap
++++ b/pkg/controller/elasticsearch/stackmon/__snapshots__/sidecar_test.snap
+@@ -1182,3 +1182,101 @@ setup.template.settings:
+  }
+ }
+ ---
++
++[TestFilebeatConfig/pre_9.4.0 - 1]
++filebeat.modules:
++  # https://www.elastic.co/guide/en/beats/filebeat/7.14/filebeat-module-elasticsearch.html
++  - module: elasticsearch
++    server:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_server.json
++      close_timeout: 2h
++      fields_under_root: true
++    gc:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/gc.log.[0-9]*
++        - /usr/share/elasticsearch/logs/gc.log
++        - /usr/share/elasticsearch/logs/gc.output.[0-9]*
++        - /usr/share/elasticsearch/logs/gc.output
++      close_timeout: 2h
++      fields_under_root: true
++    audit:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_audit.json
++      close_timeout: 2h
++      fields_under_root: true
++    slowlog:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_index_search_slowlog.json
++        - /usr/share/elasticsearch/logs/*_index_indexing_slowlog.json
++      close_timeout: 2h
++      fields_under_root: true
++    deprecation:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_deprecation.json
++      close_timeout: 2h
++      fields_under_root: true
++
++processors:
++  - add_cloud_metadata: {}
++  - add_host_metadata: {}
++
++# Elasticsearch output configuration is generated and added here
++---
++
++[TestFilebeatConfig/post_9.4.0_with_querylog - 1]
++filebeat.modules:
++  # https://www.elastic.co/guide/en/beats/filebeat/7.14/filebeat-module-elasticsearch.html
++  - module: elasticsearch
++    server:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_server.json
++      close_timeout: 2h
++      fields_under_root: true
++    gc:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/gc.log.[0-9]*
++        - /usr/share/elasticsearch/logs/gc.log
++        - /usr/share/elasticsearch/logs/gc.output.[0-9]*
++        - /usr/share/elasticsearch/logs/gc.output
++      close_timeout: 2h
++      fields_under_root: true
++    audit:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_audit.json
++      close_timeout: 2h
++      fields_under_root: true
++    slowlog:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_index_search_slowlog.json
++        - /usr/share/elasticsearch/logs/*_index_indexing_slowlog.json
++      close_timeout: 2h
++      fields_under_root: true
++    deprecation:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_deprecation.json
++      close_timeout: 2h
++      fields_under_root: true
++    querylog:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_querylog.json
++      close_timeout: 2h
++      fields_under_root: true
++
++processors:
++  - add_cloud_metadata: {}
++  - add_host_metadata: {}
++
++# Elasticsearch output configuration is generated and added here
++---
+diff --git a/pkg/controller/elasticsearch/stackmon/beat_config.go b/pkg/controller/elasticsearch/stackmon/beat_config.go
+index 6f0df89e..abc95e24 100644
+--- a/pkg/controller/elasticsearch/stackmon/beat_config.go
++++ b/pkg/controller/elasticsearch/stackmon/beat_config.go
+@@ -21,9 +21,9 @@ var (
+ 	//go:embed metricbeat.tpl.yml
+ 	metricbeatConfigTemplate string
+ 
+-	// filebeatConfig is a static configuration for Filebeat to collect Elasticsearch logs
+-	//go:embed filebeat.yml
+-	filebeatConfig string
++	// filebeatConfigTemplate is a configuration template for Filebeat to collect Elasticsearch logs
++	//go:embed filebeat.tpl.yml
++	filebeatConfigTemplate string
+ )
+ 
+ // ReconcileConfigSecrets reconciles the secrets holding beats configuration
+diff --git a/pkg/controller/elasticsearch/stackmon/filebeat.tpl.yml b/pkg/controller/elasticsearch/stackmon/filebeat.tpl.yml
+new file mode 100644
+index 00000000..b35bac1f
+--- /dev/null
++++ b/pkg/controller/elasticsearch/stackmon/filebeat.tpl.yml
+@@ -0,0 +1,51 @@
++filebeat.modules:
++  # https://www.elastic.co/guide/en/beats/filebeat/7.14/filebeat-module-elasticsearch.html
++  - module: elasticsearch
++    server:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_server.json
++      close_timeout: 2h
++      fields_under_root: true
++    gc:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/gc.log.[0-9]*
++        - /usr/share/elasticsearch/logs/gc.log
++        - /usr/share/elasticsearch/logs/gc.output.[0-9]*
++        - /usr/share/elasticsearch/logs/gc.output
++      close_timeout: 2h
++      fields_under_root: true
++    audit:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_audit.json
++      close_timeout: 2h
++      fields_under_root: true
++    slowlog:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_index_search_slowlog.json
++        - /usr/share/elasticsearch/logs/*_index_indexing_slowlog.json
++      close_timeout: 2h
++      fields_under_root: true
++    deprecation:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_deprecation.json
++      close_timeout: 2h
++      fields_under_root: true
++{{- if isVersionGTE "9.4.0" }}
++    querylog:
++      enabled: true
++      var.paths:
++        - /usr/share/elasticsearch/logs/*_querylog.json
++      close_timeout: 2h
++      fields_under_root: true
++{{- end }}
++
++processors:
++  - add_cloud_metadata: {}
++  - add_host_metadata: {}
++
++# Elasticsearch output configuration is generated and added here
+\ No newline at end of file
+diff --git a/pkg/controller/elasticsearch/stackmon/sidecar.go b/pkg/controller/elasticsearch/stackmon/sidecar.go
+index a90d828d..455d5325 100644
+--- a/pkg/controller/elasticsearch/stackmon/sidecar.go
++++ b/pkg/controller/elasticsearch/stackmon/sidecar.go
+@@ -76,11 +76,17 @@ func Metricbeat(ctx context.Context, client k8s.Client, es esv1.Elasticsearch, m
+ }
+ 
+ func Filebeat(ctx context.Context, client k8s.Client, es esv1.Elasticsearch, meta metadata.Metadata) (stackmon.BeatSidecar, error) {
+-	fileBeat, err := stackmon.NewFileBeatSidecar(ctx, client, &es, es.Spec.Version, filebeatConfig, nil, meta)
++	ver, err := version.Parse(es.Spec.Version)
+ 	if err != nil {
+ 		return stackmon.BeatSidecar{}, err
+ 	}
+-	ver, err := version.Parse(es.Spec.Version)
++
++	cfg, err := stackmon.RenderTemplate(ver, filebeatConfigTemplate, nil)
++	if err != nil {
++		return stackmon.BeatSidecar{}, err
++	}
++
++	fileBeat, err := stackmon.NewFileBeatSidecar(ctx, client, &es, es.Spec.Version, cfg, nil, meta)
+ 	if err != nil {
+ 		return stackmon.BeatSidecar{}, err
+ 	}
+diff --git a/pkg/controller/elasticsearch/stackmon/sidecar_test.go b/pkg/controller/elasticsearch/stackmon/sidecar_test.go
+index 25f21b0f..ddc871f8 100644
+--- a/pkg/controller/elasticsearch/stackmon/sidecar_test.go
++++ b/pkg/controller/elasticsearch/stackmon/sidecar_test.go
+@@ -218,3 +218,26 @@ func TestMetricbeatConfig(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestFilebeatConfig(t *testing.T) {
++	tests := []struct {
++		name    string
++		version semver.Version
++	}{
++		{
++			name:    "pre 9.4.0",
++			version: version.From(8, 17, 0),
++		},
++		{
++			name:    "post 9.4.0 with querylog",
++			version: version.From(9, 4, 0),
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			cfg, err := stackmon.RenderTemplate(tt.version, filebeatConfigTemplate, nil)
++			require.NoError(t, err)
++			snaps.MatchSnapshot(t, cfg)
++		})
++	}
++}

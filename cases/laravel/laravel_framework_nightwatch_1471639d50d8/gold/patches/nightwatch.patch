@@ -1,0 +1,104 @@
+diff --git a/src/Compatibility.php b/src/Compatibility.php
+index 977bfb8..2b54c56 100644
+--- a/src/Compatibility.php
++++ b/src/Compatibility.php
+@@ -39,6 +39,8 @@ final class Compatibility
+ 
+     public static bool $subMinuteScheduledTasksSupported = false;
+ 
++    public static bool $queryConnectionTypeCapturable = false;
++
+     /**
+      * @var array{
+      *   nightwatch_should_sample?: bool|null,
+@@ -113,6 +115,12 @@ public static function boot(Application $app): void
+         if (version_compare($version, '11.5.0', '<')) {
+             Event::macro('tap', fn (callable $callable) => tap($this, $callable));
+         }
++
++        /**
++         * @see https://github.com/laravel/framework/pull/58156
++         * @see https://github.com/laravel/framework/releases/tag/v12.45.0
++         */
++        self::$queryConnectionTypeCapturable = version_compare($version, '12.45.0', '>=');
+     }
+ 
+     /**
+diff --git a/src/QueryConnectionType.php b/src/QueryConnectionType.php
+new file mode 100644
+index 0000000..2de5758
+--- /dev/null
++++ b/src/QueryConnectionType.php
+@@ -0,0 +1,10 @@
++<?php
++
++namespace Laravel\Nightwatch;
++
++enum QueryConnectionType: string
++{
++    case Read = 'read';
++    case Write = 'write';
++    case Unknown = 'unknown';
++}
+diff --git a/src/Records/Query.php b/src/Records/Query.php
+index 3a79e22..e8dded0 100644
+--- a/src/Records/Query.php
++++ b/src/Records/Query.php
+@@ -2,6 +2,8 @@
+ 
+ namespace Laravel\Nightwatch\Records;
+ 
++use Laravel\Nightwatch\QueryConnectionType;
++
+ final class Query
+ {
+     public function __construct(
+@@ -10,6 +12,7 @@ public function __construct(
+         public readonly int $line,
+         public readonly int $duration,
+         public readonly string $connection,
++        public readonly QueryConnectionType $connectionType,
+     ) {
+         //
+     }
+diff --git a/src/Sensors/QuerySensor.php b/src/Sensors/QuerySensor.php
+index 2aaf78d..41b26fe 100644
+--- a/src/Sensors/QuerySensor.php
++++ b/src/Sensors/QuerySensor.php
+@@ -4,7 +4,9 @@
+ 
+ use Illuminate\Database\Events\QueryExecuted;
+ use Laravel\Nightwatch\Clock;
++use Laravel\Nightwatch\Compatibility;
+ use Laravel\Nightwatch\Location;
++use Laravel\Nightwatch\QueryConnectionType;
+ use Laravel\Nightwatch\Records\Query;
+ use Laravel\Nightwatch\State\CommandState;
+ use Laravel\Nightwatch\State\RequestState;
+@@ -39,6 +41,10 @@ public function __invoke(QueryExecuted $event, array $trace): array
+ 
+         [$file, $line] = $this->location->forQueryTrace($trace);
+ 
++        $connectionType = Compatibility::$queryConnectionTypeCapturable && $event->readWriteType !== null
++            ? QueryConnectionType::from($event->readWriteType)
++            : QueryConnectionType::Unknown;
++
+         return [
+             $record = new Query(
+                 sql: $event->sql,
+@@ -46,6 +52,7 @@ public function __invoke(QueryExecuted $event, array $trace): array
+                 line: $line ?? 0,
+                 duration: $durationInMicroseconds,
+                 connection: $event->connectionName ?? '', // @phpstan-ignore nullCoalesce.property
++                connectionType: $connectionType,
+             ),
+             function () use ($event, $record) {
+                 $this->executionState->queries++;
+@@ -68,6 +75,7 @@ function () use ($event, $record) {
+                     'line' => $record->line,
+                     'duration' => $record->duration,
+                     'connection' => Str::tinyText($record->connection),
++                    'connection_type' => $record->connectionType === QueryConnectionType::Unknown ? '' : $record->connectionType->value,
+                 ];
+             },
+         ];

@@ -1,0 +1,140 @@
+diff --git a/docs/changelog/130336.yaml b/docs/changelog/130336.yaml
+new file mode 100644
+index 00000000000..09037428774
+--- /dev/null
++++ b/docs/changelog/130336.yaml
+@@ -0,0 +1,5 @@
++pr: 130336
++summary: "[EIS] Rename the elser 2 default model and the default inference endpoint"
++area: Machine Learning
++type: bug
++issues: []
+diff --git a/x-pack/plugin/inference/qa/inference-service-tests/src/javaRestTest/java/org/elasticsearch/xpack/inference/InferenceGetModelsWithElasticInferenceServiceIT.java b/x-pack/plugin/inference/qa/inference-service-tests/src/javaRestTest/java/org/elasticsearch/xpack/inference/InferenceGetModelsWithElasticInferenceServiceIT.java
+index e548fcc4f2e..e9ba9923fdc 100644
+--- a/x-pack/plugin/inference/qa/inference-service-tests/src/javaRestTest/java/org/elasticsearch/xpack/inference/InferenceGetModelsWithElasticInferenceServiceIT.java
++++ b/x-pack/plugin/inference/qa/inference-service-tests/src/javaRestTest/java/org/elasticsearch/xpack/inference/InferenceGetModelsWithElasticInferenceServiceIT.java
+@@ -41,7 +41,7 @@ public class InferenceGetModelsWithElasticInferenceServiceIT extends BaseMockEIS
+         }
+ 
+         assertInferenceIdTaskType(allModels, ".rainbow-sprinkles-elastic", TaskType.CHAT_COMPLETION);
+-        assertInferenceIdTaskType(allModels, ".elser-v2-elastic", TaskType.SPARSE_EMBEDDING);
++        assertInferenceIdTaskType(allModels, ".elser-2-elastic", TaskType.SPARSE_EMBEDDING);
+         assertInferenceIdTaskType(allModels, ".multilingual-embed-v1-elastic", TaskType.TEXT_EMBEDDING);
+         assertInferenceIdTaskType(allModels, ".rerank-v1-elastic", TaskType.RERANK);
+     }
+diff --git a/x-pack/plugin/inference/qa/inference-service-tests/src/javaRestTest/java/org/elasticsearch/xpack/inference/MockElasticInferenceServiceAuthorizationServer.java b/x-pack/plugin/inference/qa/inference-service-tests/src/javaRestTest/java/org/elasticsearch/xpack/inference/MockElasticInferenceServiceAuthorizationServer.java
+index 7f0212167f8..4f6260dba71 100644
+--- a/x-pack/plugin/inference/qa/inference-service-tests/src/javaRestTest/java/org/elasticsearch/xpack/inference/MockElasticInferenceServiceAuthorizationServer.java
++++ b/x-pack/plugin/inference/qa/inference-service-tests/src/javaRestTest/java/org/elasticsearch/xpack/inference/MockElasticInferenceServiceAuthorizationServer.java
+@@ -39,7 +39,7 @@ public class MockElasticInferenceServiceAuthorizationServer implements TestRule
+                       "task_types": ["chat"]
+                     },
+                     {
+-                      "model_name": "elser-v2",
++                      "model_name": "elser_model_2",
+                       "task_types": ["embed/text/sparse"]
+                     },
+                     {
+diff --git a/x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/InferenceRevokeDefaultEndpointsIT.java b/x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/InferenceRevokeDefaultEndpointsIT.java
+index 4c200c6f202..8e40bba8b32 100644
+--- a/x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/InferenceRevokeDefaultEndpointsIT.java
++++ b/x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/InferenceRevokeDefaultEndpointsIT.java
+@@ -193,7 +193,7 @@ public class InferenceRevokeDefaultEndpointsIT extends ESSingleNodeTestCase {
+                 {
+                     "models": [
+                         {
+-                          "model_name": "elser-v2",
++                          "model_name": "elser_model_2",
+                           "task_types": ["embed/text/sparse"]
+                         },
+                         {
+@@ -222,7 +222,7 @@ public class InferenceRevokeDefaultEndpointsIT extends ESSingleNodeTestCase {
+                     service.defaultConfigIds(),
+                     containsInAnyOrder(
+                         new InferenceService.DefaultConfigId(
+-                            ".elser-v2-elastic",
++                            ".elser-2-elastic",
+                             MinimalServiceSettings.sparseEmbedding(ElasticInferenceService.NAME),
+                             service
+                         ),
+@@ -255,7 +255,7 @@ public class InferenceRevokeDefaultEndpointsIT extends ESSingleNodeTestCase {
+ 
+                 PlainActionFuture<List<Model>> listener = new PlainActionFuture<>();
+                 service.defaultConfigs(listener);
+-                assertThat(listener.actionGet(TIMEOUT).get(0).getConfigurations().getInferenceEntityId(), is(".elser-v2-elastic"));
++                assertThat(listener.actionGet(TIMEOUT).get(0).getConfigurations().getInferenceEntityId(), is(".elser-2-elastic"));
+                 assertThat(
+                     listener.actionGet(TIMEOUT).get(1).getConfigurations().getInferenceEntityId(),
+                     is(".multilingual-embed-v1-elastic")
+@@ -277,7 +277,7 @@ public class InferenceRevokeDefaultEndpointsIT extends ESSingleNodeTestCase {
+                 {
+                     "models": [
+                         {
+-                          "model_name": "elser-v2",
++                          "model_name": "elser_model_2",
+                           "task_types": ["embed/text/sparse"]
+                         },
+                         {
+@@ -302,7 +302,7 @@ public class InferenceRevokeDefaultEndpointsIT extends ESSingleNodeTestCase {
+                     service.defaultConfigIds(),
+                     containsInAnyOrder(
+                         new InferenceService.DefaultConfigId(
+-                            ".elser-v2-elastic",
++                            ".elser-2-elastic",
+                             MinimalServiceSettings.sparseEmbedding(ElasticInferenceService.NAME),
+                             service
+                         ),
+diff --git a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/ElasticInferenceService.java b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/ElasticInferenceService.java
+index 640929b0587..85ed3b509e2 100644
+--- a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/ElasticInferenceService.java
++++ b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/ElasticInferenceService.java
+@@ -106,9 +106,9 @@ public class ElasticInferenceService extends SenderService {
+     static final String DEFAULT_CHAT_COMPLETION_MODEL_ID_V1 = "rainbow-sprinkles";
+     static final String DEFAULT_CHAT_COMPLETION_ENDPOINT_ID_V1 = defaultEndpointId(DEFAULT_CHAT_COMPLETION_MODEL_ID_V1);
+ 
+-    // elser-v2
+-    static final String DEFAULT_ELSER_MODEL_ID_V2 = "elser-v2";
+-    static final String DEFAULT_ELSER_ENDPOINT_ID_V2 = defaultEndpointId(DEFAULT_ELSER_MODEL_ID_V2);
++    // elser-2
++    static final String DEFAULT_ELSER_2_MODEL_ID = "elser_model_2";
++    static final String DEFAULT_ELSER_ENDPOINT_ID_V2 = defaultEndpointId("elser-2");
+ 
+     // multilingual-text-embed
+     static final String DEFAULT_MULTILINGUAL_EMBED_MODEL_ID = "multilingual-embed-v1";
+@@ -174,13 +174,13 @@ public class ElasticInferenceService extends SenderService {
+                 ),
+                 MinimalServiceSettings.chatCompletion(NAME)
+             ),
+-            DEFAULT_ELSER_MODEL_ID_V2,
++            DEFAULT_ELSER_2_MODEL_ID,
+             new DefaultModelConfig(
+                 new ElasticInferenceServiceSparseEmbeddingsModel(
+                     DEFAULT_ELSER_ENDPOINT_ID_V2,
+                     TaskType.SPARSE_EMBEDDING,
+                     NAME,
+-                    new ElasticInferenceServiceSparseEmbeddingsServiceSettings(DEFAULT_ELSER_MODEL_ID_V2, null, null),
++                    new ElasticInferenceServiceSparseEmbeddingsServiceSettings(DEFAULT_ELSER_2_MODEL_ID, null, null),
+                     EmptyTaskSettings.INSTANCE,
+                     EmptySecretSettings.INSTANCE,
+                     elasticInferenceServiceComponents,
+@@ -213,7 +213,6 @@ public class ElasticInferenceService extends SenderService {
+                     DenseVectorFieldMapper.ElementType.FLOAT
+                 )
+             ),
+-
+             DEFAULT_RERANK_MODEL_ID_V1,
+             new DefaultModelConfig(
+                 new ElasticInferenceServiceRerankModel(
+diff --git a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElserModels.java b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElserModels.java
+index c1764b93bfc..e5af1da030e 100644
+--- a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElserModels.java
++++ b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElserModels.java
+@@ -26,8 +26,4 @@ public class ElserModels {
+         return model != null && VALID_ELSER_MODEL_IDS.contains(model);
+     }
+ 
+-    public static boolean isValidEisModel(String model) {
+-        return ELSER_V2_MODEL.equals(model);
+-    }
+-
+ }

@@ -1,0 +1,48 @@
+task_id: nextcloud_calendar_cdav_library_server_94d9fb52437f
+hidden_test_patches:
+- repo: calendar
+  patch: hidden/patches/calendar-hidden-tests.patch
+  test_profile: calendar-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/javascript/unit/defaults/defaultAlarmProvider.test.js
+  - tests/javascript/unit/models/calendar.test.js
+  - tests/javascript/unit/store/settings.test.js
+  - tests/php/unit/Controller/SettingsControllerTest.php
+  - tests/php/unit/Service/CalendarInitialStateServiceTest.php
+  hidden_file: *id001
+  semantic_changes: contract-aligned model, logging, configuration-read, and part-day
+    input-boundary assertions; prompt-absent fixed reminder presets removed
+  source: upstream test changes from nextcloud/calendar PR 8144
+- repo: cdav-library
+  patch: hidden/patches/cdav-library-hidden-tests.patch
+  test_profile: cdav_library-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test/unit/models/calendarTest.js
+  - test/unit/parserTest.js
+  - test/unit/propset/calendarPropSetTest.js
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from nextcloud/cdav-library PR 1012
+- repo: server
+  patch: hidden/patches/server-hidden-tests.patch
+  test_profile: server-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - apps/dav/tests/unit/CalDAV/CalDavBackendTest.php
+  hidden_file: *id003
+  semantic_changes: none
+  source: upstream test changes from nextcloud/server PR 59517
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - calendar-hidden
+    - cdav_library-hidden
+    - server-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

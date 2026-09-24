@@ -1,0 +1,31 @@
+profiles:
+  kube_openapi-hidden:
+    repo: kube-openapi
+    workdir: repos/kubernetes/kube-openapi
+    command: cd test/integration && go test -json -count=1 .
+    status: implemented_manual_profile
+    dependency_image: ecosyncbench/base/go:1.26-bookworm
+    test_files:
+    - test/integration/README.md
+    - test/integration/integration_suite_test.go
+    - test/integration/testdata/namedmodels/doc.go
+    - test/integration/testdata/namedmodels/golden.v3.report
+    - test/integration/testdata/namedmodels/struct.go
+    - test/integration/testdata/namedmodels/zz_generated_model_name.go
+  kubernetes-hidden:
+    repo: kubernetes
+    workdir: repos/kubernetes/kubernetes
+    command: go test -json -count=1 ./staging/src/k8s.io/api ./staging/src/k8s.io/apiextensions-apiserver/pkg/apis ./staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/builder ./staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi ./staging/src/k8s.io/apiserver/pkg/endpoints/openapi ./staging/src/k8s.io/apiserver/pkg/server ./staging/src/k8s.io/kube-aggregator/pkg/apis ./staging/src/k8s.io/kube-aggregator/pkg/controllers/openapiv3/aggregator ./test/integration/apiserver/openapi
+    status: implemented_manual_profile
+    dependency_image: ecosyncbench/base/go:1.26-bookworm
+    test_files:
+    - staging/src/k8s.io/api/openapi_models_test.go
+    - staging/src/k8s.io/apiextensions-apiserver/pkg/apis/openapi_models_test.go
+    - staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/builder/builder_test.go
+    - staging/src/k8s.io/apiextensions-apiserver/pkg/controller/openapi/controller_test.go
+    - staging/src/k8s.io/apiserver/pkg/endpoints/openapi/openapi_test.go
+    - staging/src/k8s.io/apiserver/pkg/server/genericapiserver_graceful_termination_test.go
+    - staging/src/k8s.io/apiserver/pkg/server/genericapiserver_test.go
+    - staging/src/k8s.io/kube-aggregator/pkg/apis/openapi_models_test.go
+    - staging/src/k8s.io/kube-aggregator/pkg/controllers/openapiv3/aggregator/aggregator_test.go
+    - test/integration/apiserver/openapi/openapi_enum_test.go

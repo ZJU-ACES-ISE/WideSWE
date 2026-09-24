@@ -1,0 +1,33 @@
+task_id: dotnet_crank_diagnostics_89b6dd2c3afb
+hidden_test_patches:
+- repo: crank
+  patch: hidden/patches/crank-hidden-tests.patch
+  test_profile: crank-hidden
+  origin: prompt_aligned_behavioral_test
+  source_file: &id001
+  - test/Microsoft.Crank.UnitTests/EcoSyncDotNetTraceContractTests.cs
+  hidden_file: *id001
+  semantic_changes: replaced implementation-coupled helper tests with observable
+    Job JSON, CLI process, lifecycle, and preflight behavior tests
+  source: behavior contract derived from dotnet/crank PR 887
+- repo: diagnostics
+  patch: hidden/patches/diagnostics-hidden-tests.patch
+  test_profile: diagnostics-hidden
+  origin: prompt_aligned_behavioral_test
+  source_file: &id002
+  - src/tests/dotnet-trace/EcoSyncCollectLinuxRedirectedIoTests.cs
+  hidden_file: *id002
+  semantic_changes: retained only redirected input/output behavior required by
+    the prompt and removed unrelated cursor assertions
+  source: behavior contract derived from dotnet/diagnostics PR 5745
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - crank-hidden
+    - diagnostics-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

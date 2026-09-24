@@ -1,0 +1,670 @@
+diff --git a/docs/source/developer_guides/low_level_api.md b/docs/source/developer_guides/low_level_api.md
+index ba82794..2e3236c 100644
+--- a/docs/source/developer_guides/low_level_api.md
++++ b/docs/source/developer_guides/low_level_api.md
+@@ -16,7 +16,7 @@ rendered properly in your Markdown viewer.
+ 
+ # Adapter injection
+ 
+-With PEFT, you can inject trainable adapters into any `torch` module which allows you to use adapter methods without relying on the modeling classes in PEFT. Currently, PEFT supports injecting [LoRA](../conceptual_guides/adapter#low-rank-adaptation-lora), [AdaLoRA](../conceptual_guides/adapter#adaptive-low-rank-adaptation-adalora), and [IA3](../conceptual_guides/ia3) into models because for these adapters, inplace modification of the model is sufficient for finetuning it.
++With PEFT, you can inject trainable adapters into any `torch` module which allows you to use adapter methods without relying on the modeling classes in PEFT. This works for all adapters except for those based on prompt learning (e.g. prefix tuning or p-tuning).
+ 
+ Check the table below to see when you should inject adapters.
+ 
+@@ -87,6 +87,28 @@ DummyModel(
+ )
+ ```
+ 
++### Injection based on a `state_dict`
++
++Sometimes, it is possible that there is a PEFT adapter checkpoint but the corresponding PEFT config is not known for whatever reason. To inject the PEFT layers for this checkpoint, you would usually have to reverse-engineer the corresponding PEFT config, most notably the `target_modules` argument, based on the `state_dict` from the checkpoint. This can be cumbersome and error prone. To avoid this, it is also possible to call [`inject_adapter_in_model`] and pass the loaded `state_dict` as an argument:
++
++```python
++from safetensors.torch import load_file
++
++model = ...
++state_dict = load_file(<path-to-safetensors-file>)
++lora_config = LoraConfig(...)
++model = inject_adapter_in_model(lora_config, model, state_dict=state_dict)
++```
++
++In this case, PEFT will use the `state_dict` as reference for which layers to target instead of using the PEFT config. As a user, you don't have to set the exact `target_modules` of the PEFT config for this to work. However, you should still pass a PEFT config of the right type, in this example `LoraConfig`, you can leave the `target_modules` as `None`.
++
++Be aware that this still only creates the uninitialized PEFT layers, the values from the `state_dict` are not used to populate the model weights. To populate the weights, proceed with calling [`set_peft_model_state_dict`] as described below.
++
++⚠️ Note that if there is a mismatch between what is configured in the PEFT config and what is found in the `state_dict`, PEFT will warn you about this. You can ignore the warning if you know that the PEFT config is not correctly specified.
++
++> [!WARNING]
++> If the original PEFT adapters was using `target_parameters` instead of `target_modules`, injecting from a `state_dict` will not work correctly. In this case, it is mandatory to use the correct PEFT config for injection.
++
+ ## Saving the model
+ 
+ To only save the adapter, use the [`get_peft_model_state_dict`] function:
+diff --git a/src/peft/mapping.py b/src/peft/mapping.py
+index a92b28f..70db29d 100644
+--- a/src/peft/mapping.py
++++ b/src/peft/mapping.py
+@@ -14,7 +14,7 @@
+ 
+ from __future__ import annotations
+ 
+-from typing import TYPE_CHECKING, Any
++from typing import TYPE_CHECKING, Any, Optional
+ 
+ import torch
+ 
+@@ -45,7 +45,11 @@ def get_peft_config(config_dict: dict[str, Any]) -> PeftConfig:
+ 
+ 
+ def inject_adapter_in_model(
+-    peft_config: PeftConfig, model: torch.nn.Module, adapter_name: str = "default", low_cpu_mem_usage: bool = False
++    peft_config: PeftConfig,
++    model: torch.nn.Module,
++    adapter_name: str = "default",
++    low_cpu_mem_usage: bool = False,
++    state_dict: Optional[dict[str, torch.Tensor]] = None,
+ ) -> torch.nn.Module:
+     r"""
+     A simple API to create and inject adapter in-place into a model. Currently the API does not support prompt learning
+@@ -61,6 +65,11 @@ def inject_adapter_in_model(
+             The name of the adapter to be injected, if not provided, the default adapter name is used ("default").
+         low_cpu_mem_usage (`bool`, `optional`, defaults to `False`):
+             Create empty adapter weights on meta device. Useful to speed up the loading process.
++        state_dict (`dict`, *optional*, defaults to `None`)
++            If a state_dict is passed here, the adapters will be injected based on the entries of the state_dict. This
++            can be useful when the exact `target_modules` of the PEFT method is unknown, for instance because the
++            checkpoint was created without meta data. Note that the values from the state_dict are not used, only the
++            keys are used to determine the correct layers that should be adapted.
+     """
+     if peft_config.is_prompt_learning or peft_config.is_adaption_prompt:
+         raise ValueError("`create_and_replace` does not support prompt learning and adaption prompt yet.")
+@@ -73,6 +82,8 @@ def inject_adapter_in_model(
+     tuner_cls = PEFT_TYPE_TO_TUNER_MAPPING[peft_config.peft_type]
+ 
+     # By instantiating a peft model we are injecting randomly initialized LoRA layers into the model's modules.
+-    peft_model = tuner_cls(model, peft_config, adapter_name=adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
++    peft_model = tuner_cls(
++        model, peft_config, adapter_name=adapter_name, low_cpu_mem_usage=low_cpu_mem_usage, state_dict=state_dict
++    )
+ 
+     return peft_model.model
+diff --git a/src/peft/tuners/adalora/model.py b/src/peft/tuners/adalora/model.py
+index 3c52ecd..c4502e4 100644
+--- a/src/peft/tuners/adalora/model.py
++++ b/src/peft/tuners/adalora/model.py
+@@ -65,8 +65,8 @@ class AdaLoraModel(LoraModel):
+ 
+     # Note: don't redefine prefix here, it should be inherited from LoraModel
+ 
+-    def __init__(self, model, config, adapter_name):
+-        super().__init__(model, config, adapter_name)
++    def __init__(self, model, config, adapter_name, **kwargs):
++        super().__init__(model, config, adapter_name, **kwargs)
+ 
+         traininable_mode_counter = 0
+         for config in self.peft_config.values():
+diff --git a/src/peft/tuners/boft/model.py b/src/peft/tuners/boft/model.py
+index 719d953..ee6490c 100644
+--- a/src/peft/tuners/boft/model.py
++++ b/src/peft/tuners/boft/model.py
+@@ -74,9 +74,6 @@ class BOFTModel(BaseTuner):
+ 
+     prefix: str = "boft_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def _check_new_adapter_config(self, config: BOFTConfig) -> None:
+         """
+         A helper method to check the config when a new adapter is being added.
+diff --git a/src/peft/tuners/c3a/model.py b/src/peft/tuners/c3a/model.py
+index ddc3db6..9ed85ff 100644
+--- a/src/peft/tuners/c3a/model.py
++++ b/src/peft/tuners/c3a/model.py
+@@ -55,9 +55,6 @@ class C3AModel(BaseTuner):
+ 
+     prefix: str = "c3a_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def _check_new_adapter_config(self, config: C3AConfig) -> None:
+         """
+         A helper method to check the config when a new adapter is being added.
+diff --git a/src/peft/tuners/fourierft/model.py b/src/peft/tuners/fourierft/model.py
+index e15d22d..c30019e 100644
+--- a/src/peft/tuners/fourierft/model.py
++++ b/src/peft/tuners/fourierft/model.py
+@@ -58,9 +58,6 @@ class FourierFTModel(BaseTuner):
+ 
+     prefix: str = "fourierft_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def _check_new_adapter_config(self, config: FourierFTConfig) -> None:
+         """
+         A helper method to check the config when a new adapter is being added.
+diff --git a/src/peft/tuners/ia3/model.py b/src/peft/tuners/ia3/model.py
+index d4d3026..5d1bcf3 100644
+--- a/src/peft/tuners/ia3/model.py
++++ b/src/peft/tuners/ia3/model.py
+@@ -75,9 +75,6 @@ class IA3Model(BaseTuner):
+ 
+     prefix: str = "ia3_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False):
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     @staticmethod
+     def _create_new_module(ia3_config, adapter_name, target, **kwargs):
+         # avoid eager bnb import
+diff --git a/src/peft/tuners/ln_tuning/model.py b/src/peft/tuners/ln_tuning/model.py
+index d7754d9..7e6ff29 100644
+--- a/src/peft/tuners/ln_tuning/model.py
++++ b/src/peft/tuners/ln_tuning/model.py
+@@ -65,10 +65,6 @@ class LNTuningModel(BaseTuner):
+ 
+     prefix: str = "ln_tuning_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        # self.adapter_name = adapter_name
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def __getattr__(self, name: str):
+         """Forward missing attributes to the wrapped module."""
+         try:
+diff --git a/src/peft/tuners/loha/model.py b/src/peft/tuners/loha/model.py
+index f0cd32a..c13fabc 100644
+--- a/src/peft/tuners/loha/model.py
++++ b/src/peft/tuners/loha/model.py
+@@ -18,6 +18,7 @@ import torch
+ from torch import nn
+ 
+ from peft.tuners.lycoris_utils import LycorisConfig, LycorisTuner
++from peft.utils import TRANSFORMERS_MODELS_TO_LOHA_TARGET_MODULES_MAPPING
+ from peft.utils.other import get_pattern_key
+ 
+ from .layer import Conv2d, Linear, LoHaLayer
+@@ -110,3 +111,13 @@ class LoHaModel(LycorisTuner):
+         else:
+             new_module = self._create_new_module(config, adapter_name, target, **kwargs)
+             self._replace_module(parent, target_name, new_module, target)
++
++    @staticmethod
++    def _prepare_adapter_config(peft_config, model_config):
++        if peft_config.target_modules is None:
++            if model_config["model_type"] not in TRANSFORMERS_MODELS_TO_LOHA_TARGET_MODULES_MAPPING:
++                raise ValueError("Please specify `target_modules` in `peft_config`")
++            peft_config.target_modules = set(
++                TRANSFORMERS_MODELS_TO_LOHA_TARGET_MODULES_MAPPING[model_config["model_type"]]
++            )
++        return peft_config
+diff --git a/src/peft/tuners/lokr/model.py b/src/peft/tuners/lokr/model.py
+index 6b71ad0..dc0d5be 100644
+--- a/src/peft/tuners/lokr/model.py
++++ b/src/peft/tuners/lokr/model.py
+@@ -18,6 +18,7 @@ import torch
+ from torch import nn
+ 
+ from peft.tuners.lycoris_utils import LycorisConfig, LycorisTuner
++from peft.utils import TRANSFORMERS_MODELS_TO_LOKR_TARGET_MODULES_MAPPING
+ from peft.utils.other import get_pattern_key
+ 
+ from .layer import Conv2d, Linear, LoKrLayer
+@@ -112,3 +113,13 @@ class LoKrModel(LycorisTuner):
+         else:
+             new_module = self._create_new_module(config, adapter_name, target, **kwargs)
+             self._replace_module(parent, target_name, new_module, target)
++
++    @staticmethod
++    def _prepare_adapter_config(peft_config, model_config):
++        if peft_config.target_modules is None:
++            if model_config["model_type"] not in TRANSFORMERS_MODELS_TO_LOKR_TARGET_MODULES_MAPPING:
++                raise ValueError("Please specify `target_modules` in `peft_config`")
++            peft_config.target_modules = set(
++                TRANSFORMERS_MODELS_TO_LOKR_TARGET_MODULES_MAPPING[model_config["model_type"]]
++            )
++        return peft_config
+diff --git a/src/peft/tuners/lora/__init__.py b/src/peft/tuners/lora/__init__.py
+index 7003687..0f70a8e 100644
+--- a/src/peft/tuners/lora/__init__.py
++++ b/src/peft/tuners/lora/__init__.py
+@@ -18,7 +18,7 @@ from peft.utils import register_peft_method
+ from .config import EvaConfig, LoftQConfig, LoraConfig, LoraRuntimeConfig
+ from .eva import get_eva_state_dict, initialize_lora_eva_weights
+ from .gptq import GPTQLoraLinear
+-from .layer import Conv2d, Conv3d, Embedding, Linear, LoraLayer
++from .layer import Conv2d, Conv3d, Embedding, Linear, LoraLayer, ParamWrapper
+ from .model import LoraModel
+ 
+ 
+@@ -34,6 +34,7 @@ __all__ = [
+     "LoraLayer",
+     "LoraModel",
+     "LoraRuntimeConfig",
++    "ParamWrapper",
+     "get_eva_state_dict",
+     "initialize_lora_eva_weights",
+ ]
+diff --git a/src/peft/tuners/lora/model.py b/src/peft/tuners/lora/model.py
+index 88dcc7e..b4dff53 100644
+--- a/src/peft/tuners/lora/model.py
++++ b/src/peft/tuners/lora/model.py
+@@ -139,9 +139,6 @@ class LoraModel(BaseTuner):
+ 
+     prefix: str = "lora_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def _check_new_adapter_config(self, config: LoraConfig) -> None:
+         """
+         A helper method to check the config when a new adapter is being added.
+diff --git a/src/peft/tuners/lycoris_utils.py b/src/peft/tuners/lycoris_utils.py
+index c87c464..5e6c308 100644
+--- a/src/peft/tuners/lycoris_utils.py
++++ b/src/peft/tuners/lycoris_utils.py
+@@ -203,9 +203,6 @@ class LycorisTuner(BaseTuner):
+     prefix: str
+     layers_mapping: dict[type[torch.nn.Module], type[LycorisLayer]]
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False):
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def __getattr__(self, name: str):
+         """Forward missing attributes to the wrapped module."""
+         try:
+diff --git a/src/peft/tuners/oft/model.py b/src/peft/tuners/oft/model.py
+index f736fae..b74a121 100644
+--- a/src/peft/tuners/oft/model.py
++++ b/src/peft/tuners/oft/model.py
+@@ -99,9 +99,6 @@ class OFTModel(BaseTuner):
+ 
+     prefix: str = "oft_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def _check_new_adapter_config(self, config: OFTConfig) -> None:
+         """
+         A helper method to check the config when a new adapter is being added.
+diff --git a/src/peft/tuners/poly/model.py b/src/peft/tuners/poly/model.py
+index 30313cd..c849bf2 100644
+--- a/src/peft/tuners/poly/model.py
++++ b/src/peft/tuners/poly/model.py
+@@ -33,9 +33,6 @@ from .layer import Linear, PolyLayer
+ class PolyModel(BaseTuner):
+     prefix: str = "poly_"
+ 
+-    def __init__(self, model, config, adapter_name) -> None:
+-        super().__init__(model, config, adapter_name)
+-
+     @staticmethod
+     def _check_target_module_exists(poly_config, key):
+         return check_target_module_exists(poly_config, key)
+diff --git a/src/peft/tuners/randlora/model.py b/src/peft/tuners/randlora/model.py
+index 0aab8bf..a9ff812 100644
+--- a/src/peft/tuners/randlora/model.py
++++ b/src/peft/tuners/randlora/model.py
+@@ -101,9 +101,6 @@ class RandLoraModel(BaseTuner):
+ 
+     prefix: str = "randlora_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def _find_dim(self, config) -> tuple[int, int]:
+         """
+         Finds the largest input and output dimensions across linear layers that have been wrapped with RandLora.
+diff --git a/src/peft/tuners/shira/model.py b/src/peft/tuners/shira/model.py
+index 55ad6dd..755fcc0 100644
+--- a/src/peft/tuners/shira/model.py
++++ b/src/peft/tuners/shira/model.py
+@@ -64,9 +64,6 @@ class ShiraModel(BaseTuner):
+ 
+     prefix: str = "shira_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def _check_new_adapter_config(self, config: ShiraConfig) -> None:
+         """
+         A helper method to check the config when a new adapter is being added.
+diff --git a/src/peft/tuners/trainable_tokens/model.py b/src/peft/tuners/trainable_tokens/model.py
+index b6b797e..582a31f 100644
+--- a/src/peft/tuners/trainable_tokens/model.py
++++ b/src/peft/tuners/trainable_tokens/model.py
+@@ -31,9 +31,6 @@ from .layer import TrainableTokensLayer
+ class TrainableTokensModel(BaseTuner):
+     prefix: str = "trainable_tokens_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False):
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def __getattr__(self, name: str):
+         """Forward missing attributes to the wrapped module."""
+         try:
+@@ -49,13 +46,19 @@ class TrainableTokensModel(BaseTuner):
+         return peft_config
+ 
+     def inject_adapter(
+-        self, model: nn.Module, adapter_name: str, autocast_adapter_dtype: bool = True, low_cpu_mem_usage: bool = False
++        self,
++        model: nn.Module,
++        adapter_name: str,
++        autocast_adapter_dtype: bool = True,
++        low_cpu_mem_usage: bool = False,
++        **kwargs,
+     ) -> None:
+         super().inject_adapter(
+             model=model,
+             adapter_name=adapter_name,
+             autocast_adapter_dtype=autocast_adapter_dtype,
+             low_cpu_mem_usage=low_cpu_mem_usage,
++            **kwargs,
+         )
+ 
+         model_config = self.get_model_config(self)
+diff --git a/src/peft/tuners/tuners_utils.py b/src/peft/tuners/tuners_utils.py
+index 045bef1..c5feef2 100644
+--- a/src/peft/tuners/tuners_utils.py
++++ b/src/peft/tuners/tuners_utils.py
+@@ -29,6 +29,7 @@ from torch import nn
+ from transformers import PreTrainedModel
+ from transformers.pytorch_utils import Conv1D
+ 
++from peft.mapping import PEFT_TYPE_TO_PREFIX_MAPPING
+ from peft.utils import INCLUDE_LINEAR_LAYERS_SHORTHAND
+ from peft.utils.constants import (
+     DUMMY_MODEL_CONFIG,
+@@ -179,6 +180,7 @@ class BaseTuner(nn.Module, ABC):
+         peft_config: Union[PeftConfig, dict[str, PeftConfig]],
+         adapter_name: str,
+         low_cpu_mem_usage: bool = False,
++        state_dict: Optional[dict[str, torch.Tensor]] = None,
+     ) -> None:
+         super().__init__()
+ 
+@@ -204,7 +206,7 @@ class BaseTuner(nn.Module, ABC):
+         self.active_adapter: str | list[str] = adapter_name
+         self._pre_injection_hook(self.model, self.peft_config[adapter_name], adapter_name)
+         if peft_config != PeftType.XLORA or peft_config[adapter_name] != PeftType.XLORA:
+-            self.inject_adapter(self.model, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
++            self.inject_adapter(self.model, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage, state_dict=state_dict)
+ 
+         # Copy the peft_config in the injected model.
+         self.model.peft_config = self.peft_config
+@@ -439,7 +441,12 @@ class BaseTuner(nn.Module, ABC):
+         raise NotImplementedError(f"{self.__class__.__name__} does not support targeting nn.Parameter.")
+ 
+     def inject_adapter(
+-        self, model: nn.Module, adapter_name: str, autocast_adapter_dtype: bool = True, low_cpu_mem_usage: bool = False
++        self,
++        model: nn.Module,
++        adapter_name: str,
++        autocast_adapter_dtype: bool = True,
++        low_cpu_mem_usage: bool = False,
++        state_dict: Optional[dict[str, torch.Tensor]] = None,
+     ) -> None:
+         r"""
+         Creates adapter layers and replaces the target modules with the adapter layers. This method is called under the
+@@ -456,11 +463,21 @@ class BaseTuner(nn.Module, ABC):
+                 Whether to autocast the adapter dtype. Defaults to `True`.
+             low_cpu_mem_usage (`bool`, `optional`, defaults to `False`):
+                 Create empty adapter weights on meta device. Useful to speed up the loading process.
++            state_dict (`dict`, *optional*, defaults to `None`)
++                If a state_dict is passed here, the adapters will be injected based on the entries of the state_dict.
++                This can be useful when the exact `target_modules` of the PEFT method is unknown, for instance because
++                the checkpoint was created without meta data. Note that the values from the state_dict are not used,
++                only the keys are used to determine the correct layers that should be adapted.
+ 
+         """
++        ###################################
++        # PREPARATION OF MODEL AND CONFIG #
++        ###################################
++
+         peft_config = self.peft_config[adapter_name]
+         excluded_modules = []
+         unmatched_modules = []
++        targeted_modules_from_peft_config: list[str] = []  # only relevant if state_dict is passed
+         # Note: If possible, all checks should be performed *at the start of this method*.
+         # This way, we can raise early if something goes wrong, without leaving the model
+         # in a bad (half-initialized) state.
+@@ -472,6 +489,12 @@ class BaseTuner(nn.Module, ABC):
+ 
+         self._prepare_model(peft_config, model)
+ 
++        if getattr(peft_config, "target_parameters", []) and state_dict:
++            raise ValueError(
++                "Trying to inject a PEFT adapter from a state_dict but the PEFT config uses `target_parameters`. This "
++                "is not supported -- when using `target_parameters`, please inject the adapter without the state_dict."
++            )
++
+         named_modules = list(model.named_modules())
+         key_list = [key for key, _ in named_modules]
+ 
+@@ -510,11 +533,21 @@ class BaseTuner(nn.Module, ABC):
+             if len(new_target_modules) < len(peft_config.target_modules):
+                 peft_config.target_modules = new_target_modules
+ 
++        ###############################
++        # MATCHING & CREATING MODULES #
++        ###############################
++
+         existing_adapter_map = {}
+         for key, module in named_modules:
+             if isinstance(module, BaseTunerLayer):
+                 existing_adapter_map[key] = module
+ 
++        # TODO: check if this the most robust way
++        module_names: set[str] = set()
++        if state_dict is not None:
++            prefix = PEFT_TYPE_TO_PREFIX_MAPPING[peft_config.peft_type]
++            module_names = {k.rsplit("." + prefix, 1)[0] for k in state_dict}
++
+         for key, module in named_modules:
+             if not key:
+                 continue
+@@ -529,24 +562,73 @@ class BaseTuner(nn.Module, ABC):
+             if excluded_modules and excluded_modules[-1] == key:
+                 continue
+ 
+-            result = self._check_target_module_exists(peft_config, key)
+-            if isinstance(result, _ExcludedModule):
+-                excluded_modules.append(key)
+-            elif not result:
+-                unmatched_modules.append(key)
++            if state_dict is None:
++                # normal mechanism: match the modules using the peft_config
++                result = self._check_target_module_exists(peft_config, key)
++                if isinstance(result, _ExcludedModule):
++                    excluded_modules.append(key)
++                elif not result:
++                    unmatched_modules.append(key)
++                else:
++                    self.targeted_module_names.append(key)
++                    parent, target, target_name = _get_submodules(model, key)
++                    self._check_target_module_compatiblity(peft_config, model, target_name)
++                    ctx = init_empty_weights if low_cpu_mem_usage else nullcontext
++                    with ctx():
++                        self._create_and_replace(
++                            peft_config, adapter_name, target, target_name, parent, current_key=key
++                        )
+             else:
+-                self.targeted_module_names.append(key)
+-                parent, target, target_name = _get_submodules(model, key)
+-                self._check_target_module_compatiblity(peft_config, model, target_name)
+-                ctx = init_empty_weights if low_cpu_mem_usage else nullcontext
+-                with ctx():
+-                    self._create_and_replace(peft_config, adapter_name, target, target_name, parent, current_key=key)
++                # use the state_dict to match modules instead
++                if key not in module_names:
++                    unmatched_modules.append(key)
++                else:
++                    self.targeted_module_names.append(key)
++                    parent, target, target_name = _get_submodules(model, key)
++                    self._check_target_module_compatiblity(peft_config, model, target_name)
++                    ctx = init_empty_weights if low_cpu_mem_usage else nullcontext
++                    with ctx():
++                        self._create_and_replace(
++                            peft_config, adapter_name, target, target_name, parent, current_key=key
++                        )
++
++                # still record what would have been matched via the config so that the two results can be compared
++                if self._check_target_module_exists(peft_config, key):
++                    targeted_modules_from_peft_config.append(key)
+ 
+         if getattr(peft_config, "target_parameters", []):
++            # Note: We don't need to check for no state_dict being passed, since we already checked this earlier.
+             self._inject_parameters(
+                 peft_config=peft_config, model=model, adapter_name=adapter_name, low_cpu_mem_usage=low_cpu_mem_usage
+             )
+ 
++        ####################
++        # CHECK FOR ERRORS #
++        ####################
++
++        if state_dict is not None:
++            # in case that the state_dict was used as source of truth and it resulted in different outcomes than what
++            # would have been matched with the PEFT config, warn the user about that.
++            targeted_set_from_peft_config = set(targeted_modules_from_peft_config)
++            targeted_set_from_state_dict = set(self.targeted_module_names)
++            diff_peft_config = targeted_set_from_peft_config - targeted_set_from_state_dict
++            diff_state_dict = targeted_set_from_state_dict - targeted_set_from_peft_config
++            warning_msg = ""
++            if diff_peft_config or diff_state_dict:
++                warning_msg = (
++                    "While injecting the PEFT adapters, an inconsistency was discovered between the PEFT config and "
++                    "the provided state_dict. This is not necessarily an issue and can be ignored if this was the "
++                    "intent. "
++                )
++            if diff_peft_config:
++                warning_msg += (
++                    f"The PEFT config contained these additional target modules: {sorted(diff_peft_config)}. "
++                )
++            if diff_state_dict:
++                warning_msg += f"The state_dict contained these additional target modules: {sorted(diff_state_dict)}. "
++            if warning_msg:
++                warnings.warn(warning_msg, RuntimeWarning)
++
+         if not self.targeted_module_names and not self.targeted_parameter_names and not uses_dummy_target_modules:
+             if excluded_modules and not unmatched_modules:
+                 # All targeted modules were excluded
+@@ -615,6 +697,10 @@ class BaseTuner(nn.Module, ABC):
+                 "See for example https://github.com/huggingface/peft/issues/2018."
+             )
+ 
++        ################
++        # HOUSEKEEPING #
++        ################
++
+         # It's important to set the adapter here (again), because otherwise it can happen that if a 2nd adapter is
+         # added, and it targets different layer(s) than the first adapter (which is active), then those different
+         # layers will be activated, which we don't want.
+diff --git a/src/peft/tuners/vblora/model.py b/src/peft/tuners/vblora/model.py
+index d527bdf..994ef0f 100644
+--- a/src/peft/tuners/vblora/model.py
++++ b/src/peft/tuners/vblora/model.py
+@@ -71,9 +71,6 @@ class VBLoRAModel(BaseTuner):
+ 
+     prefix: str = "vblora_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def _init_vblora_vector_bank(self, config: VBLoRAConfig, adapter_name: str) -> None:
+         vblora_vector_bank = torch.zeros(config.num_vectors, config.vector_length)
+         torch.nn.init.uniform_(vblora_vector_bank, -config.init_vector_bank_bound, config.init_vector_bank_bound)
+diff --git a/src/peft/tuners/vera/model.py b/src/peft/tuners/vera/model.py
+index e7ec7dc..5c9da63 100644
+--- a/src/peft/tuners/vera/model.py
++++ b/src/peft/tuners/vera/model.py
+@@ -101,9 +101,6 @@ class VeraModel(BaseTuner):
+ 
+     prefix: str = "vera_lambda_"
+ 
+-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
+-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
+-
+     def _find_dim(self, config) -> tuple[int, int]:
+         """
+         Finds the largest input and output dimensions across linear layers that have been wrapped with VeRA.
+diff --git a/src/peft/utils/__init__.py b/src/peft/utils/__init__.py
+index 3b992d8..3163a87 100644
+--- a/src/peft/utils/__init__.py
++++ b/src/peft/utils/__init__.py
+@@ -24,6 +24,8 @@ from .other import (
+     TRANSFORMERS_MODELS_TO_IA3_FEEDFORWARD_MODULES_MAPPING,
+     TRANSFORMERS_MODELS_TO_IA3_TARGET_MODULES_MAPPING,
+     TRANSFORMERS_MODELS_TO_LNTUNING_TARGET_MODULES_MAPPING,
++    TRANSFORMERS_MODELS_TO_LOHA_TARGET_MODULES_MAPPING,
++    TRANSFORMERS_MODELS_TO_LOKR_TARGET_MODULES_MAPPING,
+     TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING,
+     TRANSFORMERS_MODELS_TO_PREFIX_TUNING_POSTPROCESS_MAPPING,
+     TRANSFORMERS_MODELS_TO_RANDLORA_TARGET_MODULES_MAPPING,
+@@ -67,6 +69,8 @@ __all__ = [
+     "TRANSFORMERS_MODELS_TO_IA3_FEEDFORWARD_MODULES_MAPPING",
+     "TRANSFORMERS_MODELS_TO_IA3_TARGET_MODULES_MAPPING",
+     "TRANSFORMERS_MODELS_TO_LNTUNING_TARGET_MODULES_MAPPING",
++    "TRANSFORMERS_MODELS_TO_LOHA_TARGET_MODULES_MAPPING",
++    "TRANSFORMERS_MODELS_TO_LOKR_TARGET_MODULES_MAPPING",
+     "TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING",
+     "TRANSFORMERS_MODELS_TO_PREFIX_TUNING_POSTPROCESS_MAPPING",
+     "TRANSFORMERS_MODELS_TO_RANDLORA_TARGET_MODULES_MAPPING",
+diff --git a/src/peft/utils/constants.py b/src/peft/utils/constants.py
+index 02453b2..21d2b3a 100644
+--- a/src/peft/utils/constants.py
++++ b/src/peft/utils/constants.py
+@@ -136,6 +136,9 @@ TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING = {
+     "qwen3": ["q_proj", "v_proj"],
+ }
+ 
++TRANSFORMERS_MODELS_TO_LOKR_TARGET_MODULES_MAPPING = TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING.copy()
++TRANSFORMERS_MODELS_TO_LOHA_TARGET_MODULES_MAPPING = TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING.copy()
++
+ TRANSFORMERS_MODELS_TO_IA3_TARGET_MODULES_MAPPING = {
+     "t5": ["k", "v", "wo"],
+     "mt5": ["k", "v", "wi_1"],
+diff --git a/src/peft/utils/other.py b/src/peft/utils/other.py
+index 88e7217..97334c8 100644
+--- a/src/peft/utils/other.py
++++ b/src/peft/utils/other.py
+@@ -47,6 +47,8 @@ from .constants import (
+     TRANSFORMERS_MODELS_TO_IA3_FEEDFORWARD_MODULES_MAPPING,
+     TRANSFORMERS_MODELS_TO_IA3_TARGET_MODULES_MAPPING,
+     TRANSFORMERS_MODELS_TO_LNTUNING_TARGET_MODULES_MAPPING,
++    TRANSFORMERS_MODELS_TO_LOHA_TARGET_MODULES_MAPPING,
++    TRANSFORMERS_MODELS_TO_LOKR_TARGET_MODULES_MAPPING,
+     TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING,
+     TRANSFORMERS_MODELS_TO_PREFIX_TUNING_POSTPROCESS_MAPPING,
+     TRANSFORMERS_MODELS_TO_RANDLORA_TARGET_MODULES_MAPPING,
+@@ -77,6 +79,8 @@ __all__ = [
+     "TRANSFORMERS_MODELS_TO_IA3_FEEDFORWARD_MODULES_MAPPING",
+     "TRANSFORMERS_MODELS_TO_IA3_TARGET_MODULES_MAPPING",
+     "TRANSFORMERS_MODELS_TO_LNTUNING_TARGET_MODULES_MAPPING",
++    "TRANSFORMERS_MODELS_TO_LOHA_TARGET_MODULES_MAPPING",
++    "TRANSFORMERS_MODELS_TO_LOKR_TARGET_MODULES_MAPPING",
+     "TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING",
+     "TRANSFORMERS_MODELS_TO_PREFIX_TUNING_POSTPROCESS_MAPPING",
+     "TRANSFORMERS_MODELS_TO_RANDLORA_TARGET_MODULES_MAPPING",
+diff --git a/src/peft/utils/save_and_load.py b/src/peft/utils/save_and_load.py
+index e4c9c7a..38a7f62 100644
+--- a/src/peft/utils/save_and_load.py
++++ b/src/peft/utils/save_and_load.py
+@@ -250,10 +250,13 @@ def get_peft_model_state_dict(
+     #
+     embedding_is_targeted = False
+     if hasattr(config, "target_modules"):
+-        if isinstance(config.target_modules, str) and config.target_modules != INCLUDE_LINEAR_LAYERS_SHORTHAND:
++        if isinstance(config.target_modules, str) and (config.target_modules != INCLUDE_LINEAR_LAYERS_SHORTHAND):
++            # `model` could be a PeftModel or something else like transformers/diffusers/..., in which case unwrapping is
++            # not needed.
++            _model = model.get_base_model() if hasattr(model, "get_base_model") else model
+             embedding_is_targeted = any(
+                 match_target_against_key(config.target_modules, k)
+-                for k, _ in model.get_base_model().named_modules()
++                for k, _ in _model.named_modules()
+                 if any(re.match(rf"(.*\.)?{e}$", k) for e in EMBEDDING_LAYER_NAMES)
+             )
+         elif config.target_modules:

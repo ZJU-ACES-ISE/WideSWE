@@ -1,0 +1,45 @@
+profiles:
+  elastic_transport_net-hidden:
+    repo: elastic-transport-net
+    workdir: repos/elastic/elastic-transport-net
+    command: environment/run_profile.sh elastic_transport_net-hidden
+    status: implemented
+    dependency_image: ecosyncbench/base/dotnet-sdk:10.0
+    public_smoke_command: dotnet test tests/Elastic.Transport.Tests/Elastic.Transport.Tests.csproj --framework net10.0 --filter "FullyQualifiedName~StaticNodePoolTests" --verbosity minimal
+    test_files:
+    - tests/Elastic.Transport.Tests/Components/NodePool/CloudNodePoolTests.cs
+    test_command_files:
+    - tests/Elastic.Transport.Tests/Components/NodePool/CloudNodePoolTests.cs
+    patched_files:
+    - tests/Elastic.Transport.Tests/Components/NodePool/CloudNodePoolTests.cs
+  kibana-hidden:
+    repo: kibana
+    workdir: repos/elastic/kibana
+    command: environment/run_profile.sh kibana-hidden
+    status: implemented
+    dependency_image: ecosyncbench/deps/elastic-cloudid-node:f176a87d6aaa
+    public_smoke_command: |
+      corepack prepare yarn@1.22.22 --activate
+      if [ ! -f node_modules/.yarn-integrity ]; then
+        yarn install --frozen-lockfile --non-interactive
+      fi
+      if [ ! -s packages/kbn-repo-packages/package-map.json ]; then
+        node - <<'NODE'
+      const { updatePackageMap, getRepoRelsSync } = require("./packages/kbn-repo-packages");
+      updatePackageMap(process.cwd(), Array.from(getRepoRelsSync(process.cwd(), ["**/kibana.jsonc"])));
+      NODE
+      fi
+      node scripts/jest.js --config x-pack/plugins/enterprise_search/public/jest.config.js x-pack/plugins/enterprise_search/public/applications/shared/get_cloud_enterprise_search_host/get_cloud_enterprise_search_host.test.ts --runInBand --forceExit
+    test_files:
+    - x-pack/plugins/cloud/public/cloud_id_contract.hidden.test.ts
+    - x-pack/plugins/cloud/public/plugin.test.ts
+    - x-pack/plugins/cloud/server/cloud_id_contract.hidden.test.ts
+    - x-pack/plugins/cloud/server/plugin.test.ts
+    test_command_files:
+    - x-pack/plugins/cloud/public/cloud_id_contract.hidden.test.ts
+    - x-pack/plugins/cloud/public/plugin.test.ts
+    - x-pack/plugins/cloud/server/cloud_id_contract.hidden.test.ts
+    - x-pack/plugins/cloud/server/plugin.test.ts
+    patched_files:
+    - x-pack/plugins/cloud/public/cloud_id_contract.hidden.test.ts
+    - x-pack/plugins/cloud/server/cloud_id_contract.hidden.test.ts

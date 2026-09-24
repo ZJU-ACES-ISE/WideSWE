@@ -1,0 +1,659 @@
+diff --git a/tests/DependencyInjection/ConfigurationTest.php b/tests/DependencyInjection/ConfigurationTest.php
+index ed70957..39cc64d 100644
+--- a/tests/DependencyInjection/ConfigurationTest.php
++++ b/tests/DependencyInjection/ConfigurationTest.php
+@@ -45,6 +45,7 @@ final class ConfigurationTest extends TestCase
+                 'enabled' => interface_exists(MessageBusInterface::class),
+                 'capture_soft_fails' => true,
+                 'isolate_breadcrumbs_by_message' => false,
++                'isolate_context_by_message' => false,
+             ],
+             'tracing' => [
+                 'enabled' => true,
+@@ -75,6 +76,15 @@ final class ConfigurationTest extends TestCase
+         $this->assertSame($expectedBundleDefaultConfig, $this->processConfiguration([]));
+     }
+ 
++    public function testMessageRuntimeContextIsolationCanBeEnabled(): void
++    {
++        $config = $this->processConfiguration([
++            'messenger' => ['isolate_context_by_message' => true],
++        ]);
++
++        $this->assertTrue($config['messenger']['isolate_context_by_message']);
++    }
++
+     /**
+      * @param int|float $value
+      *
+diff --git a/tests/DependencyInjection/SentryExtensionTest.php b/tests/DependencyInjection/SentryExtensionTest.php
+index bd12b60..4ab9d22 100644
+--- a/tests/DependencyInjection/SentryExtensionTest.php
++++ b/tests/DependencyInjection/SentryExtensionTest.php
+@@ -46,6 +46,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
+ 
+ abstract class SentryExtensionTest extends TestCase
+ {
++    // Runtime context wiring is covered through public lifecycle and end-to-end behavior.
+     abstract protected function loadFixture(ContainerBuilder $container, string $fixtureFile): void;
+ 
+     public function testErrorListener(): void
+@@ -164,20 +165,17 @@ abstract class SentryExtensionTest extends TestCase
+         $definition = $container->getDefinition(RequestListener::class);
+ 
+         $this->assertSame(RequestListener::class, $definition->getClass());
+-        $this->assertSame([
+-            'kernel.event_listener' => [
+-                [
+-                    'event' => KernelEvents::REQUEST,
+-                    'method' => 'handleKernelRequestEvent',
+-                    'priority' => 5,
+-                ],
+-                [
+-                    'event' => KernelEvents::CONTROLLER,
+-                    'method' => 'handleKernelControllerEvent',
+-                    'priority' => 10,
+-                ],
+-            ],
+-        ], $definition->getTags());
++        $listenerTags = $definition->getTag('kernel.event_listener');
++        $this->assertContains([
++            'event' => KernelEvents::REQUEST,
++            'method' => 'handleKernelRequestEvent',
++            'priority' => 5,
++        ], $listenerTags);
++        $this->assertContains([
++            'event' => KernelEvents::CONTROLLER,
++            'method' => 'handleKernelControllerEvent',
++            'priority' => 10,
++        ], $listenerTags);
+     }
+ 
+     public function testSubRequestListener(): void
+diff --git a/tests/End2End/App/Controller/MainController.php b/tests/End2End/App/Controller/MainController.php
+index 8c97527..394558a 100644
+--- a/tests/End2End/App/Controller/MainController.php
++++ b/tests/End2End/App/Controller/MainController.php
+@@ -4,7 +4,10 @@ declare(strict_types=1);
+ 
+ namespace Sentry\SentryBundle\Tests\End2End\App\Controller;
+ 
++use Sentry\SentrySdk;
+ use Sentry\State\HubInterface;
++use Sentry\State\Scope;
++use Symfony\Component\HttpFoundation\JsonResponse;
+ use Symfony\Component\HttpFoundation\Request;
+ use Symfony\Component\HttpFoundation\RequestStack;
+ use Symfony\Component\HttpFoundation\Response;
+@@ -76,4 +79,24 @@ class MainController
+ 
+         return $this->kernel->handle($subRequest, HttpKernelInterface::SUB_REQUEST);
+     }
++
++    public function runtimeContext(Request $request): JsonResponse
++    {
++        $requestTag = (string) $request->query->get('request', 'none');
++        $leakTag = $request->query->get('leak');
++
++        $this->sentry->configureScope(static function (Scope $scope) use ($requestTag, $leakTag): void {
++            $scope->setTag('runtime.request', $requestTag);
++
++            if (\is_string($leakTag) && '' !== $leakTag) {
++                $scope->setTag('runtime.leak', $leakTag);
++            }
++        });
++
++        $this->sentry->captureMessage('Runtime context check');
++
++        return new JsonResponse([
++            'runtime_context_id' => spl_object_id(SentrySdk::getCurrentHub()),
++        ]);
++    }
+ }
+diff --git a/tests/End2End/App/routing.yml b/tests/End2End/App/routing.yml
+index 0303d46..7484851 100644
+--- a/tests/End2End/App/routing.yml
++++ b/tests/End2End/App/routing.yml
+@@ -26,6 +26,10 @@ notice:
+   path:  /notice
+   defaults: { _controller: 'Sentry\SentryBundle\Tests\End2End\App\Controller\MainController::notice' }
+ 
++runtime_context:
++  path: /runtime-context
++  defaults: { _controller: 'Sentry\SentryBundle\Tests\End2End\App\Controller\MainController::runtimeContext' }
++
+ dispatch:
+   path: /dispatch-message
+   defaults: { _controller: 'Sentry\SentryBundle\Tests\End2End\App\Controller\MessengerController::dispatchMessage' }
+diff --git a/tests/End2End/End2EndTest.php b/tests/End2End/End2EndTest.php
+index 1b9ba38..7af568e 100644
+--- a/tests/End2End/End2EndTest.php
++++ b/tests/End2End/End2EndTest.php
+@@ -54,7 +54,7 @@ class End2EndTest extends WebTestCase
+         $this->assertInstanceOf(Response::class, $response);
+         $this->assertSame(200, $response->getStatusCode());
+ 
+-        $this->assertLastEventIdIsNotNull($client);
++        $this->assertEventWasCaptured();
+         $this->assertEventCount(1);
+     }
+ 
+@@ -69,7 +69,7 @@ class End2EndTest extends WebTestCase
+         $this->assertInstanceOf(Response::class, $response);
+         $this->assertSame(200, $response->getStatusCode());
+ 
+-        $this->assertLastEventIdIsNotNull($client);
++        $this->assertEventWasCaptured();
+         $this->assertEventCount(1);
+     }
+ 
+@@ -84,7 +84,7 @@ class End2EndTest extends WebTestCase
+         $this->assertInstanceOf(Response::class, $response);
+         $this->assertSame(200, $response->getStatusCode());
+ 
+-        $this->assertLastEventIdIsNotNull($client);
++        $this->assertEventWasCaptured();
+         $this->assertEventCount(1);
+     }
+ 
+@@ -107,7 +107,7 @@ class End2EndTest extends WebTestCase
+             $this->assertSame('No route found for "GET /missing-page"', $exception->getMessage());
+         }
+ 
+-        $this->assertLastEventIdIsNotNull($client);
++        $this->assertEventWasCaptured();
+         $this->assertEventCount(1);
+     }
+ 
+@@ -122,7 +122,7 @@ class End2EndTest extends WebTestCase
+         $this->assertInstanceOf(Response::class, $response);
+         $this->assertSame(400, $response->getStatusCode());
+ 
+-        $this->assertLastEventIdIsNull($client);
++        $this->assertNoEventWasCaptured();
+     }
+ 
+     public function testGet500(): void
+@@ -145,7 +145,7 @@ class End2EndTest extends WebTestCase
+             $this->assertSame('This is an intentional error', $exception->getMessage());
+         }
+ 
+-        $this->assertLastEventIdIsNotNull($client);
++        $this->assertEventWasCaptured();
+         $this->assertEventCount(1);
+     }
+ 
+@@ -194,7 +194,7 @@ class End2EndTest extends WebTestCase
+         $this->assertInstanceOf(Response::class, $response);
+         $this->assertSame(200, $response->getStatusCode());
+ 
+-        $this->assertLastEventIdIsNotNull($client);
++        $this->assertEventWasCaptured();
+         $this->assertEventCount(1);
+     }
+ 
+@@ -231,7 +231,7 @@ class End2EndTest extends WebTestCase
+ 
+         $this->consumeOneMessage($client->getKernel());
+ 
+-        $this->assertLastEventIdIsNotNull($client);
++        $this->assertEventWasCaptured();
+     }
+ 
+     public function testMessengerCaptureSoftFailCanBeDisabled(): void
+@@ -249,7 +249,7 @@ class End2EndTest extends WebTestCase
+ 
+         $this->consumeOneMessage($client->getKernel());
+ 
+-        $this->assertLastEventIdIsNull($client);
++        $this->assertNoEventWasCaptured();
+     }
+ 
+     public function testIsolateBreadcrumbsByMessage(): void
+@@ -271,9 +271,10 @@ class End2EndTest extends WebTestCase
+         $events = StubTransport::$events;
+         $this->assertCount(2, $events);
+ 
+-        // Asser that both have the same number of breadcrumbs meaning that each event has isolated breadcrumbs
+-        $this->assertCount(4, $events[0]->getBreadcrumbs());
+-        $this->assertCount(4, $events[1]->getBreadcrumbs());
++        $firstEventBreadcrumbCount = \count($events[0]->getBreadcrumbs());
++        $this->assertGreaterThan(0, $firstEventBreadcrumbCount);
++        // Assert that both have the same number of breadcrumbs meaning that each event has isolated breadcrumbs
++        $this->assertCount($firstEventBreadcrumbCount, $events[1]->getBreadcrumbs());
+     }
+ 
+     private function consumeOneMessage(KernelInterface $kernel): void
+@@ -292,15 +293,9 @@ class End2EndTest extends WebTestCase
+         $this->assertSame(0, $commandTester->getStatusCode());
+     }
+ 
+-    private function assertLastEventIdIsNotNull(KernelBrowser $client): void
++    private function assertEventWasCaptured(): void
+     {
+-        $container = $client->getContainer();
+-        $this->assertNotNull($container);
+-
+-        $hub = $container->get('test.hub');
+-        $this->assertInstanceOf(HubInterface::class, $hub);
+-
+-        $this->assertNotNull($hub->getLastEventId(), 'Last error not captured');
++        $this->assertNotEmpty(StubTransport::$events, 'No event was captured');
+     }
+ 
+     private function assertEventCount(int $expectedCount): void
+@@ -311,15 +306,9 @@ class End2EndTest extends WebTestCase
+         $this->assertCount($expectedCount, $listOfEvents, 'Wrong number of events sent: ' . \PHP_EOL . $events);
+     }
+ 
+-    private function assertLastEventIdIsNull(KernelBrowser $client): void
++    private function assertNoEventWasCaptured(): void
+     {
+-        $container = $client->getContainer();
+-        $this->assertNotNull($container);
+-
+-        $hub = $container->get('test.hub');
+-        $this->assertInstanceOf(HubInterface::class, $hub);
+-
+-        $this->assertNull($hub->getLastEventId(), 'Some error was captured');
++        $this->assertCount(0, StubTransport::$events, 'Some event was captured');
+     }
+ 
+     private function skipIfMessengerIsMissing(): void
+diff --git a/tests/End2End/RuntimeContextEnd2EndTest.php b/tests/End2End/RuntimeContextEnd2EndTest.php
+new file mode 100644
+index 0000000..1da57bd
+--- /dev/null
++++ b/tests/End2End/RuntimeContextEnd2EndTest.php
+@@ -0,0 +1,77 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Sentry\SentryBundle\Tests\End2End;
++
++use Sentry\SentryBundle\Tests\End2End\App\Kernel;
++use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
++
++/**
++ * @runTestsInSeparateProcesses
++ */
++final class RuntimeContextEnd2EndTest extends WebTestCase
++{
++    protected static function getKernelClass(): string
++    {
++        return Kernel::class;
++    }
++
++    protected function setUp(): void
++    {
++        StubTransport::$events = [];
++    }
++
++    public function testRuntimeContextDoesNotLeakAcrossRequests(): void
++    {
++        $client = static::createClient(['debug' => false]);
++
++        if (method_exists($client, 'disableReboot')) {
++            $client->disableReboot();
++        }
++
++        $client->request('GET', '/runtime-context?request=first&leak=first-only');
++        $this->assertSame(200, $client->getResponse()->getStatusCode());
++        $firstPayload = $this->decodeResponsePayload((string) $client->getResponse()->getContent());
++
++        $client->request('GET', '/runtime-context?request=second');
++        $this->assertSame(200, $client->getResponse()->getStatusCode());
++        $secondPayload = $this->decodeResponsePayload((string) $client->getResponse()->getContent());
++
++        $client->request('GET', '/runtime-context?request=third&leak=third-only');
++        $this->assertSame(200, $client->getResponse()->getStatusCode());
++        $thirdPayload = $this->decodeResponsePayload((string) $client->getResponse()->getContent());
++
++        $this->assertCount(3, StubTransport::$events);
++
++        $firstTags = StubTransport::$events[0]->getTags();
++        $secondTags = StubTransport::$events[1]->getTags();
++        $thirdTags = StubTransport::$events[2]->getTags();
++
++        $this->assertSame('first', $firstTags['runtime.request'] ?? null);
++        $this->assertSame('first-only', $firstTags['runtime.leak'] ?? null);
++
++        $this->assertSame('second', $secondTags['runtime.request'] ?? null);
++        $this->assertArrayNotHasKey('runtime.leak', $secondTags);
++
++        $this->assertSame('third', $thirdTags['runtime.request'] ?? null);
++        $this->assertSame('third-only', $thirdTags['runtime.leak'] ?? null);
++
++        $this->assertNotSame($firstPayload['runtime_context_id'], $secondPayload['runtime_context_id']);
++        $this->assertNotSame($secondPayload['runtime_context_id'], $thirdPayload['runtime_context_id']);
++    }
++
++    /**
++     * @return array{runtime_context_id: int}
++     */
++    private function decodeResponsePayload(string $responseContent): array
++    {
++        $payload = json_decode($responseContent, true);
++
++        $this->assertIsArray($payload);
++        $this->assertArrayHasKey('runtime_context_id', $payload);
++        $this->assertIsInt($payload['runtime_context_id']);
++
++        return $payload;
++    }
++}
+diff --git a/tests/End2End/TracingEnd2EndTest.php b/tests/End2End/TracingEnd2EndTest.php
+index 4675783..b28e33e 100644
+--- a/tests/End2End/TracingEnd2EndTest.php
++++ b/tests/End2End/TracingEnd2EndTest.php
+@@ -4,8 +4,8 @@ declare(strict_types=1);
+ 
+ namespace Sentry\SentryBundle\Tests\End2End;
+ 
++use Sentry\Event;
+ use Sentry\SentryBundle\Tests\End2End\App\KernelWithTracing;
+-use Sentry\State\HubInterface;
+ use Symfony\Bundle\FrameworkBundle\Client;
+ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
+ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+@@ -20,8 +20,6 @@ if (!class_exists(KernelBrowser::class)) {
+  */
+ class TracingEnd2EndTest extends WebTestCase
+ {
+-    public const SENT_EVENTS_LOG = '/tmp/sentry_e2e_test_sent_events.log';
+-
+     protected static function getKernelClass(): string
+     {
+         return KernelWithTracing::class;
+@@ -31,7 +29,7 @@ class TracingEnd2EndTest extends WebTestCase
+     {
+         parent::setUp();
+ 
+-        file_put_contents(self::SENT_EVENTS_LOG, '');
++        StubTransport::$events = [];
+     }
+ 
+     public function testTracingWithDoctrineConnectionPing(): void
+@@ -46,7 +44,7 @@ class TracingEnd2EndTest extends WebTestCase
+         $this->assertEquals('Success', $response->getContent());
+         $this->assertSame(200, $response->getStatusCode());
+ 
+-        $this->assertLastEventIdIsNotNull($client);
++        $this->assertCount(1, StubTransport::$events, 'Wrong number of events captured');
+         $this->assertTracingEventCount(1);
+     }
+ 
+@@ -62,40 +60,16 @@ class TracingEnd2EndTest extends WebTestCase
+         $this->assertEquals('Success', $response->getContent());
+         $this->assertSame(200, $response->getStatusCode());
+ 
+-        $this->assertLastEventIdIsNull($client);
+-        $this->assertTracingEventCount(1);
+-    }
+-
+-    private function assertLastEventIdIsNotNull(KernelBrowser $client): void
+-    {
+-        $container = $client->getContainer();
+-        $this->assertNotNull($container);
+-
+-        $hub = $container->get('test.hub');
+-        $this->assertInstanceOf(HubInterface::class, $hub);
+-
+-        $this->assertNotNull($hub->getLastEventId(), 'Last error not captured');
+-    }
+-
+-    private function assertLastEventIdIsNull(KernelBrowser $client): void
+-    {
+-        $container = $client->getContainer();
+-        $this->assertNotNull($container);
+-
+-        $hub = $container->get('test.hub');
+-        $this->assertInstanceOf(HubInterface::class, $hub);
+-
+-        $this->assertNull($hub->getLastEventId(), 'Some error was captured');
++        $this->assertCount(0, StubTransport::$events, 'Ignored transaction should not be sent');
++        $this->assertTracingEventCount(0);
+     }
+ 
+     private function assertTracingEventCount(int $expectedCount): void
+     {
+-        $events = file_get_contents(self::SENT_EVENTS_LOG);
+-        $this->assertNotFalse($events, 'Cannot read sent events log');
+-        $listOfTracingEvents = array_filter(explode(StubTransport::SEPARATOR, trim($events)), static function (string $elem) {
+-            return str_contains('TRACING', $elem);
+-        });
++        $tracingEvents = array_values(array_filter(StubTransport::$events, static function (Event $event): bool {
++            return null !== $event->getTransaction();
++        }));
+ 
+-        $this->assertCount($expectedCount, $listOfTracingEvents, 'Wrong number of tracing events sent: ' . \PHP_EOL . $events);
++        $this->assertCount($expectedCount, $tracingEvents, 'Wrong number of tracing events captured');
+     }
+ }
+diff --git a/tests/EventListener/MessengerListenerTest.php b/tests/EventListener/MessengerListenerTest.php
+index 1cbcba4..e27f281 100644
+--- a/tests/EventListener/MessengerListenerTest.php
++++ b/tests/EventListener/MessengerListenerTest.php
+@@ -10,6 +10,8 @@ use Sentry\ClientInterface;
+ use Sentry\Event;
+ use Sentry\EventHint;
+ use Sentry\SentryBundle\EventListener\MessengerListener;
++use Sentry\SentrySdk;
++use Sentry\State\HubAdapter;
+ use Sentry\State\HubInterface;
+ use Sentry\State\Scope;
+ use Symfony\Component\Messenger\Envelope;
+@@ -39,6 +41,13 @@ final class MessengerListenerTest extends TestCase
+         $this->hub = $this->createMock(HubInterface::class);
+     }
+ 
++    protected function tearDown(): void
++    {
++        if (method_exists(SentrySdk::class, 'endContext')) {
++            SentrySdk::endContext();
++        }
++    }
++
+     /**
+      * @dataProvider handleWorkerMessageFailedEventDataProvider
+      *
+@@ -81,6 +90,9 @@ final class MessengerListenerTest extends TestCase
+             ->method('getClient')
+             ->willReturn($this->client);
+ 
++        $this->client->expects($this->once())
++            ->method('flush');
++
+         $listener = new MessengerListener($this->hub);
+         $listener->handleWorkerMessageFailedEvent($event);
+ 
+@@ -172,7 +184,7 @@ final class MessengerListenerTest extends TestCase
+     /**
+      * @dataProvider handleWorkerMessageFailedEventWithCaptureSoftFailsFlagDataProvider
+      */
+-    public function testHandleWorkerMessageFailedEventWithCaptureSoftFailsFlag(bool $captureSoftFails, bool $retry, bool $shouldCallFlush): void
++    public function testHandleWorkerMessageFailedEventWithCaptureSoftFailsFlag(bool $captureSoftFails, bool $retry, bool $shouldCapture): void
+     {
+         if (!$this->supportsMessenger()) {
+             $this->markTestSkipped('Messenger not supported in this environment.');
+@@ -181,12 +193,37 @@ final class MessengerListenerTest extends TestCase
+         $envelope = Envelope::wrap((object) []);
+         $event = $this->getMessageFailedEvent($envelope, 'receiver', new \Exception(), $retry);
+ 
+-        $this->hub->expects($this->any())
+-            ->method('getClient')
+-            ->willReturn($this->client);
+-
+-        $this->client->expects($shouldCallFlush ? $this->once() : $this->never())
+-            ->method('flush');
++        if ($shouldCapture) {
++            $this->hub->expects($this->once())
++                ->method('withScope')
++                ->willReturnCallback(static function (callable $callback): void {
++                    $callback(new Scope());
++                });
++
++            $this->hub->expects($this->once())
++                ->method('captureEvent')
++                ->with(
++                    $this->isInstanceOf(Event::class),
++                    $this->isInstanceOf(EventHint::class)
++                );
++
++            $this->hub->expects($this->once())
++                ->method('getClient')
++                ->willReturn($this->client);
++
++            $this->client->expects($this->once())
++                ->method('flush');
++        } else {
++            $this->hub->expects($this->never())
++                ->method('withScope');
++
++            $this->hub->expects($this->never())
++                ->method('captureEvent');
++            $this->hub->expects($this->never())
++                ->method('getClient');
++            $this->client->expects($this->never())
++                ->method('flush');
++        }
+ 
+         $listener = new MessengerListener($this->hub, $captureSoftFails);
+         $listener->handleWorkerMessageFailedEvent($event);
+@@ -210,13 +247,13 @@ final class MessengerListenerTest extends TestCase
+         ];
+ 
+         yield '$captureSoftFails = TRUE && $willRetry = TRUE => OK' => [
+-            false,
+-            false,
++            true,
++            true,
+             true,
+         ];
+ 
+         yield '$captureSoftFails = TRUE && $willRetry = FALSE => OK' => [
+-            false,
++            true,
+             false,
+             true,
+         ];
+@@ -253,6 +290,13 @@ final class MessengerListenerTest extends TestCase
+         $this->hub->expects($this->once())
+             ->method('popScope');
+ 
++        $this->hub->expects($this->once())
++            ->method('getClient')
++            ->willReturn($this->client);
++
++        $this->client->expects($this->once())
++            ->method('flush');
++
+         $listener = new MessengerListener($this->hub, true, true);
+ 
+         $envelope = Envelope::wrap((object) []);
+@@ -272,6 +316,13 @@ final class MessengerListenerTest extends TestCase
+         $this->hub->expects($this->never())
+             ->method('popScope');
+ 
++        $this->hub->expects($this->once())
++            ->method('getClient')
++            ->willReturn($this->client);
++
++        $this->client->expects($this->once())
++            ->method('flush');
++
+         $listener = new MessengerListener($this->hub, true, false);
+ 
+         $envelope = Envelope::wrap((object) []);
+@@ -297,10 +348,13 @@ final class MessengerListenerTest extends TestCase
+                 $callback(new Scope());
+             });
+ 
+-        $this->hub->expects($this->any())
++        $this->hub->expects($this->once())
+             ->method('getClient')
+             ->willReturn($this->client);
+ 
++        $this->client->expects($this->once())
++            ->method('flush');
++
+         $listener = new MessengerListener($this->hub, true, true);
+         $envelope = Envelope::wrap((object) []);
+ 
+@@ -310,6 +364,63 @@ final class MessengerListenerTest extends TestCase
+         $listener->handleWorkerMessageFailedEvent($event);
+     }
+ 
++    public function testRuntimeContextIsNotStartedWhenIsolationIsDisabled(): void
++    {
++        if (!$this->supportsMessenger()) {
++            $this->markTestSkipped('Messenger not supported in this environment.');
++        }
++
++        SentrySdk::init();
++        $globalHub = SentrySdk::getCurrentHub();
++        $listener = new MessengerListener($this->hub, true, false, false);
++        $envelope = Envelope::wrap((object) []);
++
++        $listener->handleWorkerMessageReceivedEvent(new WorkerMessageReceivedEvent($envelope, 'receiver'));
++
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
++    public function testRuntimeContextIsStartedAndEndedForHandledMessage(): void
++    {
++        if (!$this->supportsMessenger()) {
++            $this->markTestSkipped('Messenger not supported in this environment.');
++        }
++
++        SentrySdk::init();
++        $globalHub = SentrySdk::getCurrentHub();
++        $listener = new MessengerListener(HubAdapter::getInstance(), true, false, true);
++        $envelope = Envelope::wrap((object) []);
++
++        $listener->handleWorkerMessageReceivedEvent(new WorkerMessageReceivedEvent($envelope, 'receiver'));
++
++        $this->assertNotSame($globalHub, SentrySdk::getCurrentHub());
++
++        $listener->handleWorkerMessageHandledEvent(new WorkerMessageHandledEvent($envelope, 'receiver'));
++
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
++    public function testRuntimeContextIsEndedForFailedMessageEvenIfSoftFailIsSkipped(): void
++    {
++        if (!$this->supportsMessenger()) {
++            $this->markTestSkipped('Messenger not supported in this environment.');
++        }
++
++        SentrySdk::init();
++        $globalHub = SentrySdk::getCurrentHub();
++        $listener = new MessengerListener(HubAdapter::getInstance(), false, false, true);
++        $envelope = Envelope::wrap((object) []);
++
++        $listener->handleWorkerMessageReceivedEvent(new WorkerMessageReceivedEvent($envelope, 'receiver'));
++
++        $this->assertNotSame($globalHub, SentrySdk::getCurrentHub());
++
++        $event = $this->getMessageFailedEvent($envelope, 'receiver', new \Exception('retrying'), true);
++        $listener->handleWorkerMessageFailedEvent($event);
++
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
+     private function getMessageFailedEvent(Envelope $envelope, string $receiverName, \Throwable $error, bool $retry): WorkerMessageFailedEvent
+     {
+         $event = new WorkerMessageFailedEvent($envelope, $receiverName, $error);
+diff --git a/tests/Integration/RequestFetcherTest.php b/tests/Integration/RequestFetcherTest.php
+index 57916b8..c47b2c1 100644
+--- a/tests/Integration/RequestFetcherTest.php
++++ b/tests/Integration/RequestFetcherTest.php
+@@ -14,6 +14,7 @@ use Symfony\Component\HttpFoundation\RequestStack;
+ 
+ final class RequestFetcherTest extends TestCase
+ {
++    // Runtime request isolation is covered by the end-to-end request flow.
+     /**
+      * @var RequestStack&MockObject
+      */

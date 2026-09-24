@@ -1,0 +1,159 @@
+diff --git a/src/tools/BaseTool.ts b/src/tools/BaseTool.ts
+index 347ddf5..d6d9dd6 100644
+--- a/src/tools/BaseTool.ts
++++ b/src/tools/BaseTool.ts
+@@ -107,4 +107,26 @@ export abstract class BaseTool<
+       this.server.server.sendLoggingMessage({ level, data });
+     }
+   }
++
++  /**
++   * Validates output data against the output schema.
++   * If validation fails, logs a warning and returns the raw data instead of throwing an error.
++   * This allows tools to continue functioning when API responses deviate from expected schemas.
++   */
++  protected validateOutput<T>(
++    schema: ZodTypeAny,
++    rawData: unknown,
++    toolName: string
++  ): T {
++    try {
++      return schema.parse(rawData) as T;
++    } catch (validationError) {
++      this.log(
++        'warning',
++        `${toolName}: Output schema validation failed - ${validationError instanceof Error ? validationError.message : 'Unknown validation error'}`
++      );
++      // Graceful fallback to raw data
++      return rawData as T;
++    }
++  }
+ }
+diff --git a/src/tools/create-token-tool/CreateTokenTool.ts b/src/tools/create-token-tool/CreateTokenTool.ts
+index eef9886..cfd07bb 100644
+--- a/src/tools/create-token-tool/CreateTokenTool.ts
++++ b/src/tools/create-token-tool/CreateTokenTool.ts
+@@ -90,33 +90,25 @@ export class CreateTokenTool extends MapboxApiBasedTool<
+       return this.handleApiError(response, 'create token');
+     }
+ 
+-    const data = await response.json();
+-    const parseResult = CreateTokenOutputSchema.safeParse(data);
+-    if (!parseResult.success) {
+-      this.log(
+-        'error',
+-        `CreateTokenTool: Output schema validation failed\n${parseResult.error}`
+-      );
+-      return {
+-        content: [
+-          {
+-            type: 'text',
+-            text: `CreateTokenTool: Response does not conform to output schema:\n${parseResult.error}`
+-          }
+-        ],
+-        isError: true
+-      };
+-    }
++    const rawData = await response.json();
++
++    // Validate response against schema with graceful fallback
++    const data = this.validateOutput<Record<string, unknown>>(
++      CreateTokenOutputSchema,
++      rawData,
++      'CreateTokenTool'
++    );
++
+     this.log('info', `CreateTokenTool: Successfully created token`);
+ 
+     return {
+       content: [
+         {
+           type: 'text',
+-          text: JSON.stringify(parseResult.data, null, 2)
++          text: JSON.stringify(data, null, 2)
+         }
+       ],
+-      structuredContent: parseResult.data,
++      structuredContent: data,
+       isError: false
+     };
+   }
+diff --git a/src/tools/list-styles-tool/ListStylesTool.ts b/src/tools/list-styles-tool/ListStylesTool.ts
+index 1e059e7..ffac1d9 100644
+--- a/src/tools/list-styles-tool/ListStylesTool.ts
++++ b/src/tools/list-styles-tool/ListStylesTool.ts
+@@ -68,27 +68,18 @@ export class ListStylesTool extends MapboxApiBasedTool<
+       return this.handleApiError(response, 'list styles');
+     }
+ 
+-    const data = await response.json();
+-    // Validate the API response (which is an array)
+-    const parseResult = StylesArraySchema.safeParse(data);
+-    if (!parseResult.success) {
+-      this.log(
+-        'error',
+-        `ListStylesTool: Output schema validation failed\n${parseResult.error}`
+-      );
+-      return {
+-        content: [
+-          {
+-            type: 'text' as const,
+-            text: `ListStylesTool: Response does not conform to output schema:\n${parseResult.error}`
+-          }
+-        ],
+-        isError: true
+-      };
+-    }
++    const rawData = await response.json();
++
++    // Validate the API response (which is an array) with graceful fallback
++    const validatedData = this.validateOutput(
++      StylesArraySchema,
++      rawData,
++      'ListStylesTool'
++    );
++
+     this.log('info', `ListStylesTool: Successfully listed styles`);
+ 
+-    const wrappedData = { styles: parseResult.data };
++    const wrappedData = { styles: validatedData };
+     return {
+       content: [
+         {
+diff --git a/src/tools/list-tokens-tool/ListTokensTool.ts b/src/tools/list-tokens-tool/ListTokensTool.ts
+index d29b929..69a3221 100644
+--- a/src/tools/list-tokens-tool/ListTokensTool.ts
++++ b/src/tools/list-tokens-tool/ListTokensTool.ts
+@@ -130,24 +130,14 @@ export class ListTokensTool extends MapboxApiBasedTool<
+           ? data
+           : (data as { tokens?: unknown[] }).tokens || [];
+ 
+-        // Validate tokens array against TokenObjectSchema
+-        const parseResult = TokenObjectSchema.array().safeParse(tokens);
+-        if (!parseResult.success) {
+-          this.log(
+-            'error',
+-            `ListTokensTool: Token array schema validation failed\n${parseResult.error}`
+-          );
+-          return {
+-            isError: true,
+-            content: [
+-              {
+-                type: 'text',
+-                text: `ListTokensTool: Response does not conform to token array schema:\n${parseResult.error}`
+-              }
+-            ]
+-          };
+-        }
+-        allTokens.push(...parseResult.data);
++        // Validate tokens array against TokenObjectSchema with graceful fallback
++        const validatedTokens = this.validateOutput<unknown[]>(
++          TokenObjectSchema.array(),
++          tokens,
++          'ListTokensTool'
++        );
++
++        allTokens.push(...validatedTokens);
+         this.log(
+           'info',
+           `ListTokensTool: Retrieved ${tokens.length} tokens on page ${pageCount}`

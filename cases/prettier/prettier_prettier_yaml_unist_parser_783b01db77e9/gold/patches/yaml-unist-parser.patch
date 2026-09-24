@@ -1,0 +1,4107 @@
+diff --git a/package.json b/package.json
+index 315eaee..7490d92 100644
+--- a/package.json
++++ b/package.json
+@@ -21,7 +21,7 @@
+   },
+   "license": "MIT",
+   "scripts": {
+-    "prepublish": "patch-package && yarn run build",
++    "prepublish": "yarn run build",
+     "lint": "run-p \"lint:*\"",
+     "lint:eslint": "eslint .",
+     "lint:prettier": "prettier . --check",
+@@ -35,7 +35,7 @@
+     "release": "yarn build && standard-version"
+   },
+   "dependencies": {
+-    "yaml": "^1.10.2"
++    "yaml": "^2.8.1"
+   },
+   "devDependencies": {
+     "@eslint/js": "9.39.1",
+diff --git a/patches/yaml+1.10.2.patch b/patches/yaml+1.10.2.patch
+deleted file mode 100644
+index 37ebc47..0000000
+--- a/patches/yaml+1.10.2.patch
++++ /dev/null
+@@ -1,79 +0,0 @@
+-diff --git a/node_modules/yaml/index.d.ts b/node_modules/yaml/index.d.ts
+-index 53eb011..dcb722e 100644
+---- a/node_modules/yaml/index.d.ts
+-+++ b/node_modules/yaml/index.d.ts
+-@@ -205,8 +205,8 @@ export class Document extends Collection {
+-    */
+-   anchors: Document.Anchors
+-   /** The document contents. */
+--  contents: any
+--  /** Errors encountered during parsing. */
+-+  contents: AST.BlockFolded | AST.BlockLiteral | AST.BlockMap | AST.BlockSeq | AST.FlowMap | AST.FlowSeq | AST.PlainValue | AST.QuoteDouble | AST.QuoteSingle | Alias | null
+-+   /** Errors encountered during parsing. */
+-   errors: YAMLError[]
+-   /**
+-    * The schema used with the document. Use `setSchema()` to change or
+-@@ -260,7 +260,6 @@ export class Document extends Collection {
+- 
+- export namespace Document {
+-   interface Parsed extends Document {
+--    contents: Scalar | YAMLMap | YAMLSeq | null
+-     /** The schema used with the document. */
+-     schema: Schema
+-   }
+-diff --git a/node_modules/yaml/parse-cst.d.ts b/node_modules/yaml/parse-cst.d.ts
+-index 9fd2ebf..4e25756 100644
+---- a/node_modules/yaml/parse-cst.d.ts
+-+++ b/node_modules/yaml/parse-cst.d.ts
+-@@ -10,8 +10,8 @@ export namespace CST {
+-   interface Range {
+-     start: number
+-     end: number
+--    origStart?: number
+--    origEnd?: number
+-+    origStart: number
+-+    origEnd: number
+-     isEmpty(): boolean
+-   }
+- 
+-@@ -152,7 +152,7 @@ export namespace CST {
+-   interface FlowChar {
+-     char: '{' | '}' | '[' | ']' | ',' | '?' | ':'
+-     offset: number
+--    origOffset?: number
+-+    origOffset: number
+-   }
+- 
+-   interface FlowCollection extends Node {
+-@@ -184,8 +184,11 @@ export namespace CST {
+-     type: Type.DOCUMENT
+-     directives: Array<BlankLine | Comment | Directive>
+-     contents: Array<BlankLine | Comment | ContentNode>
+-+    setOrigRanges(cr: number[], offset: number): number
+-     readonly anchor: null
+-     readonly comment: null
+-     readonly tag: null
+-+    readonly directivesEndMarker: Range | null
+-+    readonly documentEndMarker: Range | null
+-   }
+- }
+-diff --git a/node_modules/yaml/types.d.ts b/node_modules/yaml/types.d.ts
+-index 411e74e..0c60eb0 100644
+---- a/node_modules/yaml/types.d.ts
+-+++ b/node_modules/yaml/types.d.ts
+-@@ -395,13 +395,13 @@ export namespace AST {
+- 
+-   interface FlowSeq extends YAMLSeq {
+-     type: Type.FLOW_SEQ
+--    items: Array<Node>
+-+    items: Array<FlowMap | FlowSeq | QuoteDouble | QuoteSingle | PlainValue | Alias | Pair>
+-     cstNode?: CST.FlowSeq
+-   }
+- 
+-   interface BlockSeq extends YAMLSeq {
+-     type: Type.SEQ
+--    items: Array<Node | null>
+-+    items: Array<FlowMap | FlowSeq | QuoteDouble | QuoteSingle | PlainValue | Alias | null>
+-     cstNode?: CST.Seq
+-   }
+- }
+diff --git a/src/__snapshots__/yaml-test-suite.test.ts.snap b/src/__snapshots__/yaml-test-suite.test.ts.snap
+index 07c6acf..d891af4 100644
+--- a/src/__snapshots__/yaml-test-suite.test.ts.snap
++++ b/src/__snapshots__/yaml-test-suite.test.ts.snap
+@@ -588,7 +588,7 @@ exports[`2AUY.yaml: Tags in Block Sequence 1`] = `
+ 
+ exports[`2CMS.yaml - Invalid mapping in plain multiline 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
+ 
+-exports[`2CMS.yaml: Invalid mapping in plain multiline 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
++exports[`2CMS.yaml: Invalid mapping in plain multiline 1`] = `[YAMLSyntaxError: Implicit keys need to be on a single line]`;
+ 
+ exports[`2EBW.yaml - Allowed characters in keys 1`] = `
+ {
+@@ -5662,7 +5662,7 @@ exports[`3GZX.yaml: Spec Example 7.1. Alias Nodes 1`] = `
+ 
+ exports[`3HFZ.yaml - Invalid content after document end marker 1`] = `[YAMLSyntaxError: Document end marker line cannot have a non-comment suffix]`;
+ 
+-exports[`3HFZ.yaml: Invalid content after document end marker 1`] = `[YAMLSyntaxError: Document end marker line cannot have a non-comment suffix]`;
++exports[`3HFZ.yaml: Invalid content after document end marker 1`] = `[YAMLSyntaxError: Unexpected scalar at node end]`;
+ 
+ exports[`3MYT.yaml - Plain Scalar looking like key, comment, anchor and tag 1`] = `
+ {
+@@ -9042,7 +9042,7 @@ exports[`4CQQ.yaml: Spec Example 2.18. Multi-line Flow Scalars 1`] = `
+ 
+ exports[`4EJS.yaml - Invalid tabs as indendation in a mapping 1`] = `[YAMLSyntaxError: Plain value cannot start with a tab character]`;
+ 
+-exports[`4EJS.yaml: Invalid tabs as indendation in a mapping 1`] = `[YAMLSyntaxError: Plain value cannot start with a tab character]`;
++exports[`4EJS.yaml: Invalid tabs as indendation in a mapping 1`] = `[YAMLSyntaxError: Tabs are not allowed as indentation]`;
+ 
+ exports[`4FJ6.yaml - Nested implicit complex keys 1`] = `
+ {
+@@ -10310,11 +10310,11 @@ exports[`4GC6.yaml: Spec Example 7.7. Single Quoted Characters 1`] = `
+ 
+ exports[`4H7K.yaml - Flow sequence with invalid extra closing bracket 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
+ 
+-exports[`4H7K.yaml: Flow sequence with invalid extra closing bracket 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
++exports[`4H7K.yaml: Flow sequence with invalid extra closing bracket 1`] = `[YAMLSyntaxError: Unexpected flow-seq-end token in YAML stream: "]"]`;
+ 
+ exports[`4HVU.yaml - Wrong indendation in Sequence 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`4HVU.yaml: Wrong indendation in Sequence 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`4HVU.yaml: Wrong indendation in Sequence 1`] = `[YAMLSyntaxError: A block sequence may not be used as an implicit map key]`;
+ 
+ exports[`4JVG.yaml - Scalar value with two anchors 1`] = `[YAMLSyntaxError: A node can have at most one anchor]`;
+ 
+@@ -19252,7 +19252,7 @@ exports[`5T43.yaml: Colon at the beginning of adjacent flow scalar 1`] = `
+ 
+ exports[`5TRB.yaml - Invalid document-start marker in doublequoted tring 1`] = `[YAMLSyntaxError: Document boundary indicators are not allowed within string values]`;
+ 
+-exports[`5TRB.yaml: Invalid document-start marker in doublequoted tring 1`] = `[YAMLSyntaxError: Document boundary indicators are not allowed within string values]`;
++exports[`5TRB.yaml: Invalid document-start marker in doublequoted tring 1`] = `[YAMLSyntaxError: Missing closing "quote]`;
+ 
+ exports[`5TYM.yaml - Spec Example 6.21. Local Tag Prefix 1`] = `
+ {
+@@ -19884,7 +19884,7 @@ exports[`5TYM.yaml: Spec Example 6.21. Local Tag Prefix 1`] = `
+ 
+ exports[`5U3A.yaml - Sequence on same Line as Mapping Key 1`] = `[YAMLSyntaxError: Sequence items must not have preceding content on the same line]`;
+ 
+-exports[`5U3A.yaml: Sequence on same Line as Mapping Key 1`] = `[YAMLSyntaxError: Sequence items must not have preceding content on the same line]`;
++exports[`5U3A.yaml: Sequence on same Line as Mapping Key 1`] = `[YAMLSyntaxError: Unexpected block-seq-ind on same line with key]`;
+ 
+ exports[`5WE3.yaml - Spec Example 8.17. Explicit Block Mapping Entries 1`] = `
+ {
+@@ -25360,7 +25360,7 @@ exports[`6JQW.yaml: Spec Example 2.13. In literals, newlines are preserved 1`] =
+ 
+ exports[`6JTT.yaml - Flow sequence without closing bracket 1`] = `[YAMLSyntaxError: Expected flow sequence to end with ]]`;
+ 
+-exports[`6JTT.yaml: Flow sequence without closing bracket 1`] = `[YAMLSyntaxError: Expected flow sequence to end with ]]`;
++exports[`6JTT.yaml: Flow sequence without closing bracket 1`] = `[YAMLSyntaxError: Flow sequence must end with a ]]`;
+ 
+ exports[`6JWB.yaml - Tags for Block Objects 1`] = `
+ {
+@@ -28570,7 +28570,7 @@ exports[`6PBE.yaml: Zero-indented sequences in explicit mapping keys 1`] = `
+ 
+ exports[`6S55.yaml - Invalid scalar at the end of sequence 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`6S55.yaml: Invalid scalar at the end of sequence 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`6S55.yaml: Invalid scalar at the end of sequence 1`] = `[YAMLSyntaxError: All mapping items must start at the same column]`;
+ 
+ exports[`6SLA.yaml - Allowed characters in quoted mapping key 1`] = `
+ {
+@@ -35848,7 +35848,7 @@ exports[`7FWL.yaml: Spec Example 6.24. Verbatim Tags 1`] = `
+ 
+ exports[`7LBH.yaml - Multiline double quoted implicit keys 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
+ 
+-exports[`7LBH.yaml: Multiline double quoted implicit keys 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
++exports[`7LBH.yaml: Multiline double quoted implicit keys 1`] = `[YAMLSyntaxError: Implicit keys need to be on a single line]`;
+ 
+ exports[`7MNF.yaml: Missing colon 1`] = `[YAMLSyntaxError: Implicit map keys need to be followed by map values]`;
+ 
+@@ -36073,9 +36073,9 @@ last line
+           ],
+           "position": {
+             "end": {
+-              "column": 1,
+-              "line": 17,
+-              "offset": 88,
++              "column": 10,
++              "line": 16,
++              "offset": 87,
+             },
+             "start": {
+               "column": 1,
+@@ -36090,9 +36090,9 @@ last line
+       "documentEndMarker": false,
+       "position": {
+         "end": {
+-          "column": 1,
+-          "line": 17,
+-          "offset": 88,
++          "column": 10,
++          "line": 16,
++          "offset": 87,
+         },
+         "start": {
+           "column": 1,
+@@ -42322,7 +42322,7 @@ exports[`8UDB.yaml: Spec Example 7.14. Flow Sequence Entries 1`] = `
+ 
+ exports[`8XDJ.yaml - Comment in plain multiline value 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`8XDJ.yaml: Comment in plain multiline value 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`8XDJ.yaml: Comment in plain multiline value 1`] = `[YAMLSyntaxError: All mapping items must start at the same column]`;
+ 
+ exports[`8XYN.yaml - Anchor with unicode character 1`] = `
+ {
+@@ -43710,7 +43710,7 @@ exports[`9BXH.yaml: Multiline doublequoted flow mapping key without value 1`] =
+ 
+ exports[`9C9N.yaml - Wrong indented flow sequence 1`] = `[YAMLSyntaxError: Insufficient indentation in flow collection]`;
+ 
+-exports[`9C9N.yaml: Wrong indented flow sequence 1`] = `[YAMLSyntaxError: Insufficient indentation in flow collection]`;
++exports[`9C9N.yaml: Wrong indented flow sequence 1`] = `[YAMLSyntaxError: Flow sequence in block collection must be sufficiently indented and end with a ]]`;
+ 
+ exports[`9CWY.yaml - Invalid scalar at the end of mapping 1`] = `[YAMLSyntaxError: Implicit map keys need to be followed by map values]`;
+ 
+@@ -46070,7 +46070,7 @@ exports[`9FMG.yaml: Multi-level Mapping Indent 1`] = `
+ 
+ exports[`9HCY.yaml - Need document footer before directives 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
+ 
+-exports[`9HCY.yaml: Need document footer before directives 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
++exports[`9HCY.yaml: Need document footer before directives 1`] = `[YAMLSyntaxError: Unexpected scalar at node end]`;
+ 
+ exports[`9J7A.yaml - Simple Mapping Indent 1`] = `
+ {
+@@ -49504,11 +49504,11 @@ exports[`9KAX.yaml: Various combinations of tags and anchors 1`] = `
+ 
+ exports[`9KBC.yaml - Mapping starting at --- line 1`] = `[YAMLSyntaxError: Block collection must not have preceding content here (e.g. directives-end indicator)]`;
+ 
+-exports[`9KBC.yaml: Mapping starting at --- line 1`] = `[YAMLSyntaxError: Block collection must not have preceding content here (e.g. directives-end indicator)]`;
++exports[`9KBC.yaml: Mapping starting at --- line 1`] = `[YAMLSyntaxError: Block collection cannot start on same line with directives-end marker]`;
+ 
+ exports[`9MAG.yaml - Flow sequence with invalid comma at the beginning 1`] = `[YAMLSyntaxError: Flow sequence contains an unexpected ,]`;
+ 
+-exports[`9MAG.yaml: Flow sequence with invalid comma at the beginning 1`] = `[YAMLSyntaxError: Flow sequence contains an unexpected ,]`;
++exports[`9MAG.yaml: Flow sequence with invalid comma at the beginning 1`] = `[YAMLSyntaxError: Unexpected , in flow sequence]`;
+ 
+ exports[`9MMA.yaml - Directive by itself with no document 1`] = `[YAMLSyntaxError: Missing directives-end indicator line]`;
+ 
+@@ -50964,7 +50964,7 @@ exports[`9MQT.yaml: Scalar doc with '...' in content 1`] = `
+ 
+ exports[`9MQT-2.yaml - Scalar doc with '...' in content 1`] = `[YAMLSyntaxError: Document boundary indicators are not allowed within string values]`;
+ 
+-exports[`9MQT-2.yaml: Scalar doc with '...' in content 1`] = `[YAMLSyntaxError: Document boundary indicators are not allowed within string values]`;
++exports[`9MQT-2.yaml: Scalar doc with '...' in content 1`] = `[YAMLSyntaxError: Missing closing "quote]`;
+ 
+ exports[`9SA2.yaml - Multiline double quoted flow mapping key 1`] = `
+ {
+@@ -61638,7 +61638,7 @@ exports[`58MP.yaml: Flow mapping edge cases 1`] = `
+ 
+ exports[`62EZ.yaml - Invalid block mapping key on same line as previous key 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`62EZ.yaml: Invalid block mapping key on same line as previous key 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`62EZ.yaml: Invalid block mapping key on same line as previous key 1`] = `[YAMLSyntaxError: Unexpected scalar at node end]`;
+ 
+ exports[`65WH.yaml - Single Entry Block Sequence 1`] = `
+ {
+@@ -74586,11 +74586,11 @@ exports[`B3HG.yaml: Spec Example 8.9. Folded Scalar [1.3] 1`] = `
+ 
+ exports[`B63P.yaml - Directive without document 1`] = `[YAMLSyntaxError: Missing directives-end indicator line]`;
+ 
+-exports[`B63P.yaml: Directive without document 1`] = `[YAMLSyntaxError: Missing directives-end indicator line]`;
++exports[`B63P.yaml: Directive without document 1`] = `[YAMLSyntaxError: Missing directives-end/doc-start indicator line]`;
+ 
+ exports[`BD7L.yaml - Invalid mapping after sequence 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
+ 
+-exports[`BD7L.yaml: Invalid mapping after sequence 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
++exports[`BD7L.yaml: Invalid mapping after sequence 1`] = `[YAMLSyntaxError: Unexpected scalar at node end]`;
+ 
+ exports[`BEC7.yaml - Spec Example 6.14. “YAML” directive 1`] = `
+ {
+@@ -74964,11 +74964,11 @@ exports[`BEC7.yaml: Spec Example 6.14. “YAML” directive 1`] = `
+ 
+ exports[`BF9H.yaml - Trailing comment in multiline plain scalar 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`BF9H.yaml: Trailing comment in multiline plain scalar 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`BF9H.yaml: Trailing comment in multiline plain scalar 1`] = `[YAMLSyntaxError: All mapping items must start at the same column]`;
+ 
+ exports[`BS4K.yaml - Comment between plain scalar lines 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
+ 
+-exports[`BS4K.yaml: Comment between plain scalar lines 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
++exports[`BS4K.yaml: Comment between plain scalar lines 1`] = `[YAMLSyntaxError: Unexpected scalar at node end]`;
+ 
+ exports[`BU8L.yaml - Node Anchor and Tag on Seperate Lines 1`] = `
+ {
+@@ -76374,7 +76374,7 @@ exports[`C2DT.yaml: Spec Example 7.18. Flow Mapping Adjacent Values 1`] = `
+ 
+ exports[`C2SP.yaml - Flow Mapping Key on two lines 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
+ 
+-exports[`C2SP.yaml: Flow Mapping Key on two lines 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
++exports[`C2SP.yaml: Flow Mapping Key on two lines 1`] = `[YAMLSyntaxError: Implicit keys need to be on a single line]`;
+ 
+ exports[`C4HZ.yaml - Spec Example 2.24. Global Tags 1`] = `
+ {
+@@ -80286,7 +80286,7 @@ exports[`CFD4.yaml: Empty implicit key in single pair flow sequences 1`] = `
+ 
+ exports[`CML9.yaml - Missing comma in flow 1`] = `[YAMLSyntaxError: Insufficient indentation in flow collection]`;
+ 
+-exports[`CML9.yaml: Missing comma in flow 1`] = `[YAMLSyntaxError: Insufficient indentation in flow collection]`;
++exports[`CML9.yaml: Missing comma in flow 1`] = `[YAMLSyntaxError: Missing , or : between flow sequence items]`;
+ 
+ exports[`CN3R.yaml - Various location of anchors in flow sequence 1`] = `
+ {
+@@ -82358,7 +82358,7 @@ exports[`CT4Q.yaml: Spec Example 7.20. Single Pair Explicit Entry 1`] = `
+ 
+ exports[`CTN5.yaml - Flow sequence with invalid extra comma 1`] = `[YAMLSyntaxError: Flow sequence contains an unexpected ,]`;
+ 
+-exports[`CTN5.yaml: Flow sequence with invalid extra comma 1`] = `[YAMLSyntaxError: Flow sequence contains an unexpected ,]`;
++exports[`CTN5.yaml: Flow sequence with invalid extra comma 1`] = `[YAMLSyntaxError: Unexpected , in flow sequence]`;
+ 
+ exports[`CUP7.yaml - Spec Example 5.6. Node Property Indicators 1`] = `
+ {
+@@ -83018,7 +83018,7 @@ exports[`CVW2.yaml: Invalid comment after comma 1`] = `[YAMLSyntaxError: Comment
+ 
+ exports[`CXX2.yaml - Mapping with anchor on document start line 1`] = `[YAMLSyntaxError: Block collection must not have preceding content here (e.g. directives-end indicator)]`;
+ 
+-exports[`CXX2.yaml: Mapping with anchor on document start line 1`] = `[YAMLSyntaxError: Block collection must not have preceding content here (e.g. directives-end indicator)]`;
++exports[`CXX2.yaml: Mapping with anchor on document start line 1`] = `[YAMLSyntaxError: Block collection cannot start on same line with directives-end marker]`;
+ 
+ exports[`D9TU.yaml - Single Pair Block Mapping 1`] = `
+ {
+@@ -83416,7 +83416,7 @@ exports[`D9TU.yaml: Single Pair Block Mapping 1`] = `
+ 
+ exports[`D49Q.yaml - Multiline single quoted implicit keys 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
+ 
+-exports[`D49Q.yaml: Multiline single quoted implicit keys 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
++exports[`D49Q.yaml: Multiline single quoted implicit keys 1`] = `[YAMLSyntaxError: Implicit keys need to be on a single line]`;
+ 
+ exports[`D83L.yaml - Block scalar indicator order 1`] = `
+ {
+@@ -88788,7 +88788,7 @@ exports[`DK4H.yaml: Implicit key followed by newline 1`] = `[YAMLSyntaxError: Im
+ 
+ exports[`DK95-2.yaml - Tabs that look like indentation 1`] = `[YAMLSyntaxError: Multi-line double-quoted string needs to be sufficiently indented]`;
+ 
+-exports[`DK95-2.yaml: Tabs that look like indentation 1`] = `[YAMLSyntaxError: Multi-line double-quoted string needs to be sufficiently indented]`;
++exports[`DK95-2.yaml: Tabs that look like indentation 1`] = `[YAMLSyntaxError: Missing closing "quote]`;
+ 
+ exports[`DK95-3.yaml - Tabs that look like indentation 1`] = `
+ {
+@@ -90764,7 +90764,7 @@ exports[`DK95-6.yaml: Tabs that look like indentation 1`] = `
+ 
+ exports[`DK95-7.yaml - Tabs that look like indentation 1`] = `[YAMLSyntaxError: Plain value cannot start with a tab character]`;
+ 
+-exports[`DK95-7.yaml: Tabs that look like indentation 1`] = `[YAMLSyntaxError: Plain value cannot start with a tab character]`;
++exports[`DK95-7.yaml: Tabs that look like indentation 1`] = `[YAMLSyntaxError: Tabs are not allowed as indentation]`;
+ 
+ exports[`DK95-8.yaml - Tabs that look like indentation 1`] = `
+ {
+@@ -91358,7 +91358,7 @@ exports[`DK95-9.yaml: Tabs that look like indentation 1`] = `
+ 
+ exports[`DMG6.yaml - Wrong indendation in Map 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`DMG6.yaml: Wrong indendation in Map 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`DMG6.yaml: Wrong indendation in Map 1`] = `[YAMLSyntaxError: All mapping items must start at the same column]`;
+ 
+ exports[`DWX9.yaml - Spec Example 8.8. Literal Content 1`] = `
+ {
+@@ -91575,9 +91575,9 @@ text
+           ],
+           "position": {
+             "end": {
+-              "column": 1,
+-              "line": 10,
+-              "offset": 43,
++              "column": 11,
++              "line": 9,
++              "offset": 42,
+             },
+             "start": {
+               "column": 1,
+@@ -91592,9 +91592,9 @@ text
+       "documentEndMarker": false,
+       "position": {
+         "end": {
+-          "column": 1,
+-          "line": 10,
+-          "offset": 43,
++          "column": 11,
++          "line": 9,
++          "offset": 42,
+         },
+         "start": {
+           "column": 1,
+@@ -92294,7 +92294,7 @@ exports[`E76Z.yaml: Aliases in Implicit Block Mapping 1`] = `
+ 
+ exports[`EB22.yaml - Missing document-end marker before directive 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
+ 
+-exports[`EB22.yaml: Missing document-end marker before directive 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
++exports[`EB22.yaml: Missing document-end marker before directive 1`] = `[YAMLSyntaxError: Unexpected scalar at node end]`;
+ 
+ exports[`EHF6.yaml - Tags for Flow Objects 1`] = `
+ {
+@@ -102514,11 +102514,11 @@ exports[`G4RS.yaml: Spec Example 2.17. Quoted Scalars 1`] = `
+ 
+ exports[`G7JE.yaml - Multiline implicit keys 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
+ 
+-exports[`G7JE.yaml: Multiline implicit keys 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
++exports[`G7JE.yaml: Multiline implicit keys 1`] = `[YAMLSyntaxError: Implicit keys need to be on a single line]`;
+ 
+ exports[`G9HC.yaml - Invalid anchor in zero indented sequence 1`] = `[YAMLSyntaxError: A collection cannot be both a mapping and a sequence]`;
+ 
+-exports[`G9HC.yaml: Invalid anchor in zero indented sequence 1`] = `[YAMLSyntaxError: A collection cannot be both a mapping and a sequence]`;
++exports[`G9HC.yaml: Invalid anchor in zero indented sequence 1`] = `[YAMLSyntaxError: A block sequence may not be used as an implicit map key]`;
+ 
+ exports[`G992.yaml - Spec Example 8.9. Folded Scalar 1`] = `
+ {
+@@ -103320,7 +103320,7 @@ exports[`GH63.yaml: Mixed Block Mapping (explicit to implicit) 1`] = `
+ 
+ exports[`GT5M.yaml - Node anchor in sequence 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
+ 
+-exports[`GT5M.yaml: Node anchor in sequence 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
++exports[`GT5M.yaml: Node anchor in sequence 1`] = `[YAMLSyntaxError: Unexpected anchor at node end]`;
+ 
+ exports[`H2RW.yaml: Blank lines 1`] = `
+ {
+@@ -104122,7 +104122,7 @@ exports[`H3Z8.yaml: Literal unicode 1`] = `
+ 
+ exports[`H7J7.yaml - Node anchor not indented 1`] = `[YAMLSyntaxError: A PLAIN node cannot be resolved as a mapping]`;
+ 
+-exports[`H7J7.yaml: Node anchor not indented 1`] = `[YAMLSyntaxError: A PLAIN node cannot be resolved as a mapping]`;
++exports[`H7J7.yaml: Node anchor not indented 1`] = `[YAMLSyntaxError: All mapping items must start at the same column]`;
+ 
+ exports[`HM87.yaml - Scalars in flow start with syntax char 1`] = `
+ {
+@@ -106396,7 +106396,7 @@ exports[`HS5T.yaml: Spec Example 7.12. Plain Lines 1`] = `
+ 
+ exports[`HU3P.yaml - Invalid Mapping in plain scalar 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
+ 
+-exports[`HU3P.yaml: Invalid Mapping in plain scalar 1`] = `[YAMLSyntaxError: Implicit map keys need to be on a single line]`;
++exports[`HU3P.yaml: Invalid Mapping in plain scalar 1`] = `[YAMLSyntaxError: Implicit keys need to be on a single line]`;
+ 
+ exports[`HWV9.yaml - Document-end marker 1`] = `
+ {
+@@ -111658,7 +111658,7 @@ exports[`JEF9-2.yaml: Trailing whitespace in streams 1`] = `
+                       },
+                       "tag": null,
+                       "type": "blockLiteral",
+-                      "value": "   
++                      "value": "
+ ",
+                     },
+                   ],
+@@ -112936,7 +112936,7 @@ exports[`JHB9.yaml: Spec Example 2.7. Two Documents in a Stream 1`] = `
+ 
+ exports[`JKF3.yaml - Multiline unidented double quoted block key 1`] = `[YAMLSyntaxError: Multi-line double-quoted string needs to be sufficiently indented]`;
+ 
+-exports[`JKF3.yaml: Multiline unidented double quoted block key 1`] = `[YAMLSyntaxError: Multi-line double-quoted string needs to be sufficiently indented]`;
++exports[`JKF3.yaml: Multiline unidented double quoted block key 1`] = `[YAMLSyntaxError: Missing closing "quote]`;
+ 
+ exports[`JQ4R.yaml - Spec Example 8.14. Block Sequence 1`] = `
+ {
+@@ -116686,7 +116686,7 @@ exports[`JTV5.yaml: Block Mapping with Multiline Scalars 1`] = `
+ 
+ exports[`JY7Z.yaml - Trailing content that looks like a mapping 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`JY7Z.yaml: Trailing content that looks like a mapping 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`JY7Z.yaml: Trailing content that looks like a mapping 1`] = `[YAMLSyntaxError: Nested mappings are not allowed in compact mappings]`;
+ 
+ exports[`K3WX.yaml - Colon and adjacent value after comment on next line 1`] = `
+ {
+@@ -118480,8 +118480,8 @@ exports[`K858.yaml: Spec Example 8.6. Empty Scalar Chomping 1`] = `
+                           "position": {
+                             "end": {
+                               "column": 1,
+-                              "line": 2,
+-                              "offset": 10,
++                              "line": 3,
++                              "offset": 11,
+                             },
+                             "start": {
+                               "column": 8,
+@@ -118499,8 +118499,8 @@ exports[`K858.yaml: Spec Example 8.6. Empty Scalar Chomping 1`] = `
+                       "position": {
+                         "end": {
+                           "column": 1,
+-                          "line": 2,
+-                          "offset": 10,
++                          "line": 3,
++                          "offset": 11,
+                         },
+                         "start": {
+                           "column": 6,
+@@ -118516,8 +118516,8 @@ exports[`K858.yaml: Spec Example 8.6. Empty Scalar Chomping 1`] = `
+                   "position": {
+                     "end": {
+                       "column": 1,
+-                      "line": 2,
+-                      "offset": 10,
++                      "line": 3,
++                      "offset": 11,
+                     },
+                     "start": {
+                       "column": 1,
+@@ -118581,8 +118581,8 @@ exports[`K858.yaml: Spec Example 8.6. Empty Scalar Chomping 1`] = `
+                           "position": {
+                             "end": {
+                               "column": 1,
+-                              "line": 4,
+-                              "offset": 19,
++                              "line": 5,
++                              "offset": 20,
+                             },
+                             "start": {
+                               "column": 7,
+@@ -118600,8 +118600,8 @@ exports[`K858.yaml: Spec Example 8.6. Empty Scalar Chomping 1`] = `
+                       "position": {
+                         "end": {
+                           "column": 1,
+-                          "line": 4,
+-                          "offset": 19,
++                          "line": 5,
++                          "offset": 20,
+                         },
+                         "start": {
+                           "column": 5,
+@@ -118617,8 +118617,8 @@ exports[`K858.yaml: Spec Example 8.6. Empty Scalar Chomping 1`] = `
+                   "position": {
+                     "end": {
+                       "column": 1,
+-                      "line": 4,
+-                      "offset": 19,
++                      "line": 5,
++                      "offset": 20,
+                     },
+                     "start": {
+                       "column": 1,
+@@ -122700,7 +122700,7 @@ exports[`KMK3.yaml: Block Submapping 1`] = `
+ 
+ exports[`KS4U.yaml - Invalid item after end of flow sequence 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
+ 
+-exports[`KS4U.yaml: Invalid item after end of flow sequence 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
++exports[`KS4U.yaml: Invalid item after end of flow sequence 1`] = `[YAMLSyntaxError: Unexpected scalar at node end]`;
+ 
+ exports[`KSS4.yaml - Scalars on --- line 1`] = `
+ {
+@@ -123960,8 +123960,8 @@ exports[`L24T.yaml: Trailing line of spaces 1`] = `
+                           "position": {
+                             "end": {
+                               "column": 1,
+-                              "line": 3,
+-                              "offset": 11,
++                              "line": 4,
++                              "offset": 15,
+                             },
+                             "start": {
+                               "column": 6,
+@@ -123972,6 +123972,7 @@ exports[`L24T.yaml: Trailing line of spaces 1`] = `
+                           "tag": null,
+                           "type": "blockLiteral",
+                           "value": "x
++ 
+ ",
+                         },
+                       ],
+@@ -123980,8 +123981,8 @@ exports[`L24T.yaml: Trailing line of spaces 1`] = `
+                       "position": {
+                         "end": {
+                           "column": 1,
+-                          "line": 3,
+-                          "offset": 11,
++                          "line": 4,
++                          "offset": 15,
+                         },
+                         "start": {
+                           "column": 4,
+@@ -123997,8 +123998,8 @@ exports[`L24T.yaml: Trailing line of spaces 1`] = `
+                   "position": {
+                     "end": {
+                       "column": 1,
+-                      "line": 3,
+-                      "offset": 11,
++                      "line": 4,
++                      "offset": 15,
+                     },
+                     "start": {
+                       "column": 1,
+@@ -124014,8 +124015,8 @@ exports[`L24T.yaml: Trailing line of spaces 1`] = `
+               "position": {
+                 "end": {
+                   "column": 1,
+-                  "line": 3,
+-                  "offset": 11,
++                  "line": 4,
++                  "offset": 15,
+                 },
+                 "start": {
+                   "column": 1,
+@@ -124372,6 +124373,7 @@ exports[`L24T-2.yaml: Trailing line of spaces 1`] = `
+                           "tag": null,
+                           "type": "blockLiteral",
+                           "value": "x
++ 
+ ",
+                         },
+                       ],
+@@ -126334,7 +126336,7 @@ exports[`LE5A.yaml: Spec Example 7.24. Flow Nodes 1`] = `
+ }
+ `;
+ 
+-exports[`LHL4.yaml: Invalid tag 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
++exports[`LHL4.yaml: Invalid tag 1`] = `[YAMLSyntaxError: Tags and anchors must be separated from the next token by white space]`;
+ 
+ exports[`LP6E.yaml - Whitespace After Scalars in Flow 1`] = `
+ {
+@@ -137100,11 +137102,11 @@ exports[`MZX3.yaml: Non-Specific Tags on Scalars 1`] = `
+ 
+ exports[`N4JP.yaml - Bad indentation in mapping 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`N4JP.yaml: Bad indentation in mapping 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`N4JP.yaml: Bad indentation in mapping 1`] = `[YAMLSyntaxError: All mapping items must start at the same column]`;
+ 
+ exports[`N782.yaml - Invalid document markers in flow style 1`] = `[YAMLSyntaxError: Expected flow sequence to end with ]]`;
+ 
+-exports[`N782.yaml: Invalid document markers in flow style 1`] = `[YAMLSyntaxError: Expected flow sequence to end with ]]`;
++exports[`N782.yaml: Invalid document markers in flow style 1`] = `[YAMLSyntaxError: Flow sequence must end with a ]]`;
+ 
+ exports[`NAT4.yaml - Various empty or newline only quoted strings 1`] = `
+ {
+@@ -143090,7 +143092,7 @@ exports[`P2AD.yaml: Spec Example 8.1. Block Scalar Header 1`] = `
+ 
+ exports[`P2EQ.yaml - Invalid sequene item on same line as previous item 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`P2EQ.yaml: Invalid sequene item on same line as previous item 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`P2EQ.yaml: Invalid sequene item on same line as previous item 1`] = `[YAMLSyntaxError: Unexpected seq-item-ind at node end]`;
+ 
+ exports[`P76L.yaml - Spec Example 6.19. Secondary Tag Handle 1`] = `
+ {
+@@ -147620,7 +147622,7 @@ exports[`PW8X.yaml: Anchors on Empty Scalars 1`] = `
+ 
+ exports[`Q4CL.yaml - Trailing content after quoted value 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`Q4CL.yaml: Trailing content after quoted value 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`Q4CL.yaml: Trailing content after quoted value 1`] = `[YAMLSyntaxError: Unexpected scalar at node end]`;
+ 
+ exports[`Q5MG.yaml - Tab at beginning of line followed by a flow mapping 1`] = `
+ {
+@@ -150368,7 +150370,7 @@ exports[`Q88A.yaml: Spec Example 7.23. Flow Content 1`] = `
+ 
+ exports[`QB6E.yaml - Wrong indented multiline quoted scalar 1`] = `[YAMLSyntaxError: Multi-line double-quoted string needs to be sufficiently indented]`;
+ 
+-exports[`QB6E.yaml: Wrong indented multiline quoted scalar 1`] = `[YAMLSyntaxError: Multi-line double-quoted string needs to be sufficiently indented]`;
++exports[`QB6E.yaml: Wrong indented multiline quoted scalar 1`] = `[YAMLSyntaxError: Missing closing "quote]`;
+ 
+ exports[`QF4Y.yaml - Spec Example 7.19. Single Pair Flow Mappings 1`] = `
+ {
+@@ -150770,7 +150772,7 @@ exports[`QF4Y.yaml: Spec Example 7.19. Single Pair Flow Mappings 1`] = `
+ 
+ exports[`QLJ7.yaml - Tag shorthand used in documents but only defined in the first 1`] = `[YAMLSyntaxError: The !prefix! tag handle is non-default and was not declared.]`;
+ 
+-exports[`QLJ7.yaml: Tag shorthand used in documents but only defined in the first 1`] = `[YAMLSyntaxError: The !prefix! tag handle is non-default and was not declared.]`;
++exports[`QLJ7.yaml: Tag shorthand used in documents but only defined in the first 1`] = `[YAMLSyntaxError: Could not resolve tag: !prefix!B]`;
+ 
+ exports[`QT73.yaml - Comment and document-end marker 1`] = `
+ {
+@@ -152580,7 +152582,7 @@ exports[`R52L.yaml: Nested flow mapping sequence and mappings 1`] = `
+ 
+ exports[`RHX7.yaml - YAML directive without document end marker 1`] = `[YAMLSyntaxError: Implicit map keys need to be followed by map values]`;
+ 
+-exports[`RHX7.yaml: YAML directive without document end marker 1`] = `[YAMLSyntaxError: Implicit map keys need to be followed by map values]`;
++exports[`RHX7.yaml: YAML directive without document end marker 1`] = `[YAMLSyntaxError: Plain value cannot start with directive indicator character %]`;
+ 
+ exports[`RLU9.yaml - Sequence Indent 1`] = `
+ {
+@@ -154240,7 +154242,7 @@ exports[`RTP8.yaml: Spec Example 9.2. Document Markers 1`] = `
+ 
+ exports[`RXY3.yaml - Invalid document-end marker in single quoted string 1`] = `[YAMLSyntaxError: Document boundary indicators are not allowed within string values]`;
+ 
+-exports[`RXY3.yaml: Invalid document-end marker in single quoted string 1`] = `[YAMLSyntaxError: Document boundary indicators are not allowed within string values]`;
++exports[`RXY3.yaml: Invalid document-end marker in single quoted string 1`] = `[YAMLSyntaxError: Missing closing 'quote]`;
+ 
+ exports[`RZP5.yaml - Various Trailing Comments [1.3] 1`] = `
+ {
+@@ -161326,7 +161328,7 @@ exports[`S3PD.yaml: Spec Example 8.18. Implicit Block Mapping Entries 1`] = `
+ 
+ exports[`S4GJ.yaml - Invalid text after block scalar indicator 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`S4GJ.yaml: Invalid text after block scalar indicator 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`S4GJ.yaml: Invalid text after block scalar indicator 1`] = `[YAMLSyntaxError: Not a YAML token: first line]`;
+ 
+ exports[`S4JQ.yaml - Spec Example 6.28. Non-Specific Tags 1`] = `
+ {
+@@ -165956,7 +165958,7 @@ exports[`SU74.yaml: Anchor and alias as mapping key 1`] = `[YAMLSyntaxError: An
+ 
+ exports[`SY6V.yaml - Anchor before sequence entry on same line 1`] = `[YAMLSyntaxError: Sequence items cannot have tags or anchors before the - indicator]`;
+ 
+-exports[`SY6V.yaml: Anchor before sequence entry on same line 1`] = `[YAMLSyntaxError: Sequence items cannot have tags or anchors before the - indicator]`;
++exports[`SY6V.yaml: Anchor before sequence entry on same line 1`] = `[YAMLSyntaxError: Missing newline after block sequence props]`;
+ 
+ exports[`SYW4.yaml - Spec Example 2.2. Mapping Scalars to Scalars 1`] = `
+ {
+@@ -167553,9 +167555,9 @@ text
+           ],
+           "position": {
+             "end": {
+-              "column": 1,
+-              "line": 10,
+-              "offset": 47,
++              "column": 11,
++              "line": 9,
++              "offset": 46,
+             },
+             "start": {
+               "column": 5,
+@@ -167570,9 +167572,9 @@ text
+       "documentEndMarker": false,
+       "position": {
+         "end": {
+-          "column": 1,
+-          "line": 10,
+-          "offset": 47,
++          "column": 11,
++          "line": 9,
++          "offset": 46,
+         },
+         "start": {
+           "column": 1,
+@@ -167620,11 +167622,11 @@ text
+ 
+ exports[`T833.yaml - Flow mapping missing a separating comma 1`] = `[YAMLSyntaxError: Flow map contains an unexpected :]`;
+ 
+-exports[`T833.yaml: Flow mapping missing a separating comma 1`] = `[YAMLSyntaxError: Flow map contains an unexpected :]`;
++exports[`T833.yaml: Flow mapping missing a separating comma 1`] = `[YAMLSyntaxError: Implicit keys need to be on a single line]`;
+ 
+ exports[`TD5N.yaml - Invalid scalar after sequence 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
+ 
+-exports[`TD5N.yaml: Invalid scalar after sequence 1`] = `[YAMLSyntaxError: Document contains trailing content not separated by a ... or --- line]`;
++exports[`TD5N.yaml: Invalid scalar after sequence 1`] = `[YAMLSyntaxError: Unexpected scalar at node end]`;
+ 
+ exports[`TE2A.yaml - Spec Example 8.16. Block Mappings 1`] = `
+ {
+@@ -173348,7 +173350,7 @@ exports[`U9NS.yaml: Spec Example 2.8. Play by Play Feed from a Game 1`] = `
+ 
+ exports[`U44R.yaml - Bad indentation in mapping (2) 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`U44R.yaml: Bad indentation in mapping (2) 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`U44R.yaml: Bad indentation in mapping (2) 1`] = `[YAMLSyntaxError: All mapping items must start at the same column]`;
+ 
+ exports[`UDM2.yaml - Plain URL in flow mapping 1`] = `
+ {
+@@ -183726,7 +183728,7 @@ exports[`V55R.yaml: Aliases in Block Sequence 1`] = `
+ 
+ exports[`VJP3.yaml - Flow collections over many lines 1`] = `[YAMLSyntaxError: Insufficient indentation in flow collection]`;
+ 
+-exports[`VJP3.yaml: Flow collections over many lines 1`] = `[YAMLSyntaxError: Insufficient indentation in flow collection]`;
++exports[`VJP3.yaml: Flow collections over many lines 1`] = `[YAMLSyntaxError: Flow map in block collection must be sufficiently indented and end with a }]`;
+ 
+ exports[`VJP3-2.yaml - Flow collections over many lines 1`] = `
+ {
+@@ -192681,7 +192683,8 @@ exports[`Y79Y-2.yaml: Tabs in various contexts 1`] = `
+                           },
+                           "tag": null,
+                           "type": "blockLiteral",
+-                          "value": "",
++                          "value": "	
++",
+                         },
+                       ],
+                       "endComments": [],
+@@ -192888,7 +192891,7 @@ exports[`Y79Y-2.yaml: Tabs in various contexts 1`] = `
+ 
+ exports[`Y79Y-4.yaml - Tabs in various contexts 1`] = `[YAMLSyntaxError: Insufficient indentation in flow collection]`;
+ 
+-exports[`Y79Y-4.yaml: Tabs in various contexts 1`] = `[YAMLSyntaxError: Insufficient indentation in flow collection]`;
++exports[`Y79Y-4.yaml: Tabs in various contexts 1`] = `[YAMLSyntaxError: Flow sequence in block collection must be sufficiently indented and end with a ]]`;
+ 
+ exports[`Y79Y-11.yaml - Tabs in various contexts 1`] = `
+ {
+@@ -197992,7 +197995,7 @@ exports[`ZL4Z.yaml: Invalid nested mapping 1`] = `[YAMLSyntaxError: Nested mappi
+ 
+ exports[`ZVH3.yaml - Wrong indented sequence item 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
+ 
+-exports[`ZVH3.yaml: Wrong indented sequence item 1`] = `[YAMLSyntaxError: All collection items must start at the same column]`;
++exports[`ZVH3.yaml: Wrong indented sequence item 1`] = `[YAMLSyntaxError: All sequence items must start at the same column]`;
+ 
+ exports[`ZWK4.yaml - Key with anchor after missing explicit mapping value 1`] = `
+ {
+diff --git a/src/attach.ts b/src/attach.ts
+index 3f3b0f6..7ae5d93 100644
+--- a/src/attach.ts
++++ b/src/attach.ts
+@@ -123,7 +123,7 @@ function attachComment(
+ 
+   const { trailingAttachableNode } = nodeTable[commentLine - 1];
+   if (trailingAttachableNode) {
+-    // istanbul ignore next
++    // istanbul ignore if -- @preserve
+     if (trailingAttachableNode.trailingComment) {
+       throw new Error(
+         `Unexpected multiple trailing comment at ${getPointText(
+diff --git a/src/constants.ts b/src/constants.ts
+deleted file mode 100644
+index 1a43117..0000000
+--- a/src/constants.ts
++++ /dev/null
+@@ -1,5 +0,0 @@
+-export enum PropLeadingCharacter {
+-  Tag = "!",
+-  Anchor = "&",
+-  Comment = "#",
+-}
+diff --git a/src/cst.ts b/src/cst.ts
+new file mode 100644
+index 0000000..1edc0fd
+--- /dev/null
++++ b/src/cst.ts
+@@ -0,0 +1,118 @@
++import type * as YAML from "yaml";
++
++// Subdivide YAML.CST.SourceToken
++export type SpaceSourceToken = YAML.CST.SourceToken & {
++  type: "space" | "newline";
++};
++export type CommentSourceToken = YAML.CST.SourceToken & { type: "comment" };
++export type DocStartSourceToken = YAML.CST.SourceToken & { type: "doc-start" };
++export type TagSourceToken = YAML.CST.SourceToken & { type: "tag" };
++export type AnchorSourceToken = YAML.CST.SourceToken & { type: "anchor" };
++export type SeqItemIndSourceToken = YAML.CST.SourceToken & {
++  type: "seq-item-ind";
++};
++export type ExplicitKeyIndSourceToken = YAML.CST.SourceToken & {
++  type: "explicit-key-ind";
++};
++export type MapValueIndSourceToken = YAML.CST.SourceToken & {
++  type: "map-value-ind";
++};
++export type FlowMapEndSourceToken = YAML.CST.SourceToken & {
++  type: "flow-map-end";
++};
++export type FlowSeqEndSourceToken = YAML.CST.SourceToken & {
++  type: "flow-seq-end";
++};
++export type CommaSourceToken = YAML.CST.SourceToken & { type: "comma" };
++export type BlockScalarHeaderSourceToken = YAML.CST.SourceToken & {
++  type: "block-scalar-header";
++};
++export type OtherSourceToken = YAML.CST.SourceToken & {
++  type: Exclude<
++    YAML.CST.SourceToken["type"],
++    (
++      | SpaceSourceToken
++      | CommentSourceToken
++      | DocStartSourceToken
++      | TagSourceToken
++      | AnchorSourceToken
++      | SeqItemIndSourceToken
++      | ExplicitKeyIndSourceToken
++      | MapValueIndSourceToken
++      | FlowMapEndSourceToken
++      | FlowSeqEndSourceToken
++      | CommaSourceToken
++      | BlockScalarHeaderSourceToken
++    )["type"]
++  >;
++};
++export type SourceToken =
++  | CommentSourceToken
++  | DocStartSourceToken
++  | TagSourceToken
++  | AnchorSourceToken
++  | SeqItemIndSourceToken
++  | ExplicitKeyIndSourceToken
++  | MapValueIndSourceToken
++  | FlowMapEndSourceToken
++  | FlowSeqEndSourceToken
++  | CommaSourceToken
++  | BlockScalarHeaderSourceToken
++  | OtherSourceToken;
++
++// Subdivide YAML.CST.FlowScalar
++export type DoubleQuotedFlowScalar = YAML.CST.FlowScalar & {
++  type: "double-quoted-scalar";
++};
++export type SingleQuotedFlowScalar = YAML.CST.FlowScalar & {
++  type: "single-quoted-scalar";
++};
++export type OtherFlowScalar = YAML.CST.FlowScalar & {
++  type: Exclude<
++    YAML.CST.FlowScalar["type"],
++    (DoubleQuotedFlowScalar | SingleQuotedFlowScalar)["type"]
++  >;
++};
++export type FlowScalar =
++  | DoubleQuotedFlowScalar
++  | SingleQuotedFlowScalar
++  | OtherFlowScalar;
++
++/**
++ * Generator to iterate over tokens, skipping space and newline tokens.
++ */
++export function* tokens<T extends YAML.CST.Token>(
++  ...tokensArgs: (Iterable<T> | undefined)[]
++): Iterable<Exclude<T, YAML.CST.SourceToken> | SourceToken> {
++  for (const tokens of tokensArgs) {
++    if (!tokens) continue;
++    for (const token of tokens) {
++      if (isSpace(token)) continue;
++      yield token as Exclude<T, YAML.CST.SourceToken> | SourceToken;
++    }
++  }
++}
++
++/**
++ * Type guard to check if a token is a space or newline token.
++ */
++function isSpace<T extends YAML.CST.Token["type"]>(token: {
++  type: T;
++}): token is { type: T & ("space" | "newline") } {
++  return token.type === "space" || token.type === "newline";
++}
++
++export type ContentPropertyToken =
++  | CommentSourceToken
++  | TagSourceToken
++  | AnchorSourceToken;
++/**
++ * Type guard to check if a token is a content property token (comment, tag, or anchor).
++ */
++export function maybeContentPropertyToken(
++  token: YAML.CST.SourceToken,
++): token is ContentPropertyToken {
++  return (
++    token.type === "comment" || token.type === "tag" || token.type === "anchor"
++  );
++}
+diff --git a/src/factories/point.ts b/src/factories/point.ts
+deleted file mode 100644
+index 0ebf004..0000000
+--- a/src/factories/point.ts
++++ /dev/null
+@@ -1,9 +0,0 @@
+-import { type Point } from "../types.js";
+-
+-export function createPoint(
+-  offset: number,
+-  line: number,
+-  column: number,
+-): Point {
+-  return { offset, line, column };
+-}
+diff --git a/src/factories/position.ts b/src/factories/position.ts
+index 05d2ce2..a79d870 100644
+--- a/src/factories/position.ts
++++ b/src/factories/position.ts
+@@ -1,4 +1,4 @@
+-import { type Point, type Position } from "../types.js";
++import type { Point, Position } from "../types.js";
+ 
+ export function createPosition(start: Point, end: Point): Position {
+   return { start, end };
+diff --git a/src/helpers.ts b/src/helpers.ts
+index 70275bb..9471a7a 100644
+--- a/src/helpers.ts
++++ b/src/helpers.ts
+@@ -1,5 +1,4 @@
+ import { wrap } from "jest-snapshot-serializer-raw";
+-import { type YAMLSemanticError, type YAMLSyntaxError } from "yaml/util";
+ import { parse } from "./parse.js";
+ import {
+   type Anchor,
+@@ -8,6 +7,7 @@ import {
+   type Position,
+   type Root,
+   type Tag,
++  type YAMLSyntaxError,
+   type YamlUnistNode,
+ } from "./types.js";
+ 
+@@ -334,14 +334,13 @@ export function testSyntaxError(text: string, message?: string) {
+     }
+     test(message || error.message, () => {
+       expect(
+-        // @ts-expect-error -- FIXME
+         error.message + "\n" + codeFrameColumns(error.source, error.position),
+       ).toMatchSnapshot();
+     });
+   }
+ }
+ 
+-function isYAMLError(e: any): e is YAMLSyntaxError | YAMLSemanticError {
++function isYAMLError(e: any): e is YAMLSyntaxError {
+   return (
+     e instanceof Error &&
+     (e.name === "YAMLSyntaxError" || e.name === "YAMLSemanticError")
+diff --git a/src/options.test.ts b/src/options.test.ts
+index cf82153..c8a2b2e 100644
+--- a/src/options.test.ts
++++ b/src/options.test.ts
+@@ -19,11 +19,9 @@ for (const { type, text } of [
+   { type: "flowMapping", text: `{"a":1,"a":2}` },
+ ]) {
+   test(`(${type}): duplicate keys in ${text}`, () => {
+-    expect(() => parse(text)).toThrowError(
+-      `Map keys must be unique; "a" is repeated`,
+-    );
++    expect(() => parse(text)).toThrowError(`Map keys must be unique`);
+     expect(() => parse(text, { allowDuplicateKeysInMap: false })).toThrowError(
+-      `Map keys must be unique; "a" is repeated`,
++      `Map keys must be unique`,
+     );
+     const ast = parse(text, { allowDuplicateKeysInMap: true });
+     expect(ast).toBeDefined();
+diff --git a/src/parse.ts b/src/parse.ts
+index 0ce98dd..fbace58 100644
+--- a/src/parse.ts
++++ b/src/parse.ts
+@@ -1,63 +1,47 @@
+-import YAML from "yaml";
+-import { YAMLSemanticError } from "yaml/util";
++import * as YAML from "yaml";
+ import { attachComments } from "./attach.js";
+ import { createRoot } from "./factories/root.js";
+-import { removeCstBlankLine } from "./preprocess.js";
+ import Context from "./transforms/context.js";
+ import { transformError } from "./transforms/error.js";
+-import type { Document } from "./types.js";
+-import { type ParseOptions, type Root } from "./types.js";
++import type { ParseOptions, Root } from "./types.js";
+ import { removeFakeNodes } from "./utils/remove-fake-nodes.js";
+ import { updatePositions } from "./utils/update-positions.js";
+ 
+-const MAP_KEY_DUPLICATE_ERROR_MESSAGE_PREFIX = 'Map keys must be unique; "';
+-const MAP_KEY_DUPLICATE_ERROR_MESSAGE_SUFFIX = '" is repeated';
+-const ERROR_MESSAGE_SHOULD_ALWAYS_IGNORE = `${MAP_KEY_DUPLICATE_ERROR_MESSAGE_PREFIX}<<${MAP_KEY_DUPLICATE_ERROR_MESSAGE_SUFFIX}`;
+-function shouldIgnoreError(
+-  error: unknown,
+-  allowDuplicateKeysInMap: boolean | undefined,
+-): boolean | undefined {
+-  if (!(error instanceof YAMLSemanticError)) {
+-    return false;
+-  }
+-  // TODO: Use `code` not `message` to check after upgrade to yaml@2
+-  const { message } = error;
+-  return (
+-    message === ERROR_MESSAGE_SHOULD_ALWAYS_IGNORE ||
+-    (allowDuplicateKeysInMap &&
+-      message.startsWith(MAP_KEY_DUPLICATE_ERROR_MESSAGE_PREFIX) &&
+-      message.endsWith(MAP_KEY_DUPLICATE_ERROR_MESSAGE_SUFFIX))
+-  );
+-}
+-
+ export function parse(text: string, options?: ParseOptions): Root {
+-  const allowDuplicateKeysInMap = options?.allowDuplicateKeysInMap;
+-  const cst = YAML.parseCST(text);
+-  const context = new Context(cst, text);
+-  const documents: Document[] = [];
++  // const allowDuplicateKeysInMap = options?.allowDuplicateKeysInMap;
++  const parser = new YAML.Parser();
++  const composer = new YAML.Composer({
++    keepSourceTokens: true,
++    uniqueKeys: true,
++  });
++  const documentNodes: YAML.Document.Parsed[] = [];
++  const cstTokens: YAML.CST.Token[] = [];
++  const context = new Context(text);
+ 
+-  for (const cstDocument of cst) {
+-    const yamlDocument = new YAML.Document({
+-      merge: false,
+-      keepCstNodes: true,
+-    }).parse(cstDocument);
++  for (const cst of parser.parse(text)) {
++    cstTokens.push(cst);
++    for (const doc of composer.next(cst)) {
++      documentNodes.push(doc);
++    }
++  }
++
++  for (const doc of composer.end()) {
++    documentNodes.push(doc);
++  }
+ 
+-    for (const error of yamlDocument.errors) {
+-      if (shouldIgnoreError(error, allowDuplicateKeysInMap)) {
++  const allowDuplicateKeysInMap = options?.allowDuplicateKeysInMap;
++  for (const doc of documentNodes) {
++    for (const error of doc.errors) {
++      if (shouldIgnoreError(text, error, allowDuplicateKeysInMap)) {
+         continue;
+       }
+       throw transformError(error, context);
+     }
+-
+-    removeCstBlankLine(yamlDocument.cstNode!);
+-
+-    const document = context.transformNode(yamlDocument);
+-    documents.push(document);
+   }
+ 
+   const root = createRoot(
+     context.transformRange({ origStart: 0, origEnd: text.length }),
+-    documents,
++    context.transformDocuments(documentNodes, cstTokens),
+     context.comments,
+   );
+ 
+@@ -67,3 +51,31 @@ export function parse(text: string, options?: ParseOptions): Root {
+ 
+   return root;
+ }
++
++const ERROR_CODE_DUPLICATE_KEY = "DUPLICATE_KEY";
++function shouldIgnoreError(
++  text: string,
++  error: unknown,
++  allowDuplicateKeysInMap: boolean | undefined,
++): boolean | undefined {
++  if (
++    !(
++      error instanceof YAML.YAMLParseError &&
++      error.code === ERROR_CODE_DUPLICATE_KEY
++    )
++  ) {
++    return false;
++  }
++
++  if (allowDuplicateKeysInMap) {
++    return true;
++  }
++
++  const index = error.pos[0];
++  const character = text.charAt(index);
++  const key =
++    character === "<"
++      ? text.slice(index, index + 2)
++      : text.slice(index + 1, index + 3);
++  return key === "<<";
++}
+diff --git a/src/preprocess.ts b/src/preprocess.ts
+deleted file mode 100644
+index c6a50f5..0000000
+--- a/src/preprocess.ts
++++ /dev/null
+@@ -1,79 +0,0 @@
+-import type * as YAML from "yaml";
+-
+-type YamlCstNode =
+-  | YAML.CST.Alias
+-  | YAML.CST.BlankLine
+-  | YAML.CST.BlockFolded
+-  | YAML.CST.BlockLiteral
+-  | YAML.CST.BlockValue
+-  | YAML.CST.Comment
+-  | YAML.CST.Directive
+-  | YAML.CST.Document
+-  | YAML.CST.FlowCollection
+-  | YAML.CST.FlowMap
+-  | YAML.CST.FlowSeq
+-  | YAML.CST.Map
+-  | YAML.CST.MapItem
+-  | YAML.CST.MapKey
+-  | YAML.CST.MapValue
+-  | YAML.CST.PlainValue
+-  | YAML.CST.QuoteDouble
+-  | YAML.CST.QuoteSingle
+-  | YAML.CST.QuoteValue
+-  | YAML.CST.Seq
+-  | YAML.CST.SeqItem;
+-
+-export function removeCstBlankLine(node: YamlCstNode) {
+-  switch (node.type) {
+-    case "DOCUMENT":
+-      for (let i = node.contents.length - 1; i >= 0; i--) {
+-        if (node.contents[i].type === "BLANK_LINE") {
+-          node.contents.splice(i, 1);
+-        } else {
+-          removeCstBlankLine(node.contents[i]);
+-        }
+-      }
+-      for (let i = node.directives.length - 1; i >= 0; i--) {
+-        if (node.directives[i].type === "BLANK_LINE") {
+-          node.directives.splice(i, 1);
+-        }
+-      }
+-      break;
+-    case "FLOW_MAP":
+-    case "FLOW_SEQ":
+-    case "MAP":
+-    case "SEQ":
+-      for (let i = node.items.length - 1; i >= 0; i--) {
+-        const item = node.items[i];
+-        if ("char" in item) {
+-          continue;
+-        }
+-        if (item.type === "BLANK_LINE") {
+-          node.items.splice(i, 1);
+-        } else {
+-          removeCstBlankLine(item);
+-        }
+-      }
+-      break;
+-    case "MAP_KEY":
+-    case "MAP_VALUE":
+-    case "SEQ_ITEM":
+-      if (node.node) {
+-        removeCstBlankLine(node.node);
+-      }
+-      break;
+-    case "ALIAS":
+-    case "BLANK_LINE":
+-    case "BLOCK_FOLDED":
+-    case "BLOCK_LITERAL":
+-    case "COMMENT":
+-    case "DIRECTIVE":
+-    case "PLAIN":
+-    case "QUOTE_DOUBLE":
+-    case "QUOTE_SINGLE":
+-      break;
+-    // istanbul ignore next
+-    default:
+-      throw new Error(`Unexpected node type ${JSON.stringify(node!.type)}`);
+-  }
+-}
+diff --git a/src/transforms/__snapshots__/alias.test.ts.snap b/src/transforms/__snapshots__/alias.test.ts.snap
+index afc20b6..39e3d36 100644
+--- a/src/transforms/__snapshots__/alias.test.ts.snap
++++ b/src/transforms/__snapshots__/alias.test.ts.snap
+@@ -12,5 +12,5 @@ exports[`An alias node must not specify any properties 1`] = `
+ "An alias node must not specify any properties
+ 1 | -·&123·hi¶
+ 2 | -·!!tag·&anchor·*123··¶
+-  |   ^^^^^^^^^^^^^^^^^^^^"
++  |                 ^^^^"
+ `;
+diff --git a/src/transforms/__snapshots__/block-folded.test.ts.snap b/src/transforms/__snapshots__/block-folded.test.ts.snap
+index a69b89f..6100824 100644
+--- a/src/transforms/__snapshots__/block-folded.test.ts.snap
++++ b/src/transforms/__snapshots__/block-folded.test.ts.snap
+@@ -144,7 +144,7 @@ blockFolded (1:1 ~ 6:1)
+   | ^
+ 6 | ¶
+   | ^
+-<blockFolded chomping="keep" indent=1 value="  123\\n  456\\n\\n\\n" />
++<blockFolded chomping="keep" indent=1 value=" 123\\n 456\\n\\n\\n" />
+ `;
+ 
+ exports[`">1\\n  123\\n  456\\n\\n\\n" 1`] = `
+@@ -159,7 +159,7 @@ blockFolded (1:1 ~ 4:1)
+   | ^
+ 5 | ¶
+ 6 | ¶
+-<blockFolded chomping="clip" indent=1 value="  123\\n  456\\n" />
++<blockFolded chomping="clip" indent=1 value=" 123\\n 456\\n" />
+ `;
+ 
+ exports[`">1-\\n  123\\n  456\\n\\n\\n" 1`] = `
+@@ -174,5 +174,5 @@ blockFolded (1:1 ~ 4:1)
+   | ^
+ 5 | ¶
+ 6 | ¶
+-<blockFolded chomping="strip" indent=1 value="  123\\n  456" />
++<blockFolded chomping="strip" indent=1 value=" 123\\n 456" />
+ `;
+diff --git a/src/transforms/__snapshots__/block-literal.test.ts.snap b/src/transforms/__snapshots__/block-literal.test.ts.snap
+index 94b61c5..cc24cd6 100644
+--- a/src/transforms/__snapshots__/block-literal.test.ts.snap
++++ b/src/transforms/__snapshots__/block-literal.test.ts.snap
+@@ -159,7 +159,7 @@ blockLiteral (1:1 ~ 6:1)
+   | ^
+ 6 | ¶
+   | ^
+-<blockLiteral chomping="keep" indent=1 value="  123\\n  456\\n\\n\\n" />
++<blockLiteral chomping="keep" indent=1 value=" 123\\n 456\\n\\n\\n" />
+ `;
+ 
+ exports[`"|1\\n  123\\n  456\\n\\n\\n" 1`] = `
+@@ -174,7 +174,7 @@ blockLiteral (1:1 ~ 4:1)
+   | ^
+ 5 | ¶
+ 6 | ¶
+-<blockLiteral chomping="clip" indent=1 value="  123\\n  456\\n" />
++<blockLiteral chomping="clip" indent=1 value=" 123\\n 456\\n" />
+ `;
+ 
+ exports[`"|1-\\n  123\\n  456\\n\\n\\n" 1`] = `
+@@ -189,5 +189,5 @@ blockLiteral (1:1 ~ 4:1)
+   | ^
+ 5 | ¶
+ 6 | ¶
+-<blockLiteral chomping="strip" indent=1 value="  123\\n  456" />
++<blockLiteral chomping="strip" indent=1 value=" 123\\n 456" />
+ `;
+diff --git a/src/transforms/__snapshots__/document.test.ts.snap b/src/transforms/__snapshots__/document.test.ts.snap
+index 7c58133..80c7bf9 100644
+--- a/src/transforms/__snapshots__/document.test.ts.snap
++++ b/src/transforms/__snapshots__/document.test.ts.snap
+@@ -1245,11 +1245,10 @@ root (1:1 ~ 3:4)
+ </root>
+ `;
+ 
+-exports[`Document contains trailing content not separated by a ... or --- line 1`] = `
+-"Document contains trailing content not separated by a ... or --- line
++exports[`Unexpected scalar at node end 1`] = `
++"Unexpected scalar at node end
+ 1 | -·123¶
+ 2 | a:¶
+-  | ^^^
+-3 | ¶
+-  | ^"
++  | ^
++3 | ¶"
+ `;
+diff --git a/src/transforms/__snapshots__/flow-collection.test.ts.snap b/src/transforms/__snapshots__/flow-collection.test.ts.snap
+index c2d0ea8..9dcb59f 100644
+--- a/src/transforms/__snapshots__/flow-collection.test.ts.snap
++++ b/src/transforms/__snapshots__/flow-collection.test.ts.snap
+@@ -1,31 +1,31 @@
+ // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+ 
+-exports[`Expected flow map to end with } 1`] = `
+-"Expected flow map to end with }
++exports[`Flow map must end with a } 1`] = `
++"Flow map must end with a }
+ 1 | {¶
+-  | ^"
++  |  ^"
+ `;
+ 
+-exports[`Flow map contains an unexpected : 1`] = `
+-"Flow map contains an unexpected :
+-1 | {·:·:·}¶
+-  | ^^^^^^^"
++exports[`Flow map must end with a } 2`] = `
++"Flow map must end with a }
++1 | {]¶
++  |  ^"
+ `;
+ 
+-exports[`Flow map contains an unexpected ? 1`] = `
+-"Flow map contains an unexpected ?
++exports[`Missing , between flow map items 1`] = `
++"Missing , between flow map items
+ 1 | {·:·?·}¶
+-  | ^^^^^^^"
++  |       ^"
+ `;
+ 
+-exports[`Flow map contains an unexpected ? 2`] = `
+-"Flow map contains an unexpected ?
+-1 | {·?·?·}¶
+-  | ^^^^^^^"
++exports[`Unexpected : in flow map 1`] = `
++"Unexpected : in flow map
++1 | {·:·:·}¶
++  |     ^"
+ `;
+ 
+-exports[`Flow map contains an unexpected ] 1`] = `
+-"Flow map contains an unexpected ]
+-1 | {]¶
+-  | ^^"
++exports[`Unexpected ? in flow map 1`] = `
++"Unexpected ? in flow map
++1 | {·?·?·}¶
++  |     ^"
+ `;
+diff --git a/src/transforms/__snapshots__/transform.test.ts.snap b/src/transforms/__snapshots__/transform.test.ts.snap
+index 6436460..7954a3f 100644
+--- a/src/transforms/__snapshots__/transform.test.ts.snap
++++ b/src/transforms/__snapshots__/transform.test.ts.snap
+@@ -1,7 +1,7 @@
+ // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+ 
+ exports[`throw if node.error is not null 1`] = `
+-"Sequence items must not have preceding content on the same line
++"Unexpected block-seq-ind on same line with key
+ 1 | a:·-·123¶
+-  |    ^^^^^"
++  |    ^"
+ `;
+diff --git a/src/transforms/alias.ts b/src/transforms/alias.ts
+index b28d1a9..016270d 100644
+--- a/src/transforms/alias.ts
++++ b/src/transforms/alias.ts
+@@ -1,19 +1,27 @@
+-import type * as YAMLTypes from "yaml/types";
++import type * as YAML from "yaml";
+ import { createAlias } from "../factories/alias.js";
+ import { type Alias } from "../types.js";
++import { extractComments } from "../utils/extract-comments.js";
+ import type Context from "./context.js";
++import { type TransformNodeProperties } from "./transform.js";
+ 
+ export function transformAlias(
+-  alias: YAMLTypes.Alias,
++  alias: YAML.Alias.Parsed,
+   context: Context,
++  props: TransformNodeProperties,
+ ): Alias {
+-  const cstNode = alias.cstNode!;
++  const srcToken = alias.srcToken!;
++  for (const token of extractComments(srcToken.end, context)) {
++    // istanbul ignore next -- @preserve
++    throw new Error(`Unexpected token type in alias end: ${token.type}`);
++  }
++
+   return createAlias(
+     context.transformRange({
+-      origStart: cstNode.valueRange!.origStart! - 1, // include the `*`
+-      origEnd: cstNode.valueRange!.origEnd!,
++      origStart: alias.range[0],
++      origEnd: alias.range[1],
+     }),
+-    context.transformContent(alias),
+-    cstNode.rawValue,
++    context.transformContentProperties(alias, props.tokens),
++    alias.source,
+   );
+ }
+diff --git a/src/transforms/block-folded.ts b/src/transforms/block-folded.ts
+index c5bf44b..6e54f43 100644
+--- a/src/transforms/block-folded.ts
++++ b/src/transforms/block-folded.ts
+@@ -1,12 +1,24 @@
+ import type * as YAML from "yaml";
++import type * as YAML_CST from "../cst.js";
+ import { createBlockFolded } from "../factories/block-folded.js";
+-import { type BlockFolded } from "../types.js";
++import type { BlockFolded } from "../types.js";
+ import { transformAstBlockValue } from "./block-value.js";
+ import type Context from "./context.js";
++import type { TransformNodeProperties } from "./transform.js";
+ 
+ export function transformBlockFolded(
+-  blockFolded: YAML.AST.BlockFolded,
++  blockFolded: YAML.Scalar.Parsed,
+   context: Context,
++  props: TransformNodeProperties,
+ ): BlockFolded {
+-  return createBlockFolded(transformAstBlockValue(blockFolded, context));
++  const srcToken: YAML_CST.FlowScalar | YAML.CST.BlockScalar | undefined =
++    blockFolded.srcToken;
++
++  // istanbul ignore if -- @preserve
++  if (!srcToken || srcToken.type !== "block-scalar") {
++    throw new Error("Expected block scalar srcToken");
++  }
++  return createBlockFolded(
++    transformAstBlockValue(blockFolded, srcToken, context, props),
++  );
+ }
+diff --git a/src/transforms/block-literal.ts b/src/transforms/block-literal.ts
+index d283637..8af4a09 100644
+--- a/src/transforms/block-literal.ts
++++ b/src/transforms/block-literal.ts
+@@ -1,12 +1,24 @@
+ import type * as YAML from "yaml";
++import type * as YAML_CST from "../cst.js";
+ import { createBlockLiteral } from "../factories/block-literal.js";
+-import { type BlockLiteral } from "../types.js";
++import type { BlockLiteral } from "../types.js";
+ import { transformAstBlockValue } from "./block-value.js";
+ import type Context from "./context.js";
++import type { TransformNodeProperties } from "./transform.js";
+ 
+ export function transformBlockLiteral(
+-  blockLiteral: YAML.AST.BlockLiteral,
++  blockLiteral: YAML.Scalar.Parsed,
+   context: Context,
++  props: TransformNodeProperties,
+ ): BlockLiteral {
+-  return createBlockLiteral(transformAstBlockValue(blockLiteral, context));
++  const srcToken: YAML_CST.FlowScalar | YAML.CST.BlockScalar | undefined =
++    blockLiteral.srcToken;
++
++  // istanbul ignore if -- @preserve
++  if (!srcToken || srcToken.type !== "block-scalar") {
++    throw new Error("Expected block scalar srcToken");
++  }
++  return createBlockLiteral(
++    transformAstBlockValue(blockLiteral, srcToken, context, props),
++  );
+ }
+diff --git a/src/transforms/block-value.ts b/src/transforms/block-value.ts
+index 15a6e52..d1d35de 100644
+--- a/src/transforms/block-value.ts
++++ b/src/transforms/block-value.ts
+@@ -1,63 +1,73 @@
+ import type * as YAML from "yaml";
++import * as YAML_CST from "../cst.js";
+ import { createBlockValue } from "../factories/block-value.js";
+-import { type BlockValue, type Comment } from "../types.js";
+-import { getPointText } from "../utils/get-point-text.js";
+-import { transformContent } from "./content.js";
++import type { BlockValue, Comment } from "../types.js";
+ import type Context from "./context.js";
+-
+-enum Chomping {
+-  CLIP = "clip",
+-  STRIP = "strip",
+-  KEEP = "keep",
+-}
++import type { TransformNodeProperties } from "./transform.js";
+ 
+ export function transformAstBlockValue(
+-  blockValue: YAML.AST.BlockFolded | YAML.AST.BlockLiteral,
++  blockValue: YAML.Scalar.Parsed,
++  srcToken: YAML.CST.BlockScalar,
+   context: Context,
++  props: TransformNodeProperties,
+ ): BlockValue {
+-  const cstNode = blockValue.cstNode!;
+-
+-  const indicatorLength = 1;
+-  const chompingLength = cstNode.chomping === "CLIP" ? 0 : 1;
+-
+-  const headerLength = cstNode.header.origEnd! - cstNode.header.origStart!;
+-  const hasExplicitBlockIndent =
+-    headerLength - indicatorLength - chompingLength !== 0;
+-
+-  const position = context.transformRange({
+-    origStart: cstNode.header.origStart!,
+-    origEnd: cstNode.valueRange!.origEnd!,
+-  });
+-
++  let blockScalarHeaderToken: YAML_CST.BlockScalarHeaderSourceToken | null =
++    null;
+   let indicatorComment: Comment | null = null;
+-  const content = transformContent(blockValue, context, comment => {
+-    const isIndicatorComment =
+-      position.start.offset < comment.position.start.offset &&
+-      comment.position.end.offset < position.end.offset;
+-
+-    if (!isIndicatorComment) {
+-      return false;
+-    }
+-
+-    // istanbul ignore next
+-    if (indicatorComment) {
++  for (const token of YAML_CST.tokens(srcToken.props)) {
++    if (token.type === "comment") {
++      indicatorComment = context.transformComment(token);
++    } else if (token.type === "block-scalar-header") {
++      blockScalarHeaderToken = token;
++    } else {
++      // istanbul ignore next -- @preserve
+       throw new Error(
+-        `Unexpected multiple indicator comments at ${getPointText(
+-          comment.position.start,
+-        )}`,
++        `Unexpected token type in block value end: ${token.type}`,
+       );
+     }
++  }
++
++  // istanbul ignore if -- @preserve
++  if (!blockScalarHeaderToken) {
++    throw new Error("Expected block scalar header token");
++  }
++
++  const headerInfo = parseHeader(blockScalarHeaderToken.source);
+ 
+-    indicatorComment = comment;
+-    return true;
++  const position = context.transformRange({
++    origStart: blockValue.range[0],
++    origEnd: blockValue.range[1],
+   });
+ 
+   return createBlockValue(
+     position,
+-    content,
+-    Chomping[cstNode.chomping],
+-    hasExplicitBlockIndent ? cstNode.blockIndent! : null,
+-    cstNode.strValue!,
++    context.transformContentProperties(blockValue, props.tokens),
++    headerInfo.chomping,
++    headerInfo.indent,
++    blockValue.source,
+     indicatorComment,
+   );
+ }
++
++/**
++ * Parse the block scalar header to extract indentation and chomping information.
++ */
++function parseHeader(header: string): {
++  indent: number | null;
++  chomping: "clip" | "keep" | "strip";
++} {
++  const parsed = /([+-]?)(\d*)([+-]?)$/u.exec(header);
++  let indent: number | null = null;
++  let chomping: "clip" | "keep" | "strip" = "clip";
++  if (parsed) {
++    indent = parsed[2] ? Number(parsed[2]) : null;
++    const chompingStr = parsed[3] || parsed[1];
++    chomping =
++      chompingStr === "+" ? "keep" : chompingStr === "-" ? "strip" : "clip";
++  }
++
++  return {
++    chomping,
++    indent,
++  };
++}
+diff --git a/src/transforms/comment.ts b/src/transforms/comment.ts
+index 3a80b49..cd61052 100644
+--- a/src/transforms/comment.ts
++++ b/src/transforms/comment.ts
+@@ -1,11 +1,17 @@
+-import type * as YAML from "yaml";
++import type * as YAML_CST from "../cst.js";
+ import { createComment } from "../factories/comment.js";
+-import { type Comment } from "../types.js";
++import type { Comment } from "../types.js";
+ import type Context from "./context.js";
+ 
+ export function transformComment(
+-  comment: YAML.CST.Comment,
++  comment: YAML_CST.CommentSourceToken,
+   context: Context,
+ ): Comment {
+-  return createComment(context.transformRange(comment.range!), comment.comment);
++  return createComment(
++    context.transformRange({
++      origStart: comment.offset,
++      origEnd: comment.offset + comment.source.length,
++    }),
++    comment.source.slice(1),
++  );
+ }
+diff --git a/src/transforms/content.ts b/src/transforms/content.ts
+index b495b75..b7229db 100644
+--- a/src/transforms/content.ts
++++ b/src/transforms/content.ts
+@@ -1,61 +1,64 @@
+ import type * as YAML from "yaml";
+-import type * as YAMLTypes from "yaml/types";
+-import { PropLeadingCharacter } from "../constants.js";
++import type * as YAML_CST from "../cst.js";
+ import { createAnchor } from "../factories/anchor.js";
+-import { createComment } from "../factories/comment.js";
+ import { createContent } from "../factories/content.js";
+ import { createTag } from "../factories/tag.js";
+-import { type Anchor, type Comment, type Content, type Tag } from "../types.js";
++import type { Anchor, Comment, Content, Range, Tag } from "../types.js";
+ import type Context from "./context.js";
+ 
+-export function transformContent(
+-  node: YAMLTypes.Node,
++export function transformContentProperties(
++  node:
++    | YAML.ParsedNode
++    | YAML.YAMLSeq.Parsed<
++        YAML.ParsedNode | YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>
++      >,
++  tokens: YAML_CST.ContentPropertyToken[],
+   context: Context,
+-  isNotMiddleComment: (comment: Comment) => boolean = () => false,
+ ): Content {
+-  const cstNode = node.cstNode!;
+-
+   const middleComments: Comment[] = [];
+ 
+-  let firstTagOrAnchorRange: YAML.CST.Range | null = null;
++  let firstTagOrAnchorRange: Range | null = null;
+ 
+   let tag: Tag | null = null;
+   let anchor: Anchor | null = null;
+ 
+-  for (const propRange of cstNode.props) {
+-    const leadingChar = context.text[propRange.origStart];
+-    switch (leadingChar) {
+-      case PropLeadingCharacter.Tag:
+-        firstTagOrAnchorRange = firstTagOrAnchorRange || propRange;
+-        tag = createTag(context.transformRange(propRange), node.tag!);
++  for (const token of tokens) {
++    const tokenRange: Range = {
++      origStart: token.offset,
++      origEnd: token.offset + token.source.length,
++    };
++    switch (token.type) {
++      case "tag":
++        {
++          firstTagOrAnchorRange = firstTagOrAnchorRange || tokenRange;
++          let resolvedTag =
++            node.tag ??
++            token.source.slice(token.source.startsWith("!!") ? 2 : 1);
++          if (resolvedTag === "!") {
++            resolvedTag = "tag:yaml.org,2002:str";
++          }
++          tag = createTag(context.transformRange(tokenRange), resolvedTag);
++        }
+         break;
+-      case PropLeadingCharacter.Anchor:
+-        firstTagOrAnchorRange = firstTagOrAnchorRange || propRange;
+-        anchor = createAnchor(
+-          context.transformRange(propRange),
+-          cstNode.anchor!,
+-        );
++      case "anchor":
++        firstTagOrAnchorRange = firstTagOrAnchorRange || tokenRange;
++        anchor = createAnchor(context.transformRange(tokenRange), node.anchor!);
+         break;
+-      case PropLeadingCharacter.Comment: {
+-        const comment = createComment(
+-          context.transformRange(propRange),
+-          context.text.slice(propRange.origStart + 1, propRange.origEnd),
+-        );
+-        context.comments.push(comment);
++      case "comment": {
++        const comment = context.transformComment(token);
+         if (
+-          !isNotMiddleComment(comment) &&
+           firstTagOrAnchorRange &&
+-          firstTagOrAnchorRange.origEnd <= propRange.origStart &&
+-          propRange.origEnd <= cstNode.valueRange!.origStart
++          firstTagOrAnchorRange.origEnd <= tokenRange.origStart &&
++          tokenRange.origEnd <= node.range[0]
+         ) {
+           middleComments.push(comment);
+         }
+         break;
+       }
+-      // istanbul ignore next
++      // istanbul ignore next -- @preserve
+       default:
+         throw new Error(
+-          `Unexpected leading character ${JSON.stringify(leadingChar)}`,
++          `Unexpected content property token type: ${(token as YAML.CST.Token).type}`,
+         );
+     }
+   }
+diff --git a/src/transforms/context.ts b/src/transforms/context.ts
+index 2fd1326..76fc10a 100644
+--- a/src/transforms/context.ts
++++ b/src/transforms/context.ts
+@@ -1,69 +1,35 @@
+ import type * as YAML from "yaml";
+-import type * as YAMLTypes from "yaml/types";
++import type * as YAML_CST from "../cst.js";
+ import { createPosition } from "../factories/position.js";
+ import type {
+   Comment,
+   Content,
+-  ParsedCST,
++  Document,
+   Point,
+   Position,
+   Range,
+ } from "../types.js";
+-import { transformContent } from "./content.js";
+-import { transformNode, type YamlNode, type YamlToUnist } from "./transform.js";
+-
+-type RangeAsLinePosGetter = (this: {
+-  range: { start: number; end: number };
+-  context: any;
+-}) => {
+-  start: { line: number; col: number };
+-  end: { line: number; col: number };
+-};
+-
+-type CSTContext = {
+-  root: { context: { src: string } };
+-};
+-
+-let rangeAsLinePosGetter: RangeAsLinePosGetter;
++import { transformComment } from "./comment.js";
++import { transformContentProperties } from "./content.js";
++import { transformDocuments } from "./document.js";
++import {
++  transformNode,
++  type TransformNodeProperties,
++  type YamlNode,
++  type YamlToUnist,
++} from "./transform.js";
+ 
+ class Context {
+   text;
+   comments: Comment[] = [];
+-  #cst;
+-  #cstContext: CSTContext | undefined;
++  #linesAndColumns: LinesAndColumns;
+ 
+-  constructor(cst: ParsedCST, text: string) {
++  constructor(text: string) {
+     this.text = text;
+-    this.#cst = cst;
+-    this.setOrigRanges();
+-  }
+-
+-  setOrigRanges() {
+-    if (this.#cst.setOrigRanges()) {
+-      return;
+-    }
+-
+-    // From `yaml/parse-cst`
+-    // https://github.com/eemeli/yaml/blob/4cdcde632ece71155f3108ec0120c1a0329a6914/src/cst/parse.js#L22
+-    for (const document of this.#cst) {
+-      document.setOrigRanges([], 0);
+-    }
++    this.#linesAndColumns = new LinesAndColumns(text);
+   }
+ 
+   #getRangePosition(range: Range): { start: Point; end: Point } {
+-    if (!rangeAsLinePosGetter) {
+-      const [document] = this.#cst;
+-      const Node = Object.getPrototypeOf(
+-        Object.getPrototypeOf(document),
+-      ) as YAML.CST.Node;
+-      rangeAsLinePosGetter = Object.getOwnPropertyDescriptor(
+-        Node,
+-        "rangeAsLinePos",
+-      )!.get as RangeAsLinePosGetter;
+-    }
+-
+-    this.#cstContext ??= { root: { context: { src: this.text } } };
+-
+     if (this.text === "" && range.origStart === 0 && range.origEnd === 0) {
+       return {
+         start: { offset: 0, line: 1, column: 1 },
+@@ -71,40 +37,14 @@ class Context {
+       };
+     }
+ 
+-    const {
+-      start: { line: startLine, col: startColumn },
+-      end: { line: endLine, col: endColumn },
+-    } = rangeAsLinePosGetter.call({
+-      range: {
+-        start: this.#ensureOffsetInRange(range.origStart),
+-        end: this.#ensureOffsetInRange(range.origEnd),
+-      },
+-      context: this.#cstContext,
+-    });
+-
+     return {
+-      start: { offset: range.origStart, line: startLine, column: startColumn },
+-      end: { offset: range.origEnd, line: endLine, column: endColumn },
++      start: this.#linesAndColumns.getPoint(range.origStart),
++      end: this.#linesAndColumns.getPoint(range.origEnd),
+     };
+   }
+ 
+-  #ensureOffsetInRange(offset: number) {
+-    if (offset < 0) {
+-      return 0;
+-    }
+-
+-    if (offset > this.text.length) {
+-      return this.text.length;
+-    }
+-
+-    return offset;
+-  }
+-
+   transformOffset(offset: number): Point {
+-    return this.#getRangePosition({
+-      origStart: offset,
+-      origEnd: offset,
+-    }).start;
++    return this.#linesAndColumns.getPoint(offset);
+   }
+ 
+   transformRange(range: Range): Position {
+@@ -112,13 +52,91 @@ class Context {
+     return createPosition(start, end);
+   }
+ 
+-  transformNode<T extends YamlNode>(node: T): YamlToUnist<T> {
+-    return transformNode(node, this);
++  transformDocuments(
++    documentNodes: YAML.Document.Parsed[],
++    cstTokens: YAML.CST.Token[],
++  ): Document[] {
++    return transformDocuments(documentNodes, cstTokens, this);
++  }
++
++  transformNode<T extends YamlNode>(
++    node: T,
++    props: TransformNodeProperties,
++  ): YamlToUnist<T> {
++    return transformNode(node, this, props);
+   }
+ 
+-  transformContent(node: YAMLTypes.Node): Content {
+-    return transformContent(node, this);
++  transformComment(node: YAML_CST.CommentSourceToken): Comment {
++    const comment = transformComment(node, this);
++    this.comments.push(comment);
++    return comment;
++  }
++
++  transformContentProperties(
++    node:
++      | YAML.ParsedNode
++      | YAML.YAMLSeq.Parsed<
++          YAML.ParsedNode | YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>
++        >,
++    tokens: YAML_CST.ContentPropertyToken[],
++  ): Content {
++    return transformContentProperties(node, tokens, this);
+   }
+ }
+ 
+ export default Context;
++
++class LinesAndColumns {
++  private lineBreakIndices: number[];
++
++  constructor(text: string) {
++    this.lineBreakIndices = [];
++    for (let i = 0; i < text.length; i++) {
++      const ch = text[i];
++      if (ch === "\n") {
++        this.lineBreakIndices.push(i);
++      } else if (ch === "\r") {
++        if (i + 1 < text.length && text[i + 1] === "\n") {
++          this.lineBreakIndices.push(i + 1);
++          i++;
++        } else {
++          this.lineBreakIndices.push(i);
++        }
++      }
++    }
++  }
++
++  /**
++   * Get line and column for the given offset.
++   * @param offset 0-based offset
++   * @returns 1-based line and 1-based column
++   */
++  getPoint(offset: number): Point {
++    let low = 0;
++    let high = this.lineBreakIndices.length - 1;
++
++    while (low <= high) {
++      const mid = Math.floor((low + high) / 2);
++      const lineBreakIndex = this.lineBreakIndices[mid];
++
++      if (lineBreakIndex < offset) {
++        low = mid + 1;
++      } else if (lineBreakIndex > offset) {
++        high = mid - 1;
++      } else {
++        return {
++          line: mid + 1,
++          column:
++            mid === 0 ? offset + 1 : offset - this.lineBreakIndices[mid - 1],
++          offset,
++        };
++      }
++    }
++
++    const line = low + 1;
++    const lineStartIndex = low === 0 ? 0 : this.lineBreakIndices[low - 1] + 1;
++    const column = offset - lineStartIndex + 1;
++
++    return { line, column, offset };
++  }
++}
+diff --git a/src/transforms/directive.ts b/src/transforms/directive.ts
+index a6f3791..0339d5f 100644
+--- a/src/transforms/directive.ts
++++ b/src/transforms/directive.ts
+@@ -1,17 +1,20 @@
+ import type * as YAML from "yaml";
+ import { createDirective } from "../factories/directive.js";
+-import type { Directive, Range } from "../types.js";
+-import { extractPropComments } from "../utils/extract-prop-comments.js";
++import type { Directive } from "../types.js";
+ import type Context from "./context.js";
+ 
+ export function transformDirective(
+   directive: YAML.CST.Directive,
+   context: Context,
+ ): Directive {
+-  extractPropComments(directive, context);
++  const parts = directive.source.trim().split(/[\t ]+/);
++  const name = parts.shift()!.replace(/^%/, "");
+   return createDirective(
+-    context.transformRange(directive.range as Range),
+-    directive.name,
+-    directive.parameters,
++    context.transformRange({
++      origStart: directive.offset,
++      origEnd: directive.offset + directive.source.length,
++    }),
++    name,
++    parts,
+   );
+ }
+diff --git a/src/transforms/document-body.ts b/src/transforms/document-body.ts
+index 9ec262c..9f23a2c 100644
+--- a/src/transforms/document-body.ts
++++ b/src/transforms/document-body.ts
+@@ -1,73 +1,112 @@
+ import type * as YAML from "yaml";
++import * as YAML_CST from "../cst.js";
+ import { createDocumentBody } from "../factories/document-body.js";
+-import { type Comment, type ContentNode, type Point } from "../types.js";
++import type { Comment, ContentNode, Point } from "../types.js";
++import { extractComments } from "../utils/extract-comments.js";
++import { findCharIndex } from "../utils/find-char-index.js";
+ import { getLast } from "../utils/get-last.js";
+-import { getMatchIndex } from "../utils/get-match-index.js";
+ import { getPointText } from "../utils/get-point-text.js";
+ import type Context from "./context.js";
+ 
+ export function transformDocumentBody(
+-  document: YAML.Document,
++  docStart: YAML_CST.DocStartSourceToken | null,
++  tokensBeforeBody: YAML_CST.SourceToken[],
++  cstNode: YAML.CST.Document,
++  document: YAML.Document.Parsed,
++  tokensAfterBody: YAML_CST.SourceToken[],
++  docEnd: YAML.CST.DocumentEnd | null,
+   context: Context,
+-  headEndMarkerPoint: null | Point,
+ ) {
+-  const cstNode = document.cstNode!;
+-
+-  const {
+-    comments,
+-    endComments,
+-    documentTrailingComment,
+-    documentHeadTrailingComment,
+-  } = categorizeNodes(cstNode, context, headEndMarkerPoint);
++  const { documentTrailingComment, endComments, propTokens } = categorizeNodes(
++    tokensBeforeBody,
++    cstNode,
++    tokensAfterBody,
++    docEnd,
++    context,
++  );
+ 
+-  const content = context.transformNode(document.contents);
+-  const { position, documentEndPoint } = getPosition(cstNode, content, context);
++  const hasContent =
++    document.contents &&
++    (document.contents.range[0] < document.contents.range[1] ||
++      propTokens.some(
++        token => token.type === "tag" || token.type === "anchor",
++      ));
++
++  const content = hasContent
++    ? context.transformNode(document.contents, { tokens: propTokens })
++    : null;
++
++  if (!hasContent) {
++    // Handle comments in empty document body
++    for (const token of extractComments(propTokens, context)) {
++      // istanbul ignore next -- @preserve
++      throw new Error(
++        `Unexpected token type in empty document body: ${token.type}`,
++      );
++    }
++  }
+ 
+-  context.comments.push(...comments, ...endComments);
++  const { position, documentEndPoint } = getPosition(
++    docStart,
++    document,
++    content,
++    docEnd,
++    context,
++  );
+ 
+   return {
+     documentBody: createDocumentBody(position, content, endComments),
+     documentEndPoint,
+     documentTrailingComment,
+-    documentHeadTrailingComment,
+   };
+ }
+ 
+ function categorizeNodes(
++  tokensBeforeBody: YAML_CST.SourceToken[],
+   document: YAML.CST.Document,
++  tokensAfterBody: YAML_CST.SourceToken[],
++  docEnd: YAML.CST.DocumentEnd | null,
+   context: Context,
+-  headEndMarkerPoint: null | Point,
+ ) {
+-  const comments: Comment[] = [];
+   const endComments: Comment[] = [];
+   const documentTrailingComments: Comment[] = [];
+-  const documentHeadTrailingComments: Comment[] = [];
+-
+-  let hasContent = false;
+-  for (let i = document.contents.length - 1; i >= 0; i--) {
+-    const node = document.contents[i];
+-    if (node.type === "COMMENT") {
+-      const comment = context.transformNode(node);
+-      if (
+-        headEndMarkerPoint &&
+-        headEndMarkerPoint.line === comment.position.start.line
+-      ) {
+-        documentHeadTrailingComments.unshift(comment);
+-      } else if (hasContent) {
+-        comments.unshift(comment);
+-      } else if (
+-        comment.position.start.offset >= document.valueRange!.origEnd!
+-      ) {
+-        documentTrailingComments.unshift(comment);
++  const propTokens: YAML_CST.ContentPropertyToken[] = [];
++
++  for (const token of tokensBeforeBody) {
++    if (YAML_CST.maybeContentPropertyToken(token)) {
++      propTokens.push(token);
++      continue;
++    }
++    // istanbul ignore next -- @preserve
++    throw new Error(`Unexpected token type: ${token.type}`);
++  }
++  for (const token of extractComments(tokensAfterBody, context)) {
++    // istanbul ignore next -- @preserve
++    throw new Error(`Unexpected token type: ${token.type}`);
++  }
++
++  const docEndPoint: null | Point = docEnd
++    ? context.transformOffset(docEnd.offset)
++    : null;
++  for (const token of YAML_CST.tokens(document.end, docEnd?.end)) {
++    if (token.type === "comment") {
++      const comment = context.transformComment(token);
++      if (docEndPoint) {
++        if (docEndPoint.line === comment.position.start.line) {
++          documentTrailingComments.push(comment);
++        } else if (comment.position.start.line < docEndPoint.line) {
++          endComments.push(comment);
++        }
+       } else {
+-        comments.unshift(comment);
++        endComments.push(comment);
+       }
+-    } else {
+-      hasContent = true;
++      continue;
+     }
++    // istanbul ignore next -- @preserve
++    throw new Error(`Unexpected token type: ${token.type}`);
+   }
+ 
+-  // istanbul ignore next
++  // istanbul ignore if -- @preserve
+   if (documentTrailingComments.length > 1) {
+     throw new Error(
+       `Unexpected multiple document trailing comments at ${getPointText(
+@@ -76,52 +115,46 @@ function categorizeNodes(
+     );
+   }
+ 
+-  // istanbul ignore next
+-  if (documentHeadTrailingComments.length > 1) {
+-    throw new Error(
+-      `Unexpected multiple documentHead trailing comments at ${getPointText(
+-        documentHeadTrailingComments[1].position.start,
+-      )}`,
+-    );
+-  }
+-
+   return {
+-    comments,
++    propTokens,
+     endComments,
+     documentTrailingComment: getLast(documentTrailingComments) || null,
+-    documentHeadTrailingComment: getLast(documentHeadTrailingComments) || null,
+   };
+ }
+ 
+ function getPosition(
+-  document: YAML.CST.Document,
++  docStart: YAML_CST.DocStartSourceToken | null,
++  document: YAML.Document.Parsed,
+   content: null | ContentNode,
++  docEnd: YAML.CST.DocumentEnd | null,
+   context: Context,
+ ) {
+-  const markerIndex = getMatchIndex(
+-    context.text.slice(document.valueRange!.origEnd),
+-    /^\.\.\./,
+-  );
+-
+-  let origEnd =
+-    markerIndex === -1
+-      ? document.valueRange!.origEnd
+-      : Math.max(0, document.valueRange!.origEnd - 1);
++  let origEnd = docEnd
++    ? Math.max(0, docEnd.offset - 1)
++    : (findCharIndex(context.text, document.range[2], /\S/u) ??
++      context.text.length);
+ 
+   // CRLF fix
+   if (context.text[origEnd - 1] === "\r") {
+     origEnd--;
+   }
+ 
++  let origStart = content !== null ? content.position.start.offset : origEnd;
++  if (docStart) {
++    const docStartEnd = docStart.offset + docStart.source.length + 1;
++    if (origStart < docStartEnd && docStartEnd <= origEnd) {
++      origStart = docStartEnd;
++    }
++  }
++
+   const position = context.transformRange({
+-    origStart: content !== null ? content.position.start.offset : origEnd,
++    origStart,
+     origEnd,
+   });
+ 
+-  const documentEndPoint =
+-    markerIndex === -1
+-      ? position.end
+-      : context.transformOffset(document.valueRange!.origEnd + 3);
++  const documentEndPoint = docEnd
++    ? context.transformOffset(docEnd.offset + docEnd.source.length)
++    : position.end;
+ 
+   return { position, documentEndPoint };
+ }
+diff --git a/src/transforms/document-head.ts b/src/transforms/document-head.ts
+index f141315..0d49134 100644
+--- a/src/transforms/document-head.ts
++++ b/src/transforms/document-head.ts
+@@ -1,108 +1,126 @@
+ import type * as YAML from "yaml";
++import * as YAML_CST from "../cst.js";
+ import { createDocumentHead } from "../factories/document-head.js";
+ import type { Comment, Directive, Range } from "../types.js";
+-import { getMatchIndex } from "../utils/get-match-index.js";
+ import type Context from "./context.js";
++import { transformDirective } from "./directive.js";
+ 
+ export function transformDocumentHead(
+-  document: YAML.Document,
++  tokensBeforeBody: (YAML_CST.CommentSourceToken | YAML.CST.Directive)[],
++  cstNode: YAML.CST.Document,
++  document: YAML.Document.Parsed,
+   context: Context,
+ ) {
+-  const cstNode = document.cstNode!;
+-
+-  const { directives, comments, endComments } = categorizeNodes(
+-    cstNode,
++  const { directives, endCommentCandidates } = categorizeNodes(
++    tokensBeforeBody,
+     context,
+   );
+ 
+-  const { position, documentEndMarkererPoint } = getPosition(
+-    cstNode,
+-    directives,
+-    context,
+-  );
++  let betweenTokens: YAML_CST.SourceToken[] = [];
++  let docStart: YAML_CST.DocStartSourceToken | null = null;
++  for (const token of YAML_CST.tokens(cstNode.start)) {
++    betweenTokens.push(token);
++    if (!docStart && token.type === "doc-start") {
++      // Collect comments between directives and doc-start
++      for (const t of betweenTokens) {
++        if (t.type === "comment") {
++          const comment = context.transformComment(t);
++          endCommentCandidates.push(comment);
++        }
++      }
+ 
+-  context.comments.push(...comments, ...endComments);
++      // Reset betweenTokens to collect tokens after doc-start
++      betweenTokens = [];
+ 
+-  const createDocumentHeadWithTrailingComment = (
+-    trailingComment: null | Comment,
+-  ) => {
+-    if (trailingComment) {
+-      context.comments.push(trailingComment);
++      docStart = token;
+     }
+-    return createDocumentHead(
+-      position,
+-      directives,
+-      endComments,
+-      trailingComment,
+-    );
+-  };
++  }
++
++  const position = getPosition(directives, document, docStart, context);
++
++  let trailingComment: null | Comment = null;
++  if (docStart && betweenTokens.length > 0) {
++    const lastToken = betweenTokens[0];
++    if (lastToken.type === "comment") {
++      const loc = context.transformOffset(lastToken.offset);
++      if (loc.line === position.end.line) {
++        trailingComment = context.transformComment(lastToken);
++        // Remove from betweenTokens as it's trailing comment of document head
++        betweenTokens.shift();
++      }
++    }
++  }
++
++  const endComments = docStart ? endCommentCandidates : [];
++
++  const documentHead = createDocumentHead(
++    position,
++    directives,
++    endComments,
++    trailingComment,
++  );
+ 
+   return {
+-    createDocumentHeadWithTrailingComment,
+-    documentHeadEndMarkerPoint: documentEndMarkererPoint,
++    documentHead: documentHead,
++    docStart,
++    tokensBeforeBody: betweenTokens,
+   };
+ }
+-
+-function categorizeNodes(document: YAML.CST.Document, context: Context) {
++function categorizeNodes(
++  tokensBeforeBody: (YAML_CST.CommentSourceToken | YAML.CST.Directive)[],
++  context: Context,
++) {
+   const directives: Directive[] = [];
+-  const comments: Comment[] = [];
+-  const endComments: Comment[] = [];
++  let endCommentCandidates: Comment[] = [];
+ 
+-  let hasDirective = false;
+-  for (let i = document.directives.length - 1; i >= 0; i--) {
+-    const node = context.transformNode(document.directives[i]);
+-    if (node.type === "comment") {
+-      if (hasDirective) {
+-        comments.unshift(node);
++  let lastDirective: Directive | null = null;
++  for (const token of tokensBeforeBody) {
++    if (token.type === "comment") {
++      const node = context.transformComment(token);
++      if (
++        lastDirective &&
++        lastDirective.position.end.line === node.position.start.line &&
++        !lastDirective.trailingComment
++      ) {
++        lastDirective.trailingComment = node;
++        lastDirective.position.end = node.position.end;
+       } else {
+-        endComments.unshift(node);
++        endCommentCandidates.push(node);
+       }
+     } else {
+-      hasDirective = true;
+-      directives.unshift(node);
++      const node = transformDirective(token, context);
++      directives.push(node);
++      lastDirective = node;
++      endCommentCandidates = [];
+     }
+   }
+-
+-  return { directives, comments, endComments };
++  return { directives, endCommentCandidates };
+ }
+ 
+ function getPosition(
+-  document: YAML.CST.Document,
+   directives: Directive[],
++  document: YAML.Document.Parsed,
++  docStart: YAML.CST.SourceToken | null,
+   context: Context,
+ ) {
+-  let documentEndMarkererIndex = getMatchIndex(
+-    context.text.slice(0, document.valueRange!.origStart),
+-    /---\s*$/,
+-  );
+-  // end marker should start with the first character on the line
+-  if (
+-    documentEndMarkererIndex > 0 &&
+-    !/[\r\n]/.test(context.text[documentEndMarkererIndex - 1])
+-  ) {
+-    documentEndMarkererIndex = -1;
+-  }
+-
+-  const range: Range =
+-    documentEndMarkererIndex === -1
++  const range: Range = docStart
++    ? {
++        origStart: docStart.offset,
++        origEnd: docStart.offset + docStart.source.length,
++      }
++    : document.contents
+       ? {
+-          origStart: document.valueRange!.origStart!,
+-          origEnd: document.valueRange!.origStart!,
++          origStart: document.contents.range[0],
++          origEnd: document.contents.range[0],
+         }
+       : {
+-          origStart: documentEndMarkererIndex!,
+-          origEnd: documentEndMarkererIndex + 3,
++          origStart: document.range[0],
++          origEnd: document.range[0],
+         };
+ 
+   if (directives.length !== 0) {
+     range.origStart = directives[0].position.start.offset;
+   }
+ 
+-  return {
+-    position: context.transformRange(range),
+-    documentEndMarkererPoint:
+-      documentEndMarkererIndex === -1
+-        ? null
+-        : context.transformOffset(documentEndMarkererIndex),
+-  };
++  return context.transformRange(range);
+ }
+diff --git a/src/transforms/document.ts b/src/transforms/document.ts
+index 286b78b..c18ae7e 100644
+--- a/src/transforms/document.ts
++++ b/src/transforms/document.ts
+@@ -1,39 +1,188 @@
+ import type * as YAML from "yaml";
++import * as YAML_CST from "../cst.js";
+ import { createDocument } from "../factories/document.js";
++import { createDocumentBody } from "../factories/document-body.js";
++import { createDocumentHead } from "../factories/document-head.js";
+ import { createPosition } from "../factories/position.js";
+-import { type Document } from "../types.js";
++import type { Document } from "../types.js";
++import { getPointText } from "../utils/get-point-text.js";
+ import type Context from "./context.js";
+ import { transformDocumentBody } from "./document-body.js";
+ import { transformDocumentHead } from "./document-head.js";
+ 
+-export function transformDocument(
+-  document: YAML.Document,
++type DocumentData = {
++  tokensBeforeBody: (YAML_CST.CommentSourceToken | YAML.CST.Directive)[];
++  cstNode: YAML.CST.Document;
++  node: YAML.Document.Parsed;
++  tokensAfterBody: YAML_CST.CommentSourceToken[];
++  docEnd: YAML.CST.DocumentEnd | null;
++};
++
++export function transformDocuments(
++  documentNodes: YAML.Document.Parsed[],
++  cstTokens: YAML.CST.Token[],
+   context: Context,
+-): Document {
+-  const { createDocumentHeadWithTrailingComment, documentHeadEndMarkerPoint } =
+-    transformDocumentHead(document, context);
++): Document[] {
++  let bufferComments: YAML_CST.CommentSourceToken[] = [];
++  let tokensBeforeBody: (YAML_CST.CommentSourceToken | YAML.CST.Directive)[] =
++    [];
++  let currentDoc: DocumentData | null = null;
++  const documents: DocumentData[] = [];
++  for (const token of YAML_CST.tokens(cstTokens)) {
++    if (token.type === "comment") {
++      bufferComments.push(token);
++      continue;
++    }
++    if (token.type === "doc-end") {
++      // istanbul ignore if -- @preserve
++      if (!currentDoc || currentDoc.docEnd)
++        throw new Error(
++          `Unexpected doc-end token at ${getPointText(context.transformOffset(token.offset))}`,
++        );
+ 
+-  const {
+-    documentBody,
+-    documentEndPoint,
+-    documentTrailingComment,
+-    documentHeadTrailingComment,
+-  } = transformDocumentBody(document, context, documentHeadEndMarkerPoint);
++      currentDoc.tokensAfterBody = [...bufferComments];
++      bufferComments = [];
+ 
+-  const documentHead = createDocumentHeadWithTrailingComment(
+-    documentHeadTrailingComment,
+-  );
++      currentDoc.docEnd = token;
++      currentDoc = null;
++      continue;
++    }
++    if (currentDoc) {
++      currentDoc = null;
++    }
++    if (token.type === "directive") {
++      tokensBeforeBody.push(...bufferComments, token);
++      bufferComments = [];
++      continue;
++    }
++    if (token.type === "document") {
++      // istanbul ignore if -- @preserve
++      if (documentNodes.length <= documents.length) {
++        throw new Error(
++          `Unexpected document token at ${getPointText(context.transformOffset(token.offset))}`,
++        );
++      }
++      currentDoc = {
++        tokensBeforeBody: [...tokensBeforeBody, ...bufferComments],
++        cstNode: token,
++        node: documentNodes[documents.length],
++        tokensAfterBody: [],
++        docEnd: null,
++      };
++      documents.push(currentDoc);
++      tokensBeforeBody = [];
++      bufferComments = [];
++      continue;
++    }
++    // istanbul ignore next -- @preserve
++    throw new Error(
++      `Unexpected token type: ${token.type} at ${getPointText(context.transformOffset(token.offset))}`,
++    );
++  }
++  // istanbul ignore if -- @preserve
++  if (documents.length < documentNodes.length) {
++    const errorIndex = documentNodes[documents.length].range[0];
++    throw new Error(
++      `Unexpected document token at ${getPointText(context.transformOffset(errorIndex))}`,
++    );
++  }
++  if (documents.length > 0 && !documents[documents.length - 1].docEnd) {
++    // Append buffered comments to the last document
++    const lastDoc = documents[documents.length - 1];
++    lastDoc.tokensAfterBody.push(...bufferComments);
++    bufferComments = [];
++  }
+ 
+-  if (documentTrailingComment) {
+-    context.comments.push(documentTrailingComment);
++  const nodes = documents.map(document => transformDocument(document, context));
++
++  if (bufferComments.length === 0) {
++    if (nodes.length === 0) {
++      // Create an empty document if there is no document but comments
++      const emptyDoc: Document = createDocument(
++        createPosition(
++          context.transformOffset(0),
++          context.transformOffset(context.text.length),
++        ),
++        false,
++        false,
++        createDocumentHead(
++          createPosition(
++            context.transformOffset(0),
++            context.transformOffset(context.text.length),
++          ),
++          [],
++          [],
++          null,
++        ),
++        createDocumentBody(
++          createPosition(
++            context.transformOffset(0),
++            context.transformOffset(context.text.length),
++          ),
++          null,
++          [],
++        ),
++        null,
++      );
++      return [emptyDoc];
++    }
++    return nodes;
+   }
+ 
+-  const cstNode = document.cstNode!;
++  // Append remaining comments as a new document
++  const firstComment = bufferComments[0];
++  const commentDoc: Document = createDocument(
++    createPosition(
++      context.transformOffset(firstComment.offset),
++      context.transformOffset(context.text.length),
++    ),
++    false,
++    false,
++    createDocumentHead(
++      createPosition(
++        context.transformOffset(firstComment.offset),
++        context.transformOffset(firstComment.offset),
++      ),
++      [],
++      [],
++      null,
++    ),
++    createDocumentBody(
++      createPosition(
++        context.transformOffset(firstComment.offset),
++        context.transformOffset(context.text.length),
++      ),
++      null,
++      bufferComments.map(token => context.transformComment(token)),
++    ),
++    null,
++  );
++  return [...nodes, commentDoc];
++}
++
++function transformDocument(document: DocumentData, context: Context): Document {
++  const { documentHead, tokensBeforeBody, docStart } = transformDocumentHead(
++    document.tokensBeforeBody,
++    document.cstNode,
++    document.node,
++    context,
++  );
++
++  const { documentBody, documentEndPoint, documentTrailingComment } =
++    transformDocumentBody(
++      docStart,
++      tokensBeforeBody,
++      document.cstNode,
++      document.node,
++      document.tokensAfterBody,
++      document.docEnd,
++      context,
++    );
+ 
+   return createDocument(
+     createPosition(documentHead.position.start, documentEndPoint),
+-    Boolean(cstNode.directivesEndMarker),
+-    Boolean(cstNode.documentEndMarker),
++    Boolean(docStart),
++    Boolean(document.docEnd),
+     documentHead,
+     documentBody,
+     documentTrailingComment,
+diff --git a/src/transforms/error.ts b/src/transforms/error.ts
+index 173d87c..775858f 100644
+--- a/src/transforms/error.ts
++++ b/src/transforms/error.ts
+@@ -1,17 +1,19 @@
+-import { type YAMLError } from "yaml/util";
++import type * as YAML from "yaml";
+ import { createError } from "../factories/error.js";
+-import type { Range, YAMLSyntaxError } from "../types.js";
++import type { YAMLSyntaxError } from "../types.js";
+ import type Context from "./context.js";
+ 
+ export function transformError(
+-  error: Extract<YAMLError, SyntaxError>,
++  error: YAML.YAMLError,
+   context: Context,
+ ): YAMLSyntaxError {
+-  // istanbul ignore next
+-  const range = (error.source!.range || error.source!.valueRange) as Range;
++  const range = error.pos;
+   return createError(
+     error.message,
+     context.text,
+-    context.transformRange(range),
++    context.transformRange({
++      origStart: range[0],
++      origEnd: range[1],
++    }),
+   );
+ }
+diff --git a/src/transforms/flow-map.ts b/src/transforms/flow-map.ts
+index 0d9da5d..9ed7ff0 100644
+--- a/src/transforms/flow-map.ts
++++ b/src/transforms/flow-map.ts
+@@ -1,49 +1,73 @@
+ import type * as YAML from "yaml";
++import type * as YAML_CST from "../cst.js";
+ import { createFlowMapping } from "../factories/flow-mapping.js";
+ import { createFlowMappingItem } from "../factories/flow-mapping-item.js";
+-import { type FlowMapping } from "../types.js";
++import type { FlowMapping } from "../types.js";
+ import { extractComments } from "../utils/extract-comments.js";
+-import { getFlowMapItemAdditionalRanges } from "../utils/get-flow-map-item-additional-ranges.js";
+-import { getLast } from "../utils/get-last.js";
+-import { groupCstFlowCollectionItems } from "../utils/group-cst-flow-collection-items.js";
+ import type Context from "./context.js";
+-import { transformAstPair } from "./pair.js";
++import { transformPair } from "./pair.js";
++import type { TransformNodeProperties } from "./transform.js";
+ 
+ export function transformFlowMap(
+-  flowMap: YAML.AST.FlowMap,
++  flowMap: YAML.YAMLMap.Parsed,
+   context: Context,
++  props: TransformNodeProperties,
+ ): FlowMapping {
+-  const cstItemsWithoutComments = extractComments(
+-    flowMap.cstNode!.items,
+-    context,
+-  );
++  const srcToken = flowMap.srcToken;
+ 
+-  const groupedCstItems = groupCstFlowCollectionItems(cstItemsWithoutComments);
++  // istanbul ignore if -- @preserve
++  if (!srcToken || srcToken.type !== "flow-collection") {
++    throw new Error("Expected flow-collection CST node for flow map");
++  }
+ 
+   const flowMappingItems = flowMap.items.map((pair, index) => {
+-    const cstNodes = groupedCstItems[index];
+-
+-    const { additionalKeyRange, additionalValueRange } =
+-      getFlowMapItemAdditionalRanges(cstNodes);
+-
+-    return transformAstPair(
+-      pair,
+-      context,
+-      createFlowMappingItem,
+-      additionalKeyRange,
+-      additionalValueRange,
+-    );
++    const srcItem = srcToken.items[index];
++
++    return transformPair(pair, srcItem, context, createFlowMappingItem);
+   });
+ 
+-  const openMarker = cstItemsWithoutComments[0] as YAML.CST.FlowChar;
+-  const closeMarker = getLast(cstItemsWithoutComments) as YAML.CST.FlowChar;
++  if (flowMap.items.length < srcToken.items.length) {
++    // Handle extra comments
++    for (let i = flowMap.items.length; i < srcToken.items.length; i++) {
++      const srcItem = srcToken.items[i];
++      for (const token of extractComments(srcItem.start, context)) {
++        // istanbul ignore else -- @preserve
++        if (token.type === "comma") {
++          // skip
++          continue;
++        }
++
++        // istanbul ignore next -- @preserve
++        throw new Error(
++          `Unexpected token type in collection item start: ${token.type}`,
++        );
++      }
++    }
++  }
++
++  let flowMapEndToken: YAML_CST.FlowMapEndSourceToken | null = null;
++  for (const token of extractComments(srcToken.end, context)) {
++    // istanbul ignore else -- @preserve
++    if (token.type === "flow-map-end") {
++      flowMapEndToken = token;
++      continue;
++    }
++
++    // istanbul ignore next -- @preserve
++    throw new Error(`Unexpected token type in flow map end: ${token.type}`);
++  }
++
++  // istanbul ignore if -- @preserve
++  if (!flowMapEndToken) {
++    throw new Error("Expected flow-map-end token");
++  }
+ 
+   return createFlowMapping(
+     context.transformRange({
+-      origStart: openMarker.origOffset,
+-      origEnd: closeMarker.origOffset + 1,
++      origStart: srcToken.start.offset,
++      origEnd: flowMapEndToken.offset + flowMapEndToken.source.length,
+     }),
+-    context.transformContent(flowMap),
++    context.transformContentProperties(flowMap, props.tokens),
+     flowMappingItems,
+   );
+ }
+diff --git a/src/transforms/flow-seq.ts b/src/transforms/flow-seq.ts
+index 396c964..d5e6bc3 100644
+--- a/src/transforms/flow-seq.ts
++++ b/src/transforms/flow-seq.ts
+@@ -1,62 +1,149 @@
+-import type * as YAML from "yaml";
+-import type * as YAMLTypes from "yaml/types";
++import * as YAML from "yaml";
++import * as YAML_CST from "../cst.js";
+ import { createFlowMappingItem } from "../factories/flow-mapping-item.js";
+ import { createFlowSequence } from "../factories/flow-sequence.js";
+ import { createFlowSequenceItem } from "../factories/flow-sequence-item.js";
+ import { createPosition } from "../factories/position.js";
+-import { type FlowSequence } from "../types.js";
++import type { FlowSequence } from "../types.js";
+ import { extractComments } from "../utils/extract-comments.js";
+-import { getFlowMapItemAdditionalRanges } from "../utils/get-flow-map-item-additional-ranges.js";
+ import { getLast } from "../utils/get-last.js";
+-import { groupCstFlowCollectionItems } from "../utils/group-cst-flow-collection-items.js";
+ import type Context from "./context.js";
+-import { transformAstPair } from "./pair.js";
++import { transformPair } from "./pair.js";
++import type { TransformNodeProperties } from "./transform.js";
+ 
+ export function transformFlowSeq(
+-  flowSeq: YAML.AST.FlowSeq,
++  flowSeq: YAML.YAMLSeq.Parsed<
++    YAML.ParsedNode | YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>
++  >,
+   context: Context,
++  props: TransformNodeProperties,
+ ): FlowSequence {
+-  const cstItemsWithoutComments = extractComments(
+-    flowSeq.cstNode!.items,
+-    context,
+-  );
++  const srcToken = flowSeq.srcToken;
+ 
+-  const groupedCstItems = groupCstFlowCollectionItems(cstItemsWithoutComments);
++  // istanbul ignore if -- @preserve
++  if (!srcToken || srcToken.type !== "flow-collection") {
++    throw new Error("Expected flow-collection CST node for flow sequence");
++  }
+ 
+   const flowSequenceItems = flowSeq.items.map((item, index) => {
+-    if (item.type !== "PAIR") {
+-      const node = context.transformNode(
+-        item as Exclude<typeof item, YAMLTypes.Pair>,
+-      );
++    const srcItem = srcToken.items[index];
++
++    if (isBlockMappingOfImmediateChildOfFlowSequence(item, srcItem)) {
++      const pair = getLast(item.items)!;
++      return transformPair(pair, srcItem, context, createFlowMappingItem);
++    }
++
++    if (!YAML.isPair(item)) {
++      const propTokens: YAML_CST.ContentPropertyToken[] = [];
++      for (const token of YAML_CST.tokens(srcItem.start)) {
++        if (YAML_CST.maybeContentPropertyToken(token)) {
++          propTokens.push(token);
++          continue;
++        }
++        // istanbul ignore else -- @preserve
++        if (token.type === "comma") {
++          // skip
++          continue;
++        }
++
++        // istanbul ignore next -- @preserve
++        throw new Error(
++          `Unexpected token type in sequence item start: ${token.type}`,
++        );
++      }
++      const node = context.transformNode(item, { tokens: propTokens });
+       return createFlowSequenceItem(
+         createPosition(node.position.start, node.position.end),
+         node,
+       );
+     } else {
+-      const cstNodes = groupedCstItems[index];
++      return transformPair(item, srcItem, context, createFlowMappingItem);
++    }
++  });
+ 
+-      const { additionalKeyRange, additionalValueRange } =
+-        getFlowMapItemAdditionalRanges(cstNodes);
++  if (flowSeq.items.length < srcToken.items.length) {
++    // Handle extra comments
++    for (let i = flowSeq.items.length; i < srcToken.items.length; i++) {
++      const srcItem = srcToken.items[i];
++      for (const token of extractComments(srcItem.start, context)) {
++        // istanbul ignore else -- @preserve
++        if (token.type === "comma") {
++          // skip
++          continue;
++        }
+ 
+-      return transformAstPair(
+-        item,
+-        context,
+-        createFlowMappingItem,
+-        additionalKeyRange,
+-        additionalValueRange,
+-      );
++        // istanbul ignore next -- @preserve
++        throw new Error(
++          `Unexpected token type in collection item start: ${token.type}`,
++        );
++      }
+     }
+-  });
++  }
+ 
+-  const openMarker = cstItemsWithoutComments[0] as YAML.CST.FlowChar;
+-  const closeMarker = getLast(cstItemsWithoutComments) as YAML.CST.FlowChar;
++  let flowSeqEndToken: YAML_CST.FlowSeqEndSourceToken | null = null;
++  for (const token of YAML_CST.tokens(srcToken.end)) {
++    if (token.type === "comment") {
++      context.transformComment(token);
++      continue;
++    }
++
++    // istanbul ignore else -- @preserve
++    if (token.type === "flow-seq-end") {
++      flowSeqEndToken = token;
++      continue;
++    }
++
++    // istanbul ignore next -- @preserve
++    throw new Error(`Unexpected token type in flow seq end: ${token.type}`);
++  }
++
++  // istanbul ignore if -- @preserve
++  if (!flowSeqEndToken) {
++    throw new Error("Expected flow-seq-end token");
++  }
+ 
+   return createFlowSequence(
+     context.transformRange({
+-      origStart: openMarker.origOffset,
+-      origEnd: closeMarker.origOffset + 1,
++      origStart: srcToken.start.offset,
++      origEnd: flowSeqEndToken.offset + flowSeqEndToken.source.length,
+     }),
+-    context.transformContent(flowSeq),
++    context.transformContentProperties(flowSeq, props.tokens),
+     flowSequenceItems,
+   );
+ }
++
++/**
++ * Checks whether the given item is a block mapping that is an immediate child of a flow sequence.
++ * This is determined by checking if the item does not have a source token and contains exactly one item.
++ *
++ * e.g.
++ *
++ * ```yaml
++ * [ key: value ]
++ * ```
++ */
++function isBlockMappingOfImmediateChildOfFlowSequence(
++  item: YAML.ParsedNode | YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>,
++  srcItem: YAML.CST.CollectionItem,
++): item is YAML.YAMLMap.Parsed & {
++  items: [YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>];
++} {
++  if (item.srcToken) {
++    // If the item has a source token, it is not a block mapping immediate child of a flow sequence
++    // because it is associated with a source token indicating it is not an immediate child.
++    return false;
++  }
++
++  // istanbul ignore if -- @preserve
++  if (!YAML.isMap(item)) return false;
++
++  // istanbul ignore if -- @preserve
++  if (item.items.length !== 1) {
++    // If the block mapping does not contain exactly one item, it is not considered
++    // an immediate child of a flow sequence.
++    return false;
++  }
++
++  const child = item.items[0];
++  return child.srcToken === srcItem;
++}
+diff --git a/src/transforms/map.ts b/src/transforms/map.ts
+index 3dfad73..b123275 100644
+--- a/src/transforms/map.ts
++++ b/src/transforms/map.ts
+@@ -2,84 +2,50 @@ import type * as YAML from "yaml";
+ import { createMapping } from "../factories/mapping.js";
+ import { createMappingItem } from "../factories/mapping-item.js";
+ import { createPosition } from "../factories/position.js";
+-import { type Mapping } from "../types.js";
+-import { createSlicer } from "../utils/create-slicer.js";
++import type { Mapping } from "../types.js";
+ import { extractComments } from "../utils/extract-comments.js";
+-import { extractPropComments } from "../utils/extract-prop-comments.js";
+ import { getLast } from "../utils/get-last.js";
+ import type Context from "./context.js";
+-import { transformAstPair } from "./pair.js";
++import { transformPair } from "./pair.js";
++import type { TransformNodeProperties } from "./transform.js";
+ 
+ export function transformMap(
+-  map: YAML.AST.BlockMap,
++  map: YAML.YAMLMap.Parsed,
+   context: Context,
++  props: TransformNodeProperties,
+ ): Mapping {
+-  const cstNode = map.cstNode!;
++  const srcToken = map.srcToken;
+ 
+-  cstNode.items
+-    .filter(item => item.type === "MAP_KEY" || item.type === "MAP_VALUE")
+-    .forEach(item => extractPropComments(item, context));
+-
+-  const cstItemsWithoutComments = extractComments(cstNode.items, context);
+-
+-  const groupedCstItems = groupCstItems(cstItemsWithoutComments);
++  // istanbul ignore if -- @preserve
++  if (!srcToken || srcToken.type !== "block-map") {
++    throw new Error("Expected block mapping srcToken");
++  }
+ 
+   const mappingItems = map.items.map((pair, index) => {
+-    const cstNodes = groupedCstItems[index];
+-    const [keyRange, valueRange] =
+-      cstNodes[0].type === "MAP_VALUE"
+-        ? [null, cstNodes[0].range!]
+-        : [
+-            cstNodes[0].range!,
+-            cstNodes.length === 1 ? null : cstNodes[1].range!,
+-          ];
++    const srcItem = srcToken.items[index];
+ 
+-    return transformAstPair(
+-      pair,
+-      context,
+-      createMappingItem,
+-      keyRange,
+-      valueRange,
+-    );
++    return transformPair(pair, srcItem, context, createMappingItem);
+   });
+ 
++  if (map.items.length < srcToken.items.length) {
++    // Handle extra comments
++    for (let i = map.items.length; i < srcToken.items.length; i++) {
++      const srcItem = srcToken.items[i];
++      for (const token of extractComments(srcItem.start, context)) {
++        // istanbul ignore next -- @preserve
++        throw new Error(
++          `Unexpected token type in collection item start: ${token.type}`,
++        );
++      }
++    }
++  }
++
+   return createMapping(
+     createPosition(
+       mappingItems[0].position.start,
+       getLast(mappingItems)!.position.end,
+     ),
+-    context.transformContent(map),
++    context.transformContentProperties(map, props.tokens),
+     mappingItems,
+   );
+ }
+-
+-function groupCstItems(
+-  cstItems: Array<Exclude<YAML.CST.Map["items"][number], YAML.CST.Comment>>,
+-) {
+-  const groups: Array<typeof cstItems> = [];
+-  const sliceCstItems = createSlicer(cstItems, 0);
+-
+-  let hasKey = false;
+-
+-  for (let i = 0; i < cstItems.length; i++) {
+-    const cstItem = cstItems[i];
+-
+-    if (cstItem.type === "MAP_VALUE") {
+-      groups.push(sliceCstItems(i + 1));
+-      hasKey = false;
+-      continue;
+-    }
+-
+-    if (hasKey) {
+-      groups.push(sliceCstItems(i));
+-    }
+-
+-    hasKey = true;
+-  }
+-
+-  if (hasKey) {
+-    groups.push(sliceCstItems(Infinity));
+-  }
+-
+-  return groups;
+-}
+diff --git a/src/transforms/pair.ts b/src/transforms/pair.ts
+index 5e373d8..b15f7ec 100644
+--- a/src/transforms/pair.ts
++++ b/src/transforms/pair.ts
+@@ -1,72 +1,181 @@
+-import type * as YAMLTypes from "yaml/types";
+-import { type createFlowMappingItem } from "../factories/flow-mapping-item.js";
+-import { type createMappingItem } from "../factories/mapping-item.js";
++import type * as YAML from "yaml";
++import * as YAML_CST from "../cst.js";
++import type { createFlowMappingItem } from "../factories/flow-mapping-item.js";
++import type { createMappingItem } from "../factories/mapping-item.js";
+ import { createMappingKey } from "../factories/mapping-key.js";
+ import { createMappingValue } from "../factories/mapping-value.js";
+ import { createEmptyPosition, createPosition } from "../factories/position.js";
+ import type {
+   Comment,
++  ContentNode,
+   Directive,
+   Document,
+   FlowMappingItem,
+   MappingItem,
+   Range,
+ } from "../types.js";
++import { extractComments } from "../utils/extract-comments.js";
+ import type Context from "./context.js";
++import { isEmptyNode, type TransformNodeProperties } from "./transform.js";
+ 
+-export function transformAstPair(
+-  pair: YAMLTypes.Pair | YAMLTypes.Merge,
++export function transformPair(
++  pair: YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>,
++  srcItem: YAML.CST.CollectionItem,
+   context: Context,
+   createNode: typeof createMappingItem,
+-  additionalKeyRange: null | Range,
+-  additionalValueRange: null | Range,
+ ): MappingItem;
+-export function transformAstPair(
+-  pair: YAMLTypes.Pair | YAMLTypes.Merge,
++export function transformPair(
++  pair: YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>,
++  srcItem: YAML.CST.CollectionItem,
+   context: Context,
+   createNode: typeof createFlowMappingItem,
+-  additionalKeyRange: null | Range,
+-  additionalValueRange: null | Range,
+ ): FlowMappingItem;
+-export function transformAstPair(
+-  pair: YAMLTypes.Pair | YAMLTypes.Merge,
++export function transformPair(
++  pair: YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>,
++  srcItem: YAML.CST.CollectionItem,
+   context: Context,
+   createNode: typeof createMappingItem | typeof createFlowMappingItem,
+-  additionalKeyRange: null | Range,
+-  additionalValueRange: null | Range,
+ ): MappingItem | FlowMappingItem {
+-  const keyContent = context.transformNode(pair.key);
+-  const valueContent = context.transformNode(pair.value);
++  const keyPropTokens: YAML_CST.ContentPropertyToken[] = [];
++  let explicitKeyIndToken: YAML_CST.ExplicitKeyIndSourceToken | null = null;
++  for (const token of YAML_CST.tokens(srcItem.start)) {
++    if (YAML_CST.maybeContentPropertyToken(token)) {
++      keyPropTokens.push(token);
++      continue;
++    }
++    if (token.type === "explicit-key-ind") {
++      explicitKeyIndToken = token;
++      continue;
++    }
++    // istanbul ignore else -- @preserve
++    if (token.type === "comma") {
++      // skip
++      continue;
++    }
++    // istanbul ignore next -- @preserve
++    throw new Error(
++      `Unexpected token type in collection item start: ${token.type}`,
++    );
++  }
+ 
+-  const mappingKey =
+-    keyContent || additionalKeyRange
+-      ? createMappingKey(
+-          context.transformRange({
+-            origStart: additionalKeyRange
+-              ? additionalKeyRange.origStart
+-              : keyContent!.position.start.offset,
+-            origEnd: keyContent
+-              ? keyContent.position.end.offset
+-              : additionalKeyRange!.origStart + 1,
+-          }),
+-          keyContent as Exclude<
+-            typeof keyContent,
+-            Comment | Directive | Document
+-          >,
+-        )
+-      : null;
++  const valuePropTokens: YAML_CST.ContentPropertyToken[] = [];
++  let mapValueIndToken: YAML_CST.MapValueIndSourceToken | null = null;
++  for (const token of YAML_CST.tokens(srcItem.sep)) {
++    if (YAML_CST.maybeContentPropertyToken(token)) {
++      valuePropTokens.push(token);
++      continue;
++    }
++    // istanbul ignore else -- @preserve
++    if (token.type === "map-value-ind") {
++      mapValueIndToken = token;
++      continue;
++    }
++    // istanbul ignore next -- @preserve
++    throw new Error(
++      `Unexpected token type in collection item sep: ${token.type}`,
++    );
++  }
++
++  const keyStartOffset =
++    // Has `?` indicator
++    explicitKeyIndToken?.offset ??
++    // Has key value
++    srcItem.key?.offset ??
++    // Has `:` indicator
++    mapValueIndToken?.offset ??
++    // Fallback to value start
++    srcItem.value!.offset;
++  const keyEndOffset =
++    // Has key value
++    srcItem.key
++      ? pair.key.range![1]
++      : // Has `?` indicator
++        explicitKeyIndToken
++        ? explicitKeyIndToken.offset + explicitKeyIndToken.source.length
++        : // Fallback to start of key
++          keyStartOffset;
++  const keyRange = {
++    origStart: keyStartOffset,
++    origEnd: keyEndOffset,
++  };
++
++  let valueRange: Range | null = null;
++  if (pair.value) {
++    const valueStartOffset =
++      // Has `:` indicator
++      mapValueIndToken?.offset ??
++      // Has value
++      srcItem.value?.offset ??
++      // Fallback to AST value start
++      pair.value.range![0];
++    const valueEndOffset =
++      // Has value
++      srcItem.value
++        ? pair.value.range![1]
++        : // Has `:` indicator
++          mapValueIndToken
++          ? mapValueIndToken.offset + mapValueIndToken.source.length
++          : // Fallback to start of value
++            valueStartOffset;
++    valueRange = {
++      origStart: valueStartOffset,
++      origEnd: valueEndOffset,
++    };
++  }
++
++  return transformAstPair(
++    pair,
++    context,
++    createNode,
++    { range: keyRange, props: { tokens: keyPropTokens } },
++    { range: valueRange, props: { tokens: valuePropTokens } },
++  );
++}
++
++function transformAstPair(
++  pair: YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>,
++  context: Context,
++  createNode: typeof createMappingItem | typeof createFlowMappingItem,
++  additionalKeyData: { range: Range; props: TransformNodeProperties },
++  additionalValueData: { range: null | Range; props: TransformNodeProperties },
++): MappingItem | FlowMappingItem {
++  let keyContent: ContentNode | null = null;
++  if (!isEmptyNode(pair.key, additionalKeyData.props)) {
++    keyContent = context.transformNode(pair.key, additionalKeyData.props);
++  } else {
++    extractComments(additionalKeyData.props.tokens, context);
++  }
++
++  let valueContent: ContentNode | null = null;
++  if (!isEmptyNode(pair.value, additionalValueData.props)) {
++    valueContent = context.transformNode(pair.value, additionalValueData.props);
++  } else {
++    extractComments(additionalValueData.props.tokens, context);
++  }
++
++  const mappingKey = createMappingKey(
++    context.transformRange({
++      origStart: additionalKeyData.range
++        ? additionalKeyData.range.origStart
++        : keyContent!.position.start.offset,
++      origEnd: keyContent
++        ? keyContent.position.end.offset
++        : additionalKeyData.range!.origEnd,
++    }),
++    keyContent as Exclude<typeof keyContent, Comment | Directive | Document>,
++  );
+ 
+   const mappingValue =
+-    valueContent || additionalValueRange
++    valueContent || additionalValueData.range
+       ? createMappingValue(
+           context.transformRange({
+-            origStart: additionalValueRange
+-              ? additionalValueRange.origStart
+-              : // istanbul ignore next
++            origStart: additionalValueData.range
++              ? additionalValueData.range.origStart
++              : // istanbul ignore next -- @preserve
+                 valueContent!.position.start.offset,
+             origEnd: valueContent
+               ? valueContent.position.end.offset
+-              : additionalValueRange!.origStart + 1,
++              : additionalValueData.range!.origStart + 1,
+           }),
+           valueContent as Exclude<
+             typeof valueContent,
+@@ -77,12 +186,11 @@ export function transformAstPair(
+ 
+   return createNode(
+     createPosition(
+-      mappingKey ? mappingKey.position.start : mappingValue!.position.start,
+-      mappingValue ? mappingValue.position.end : mappingKey!.position.end,
++      mappingKey.position.start,
++      mappingValue ? mappingValue.position.end : mappingKey.position.end,
+     ),
+-    mappingKey ||
+-      createMappingKey(createEmptyPosition(mappingValue!.position.start), null),
++    mappingKey,
+     mappingValue ||
+-      createMappingValue(createEmptyPosition(mappingKey!.position.end), null),
++      createMappingValue(createEmptyPosition(mappingKey.position.end), null),
+   );
+ }
+diff --git a/src/transforms/plain.ts b/src/transforms/plain.ts
+index 516280f..e2e1427 100644
+--- a/src/transforms/plain.ts
++++ b/src/transforms/plain.ts
+@@ -1,25 +1,48 @@
+ import type * as YAML from "yaml";
+ import { createPlain } from "../factories/plain.js";
+-import { type Plain } from "../types.js";
++import type { Plain } from "../types.js";
++import { extractComments } from "../utils/extract-comments.js";
+ import { findLastCharIndex } from "../utils/find-last-char-index.js";
+ import type Context from "./context.js";
++import type { TransformNodeProperties } from "./transform.js";
+ 
+ export function transformPlain(
+-  plain: YAML.AST.PlainValue,
++  plain: YAML.Scalar.Parsed,
+   context: Context,
++  props: TransformNodeProperties,
+ ): Plain {
+-  const cstNode = plain.cstNode!;
++  if (plain.range[0] === plain.range[1]) {
++    // empty plain scalar
++    const index =
++      findLastCharIndex(context.text, plain.range[0] - 1, /\S/u) + 1;
++    return createPlain(
++      context.transformRange({
++        origStart: index,
++        origEnd: index,
++      }),
++      context.transformContentProperties(plain, props.tokens),
++      "",
++    );
++  }
++
++  const srcToken = plain.srcToken;
++
++  // istanbul ignore if -- @preserve
++  if (!srcToken || srcToken.type !== "scalar") {
++    throw new Error("Expected plain scalar srcToken");
++  }
++
++  for (const token of extractComments(srcToken.end, context)) {
++    // istanbul ignore next -- @preserve
++    throw new Error(`Unexpected token type in plain scalar end: ${token.type}`);
++  }
++
+   return createPlain(
+     context.transformRange({
+-      origStart: cstNode.valueRange!.origStart!,
+-      origEnd:
+-        findLastCharIndex(
+-          context.text,
+-          cstNode.valueRange!.origEnd! - 1,
+-          /\S/,
+-        ) + 1,
++      origStart: plain.range[0],
++      origEnd: plain.range[1],
+     }),
+-    context.transformContent(plain),
+-    cstNode.strValue!,
++    context.transformContentProperties(plain, props.tokens),
++    plain.source,
+   );
+ }
+diff --git a/src/transforms/quote-double.ts b/src/transforms/quote-double.ts
+index 5dd8026..8aee396 100644
+--- a/src/transforms/quote-double.ts
++++ b/src/transforms/quote-double.ts
+@@ -1,12 +1,24 @@
+ import type * as YAML from "yaml";
++import type * as YAML_CST from "../cst.js";
+ import { createQuoteDouble } from "../factories/quote-double.js";
+ import { type QuoteDouble } from "../types.js";
+ import type Context from "./context.js";
+ import { transformAstQuoteValue } from "./quote-value.js";
++import type { TransformNodeProperties } from "./transform.js";
+ 
+ export function transformQuoteDouble(
+-  quoteDouble: YAML.AST.QuoteDouble,
++  quoteDouble: YAML.Scalar.Parsed,
+   context: Context,
++  props: TransformNodeProperties,
+ ): QuoteDouble {
+-  return createQuoteDouble(transformAstQuoteValue(quoteDouble, context));
++  const srcToken: YAML_CST.FlowScalar | YAML.CST.BlockScalar | undefined =
++    quoteDouble.srcToken;
++
++  // istanbul ignore if -- @preserve
++  if (!srcToken || srcToken.type !== "double-quoted-scalar") {
++    throw new Error("Expected double-quoted scalar srcToken");
++  }
++  return createQuoteDouble(
++    transformAstQuoteValue(quoteDouble, srcToken, context, props),
++  );
+ }
+diff --git a/src/transforms/quote-single.ts b/src/transforms/quote-single.ts
+index 62b3128..a9fada0 100644
+--- a/src/transforms/quote-single.ts
++++ b/src/transforms/quote-single.ts
+@@ -1,12 +1,25 @@
+ import type * as YAML from "yaml";
++import type * as YAML_CST from "../cst.js";
+ import { createQuoteSingle } from "../factories/quote-single.js";
+ import { type QuoteSingle } from "../types.js";
+ import type Context from "./context.js";
+ import { transformAstQuoteValue } from "./quote-value.js";
++import type { TransformNodeProperties } from "./transform.js";
+ 
+ export function transformQuoteSingle(
+-  quoteSingle: YAML.AST.QuoteSingle,
++  quoteSingle: YAML.Scalar.Parsed,
+   context: Context,
++  props: TransformNodeProperties,
+ ): QuoteSingle {
+-  return createQuoteSingle(transformAstQuoteValue(quoteSingle, context));
++  const srcToken: YAML_CST.FlowScalar | YAML.CST.BlockScalar | undefined =
++    quoteSingle.srcToken;
++
++  // istanbul ignore if -- @preserve
++  if (!srcToken || srcToken.type !== "single-quoted-scalar") {
++    throw new Error("Expected single-quoted scalar srcToken");
++  }
++
++  return createQuoteSingle(
++    transformAstQuoteValue(quoteSingle, srcToken, context, props),
++  );
+ }
+diff --git a/src/transforms/quote-value.ts b/src/transforms/quote-value.ts
+index 061d241..46076dc 100644
+--- a/src/transforms/quote-value.ts
++++ b/src/transforms/quote-value.ts
+@@ -1,16 +1,27 @@
+ import type * as YAML from "yaml";
++import type * as YAML_CST from "../cst.js";
+ import { createQuoteValue } from "../factories/quote-value.js";
+-import { type QuoteValue } from "../types.js";
++import type { QuoteValue } from "../types.js";
++import { extractComments } from "../utils/extract-comments.js";
+ import type Context from "./context.js";
++import { type TransformNodeProperties } from "./transform.js";
+ 
+ export function transformAstQuoteValue(
+-  quoteValue: YAML.AST.QuoteDouble | YAML.AST.QuoteSingle,
++  quoteValue: YAML.Scalar.Parsed,
++  srcToken: YAML_CST.SingleQuotedFlowScalar | YAML_CST.DoubleQuotedFlowScalar,
+   context: Context,
++  props: TransformNodeProperties,
+ ): QuoteValue {
+-  const cstNode = quoteValue.cstNode!;
++  for (const token of extractComments(srcToken.end, context)) {
++    // istanbul ignore next -- @preserve
++    throw new Error(`Unexpected token type in quote value end: ${token.type}`);
++  }
+   return createQuoteValue(
+-    context.transformRange(cstNode.valueRange!),
+-    context.transformContent(quoteValue),
+-    cstNode.strValue as string,
++    context.transformRange({
++      origStart: quoteValue.range[0],
++      origEnd: quoteValue.range[1],
++    }),
++    context.transformContentProperties(quoteValue, props.tokens),
++    quoteValue.source,
+   );
+ }
+diff --git a/src/transforms/seq.ts b/src/transforms/seq.ts
+index 4345b75..2d627cd 100644
+--- a/src/transforms/seq.ts
++++ b/src/transforms/seq.ts
+@@ -1,40 +1,116 @@
+-import type * as YAML from "yaml";
++import * as YAML from "yaml";
++import * as YAML_CST from "../cst.js";
++import { createMapping } from "../factories/mapping.js";
++import { createMappingItem } from "../factories/mapping-item.js";
+ import { createPosition } from "../factories/position.js";
+ import { createSequence } from "../factories/sequence.js";
+ import { createSequenceItem } from "../factories/sequence-item.js";
+-import { type Sequence } from "../types.js";
++import type { Sequence } from "../types.js";
+ import { extractComments } from "../utils/extract-comments.js";
+-import { extractPropComments } from "../utils/extract-prop-comments.js";
+ import { getLast } from "../utils/get-last.js";
+ import type Context from "./context.js";
++import { transformPair } from "./pair.js";
++import { isEmptyNode, type TransformNodeProperties } from "./transform.js";
+ 
++type ItemNode =
++  | YAML.ParsedNode
++  | YAML.Pair<YAML.ParsedNode, YAML.ParsedNode | null>;
+ export function transformSeq(
+-  seq: YAML.AST.BlockSeq,
++  seq: YAML.YAMLSeq.Parsed<ItemNode>,
+   context: Context,
++  props: TransformNodeProperties,
+ ): Sequence {
+-  const cstItemsWithoutComments = extractComments(seq.cstNode!.items, context);
++  const srcToken = seq.srcToken;
+ 
+-  const sequenceItems = cstItemsWithoutComments.map((cstItem, index) => {
+-    extractPropComments(cstItem, context);
+-    const item = context.transformNode(seq.items[index]);
++  // istanbul ignore if -- @preserve
++  if (!srcToken || srcToken.type !== "block-seq") {
++    throw new Error("Expected block sequence srcToken");
++  }
++
++  const sequenceItems = seq.items.map((itemNode, index) => {
++    const srcItem = srcToken.items[index];
++    const propTokens: YAML_CST.ContentPropertyToken[] = [];
++    let seqItemIndToken: YAML_CST.SeqItemIndSourceToken | null = null;
++    for (const token of YAML_CST.tokens(srcItem.start)) {
++      if (YAML_CST.maybeContentPropertyToken(token)) {
++        propTokens.push(token);
++        continue;
++      }
++
++      // istanbul ignore else -- @preserve
++      if (token.type === "seq-item-ind") {
++        seqItemIndToken = token;
++        continue;
++      }
++      // istanbul ignore next -- @preserve
++      throw new Error(
++        `Unexpected token type in sequence item start: ${token.type}`,
++      );
++    }
++
++    const item = transformItemValue(itemNode, context, { tokens: propTokens });
+ 
+     return createSequenceItem(
+       createPosition(
+-        context.transformOffset(cstItem.valueRange!.origStart),
+-        item === null
+-          ? context.transformOffset(cstItem.valueRange!.origStart + 1)
+-          : item.position.end,
++        seqItemIndToken
++          ? context.transformOffset(seqItemIndToken.offset)
++          : item!.position.start,
++        item?.position.end ??
++          context.transformOffset(
++            seqItemIndToken!.offset + seqItemIndToken!.source.length,
++          ),
+       ),
+       item,
+     );
+   });
+ 
++  if (seq.items.length < srcToken.items.length) {
++    // Handle extra comments
++    for (let i = seq.items.length; i < srcToken.items.length; i++) {
++      const srcItem = srcToken.items[i];
++      for (const token of extractComments(srcItem.start, context)) {
++        // istanbul ignore next -- @preserve
++        throw new Error(
++          `Unexpected token type in collection item start: ${token.type}`,
++        );
++      }
++    }
++  }
++
+   return createSequence(
+     createPosition(
+       sequenceItems[0].position.start,
+       getLast(sequenceItems)!.position.end,
+     ),
+-    context.transformContent(seq),
++    context.transformContentProperties(seq, props.tokens),
+     sequenceItems,
+   );
+ }
++
++function transformItemValue(
++  itemNode: ItemNode,
++  context: Context,
++  props: TransformNodeProperties,
++) {
++  if (!YAML.isPair(itemNode)) {
++    if (isEmptyNode(itemNode, props)) {
++      extractComments(props.tokens, context);
++      return null;
++    }
++    return context.transformNode(itemNode, props);
++  }
++
++  const srcItem = itemNode.srcToken!;
++  const mappingItem = transformPair(
++    itemNode,
++    srcItem,
++    context,
++    createMappingItem,
++  );
++
++  return createMapping(
++    mappingItem.position,
++    context.transformContentProperties(itemNode.key, props.tokens),
++    [mappingItem],
++  );
++}
+diff --git a/src/transforms/transform.ts b/src/transforms/transform.ts
+index 3bb4c07..ea7e312 100644
+--- a/src/transforms/transform.ts
++++ b/src/transforms/transform.ts
+@@ -1,12 +1,9 @@
+-import type * as YAML from "yaml";
+-import type * as YAMLTypes from "yaml/types";
++import * as YAML from "yaml";
++import type * as YAML_CST from "../cst.js";
+ import type {
+   Alias,
+   BlockFolded,
+   BlockLiteral,
+-  Comment,
+-  Directive,
+-  Document,
+   FlowMapping,
+   FlowSequence,
+   Mapping,
+@@ -19,10 +16,7 @@ import type {
+ import { transformAlias } from "./alias.js";
+ import { transformBlockFolded } from "./block-folded.js";
+ import { transformBlockLiteral } from "./block-literal.js";
+-import { transformComment } from "./comment.js";
+ import type Context from "./context.js";
+-import { transformDirective } from "./directive.js";
+-import { transformDocument } from "./document.js";
+ import { transformFlowMap } from "./flow-map.js";
+ import { transformFlowSeq } from "./flow-seq.js";
+ import { transformMap } from "./map.js";
+@@ -31,83 +25,77 @@ import { transformQuoteDouble } from "./quote-double.js";
+ import { transformQuoteSingle } from "./quote-single.js";
+ import { transformSeq } from "./seq.js";
+ 
+-export type YamlNode =
+-  | null
+-  | YAMLTypes.Alias
+-  | YAML.CST.BlankLine
+-  | YAML.AST.BlockFolded
+-  | YAML.AST.BlockLiteral
+-  | YAML.CST.Comment
+-  | YAML.CST.Directive
+-  | YAML.Document
+-  | YAML.AST.FlowMap
+-  | YAML.AST.FlowSeq
+-  | YAML.AST.BlockMap
+-  | YAML.AST.PlainValue
+-  | YAML.AST.QuoteDouble
+-  | YAML.AST.QuoteSingle
+-  | YAMLTypes.Scalar
+-  | YAML.AST.BlockSeq;
++export type YamlNode = null | YAML.ParsedNode;
+ 
+ // prettier-ignore
+ export type YamlToUnist<T extends YamlNode> =
+   T extends null ? null :
+-  T extends YAMLTypes.Alias ? Alias :
+-  T extends YAML.AST.BlockFolded ? BlockFolded :
+-  T extends YAML.AST.BlockLiteral ? BlockLiteral :
+-  T extends YAML.CST.Comment ? Comment :
+-  T extends YAML.CST.Directive ? Directive :
+-  T extends YAML.Document ? Document :
+-  T extends YAML.AST.FlowMap ? FlowMapping :
+-  T extends YAML.AST.FlowSeq ? FlowSequence :
+-  T extends YAML.AST.BlockMap ? Mapping :
+-  T extends YAML.AST.PlainValue ? Plain :
+-  T extends YAML.AST.QuoteDouble ? QuoteDouble :
+-  T extends YAML.AST.QuoteSingle ? QuoteSingle :
+-  T extends YAML.AST.BlockSeq ? Sequence :
++  T extends YAML.Alias.Parsed ? Alias :
++  T extends YAML.YAMLMap.Parsed ? (Mapping | FlowMapping) :
++  T extends YAML.YAMLSeq.Parsed ? (Sequence | FlowSequence) :
++  T extends YAML.Scalar.Parsed ? (BlockLiteral | BlockFolded | Plain | QuoteSingle | QuoteDouble) :
+   never;
+ 
++export type TransformNodeProperties = {
++  tokens: YAML_CST.ContentPropertyToken[];
++};
++
+ export function transformNode<T extends YamlNode>(
+   node: T,
+   context: Context,
++  props: TransformNodeProperties,
+ ): YamlToUnist<T>;
+ export function transformNode(
+   node: YamlNode,
+   context: Context,
++  props: TransformNodeProperties,
+ ): YamlUnistNode | null {
+-  if (node === null || (node.type === undefined && node.value === null)) {
++  if (node == null) {
+     return null;
+   }
+-
+-  switch (node.type) {
+-    case "ALIAS":
+-      return transformAlias(node, context);
+-    case "BLOCK_FOLDED":
+-      return transformBlockFolded(node as YAML.AST.BlockFolded, context);
+-    case "BLOCK_LITERAL":
+-      return transformBlockLiteral(node as YAML.AST.BlockLiteral, context);
+-    case "COMMENT":
+-      return transformComment(node, context);
+-    case "DIRECTIVE":
+-      return transformDirective(node, context);
+-    case "DOCUMENT":
+-      return transformDocument(node, context);
+-    case "FLOW_MAP":
+-      return transformFlowMap(node, context);
+-    case "FLOW_SEQ":
+-      return transformFlowSeq(node, context);
+-    case "MAP":
+-      return transformMap(node, context);
+-    case "PLAIN":
+-      return transformPlain(node as YAML.AST.PlainValue, context);
+-    case "QUOTE_DOUBLE":
+-      return transformQuoteDouble(node as YAML.AST.QuoteDouble, context);
+-    case "QUOTE_SINGLE":
+-      return transformQuoteSingle(node as YAML.AST.QuoteSingle, context);
+-    case "SEQ":
+-      return transformSeq(node, context);
+-    // istanbul ignore next
+-    default:
+-      throw new Error(`Unexpected node type ${node.type}`);
++  if (YAML.isAlias(node)) {
++    return transformAlias(node, context, props);
++  }
++  if (YAML.isMap(node)) {
++    if (node.flow) {
++      return transformFlowMap(node, context, props);
++    }
++    return transformMap(node, context, props);
++  }
++  if (YAML.isSeq(node)) {
++    if (node.flow) {
++      return transformFlowSeq(node, context, props);
++    }
++    return transformSeq(node, context, props);
+   }
++  if (YAML.isScalar(node)) {
++    switch (node.type!) {
++      case "BLOCK_FOLDED":
++        return transformBlockFolded(node, context, props);
++      case "BLOCK_LITERAL":
++        return transformBlockLiteral(node, context, props);
++      case "PLAIN":
++        return transformPlain(node, context, props);
++      case "QUOTE_DOUBLE":
++        return transformQuoteDouble(node, context, props);
++      case "QUOTE_SINGLE":
++        return transformQuoteSingle(node, context, props);
++    }
++    // istanbul ignore next -- @preserve
++    throw new Error(`Unexpected scalar type: ${node.type}`);
++  }
++
++  // istanbul ignore next -- @preserve
++  throw new Error(`Unexpected unknown node type`);
++}
++
++export function isEmptyNode(
++  node: YAML.ParsedNode | null,
++  props: TransformNodeProperties,
++) {
++  return (
++    !node ||
++    (node.range[0] === node.range[1] &&
++      props.tokens.every(t => t.type === "comment"))
++  );
+ }
+diff --git a/src/types.ts b/src/types.ts
+index acfc5ae..a16aa2e 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -1,11 +1,7 @@
+-import type * as YAML from "yaml";
+-
+ export interface ParseOptions {
+   allowDuplicateKeysInMap?: boolean;
+ }
+ 
+-export type ParsedCST = ReturnType<typeof YAML.parseCST>;
+-
+ export interface Node {
+   type: string;
+   position: Position;
+diff --git a/src/utils/create-slicer.ts b/src/utils/create-slicer.ts
+deleted file mode 100644
+index 5987652..0000000
+--- a/src/utils/create-slicer.ts
++++ /dev/null
+@@ -1,4 +0,0 @@
+-export function createSlicer<T>(array: T[], start: number) {
+-  let index = start;
+-  return (end: number) => array.slice(index, (index = end));
+-}
+diff --git a/src/utils/define-parents.ts b/src/utils/define-parents.ts
+index 83842d6..258d10a 100644
+--- a/src/utils/define-parents.ts
++++ b/src/utils/define-parents.ts
+@@ -18,7 +18,7 @@ export function defineParents(
+     defineParents(node.tag, node);
+   }
+ 
+-  // istanbul ignore next
++  // istanbul ignore if -- @preserve
+   if ("leadingComments" in node) {
+     node.leadingComments.forEach(comment => defineParents(comment, node));
+   }
+diff --git a/src/utils/extract-comments.ts b/src/utils/extract-comments.ts
+index 46d1070..3d228d8 100644
+--- a/src/utils/extract-comments.ts
++++ b/src/utils/extract-comments.ts
+@@ -1,23 +1,29 @@
+ import type * as YAML from "yaml";
++import * as YAML_CST from "../cst.js";
+ import type Context from "../transforms/context.js";
+ 
+-export function extractComments<T extends null | object>(
+-  nodes: Array<T | YAML.CST.Comment>,
++export function extractComments<T extends YAML_CST.SourceToken>(
++  tokens: T[] | undefined,
+   context: Context,
+-): T[];
++): Exclude<T, YAML_CST.CommentSourceToken>[];
+ export function extractComments(
+-  nodes: Array<null | object | YAML.CST.Comment>,
++  tokens: YAML.CST.SourceToken[] | undefined,
+   context: Context,
+-): Array<null | object> {
+-  const restNodes: Array<null | object> = [];
+-
+-  for (const node of nodes) {
+-    if (node && "type" in node && node.type === "COMMENT") {
+-      context.comments.push(context.transformNode(node));
++): YAML_CST.SourceToken[];
++export function extractComments<T extends YAML_CST.SourceToken>(
++  tokens: T[] | undefined,
++  context: Context,
++): Exclude<T, YAML_CST.CommentSourceToken>[] {
++  const restNodes: Exclude<
++    YAML_CST.SourceToken,
++    YAML_CST.CommentSourceToken
++  >[] = [];
++  for (const token of YAML_CST.tokens(tokens)) {
++    if (token.type === "comment") {
++      context.transformComment(token);
+     } else {
+-      restNodes.push(node);
++      restNodes.push(token);
+     }
+   }
+-
+-  return restNodes;
++  return restNodes as Exclude<T, YAML_CST.CommentSourceToken>[];
+ }
+diff --git a/src/utils/extract-prop-comments.ts b/src/utils/extract-prop-comments.ts
+deleted file mode 100644
+index aef06b5..0000000
+--- a/src/utils/extract-prop-comments.ts
++++ /dev/null
+@@ -1,29 +0,0 @@
+-import type * as YAML from "yaml";
+-import { PropLeadingCharacter } from "../constants.js";
+-import { createComment } from "../factories/comment.js";
+-import type Context from "../transforms/context.js";
+-import type { Range } from "../types.ts";
+-
+-export function extractPropComments(
+-  node: YAML.CST.Node,
+-  context: Context,
+-): void {
+-  for (const propRange of node.props) {
+-    const leadingChar = context.text[propRange.origStart!];
+-    switch (leadingChar) {
+-      case PropLeadingCharacter.Comment:
+-        context.comments.push(
+-          createComment(
+-            context.transformRange(propRange as Range),
+-            context.text.slice(propRange.origStart! + 1, propRange.origEnd),
+-          ),
+-        );
+-        break;
+-      // istanbul ignore next
+-      default:
+-        throw new Error(
+-          `Unexpected leading character ${JSON.stringify(leadingChar)}`,
+-        );
+-    }
+-  }
+-}
+diff --git a/src/utils/find-char-index.ts b/src/utils/find-char-index.ts
+new file mode 100644
+index 0000000..a77fcd1
+--- /dev/null
++++ b/src/utils/find-char-index.ts
+@@ -0,0 +1,8 @@
++export function findCharIndex(text: string, from: number, regex: RegExp) {
++  for (let i = from; i < text.length; i++) {
++    if (regex.test(text[i])) {
++      return i;
++    }
++  }
++  return null;
++}
+diff --git a/src/utils/find-last-char-index.ts b/src/utils/find-last-char-index.ts
+index a9aa55a..ef45772 100644
+--- a/src/utils/find-last-char-index.ts
++++ b/src/utils/find-last-char-index.ts
+@@ -4,6 +4,6 @@ export function findLastCharIndex(text: string, from: number, regex: RegExp) {
+       return i;
+     }
+   }
+-  // istanbul ignore next
++  // istanbul ignore next -- @preserve
+   return -1;
+ }
+diff --git a/src/utils/get-flow-map-item-additional-ranges.ts b/src/utils/get-flow-map-item-additional-ranges.ts
+deleted file mode 100644
+index 3bfdebf..0000000
+--- a/src/utils/get-flow-map-item-additional-ranges.ts
++++ /dev/null
+@@ -1,20 +0,0 @@
+-import type * as YAML from "yaml";
+-
+-export function getFlowMapItemAdditionalRanges(
+-  cstNodes: YAML.CST.FlowMap["items"],
+-) {
+-  const [questionMarkRange, colonRange] = ["?", ":"].map(char => {
+-    const flowChar = cstNodes.find(
+-      (cstNode): cstNode is YAML.CST.FlowChar =>
+-        "char" in cstNode && cstNode.char === char,
+-    );
+-    return flowChar
+-      ? { origStart: flowChar.origOffset, origEnd: flowChar.origOffset + 1 }
+-      : null;
+-  });
+-
+-  return {
+-    additionalKeyRange: questionMarkRange,
+-    additionalValueRange: colonRange,
+-  };
+-}
+diff --git a/src/utils/get-match-index.ts b/src/utils/get-match-index.ts
+deleted file mode 100644
+index bfe46ed..0000000
+--- a/src/utils/get-match-index.ts
++++ /dev/null
+@@ -1,4 +0,0 @@
+-export function getMatchIndex(text: string, regex: RegExp): number {
+-  const match = text.match(regex);
+-  return match ? match.index! : -1;
+-}
+diff --git a/src/utils/get-point-text.ts b/src/utils/get-point-text.ts
+index f46a7fd..057e3a7 100644
+--- a/src/utils/get-point-text.ts
++++ b/src/utils/get-point-text.ts
+@@ -1,6 +1,6 @@
+ import { type Point } from "../types.js";
+ 
+-// istanbul ignore next
++// istanbul ignore next -- @preserve
+ export function getPointText(point: Point) {
+   return `${point.line}:${point.column}`;
+ }
+diff --git a/src/utils/group-cst-flow-collection-items.ts b/src/utils/group-cst-flow-collection-items.ts
+deleted file mode 100644
+index a546993..0000000
+--- a/src/utils/group-cst-flow-collection-items.ts
++++ /dev/null
+@@ -1,43 +0,0 @@
+-import type * as YAML from "yaml";
+-import { createSlicer } from "./create-slicer.js";
+-
+-type CstFlowMapItemWithoutComment = Exclude<
+-  YAML.CST.FlowMap["items"][number],
+-  YAML.CST.Comment
+->;
+-
+-type CstFlowSeqItemWithoutComment = Exclude<
+-  YAML.CST.FlowSeq["items"][number],
+-  YAML.CST.Comment
+->;
+-
+-export function groupCstFlowCollectionItems<
+-  T extends CstFlowMapItemWithoutComment[] | CstFlowSeqItemWithoutComment[],
+->(cstItems: T): T[];
+-export function groupCstFlowCollectionItems(
+-  cstItems: CstFlowMapItemWithoutComment[] | CstFlowSeqItemWithoutComment[],
+-) {
+-  const groups: Array<typeof cstItems> = [];
+-  const sliceCstItems = createSlicer(cstItems, 1); // exclude `{` or `[`
+-
+-  let hasItem = false;
+-
+-  for (let i = 1; i < cstItems.length - 1; i++) {
+-    const cstItem = cstItems[i];
+-
+-    if ("char" in cstItem && cstItem.char === ",") {
+-      groups.push(sliceCstItems(i));
+-      sliceCstItems(i + 1); // exclude `,`
+-      hasItem = false;
+-      continue;
+-    }
+-
+-    hasItem = true;
+-  }
+-
+-  if (hasItem) {
+-    groups.push(sliceCstItems(cstItems.length - 1)); // exclude `}` or `]`
+-  }
+-
+-  return groups;
+-}
+diff --git a/src/utils/update-positions.ts b/src/utils/update-positions.ts
+index b978782..f2d43bd 100644
+--- a/src/utils/update-positions.ts
++++ b/src/utils/update-positions.ts
+@@ -1,4 +1,4 @@
+-import { type Point, type Position, type YamlUnistNode } from "../types.js";
++import type { Point, Position, YamlUnistNode } from "../types.js";
+ import { createUpdater } from "./create-updater.js";
+ import { getLast } from "./get-last.js";
+ 
+diff --git a/src/yaml-test-suite.test.ts b/src/yaml-test-suite.test.ts
+index 1506083..86d2bdb 100644
+--- a/src/yaml-test-suite.test.ts
++++ b/src/yaml-test-suite.test.ts
+@@ -20,6 +20,12 @@ const bugs = new Set([
+   "Y79Y-9.yaml",
+   "Y79Y-10.yaml",
+   "YJV2.yaml",
++
++  // The test suite expects a parsing error,
++  // but the yaml package does not give a parsing error.
++  // https://github.com/eemeli/yaml/blob/086fa6b5bae325da18734750cddee231ce578930/tests/yaml-test-suite.ts#L19
++  "9MMA.yaml",
++  "SF5V.yaml",
+ ]);
+ 
+ for (const { id, cases, name } of yamlTestSuite) {
+diff --git a/yarn.lock b/yarn.lock
+index c28ad84..9a6b1da 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -4781,18 +4781,11 @@ __metadata:
+     typescript: "npm:5.9.3"
+     typescript-eslint: "npm:8.47.0"
+     vitest: "npm:4.0.12"
+-    yaml: "npm:^1.10.2"
++    yaml: "npm:^2.8.1"
+     yaml-test-suite: "npm:0.1.0"
+   languageName: unknown
+   linkType: soft
+ 
+-"yaml@npm:^1.10.2":
+-  version: 1.10.2
+-  resolution: "yaml@npm:1.10.2"
+-  checksum: 10/e088b37b4d4885b70b50c9fa1b7e54bd2e27f5c87205f9deaffd1fb293ab263d9c964feadb9817a7b129a5bf30a06582cb08750f810568ecc14f3cdbabb79cb3
+-  languageName: node
+-  linkType: hard
+-
+ "yaml@npm:^2.2.2":
+   version: 2.7.0
+   resolution: "yaml@npm:2.7.0"
+@@ -4802,6 +4795,15 @@ __metadata:
+   languageName: node
+   linkType: hard
+ 
++"yaml@npm:^2.8.1":
++  version: 2.8.1
++  resolution: "yaml@npm:2.8.1"
++  bin:
++    yaml: bin.mjs
++  checksum: 10/eae07b3947d405012672ec17ce27348aea7d1fa0534143355d24a43a58f5e05652157ea2182c4fe0604f0540be71f99f1173f9d61018379404507790dff17665
++  languageName: node
++  linkType: hard
++
+ "yargs-parser@npm:^20.2.2, yargs-parser@npm:^20.2.3":
+   version: 20.2.9
+   resolution: "yargs-parser@npm:20.2.9"

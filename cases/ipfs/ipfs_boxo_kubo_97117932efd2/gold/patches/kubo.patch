@@ -1,0 +1,737 @@
+diff --git a/core/commands/provide.go b/core/commands/provide.go
+new file mode 100644
+index 000000000..97d4d8c94
+--- /dev/null
++++ b/core/commands/provide.go
+@@ -0,0 +1,82 @@
++package commands
++
++import (
++	"fmt"
++	"io"
++
++	cmds "github.com/ipfs/go-ipfs-cmds"
++	cmdenv "github.com/ipfs/kubo/core/commands/cmdenv"
++)
++
++const (
++	provideQuietOptionName = "quiet"
++)
++
++var ProvideCmd = &cmds.Command{
++	Status: cmds.Experimental,
++	Helptext: cmds.HelpText{
++		Tagline: "Control providing operations",
++		ShortDescription: `
++Control providing operations.
++
++NOTE: This command is experimental and not all provide-related commands have
++been migrated to this namespace yet. For example, 'ipfs routing
++provide|reprovide' are still under the routing namespace, 'ipfs stats
++reprovide' provides statistics. Additionally, 'ipfs bitswap reprovide' and
++'ipfs stats provide' are deprecated.
++`,
++	},
++
++	Subcommands: map[string]*cmds.Command{
++		"clear": ProvideClearCmd,
++	},
++}
++
++var ProvideClearCmd = &cmds.Command{
++	Status: cmds.Experimental,
++	Helptext: cmds.HelpText{
++		Tagline: "Clear all CIDs from the provide queue.",
++		ShortDescription: `
++Clear all CIDs from the reprovide queue.
++
++Note: Kubo will automatically clear the queue when it detects a change of
++Reprovider.Strategy upon a restart. For more information about reprovider
++strategies, see:
++https://github.com/ipfs/kubo/blob/master/docs/config.md#reproviderstrategy
++`,
++	},
++	Options: []cmds.Option{
++		cmds.BoolOption(provideQuietOptionName, "q", "Do not write output."),
++	},
++	Run: func(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment) error {
++		n, err := cmdenv.GetNode(env)
++		if err != nil {
++			return err
++		}
++
++		quiet, _ := req.Options[provideQuietOptionName].(bool)
++		if n.Provider == nil {
++			return nil
++		}
++
++		cleared := n.Provider.Clear()
++		if quiet {
++			return nil
++		}
++		_ = re.Emit(cleared)
++
++		return nil
++	},
++	Type: int(0),
++	Encoders: cmds.EncoderMap{
++		cmds.Text: cmds.MakeTypedEncoder(func(req *cmds.Request, w io.Writer, cleared int) error {
++			quiet, _ := req.Options[provideQuietOptionName].(bool)
++			if quiet {
++				return nil
++			}
++
++			_, err := fmt.Fprintf(w, "removed %d items from provide queue\n", cleared)
++			return err
++		}),
++	},
++}
+diff --git a/core/commands/root.go b/core/commands/root.go
+index 80c2309df..d70a49376 100644
+--- a/core/commands/root.go
++++ b/core/commands/root.go
+@@ -65,6 +65,7 @@ ADVANCED COMMANDS
+   p2p           Libp2p stream mounting (experimental)
+   filestore     Manage the filestore (experimental)
+   mount         Mount an IPFS read-only mount point (experimental)
++  provide       Control providing operations
+ 
+ NETWORK COMMANDS
+   id            Show info about IPFS peers
+@@ -133,6 +134,7 @@ var rootSubcommands = map[string]*cmds.Command{
+ 	"files":     FilesCmd,
+ 	"filestore": FileStoreCmd,
+ 	"get":       GetCmd,
++	"provide":   ProvideCmd,
+ 	"pubsub":    PubsubCmd,
+ 	"repo":      RepoCmd,
+ 	"stats":     StatsCmd,
+diff --git a/core/node/provider.go b/core/node/provider.go
+index 79fed2a4f..d1237da97 100644
+--- a/core/node/provider.go
++++ b/core/node/provider.go
+@@ -2,6 +2,7 @@ package node
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"time"
+ 
+@@ -11,6 +12,7 @@ import (
+ 	pin "github.com/ipfs/boxo/pinning/pinner"
+ 	provider "github.com/ipfs/boxo/provider"
+ 	"github.com/ipfs/go-cid"
++	"github.com/ipfs/go-datastore"
+ 	"github.com/ipfs/kubo/repo"
+ 	irouting "github.com/ipfs/kubo/routing"
+ 	"go.uber.org/fx"
+@@ -21,7 +23,10 @@ import (
+ // and in 'ipfs stats provide' report.
+ const sampledBatchSize = 1000
+ 
+-func ProviderSys(reprovideInterval time.Duration, acceleratedDHTClient bool, provideWorkerCount int) fx.Option {
++// Datastore key used to store previous reprovide strategy.
++const reprovideStrategyKey = "/reprovideStrategy"
++
++func ProviderSys(reprovideInterval time.Duration, acceleratedDHTClient bool, provideWorkerCount int, reprovideStrategy string) fx.Option {
+ 	return fx.Provide(func(lc fx.Lifecycle, cr irouting.ProvideManyRouter, keyProvider provider.KeyChanFunc, repo repo.Repo, bs blockstore.Blockstore) (provider.System, error) {
+ 		opts := []provider.Option{
+ 			provider.Online(cr),
+@@ -114,10 +119,35 @@ https://github.com/ipfs/kubo/blob/master/docs/config.md#routingaccelerateddhtcli
+ 					return false
+ 				}, sampledBatchSize))
+ 		}
+-		sys, err := provider.New(repo.Datastore(), opts...)
++
++		var strategyChanged bool
++		ctx := context.Background()
++		ds := repo.Datastore()
++		strategyKey := datastore.NewKey(reprovideStrategyKey)
++
++		prev, err := ds.Get(ctx, strategyKey)
++		if err != nil && !errors.Is(err, datastore.ErrNotFound) {
++			logger.Error("cannot read previous reprovide strategy", "err", err)
++		} else if string(prev) != reprovideStrategy {
++			strategyChanged = true
++		}
++
++		sys, err := provider.New(ds, opts...)
+ 		if err != nil {
+ 			return nil, err
+ 		}
++		if strategyChanged {
++			logger.Infow("Reprovider.Strategy changed, clearing provide queue", "previous", string(prev), "current", reprovideStrategy)
++			sys.Clear()
++			if reprovideStrategy == "" {
++				err = ds.Delete(ctx, strategyKey)
++			} else {
++				err = ds.Put(ctx, strategyKey, []byte(reprovideStrategy))
++			}
++			if err != nil {
++				logger.Error("cannot update reprovide strategy", "err", err)
++			}
++		}
+ 
+ 		lc.Append(fx.Hook{
+ 			OnStop: func(ctx context.Context) error {
+@@ -147,7 +177,7 @@ func OnlineProviders(provide bool, reprovideStrategy string, reprovideInterval t
+ 
+ 	return fx.Options(
+ 		keyProvider,
+-		ProviderSys(reprovideInterval, acceleratedDHTClient, provideWorkerCount),
++		ProviderSys(reprovideInterval, acceleratedDHTClient, provideWorkerCount, reprovideStrategy),
+ 	)
+ }
+ 
+diff --git a/docs/changelogs/v0.36.md b/docs/changelogs/v0.36.md
+index 5c078e330..0bf39522c 100644
+--- a/docs/changelogs/v0.36.md
++++ b/docs/changelogs/v0.36.md
+@@ -215,7 +215,7 @@ The `ipfs config edit` command did not correctly handle the `EDITOR` environment
+   - chore: update to boxo merkledag package
+   - feat: car debug handles the zero length block ([ipld/go-car#569](https://github.com/ipld/go-car/pull/569))
+   - chore(deps): bump github.com/rogpeppe/go-internal from 1.13.1 to 1.14.1 in /cmd ([ipld/go-car#566](https://github.com/ipld/go-car/pull/566))
+-  - Add a concatination cli utility ([ipld/go-car#565](https://github.com/ipld/go-car/pull/565))
++  - Add a concatenation cli utility ([ipld/go-car#565](https://github.com/ipld/go-car/pull/565))
+ - github.com/ipld/go-codec-dagpb (v1.6.0 -> v1.7.0):
+   - chore: v1.7.0 bump
+ - github.com/libp2p/go-flow-metrics (v0.2.0 -> v0.3.0):
+diff --git a/docs/changelogs/v0.37.md b/docs/changelogs/v0.37.md
+index 1a78a9505..f34d5cd6f 100644
+--- a/docs/changelogs/v0.37.md
++++ b/docs/changelogs/v0.37.md
+@@ -10,7 +10,8 @@ This release  was brought to you by the [Interplanetary Shipyard](https://ipship
+ 
+ - [Overview](#overview)
+ - [🔦 Highlights](#-highlights)
+-  - [📦️ Important dependency updates](#-important-dependency-updates)
++  - [Clear provide queue when reprovide strategy changes](#clear-provide-queue-when-reprovide-strategy-changes)
++- [📦️ Important dependency updates](#-important-dependency-updates)
+ - [📝 Changelog](#-changelog)
+ - [👨‍👩‍👧‍👦 Contributors](#-contributors)
+ 
+@@ -18,8 +19,21 @@ This release  was brought to you by the [Interplanetary Shipyard](https://ipship
+ 
+ ### 🔦 Highlights
+ 
++#### Clear provide queue when reprovide strategy changes
++
++Your content sharing strategy changes now take effect cleanly, without interference from previously queued items.
++
++When you change [`Reprovider.Strategy`](https://github.com/ipfs/kubo/blob/master/docs/config.md#reproviderstrategy) and restart Kubo, the provide queue is automatically cleared. This ensures only content matching your new strategy will be announced to the network.
++
++A new `ipfs provide clear` command also allows manual queue clearing for debugging purposes.
++
++> [!NOTE]
++> Upgrading to Kubo 0.37 will automatically clear any preexisting provide queue. The next time `Reprovider.Interval` hits, `Reprovider.Strategy` will be executed on a clean slate, ensuring consistent behavior with your current configuration.
++
+ #### 📦️ Important dependency updates
+ 
++- update `boxo` to [v0.34.0](https://github.com/ipfs/boxo/releases/tag/v0.34.0)
++
+ ### 📝 Changelog
+ 
+ ### 👨‍👩‍👧‍👦 Contributors
+diff --git a/docs/config.md b/docs/config.md
+index 732899573..6b9ad4c13 100644
+--- a/docs/config.md
++++ b/docs/config.md
+@@ -1839,10 +1839,13 @@ Tells reprovider what should be announced. Valid strategies are:
+   - Order: first `pinned` and then the locally available part of `mfs`.
+ - `"flat"` - same as `all`, announce all CIDs of stored blocks, but without prioritizing anything.
+ 
+-> [!IMPORTANT]
+-> Reproviding larger pinsets using the `all`, `mfs`, `pinned`, `pinned+mfs` or `roots` strategies requires additional memory, with an estimated ~1 GiB of RAM per 20 million items for reproviding to the Amino DHT.
+-> This is due to the use of a buffered provider, which avoids holding a lock on the entire pinset during the reprovide cycle.
+-> The `flat` strategy can be used to lower memory requirements, but only recommended if memory utilization is too high, prioritization of pins is not necessary, and it is acceptable to announce every block cached in the local repository.
++**Strategy changes automatically clear the provide queue.** When you change `Reprovider.Strategy` and restart Kubo, the provide queue is automatically cleared to ensure only content matching your new strategy is announced. You can also manually clear the queue using `ipfs provide clear`.
++
++**Memory requirements:**
++
++- Reproviding larger pinsets using the `all`, `mfs`, `pinned`, `pinned+mfs` or `roots` strategies requires additional memory, with an estimated ~1 GiB of RAM per 20 million items for reproviding to the Amino DHT.
++- This is due to the use of a buffered provider, which avoids holding a lock on the entire pinset during the reprovide cycle.
++- The `flat` strategy can be used to lower memory requirements, but only recommended if memory utilization is too high, prioritization of pins is not necessary, and it is acceptable to announce every block cached in the local repository.
+ 
+ Default: `"all"`
+ 
+diff --git a/docs/examples/kubo-as-a-library/go.mod b/docs/examples/kubo-as-a-library/go.mod
+index 47fd48238..c9b695d99 100644
+--- a/docs/examples/kubo-as-a-library/go.mod
++++ b/docs/examples/kubo-as-a-library/go.mod
+@@ -7,7 +7,7 @@ go 1.24
+ replace github.com/ipfs/kubo => ./../../..
+ 
+ require (
+-	github.com/ipfs/boxo v0.33.0
++	github.com/ipfs/boxo v0.33.1-0.20250710085426-6cfa79448bb1
+ 	github.com/ipfs/kubo v0.0.0-00010101000000-000000000000
+ 	github.com/libp2p/go-libp2p v0.42.0
+ 	github.com/multiformats/go-multiaddr v0.16.0
+@@ -26,6 +26,7 @@ require (
+ 	github.com/caddyserver/certmagic v0.23.0 // indirect
+ 	github.com/caddyserver/zerossl v0.1.3 // indirect
+ 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
++	github.com/cenkalti/backoff/v5 v5.0.2 // indirect
+ 	github.com/ceramicnetwork/go-dag-jose v0.1.1 // indirect
+ 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+ 	github.com/cockroachdb/crlib v0.0.0-20241015224233-894974b3ad94 // indirect
+@@ -49,7 +50,7 @@ require (
+ 	github.com/flynn/noise v1.1.0 // indirect
+ 	github.com/francoispqt/gojay v1.2.13 // indirect
+ 	github.com/fsnotify/fsnotify v1.7.0 // indirect
+-	github.com/gabriel-vasile/mimetype v1.4.6 // indirect
++	github.com/gabriel-vasile/mimetype v1.4.9 // indirect
+ 	github.com/gammazero/chanqueue v1.1.0 // indirect
+ 	github.com/gammazero/deque v1.0.0 // indirect
+ 	github.com/getsentry/sentry-go v0.27.0 // indirect
+@@ -65,7 +66,7 @@ require (
+ 	github.com/google/pprof v0.0.0-20250607225305-033d6d78b36a // indirect
+ 	github.com/google/uuid v1.6.0 // indirect
+ 	github.com/gorilla/websocket v1.5.3 // indirect
+-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
++	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1 // indirect
+ 	github.com/hashicorp/golang-lru v1.0.2 // indirect
+ 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+ 	github.com/huin/goupnp v1.3.0 // indirect
+@@ -128,7 +129,7 @@ require (
+ 	github.com/marten-seemann/tcp v0.0.0-20210406111302-dfbc87cc63fd // indirect
+ 	github.com/mattn/go-isatty v0.0.20 // indirect
+ 	github.com/mholt/acmez/v3 v3.1.2 // indirect
+-	github.com/miekg/dns v1.1.66 // indirect
++	github.com/miekg/dns v1.1.67 // indirect
+ 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
+ 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
+ 	github.com/minio/sha256-simd v1.0.1 // indirect
+@@ -177,7 +178,6 @@ require (
+ 	github.com/quic-go/quic-go v0.52.0 // indirect
+ 	github.com/quic-go/webtransport-go v0.8.1-0.20241018022711-4ac2c9250e66 // indirect
+ 	github.com/rogpeppe/go-internal v1.13.1 // indirect
+-	github.com/samber/lo v1.47.0 // indirect
+ 	github.com/spaolacci/murmur3 v1.1.0 // indirect
+ 	github.com/syndtr/goleveldb v1.0.1-0.20220721030215-126854af5e6d // indirect
+ 	github.com/ucarion/urlpath v0.0.0-20200424170820-7ccc79b76bbb // indirect
+@@ -191,17 +191,17 @@ require (
+ 	github.com/zeebo/blake3 v0.2.4 // indirect
+ 	go.opencensus.io v0.24.0 // indirect
+ 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
+-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.56.0 // indirect
++	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 // indirect
+ 	go.opentelemetry.io/otel v1.37.0 // indirect
+-	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.31.0 // indirect
+-	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.31.0 // indirect
+-	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.31.0 // indirect
+-	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.31.0 // indirect
+-	go.opentelemetry.io/otel/exporters/zipkin v1.31.0 // indirect
++	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.37.0 // indirect
++	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.37.0 // indirect
++	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.37.0 // indirect
++	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.37.0 // indirect
++	go.opentelemetry.io/otel/exporters/zipkin v1.37.0 // indirect
+ 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
+-	go.opentelemetry.io/otel/sdk v1.31.0 // indirect
++	go.opentelemetry.io/otel/sdk v1.37.0 // indirect
+ 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
+-	go.opentelemetry.io/proto/otlp v1.3.1 // indirect
++	go.opentelemetry.io/proto/otlp v1.7.0 // indirect
+ 	go.uber.org/automaxprocs v1.6.0 // indirect
+ 	go.uber.org/dig v1.19.0 // indirect
+ 	go.uber.org/fx v1.24.0 // indirect
+@@ -221,9 +221,9 @@ require (
+ 	golang.org/x/tools v0.34.0 // indirect
+ 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
+ 	gonum.org/v1/gonum v0.16.0 // indirect
+-	google.golang.org/genproto/googleapis/api v0.0.0-20241007155032-5fefd90f89a9 // indirect
+-	google.golang.org/genproto/googleapis/rpc v0.0.0-20241007155032-5fefd90f89a9 // indirect
+-	google.golang.org/grpc v1.67.1 // indirect
++	google.golang.org/genproto/googleapis/api v0.0.0-20250603155806-513f23925822 // indirect
++	google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822 // indirect
++	google.golang.org/grpc v1.73.0 // indirect
+ 	google.golang.org/protobuf v1.36.6 // indirect
+ 	gopkg.in/yaml.v3 v3.0.1 // indirect
+ 	lukechampine.com/blake3 v1.4.1 // indirect
+diff --git a/docs/examples/kubo-as-a-library/go.sum b/docs/examples/kubo-as-a-library/go.sum
+index 8ebaa1fad..fa0462bf5 100644
+--- a/docs/examples/kubo-as-a-library/go.sum
++++ b/docs/examples/kubo-as-a-library/go.sum
+@@ -67,6 +67,8 @@ github.com/caddyserver/zerossl v0.1.3 h1:onS+pxp3M8HnHpN5MMbOMyNjmTheJyWRaZYwn+Y
+ github.com/caddyserver/zerossl v0.1.3/go.mod h1:CxA0acn7oEGO6//4rtrRjYgEoa4MFw/XofZnrYwGqG4=
+ github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
+ github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
++github.com/cenkalti/backoff/v5 v5.0.2 h1:rIfFVxEf1QsI7E1ZHfp/B4DF/6QBAUhmgkxc0H7Zss8=
++github.com/cenkalti/backoff/v5 v5.0.2/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
+ github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=
+ github.com/ceramicnetwork/go-dag-jose v0.1.1 h1:7pObs22egc14vSS3AfCFfS1VmaL4lQUsAK7OGC3PlKk=
+ github.com/ceramicnetwork/go-dag-jose v0.1.1/go.mod h1:8ptnYwY2Z2y/s5oJnNBn/UCxLg6CpramNJ2ZXF/5aNY=
+@@ -157,8 +159,8 @@ github.com/fsnotify/fsnotify v1.4.9/go.mod h1:znqG4EE+3YCdAaPaxE2ZRY/06pZUdp0tY4
+ github.com/fsnotify/fsnotify v1.5.4/go.mod h1:OVB6XrOHzAwXMpEM7uPOzcehqUV2UqJxmVXmkdnm1bU=
+ github.com/fsnotify/fsnotify v1.7.0 h1:8JEhPFa5W2WU7YfeZzPNqzMP6Lwt7L2715Ggo0nosvA=
+ github.com/fsnotify/fsnotify v1.7.0/go.mod h1:40Bi/Hjc2AVfZrqy+aj+yEI+/bRxZnMJyTJwOpGvigM=
+-github.com/gabriel-vasile/mimetype v1.4.6 h1:3+PzJTKLkvgjeTbts6msPJt4DixhT4YtFNf1gtGe3zc=
+-github.com/gabriel-vasile/mimetype v1.4.6/go.mod h1:JX1qVKqZd40hUPpAfiNTe0Sne7hdfKSbOqqmkq8GCXc=
++github.com/gabriel-vasile/mimetype v1.4.9 h1:5k+WDwEsD9eTLL8Tz3L0VnmVh9QxGjRmjBvAG7U/oYY=
++github.com/gabriel-vasile/mimetype v1.4.9/go.mod h1:WnSQhFKJuBlRyLiKohA/2DtIlPFAbguNaG7QCHcyGok=
+ github.com/gammazero/chanqueue v1.1.0 h1:yiwtloc1azhgGLFo2gMloJtQvkYD936Ai7tBfa+rYJw=
+ github.com/gammazero/chanqueue v1.1.0/go.mod h1:fMwpwEiuUgpab0sH4VHiVcEoji1pSi+EIzeG4TPeKPc=
+ github.com/gammazero/deque v1.0.0 h1:LTmimT8H7bXkkCy6gZX7zNLtkbz4NdS2z8LZuor3j34=
+@@ -266,8 +268,8 @@ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aN
+ github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+ github.com/gregjones/httpcache v0.0.0-20180305231024-9cad4c3443a7/go.mod h1:FecbI9+v66THATjSRHfNgh1IVFe/9kFxbXtjV0ctIMA=
+ github.com/grpc-ecosystem/grpc-gateway v1.5.0/go.mod h1:RSKVYQBd5MCa4OVpNdGskqpgL2+G+NZTnrVHpWWfpdw=
+-github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 h1:asbCHRVmodnJTuQ3qamDwqVOIjwqUPTYmYuemVOx+Ys=
+-github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0/go.mod h1:ggCgvZ2r7uOoQjOyu2Y1NhHmEPPzzuhWgcza5M1Ji1I=
++github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1 h1:X5VWvz21y3gzm9Nw/kaUeku/1+uBhcekkmy4IkffJww=
++github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1/go.mod h1:Zanoh4+gvIgluNqcfMVTJueD4wSS5hT7zTt4Mrutd90=
+ github.com/gxed/hashland/keccakpg v0.0.1/go.mod h1:kRzw3HkwxFU1mpmPP8v1WyQzwdGfmKFJ6tItnhQ67kU=
+ github.com/gxed/hashland/murmur3 v0.0.1/go.mod h1:KjXop02n4/ckmZSnY2+HKcLud/tcmvhST0bie/0lS48=
+ github.com/hashicorp/golang-lru v0.5.0/go.mod h1:/m3WP610KZHVQ1SGc6re/UDhFvYD7pJ4Ao+sR/qLZy8=
+@@ -289,8 +291,8 @@ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0 h1:OqNqsGZPX8zh3eFMO8Lf8EHRRnSGBMqcd
+ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0/go.mod h1:BxhUdtBgOXg1B+gAPEplkg/GpyTZY+kCMSfsJvvydqU=
+ github.com/ipfs/bbloom v0.0.4 h1:Gi+8EGJ2y5qiD5FbsbpX/TMNcJw8gSqr7eyjHa4Fhvs=
+ github.com/ipfs/bbloom v0.0.4/go.mod h1:cS9YprKXpoZ9lT0n/Mw/a6/aFV6DTjTLYHeA+gyqMG0=
+-github.com/ipfs/boxo v0.33.0 h1:9ow3chwkDzMj0Deq4AWRUEI7WnIIV7SZhPTzzG2mmfw=
+-github.com/ipfs/boxo v0.33.0/go.mod h1:3IPh7YFcCIcKp6o02mCHovrPntoT5Pctj/7j4syh/RM=
++github.com/ipfs/boxo v0.33.1-0.20250710085426-6cfa79448bb1 h1:ZzGKxEqait8lqsEiZ7/esJKELW1/+/Y8swpRgjOZHK0=
++github.com/ipfs/boxo v0.33.1-0.20250710085426-6cfa79448bb1/go.mod h1:Cvy+GW4Noex2jaoTsOM+RYQdXhjNAk09s313vkOyYmA=
+ github.com/ipfs/go-bitfield v1.1.0 h1:fh7FIo8bSwaJEh6DdTWbCeZ1eqOaOkKFI74SCnsWbGA=
+ github.com/ipfs/go-bitfield v1.1.0/go.mod h1:paqf1wjq/D2BBmzfTVFlJQ9IlFOZpg422HL0HqsGWHU=
+ github.com/ipfs/go-block-format v0.0.3/go.mod h1:4LmD4ZUw0mhO+JSKdpWwrzATiEfM7WWgQ8H5l6P8MVk=
+@@ -479,8 +481,8 @@ github.com/mholt/acmez/v3 v3.1.2 h1:auob8J/0FhmdClQicvJvuDavgd5ezwLBfKuYmynhYzc=
+ github.com/mholt/acmez/v3 v3.1.2/go.mod h1:L1wOU06KKvq7tswuMDwKdcHeKpFFgkppZy/y0DFxagQ=
+ github.com/microcosm-cc/bluemonday v1.0.1/go.mod h1:hsXNsILzKxV+sX77C5b8FSuKF00vh2OMYv+xgHpAMF4=
+ github.com/miekg/dns v1.1.43/go.mod h1:+evo5L0630/F6ca/Z9+GAqzhjGyn8/c+TBaOyfEl0V4=
+-github.com/miekg/dns v1.1.66 h1:FeZXOS3VCVsKnEAd+wBkjMC3D2K+ww66Cq3VnCINuJE=
+-github.com/miekg/dns v1.1.66/go.mod h1:jGFzBsSNbJw6z1HYut1RKBKHA9PBdxeHrZG8J+gC2WE=
++github.com/miekg/dns v1.1.67 h1:kg0EHj0G4bfT5/oOys6HhZw4vmMlnoZ+gDu8tJ/AlI0=
++github.com/miekg/dns v1.1.67/go.mod h1:fujopn7TB3Pu3JM69XaawiU0wqjpL9/8xGop5UrTPps=
+ github.com/mikioh/tcp v0.0.0-20190314235350-803a9b46060c h1:bzE/A84HN25pxAuk9Eej1Kz9OUelF97nAc82bDquQI8=
+ github.com/mikioh/tcp v0.0.0-20190314235350-803a9b46060c/go.mod h1:0SQS9kMwD2VsyFEB++InYyBJroV/FRmBgcydeSUcJms=
+ github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b h1:z78hV3sbSMAUoyUMM0I83AUIT6Hu17AWfgjzIbtrYFc=
+@@ -656,8 +658,6 @@ github.com/rogpeppe/go-internal v1.13.1/go.mod h1:uMEvuHeurkdAXX61udpOXGD/AzZDWN
+ github.com/russross/blackfriday v1.5.2/go.mod h1:JO/DiYxRf+HjHt06OyowR9PTA263kcR/rfWxYHBV53g=
+ github.com/russross/blackfriday/v2 v2.0.1/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
+ github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd/go.mod h1:hPqNNc0+uJM6H+SuU8sEs5K5IQeKccPqeSjfgcKGgPk=
+-github.com/samber/lo v1.47.0 h1:z7RynLwP5nbyRscyvcD043DWYoOcYRv3mV8lBeqOCLc=
+-github.com/samber/lo v1.47.0/go.mod h1:RmDH9Ct32Qy3gduHQuKJ3gW1fMHAnE/fAzQuf6He5cU=
+ github.com/sergi/go-diff v1.0.0/go.mod h1:0CfEIISq7TuYL3j771MWULgwwjU+GofnZX9QAmXWZgo=
+ github.com/shurcooL/component v0.0.0-20170202220835-f88ec8f54cc4/go.mod h1:XhFIlyj5a1fBNx5aJTbKoIq0mNaPvOagO+HjB3EtxrY=
+ github.com/shurcooL/events v0.0.0-20181021180414-410e4ca65f48/go.mod h1:5u70Mqkb5O5cxEA8nxTsgrgLehJeAw6Oc4Ab1c/P1HM=
+@@ -779,28 +779,30 @@ go.opencensus.io v0.24.0 h1:y73uSU6J157QMP2kn2r30vwW1A2W2WFwSCGnAVxeaD0=
+ go.opencensus.io v0.24.0/go.mod h1:vNK8G9p7aAivkbmorf4v+7Hgx+Zs0yY+0fOtgBfjQKo=
+ go.opentelemetry.io/auto/sdk v1.1.0 h1:cH53jehLUN6UFLY71z+NDOiNJqDdPRaXzTel0sJySYA=
+ go.opentelemetry.io/auto/sdk v1.1.0/go.mod h1:3wSPjt5PWp2RhlCcmmOial7AvC4DQqZb7a7wCow3W8A=
+-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.56.0 h1:UP6IpuHFkUgOQL9FFQFrZ+5LiwhhYRbi7VZSIx6Nj5s=
+-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.56.0/go.mod h1:qxuZLtbq5QDtdeSHsS7bcf6EH6uO6jUAgk764zd3rhM=
++go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 h1:Hf9xI/XLML9ElpiHVDNwvqI0hIFlzV8dgIr35kV1kRU=
++go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0/go.mod h1:NfchwuyNoMcZ5MLHwPrODwUF1HWCXWrL31s8gSAdIKY=
+ go.opentelemetry.io/otel v1.37.0 h1:9zhNfelUvx0KBfu/gb+ZgeAfAgtWrfHJZcAqFC228wQ=
+ go.opentelemetry.io/otel v1.37.0/go.mod h1:ehE/umFRLnuLa/vSccNq9oS1ErUlkkK71gMcN34UG8I=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.31.0 h1:K0XaT3DwHAcV4nKLzcQvwAgSyisUghWoY20I7huthMk=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.31.0/go.mod h1:B5Ki776z/MBnVha1Nzwp5arlzBbE3+1jk+pGmaP5HME=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.31.0 h1:FFeLy03iVTXP6ffeN2iXrxfGsZGCjVx0/4KlizjyBwU=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.31.0/go.mod h1:TMu73/k1CP8nBUpDLc71Wj/Kf7ZS9FK5b53VapRsP9o=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.31.0 h1:lUsI2TYsQw2r1IASwoROaCnjdj2cvC2+Jbxvk6nHnWU=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.31.0/go.mod h1:2HpZxxQurfGxJlJDblybejHB6RX6pmExPNe517hREw4=
+-go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.31.0 h1:UGZ1QwZWY67Z6BmckTU+9Rxn04m2bD3gD6Mk0OIOCPk=
+-go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.31.0/go.mod h1:fcwWuDuaObkkChiDlhEpSq9+X1C0omv+s5mBtToAQ64=
+-go.opentelemetry.io/otel/exporters/zipkin v1.31.0 h1:CgucL0tj3717DJnni7HVVB2wExzi8c2zJNEA2BhLMvI=
+-go.opentelemetry.io/otel/exporters/zipkin v1.31.0/go.mod h1:rfzOVNiSwIcWtEC2J8epwG26fiaXlYvLySJ7bwsrtAE=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.37.0 h1:Ahq7pZmv87yiyn3jeFz/LekZmPLLdKejuO3NcK9MssM=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.37.0/go.mod h1:MJTqhM0im3mRLw1i8uGHnCvUEeS7VwRyxlLC78PA18M=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.37.0 h1:EtFWSnwW9hGObjkIdmlnWSydO+Qs8OwzfzXLUPg4xOc=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.37.0/go.mod h1:QjUEoiGCPkvFZ/MjK6ZZfNOS6mfVEVKYE99dFhuN2LI=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.37.0 h1:bDMKF3RUSxshZ5OjOTi8rsHGaPKsAt76FaqgvIUySLc=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.37.0/go.mod h1:dDT67G/IkA46Mr2l9Uj7HsQVwsjASyV9SjGofsiUZDA=
++go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.37.0 h1:SNhVp/9q4Go/XHBkQ1/d5u9P/U+L1yaGPoi0x+mStaI=
++go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.37.0/go.mod h1:tx8OOlGH6R4kLV67YaYO44GFXloEjGPZuMjEkaaqIp4=
++go.opentelemetry.io/otel/exporters/zipkin v1.37.0 h1:Z2apuaRnHEjzDAkpbWNPiksz1R0/FCIrJSjiMA43zwI=
++go.opentelemetry.io/otel/exporters/zipkin v1.37.0/go.mod h1:ofGu/7fG+bpmjZoiPUUmYDJ4vXWxMT57HmGoegx49uw=
+ go.opentelemetry.io/otel/metric v1.37.0 h1:mvwbQS5m0tbmqML4NqK+e3aDiO02vsf/WgbsdpcPoZE=
+ go.opentelemetry.io/otel/metric v1.37.0/go.mod h1:04wGrZurHYKOc+RKeye86GwKiTb9FKm1WHtO+4EVr2E=
+-go.opentelemetry.io/otel/sdk v1.31.0 h1:xLY3abVHYZ5HSfOg3l2E5LUj2Cwva5Y7yGxnSW9H5Gk=
+-go.opentelemetry.io/otel/sdk v1.31.0/go.mod h1:TfRbMdhvxIIr/B2N2LQW2S5v9m3gOQ/08KsbbO5BPT0=
++go.opentelemetry.io/otel/sdk v1.37.0 h1:ItB0QUqnjesGRvNcmAcU0LyvkVyGJ2xftD29bWdDvKI=
++go.opentelemetry.io/otel/sdk v1.37.0/go.mod h1:VredYzxUvuo2q3WRcDnKDjbdvmO0sCzOvVAiY+yUkAg=
++go.opentelemetry.io/otel/sdk/metric v1.37.0 h1:90lI228XrB9jCMuSdA0673aubgRobVZFhbjxHHspCPc=
++go.opentelemetry.io/otel/sdk/metric v1.37.0/go.mod h1:cNen4ZWfiD37l5NhS+Keb5RXVWZWpRE+9WyVCpbo5ps=
+ go.opentelemetry.io/otel/trace v1.37.0 h1:HLdcFNbRQBE2imdSEgm/kwqmQj1Or1l/7bW6mxVK7z4=
+ go.opentelemetry.io/otel/trace v1.37.0/go.mod h1:TlgrlQ+PtQO5XFerSPUYG0JSgGyryXewPGyayAWSBS0=
+-go.opentelemetry.io/proto/otlp v1.3.1 h1:TrMUixzpM0yuc/znrFTP9MMRh8trP93mkCiDVeXrui0=
+-go.opentelemetry.io/proto/otlp v1.3.1/go.mod h1:0X1WI4de4ZsLrrJNLAQbFeLCm3T7yBkR0XqQ7niQU+8=
++go.opentelemetry.io/proto/otlp v1.7.0 h1:jX1VolD6nHuFzOYso2E73H85i92Mv8JQYk0K9vz09os=
++go.opentelemetry.io/proto/otlp v1.7.0/go.mod h1:fSKjH6YJ7HDlwzltzyMj036AJ3ejJLCgCSHGj4efDDo=
+ go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=
+ go.uber.org/atomic v1.11.0/go.mod h1:LUxbIzbOniOlMKjJjyPfpl4v+PKK2cNJn91OQbhoJI0=
+ go.uber.org/automaxprocs v1.6.0 h1:O3y2/QNTOdbF+e/dpXNNW7Rx2hZ4sTIPyybbxyNqTUs=
+@@ -1091,10 +1093,10 @@ google.golang.org/genproto v0.0.0-20191216164720-4f79533eabd1/go.mod h1:n3cpQtvx
+ google.golang.org/genproto v0.0.0-20191230161307-f3c370f40bfb/go.mod h1:n3cpQtvxv34hfy77yVDNjmbRyujviMdxYliBSkLhpCc=
+ google.golang.org/genproto v0.0.0-20200212174721-66ed5ce911ce/go.mod h1:55QSHmfGQM9UVYDPBsyGGes0y52j32PQ3BqQfXhyH3c=
+ google.golang.org/genproto v0.0.0-20200526211855-cb27e3aa2013/go.mod h1:NbSheEEYHJ7i3ixzK3sjbqSGDJWnxyFXZblF3eUsNvo=
+-google.golang.org/genproto/googleapis/api v0.0.0-20241007155032-5fefd90f89a9 h1:T6rh4haD3GVYsgEfWExoCZA2o2FmbNyKpTuAxbEFPTg=
+-google.golang.org/genproto/googleapis/api v0.0.0-20241007155032-5fefd90f89a9/go.mod h1:wp2WsuBYj6j8wUdo3ToZsdxxixbvQNAHqVJrTgi5E5M=
+-google.golang.org/genproto/googleapis/rpc v0.0.0-20241007155032-5fefd90f89a9 h1:QCqS/PdaHTSWGvupk2F/ehwHtGc0/GYkT+3GAcR1CCc=
+-google.golang.org/genproto/googleapis/rpc v0.0.0-20241007155032-5fefd90f89a9/go.mod h1:GX3210XPVPUjJbTUbvwI8f2IpZDMZuPJWDzDuebbviI=
++google.golang.org/genproto/googleapis/api v0.0.0-20250603155806-513f23925822 h1:oWVWY3NzT7KJppx2UKhKmzPq4SRe0LdCijVRwvGeikY=
++google.golang.org/genproto/googleapis/api v0.0.0-20250603155806-513f23925822/go.mod h1:h3c4v36UTKzUiuaOKQ6gr3S+0hovBtUrXzTG/i3+XEc=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822 h1:fc6jSaCT0vBduLYZHYrBBNY4dsWuvgyff9noRNDdBeE=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822/go.mod h1:qQ0YXyHHx3XkvlzUtpXDkS29lDSafHMZBAZDc03LQ3A=
+ google.golang.org/grpc v1.14.0/go.mod h1:yo6s7OP7yaDglbqo1J04qKzAhqBH6lvTonzMVmEdcZw=
+ google.golang.org/grpc v1.16.0/go.mod h1:0JHn/cJsOMiMfNA9+DeHDlAU7KAAB5GDlYFpa9MZMio=
+ google.golang.org/grpc v1.17.0/go.mod h1:6QZJwpn2B+Zp71q/5VxRsJ6NXXVCE5NRUHRo+f3cWCs=
+@@ -1107,8 +1109,8 @@ google.golang.org/grpc v1.26.0/go.mod h1:qbnxyOmOxrQa7FizSgH+ReBfzJrCY1pSN7KXBS8
+ google.golang.org/grpc v1.27.0/go.mod h1:qbnxyOmOxrQa7FizSgH+ReBfzJrCY1pSN7KXBS8abTk=
+ google.golang.org/grpc v1.27.1/go.mod h1:qbnxyOmOxrQa7FizSgH+ReBfzJrCY1pSN7KXBS8abTk=
+ google.golang.org/grpc v1.33.2/go.mod h1:JMHMWHQWaTccqQQlmk3MJZS+GWXOdAesneDmEnv2fbc=
+-google.golang.org/grpc v1.67.1 h1:zWnc1Vrcno+lHZCOofnIMvycFcc0QRGIzm9dhnDX68E=
+-google.golang.org/grpc v1.67.1/go.mod h1:1gLDyUQU7CTLJI90u3nXZ9ekeghjeM7pTDZlqFNg2AA=
++google.golang.org/grpc v1.73.0 h1:VIWSmpI2MegBtTuFt5/JWy2oXxtjJ/e89Z70ImfD2ok=
++google.golang.org/grpc v1.73.0/go.mod h1:50sbHOUqWoCQGI8V2HQLJM0B+LMlIUjNSZmow7EVBQc=
+ google.golang.org/protobuf v0.0.0-20200109180630-ec00e32a8dfd/go.mod h1:DFci5gLYBciE7Vtevhsrf46CRTquxDuWsQurQQe4oz8=
+ google.golang.org/protobuf v0.0.0-20200221191635-4d8936d0db64/go.mod h1:kwYJMbMJ01Woi6D6+Kah6886xMZcty6N08ah7+eCXa0=
+ google.golang.org/protobuf v0.0.0-20200228230310-ab0ca4ff8a60/go.mod h1:cfTl7dwQJ+fmap5saPgwCLgHXTUD7jkjRqWcaiX5VyM=
+diff --git a/go.mod b/go.mod
+index b50b82690..f150e066f 100644
+--- a/go.mod
++++ b/go.mod
+@@ -22,7 +22,7 @@ require (
+ 	github.com/hashicorp/go-version v1.7.0
+ 	github.com/ipfs-shipyard/nopfs v0.0.14
+ 	github.com/ipfs-shipyard/nopfs/ipfs v0.25.0
+-	github.com/ipfs/boxo v0.33.0
++	github.com/ipfs/boxo v0.33.1-0.20250710085426-6cfa79448bb1
+ 	github.com/ipfs/go-block-format v0.2.2
+ 	github.com/ipfs/go-cid v0.5.0
+ 	github.com/ipfs/go-cidutil v0.1.0
+@@ -77,10 +77,10 @@ require (
+ 	github.com/whyrusleeping/go-sysinfo v0.0.0-20190219211824-4a357d4b90b1
+ 	github.com/whyrusleeping/multiaddr-filter v0.0.0-20160516205228-e903e4adabd7
+ 	go.opencensus.io v0.24.0
+-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.56.0
++	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0
+ 	go.opentelemetry.io/contrib/propagators/autoprop v0.46.1
+ 	go.opentelemetry.io/otel v1.37.0
+-	go.opentelemetry.io/otel/sdk v1.31.0
++	go.opentelemetry.io/otel/sdk v1.37.0
+ 	go.opentelemetry.io/otel/trace v1.37.0
+ 	go.uber.org/dig v1.19.0
+ 	go.uber.org/fx v1.24.0
+@@ -103,6 +103,7 @@ require (
+ 	github.com/benbjohnson/clock v1.3.5 // indirect
+ 	github.com/beorn7/perks v1.0.1 // indirect
+ 	github.com/caddyserver/zerossl v0.1.3 // indirect
++	github.com/cenkalti/backoff/v5 v5.0.2 // indirect
+ 	github.com/cespare/xxhash v1.1.0 // indirect
+ 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+ 	github.com/cockroachdb/crlib v0.0.0-20241015224233-894974b3ad94 // indirect
+@@ -124,7 +125,7 @@ require (
+ 	github.com/felixge/httpsnoop v1.0.4 // indirect
+ 	github.com/flynn/noise v1.1.0 // indirect
+ 	github.com/francoispqt/gojay v1.2.13 // indirect
+-	github.com/gabriel-vasile/mimetype v1.4.6 // indirect
++	github.com/gabriel-vasile/mimetype v1.4.9 // indirect
+ 	github.com/gammazero/chanqueue v1.1.0 // indirect
+ 	github.com/gammazero/deque v1.0.0 // indirect
+ 	github.com/getsentry/sentry-go v0.27.0 // indirect
+@@ -142,7 +143,7 @@ require (
+ 	github.com/google/pprof v0.0.0-20250607225305-033d6d78b36a // indirect
+ 	github.com/gorilla/mux v1.8.1 // indirect
+ 	github.com/gorilla/websocket v1.5.3 // indirect
+-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
++	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1 // indirect
+ 	github.com/hashicorp/golang-lru v1.0.2 // indirect
+ 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+ 	github.com/huin/goupnp v1.3.0 // indirect
+@@ -177,7 +178,7 @@ require (
+ 	github.com/mattn/go-runewidth v0.0.15 // indirect
+ 	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect
+ 	github.com/mholt/acmez/v3 v3.1.2 // indirect
+-	github.com/miekg/dns v1.1.66 // indirect
++	github.com/miekg/dns v1.1.67 // indirect
+ 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
+ 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
+ 	github.com/minio/sha256-simd v1.0.1 // indirect
+@@ -223,7 +224,6 @@ require (
+ 	github.com/rivo/uniseg v0.4.4 // indirect
+ 	github.com/rogpeppe/go-internal v1.13.1 // indirect
+ 	github.com/rs/cors v1.11.1 // indirect
+-	github.com/samber/lo v1.47.0 // indirect
+ 	github.com/slok/go-http-metrics v0.13.0 // indirect
+ 	github.com/spaolacci/murmur3 v1.1.0 // indirect
+ 	github.com/texttheater/golang-levenshtein v1.0.1 // indirect
+@@ -242,13 +242,13 @@ require (
+ 	go.opentelemetry.io/contrib/propagators/b3 v1.21.1 // indirect
+ 	go.opentelemetry.io/contrib/propagators/jaeger v1.21.1 // indirect
+ 	go.opentelemetry.io/contrib/propagators/ot v1.21.1 // indirect
+-	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.31.0 // indirect
+-	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.31.0 // indirect
+-	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.31.0 // indirect
+-	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.31.0 // indirect
+-	go.opentelemetry.io/otel/exporters/zipkin v1.31.0 // indirect
++	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.37.0 // indirect
++	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.37.0 // indirect
++	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.37.0 // indirect
++	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.37.0 // indirect
++	go.opentelemetry.io/otel/exporters/zipkin v1.37.0 // indirect
+ 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
+-	go.opentelemetry.io/proto/otlp v1.3.1 // indirect
++	go.opentelemetry.io/proto/otlp v1.7.0 // indirect
+ 	go.uber.org/automaxprocs v1.6.0 // indirect
+ 	go.uber.org/mock v0.5.2 // indirect
+ 	go.uber.org/zap/exp v0.3.0 // indirect
+@@ -261,9 +261,9 @@ require (
+ 	golang.org/x/tools v0.34.0 // indirect
+ 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
+ 	gonum.org/v1/gonum v0.16.0 // indirect
+-	google.golang.org/genproto/googleapis/api v0.0.0-20241007155032-5fefd90f89a9 // indirect
+-	google.golang.org/genproto/googleapis/rpc v0.0.0-20241007155032-5fefd90f89a9 // indirect
+-	google.golang.org/grpc v1.67.1 // indirect
++	google.golang.org/genproto/googleapis/api v0.0.0-20250603155806-513f23925822 // indirect
++	google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822 // indirect
++	google.golang.org/grpc v1.73.0 // indirect
+ 	gopkg.in/yaml.v2 v2.4.0 // indirect
+ 	gopkg.in/yaml.v3 v3.0.1 // indirect
+ 	lukechampine.com/blake3 v1.4.1 // indirect
+diff --git a/go.sum b/go.sum
+index de2844ca1..d88a92c76 100644
+--- a/go.sum
++++ b/go.sum
+@@ -94,6 +94,8 @@ github.com/caddyserver/zerossl v0.1.3 h1:onS+pxp3M8HnHpN5MMbOMyNjmTheJyWRaZYwn+Y
+ github.com/caddyserver/zerossl v0.1.3/go.mod h1:CxA0acn7oEGO6//4rtrRjYgEoa4MFw/XofZnrYwGqG4=
+ github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
+ github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
++github.com/cenkalti/backoff/v5 v5.0.2 h1:rIfFVxEf1QsI7E1ZHfp/B4DF/6QBAUhmgkxc0H7Zss8=
++github.com/cenkalti/backoff/v5 v5.0.2/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
+ github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=
+ github.com/ceramicnetwork/go-dag-jose v0.1.1 h1:7pObs22egc14vSS3AfCFfS1VmaL4lQUsAK7OGC3PlKk=
+ github.com/ceramicnetwork/go-dag-jose v0.1.1/go.mod h1:8ptnYwY2Z2y/s5oJnNBn/UCxLg6CpramNJ2ZXF/5aNY=
+@@ -195,8 +197,8 @@ github.com/fsnotify/fsnotify v1.4.9/go.mod h1:znqG4EE+3YCdAaPaxE2ZRY/06pZUdp0tY4
+ github.com/fsnotify/fsnotify v1.5.4/go.mod h1:OVB6XrOHzAwXMpEM7uPOzcehqUV2UqJxmVXmkdnm1bU=
+ github.com/fsnotify/fsnotify v1.7.0 h1:8JEhPFa5W2WU7YfeZzPNqzMP6Lwt7L2715Ggo0nosvA=
+ github.com/fsnotify/fsnotify v1.7.0/go.mod h1:40Bi/Hjc2AVfZrqy+aj+yEI+/bRxZnMJyTJwOpGvigM=
+-github.com/gabriel-vasile/mimetype v1.4.6 h1:3+PzJTKLkvgjeTbts6msPJt4DixhT4YtFNf1gtGe3zc=
+-github.com/gabriel-vasile/mimetype v1.4.6/go.mod h1:JX1qVKqZd40hUPpAfiNTe0Sne7hdfKSbOqqmkq8GCXc=
++github.com/gabriel-vasile/mimetype v1.4.9 h1:5k+WDwEsD9eTLL8Tz3L0VnmVh9QxGjRmjBvAG7U/oYY=
++github.com/gabriel-vasile/mimetype v1.4.9/go.mod h1:WnSQhFKJuBlRyLiKohA/2DtIlPFAbguNaG7QCHcyGok=
+ github.com/gammazero/chanqueue v1.1.0 h1:yiwtloc1azhgGLFo2gMloJtQvkYD936Ai7tBfa+rYJw=
+ github.com/gammazero/chanqueue v1.1.0/go.mod h1:fMwpwEiuUgpab0sH4VHiVcEoji1pSi+EIzeG4TPeKPc=
+ github.com/gammazero/deque v1.0.0 h1:LTmimT8H7bXkkCy6gZX7zNLtkbz4NdS2z8LZuor3j34=
+@@ -331,8 +333,8 @@ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aN
+ github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+ github.com/gregjones/httpcache v0.0.0-20180305231024-9cad4c3443a7/go.mod h1:FecbI9+v66THATjSRHfNgh1IVFe/9kFxbXtjV0ctIMA=
+ github.com/grpc-ecosystem/grpc-gateway v1.5.0/go.mod h1:RSKVYQBd5MCa4OVpNdGskqpgL2+G+NZTnrVHpWWfpdw=
+-github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 h1:asbCHRVmodnJTuQ3qamDwqVOIjwqUPTYmYuemVOx+Ys=
+-github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0/go.mod h1:ggCgvZ2r7uOoQjOyu2Y1NhHmEPPzzuhWgcza5M1Ji1I=
++github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1 h1:X5VWvz21y3gzm9Nw/kaUeku/1+uBhcekkmy4IkffJww=
++github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1/go.mod h1:Zanoh4+gvIgluNqcfMVTJueD4wSS5hT7zTt4Mrutd90=
+ github.com/gxed/hashland/keccakpg v0.0.1/go.mod h1:kRzw3HkwxFU1mpmPP8v1WyQzwdGfmKFJ6tItnhQ67kU=
+ github.com/gxed/hashland/murmur3 v0.0.1/go.mod h1:KjXop02n4/ckmZSnY2+HKcLud/tcmvhST0bie/0lS48=
+ github.com/hashicorp/go-version v1.7.0 h1:5tqGy27NaOTB8yJKUZELlFAS/LTKJkrmONwQKeRZfjY=
+@@ -356,8 +358,8 @@ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0 h1:OqNqsGZPX8zh3eFMO8Lf8EHRRnSGBMqcd
+ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0/go.mod h1:BxhUdtBgOXg1B+gAPEplkg/GpyTZY+kCMSfsJvvydqU=
+ github.com/ipfs/bbloom v0.0.4 h1:Gi+8EGJ2y5qiD5FbsbpX/TMNcJw8gSqr7eyjHa4Fhvs=
+ github.com/ipfs/bbloom v0.0.4/go.mod h1:cS9YprKXpoZ9lT0n/Mw/a6/aFV6DTjTLYHeA+gyqMG0=
+-github.com/ipfs/boxo v0.33.0 h1:9ow3chwkDzMj0Deq4AWRUEI7WnIIV7SZhPTzzG2mmfw=
+-github.com/ipfs/boxo v0.33.0/go.mod h1:3IPh7YFcCIcKp6o02mCHovrPntoT5Pctj/7j4syh/RM=
++github.com/ipfs/boxo v0.33.1-0.20250710085426-6cfa79448bb1 h1:ZzGKxEqait8lqsEiZ7/esJKELW1/+/Y8swpRgjOZHK0=
++github.com/ipfs/boxo v0.33.1-0.20250710085426-6cfa79448bb1/go.mod h1:Cvy+GW4Noex2jaoTsOM+RYQdXhjNAk09s313vkOyYmA=
+ github.com/ipfs/go-bitfield v1.1.0 h1:fh7FIo8bSwaJEh6DdTWbCeZ1eqOaOkKFI74SCnsWbGA=
+ github.com/ipfs/go-bitfield v1.1.0/go.mod h1:paqf1wjq/D2BBmzfTVFlJQ9IlFOZpg422HL0HqsGWHU=
+ github.com/ipfs/go-block-format v0.0.3/go.mod h1:4LmD4ZUw0mhO+JSKdpWwrzATiEfM7WWgQ8H5l6P8MVk=
+@@ -578,8 +580,8 @@ github.com/mholt/acmez/v3 v3.1.2 h1:auob8J/0FhmdClQicvJvuDavgd5ezwLBfKuYmynhYzc=
+ github.com/mholt/acmez/v3 v3.1.2/go.mod h1:L1wOU06KKvq7tswuMDwKdcHeKpFFgkppZy/y0DFxagQ=
+ github.com/microcosm-cc/bluemonday v1.0.1/go.mod h1:hsXNsILzKxV+sX77C5b8FSuKF00vh2OMYv+xgHpAMF4=
+ github.com/miekg/dns v1.1.43/go.mod h1:+evo5L0630/F6ca/Z9+GAqzhjGyn8/c+TBaOyfEl0V4=
+-github.com/miekg/dns v1.1.66 h1:FeZXOS3VCVsKnEAd+wBkjMC3D2K+ww66Cq3VnCINuJE=
+-github.com/miekg/dns v1.1.66/go.mod h1:jGFzBsSNbJw6z1HYut1RKBKHA9PBdxeHrZG8J+gC2WE=
++github.com/miekg/dns v1.1.67 h1:kg0EHj0G4bfT5/oOys6HhZw4vmMlnoZ+gDu8tJ/AlI0=
++github.com/miekg/dns v1.1.67/go.mod h1:fujopn7TB3Pu3JM69XaawiU0wqjpL9/8xGop5UrTPps=
+ github.com/mikioh/tcp v0.0.0-20190314235350-803a9b46060c h1:bzE/A84HN25pxAuk9Eej1Kz9OUelF97nAc82bDquQI8=
+ github.com/mikioh/tcp v0.0.0-20190314235350-803a9b46060c/go.mod h1:0SQS9kMwD2VsyFEB++InYyBJroV/FRmBgcydeSUcJms=
+ github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b h1:z78hV3sbSMAUoyUMM0I83AUIT6Hu17AWfgjzIbtrYFc=
+@@ -790,8 +792,6 @@ github.com/rs/cors v1.11.1/go.mod h1:XyqrcTp5zjWr1wsJ8PIRZssZ8b/WMcMf71DJnit4EMU
+ github.com/russross/blackfriday v1.5.2/go.mod h1:JO/DiYxRf+HjHt06OyowR9PTA263kcR/rfWxYHBV53g=
+ github.com/russross/blackfriday/v2 v2.0.1/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
+ github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd/go.mod h1:hPqNNc0+uJM6H+SuU8sEs5K5IQeKccPqeSjfgcKGgPk=
+-github.com/samber/lo v1.47.0 h1:z7RynLwP5nbyRscyvcD043DWYoOcYRv3mV8lBeqOCLc=
+-github.com/samber/lo v1.47.0/go.mod h1:RmDH9Ct32Qy3gduHQuKJ3gW1fMHAnE/fAzQuf6He5cU=
+ github.com/sergi/go-diff v1.0.0/go.mod h1:0CfEIISq7TuYL3j771MWULgwwjU+GofnZX9QAmXWZgo=
+ github.com/shurcooL/component v0.0.0-20170202220835-f88ec8f54cc4/go.mod h1:XhFIlyj5a1fBNx5aJTbKoIq0mNaPvOagO+HjB3EtxrY=
+ github.com/shurcooL/events v0.0.0-20181021180414-410e4ca65f48/go.mod h1:5u70Mqkb5O5cxEA8nxTsgrgLehJeAw6Oc4Ab1c/P1HM=
+@@ -935,8 +935,8 @@ go.opencensus.io v0.24.0 h1:y73uSU6J157QMP2kn2r30vwW1A2W2WFwSCGnAVxeaD0=
+ go.opencensus.io v0.24.0/go.mod h1:vNK8G9p7aAivkbmorf4v+7Hgx+Zs0yY+0fOtgBfjQKo=
+ go.opentelemetry.io/auto/sdk v1.1.0 h1:cH53jehLUN6UFLY71z+NDOiNJqDdPRaXzTel0sJySYA=
+ go.opentelemetry.io/auto/sdk v1.1.0/go.mod h1:3wSPjt5PWp2RhlCcmmOial7AvC4DQqZb7a7wCow3W8A=
+-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.56.0 h1:UP6IpuHFkUgOQL9FFQFrZ+5LiwhhYRbi7VZSIx6Nj5s=
+-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.56.0/go.mod h1:qxuZLtbq5QDtdeSHsS7bcf6EH6uO6jUAgk764zd3rhM=
++go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 h1:Hf9xI/XLML9ElpiHVDNwvqI0hIFlzV8dgIr35kV1kRU=
++go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0/go.mod h1:NfchwuyNoMcZ5MLHwPrODwUF1HWCXWrL31s8gSAdIKY=
+ go.opentelemetry.io/contrib/propagators/autoprop v0.46.1 h1:cXTYcMjY0dsYokAuo8LbNBQxpF8VgTHdiHJJ1zlIXl4=
+ go.opentelemetry.io/contrib/propagators/autoprop v0.46.1/go.mod h1:WZxgny1/6+j67B1s72PLJ4bGjidoWFzSmLNfJKVt2bo=
+ go.opentelemetry.io/contrib/propagators/aws v1.21.1 h1:uQIQIDWb0gzyvon2ICnghpLAf9w7ADOCUiIiwCQgR2o=
+@@ -949,24 +949,26 @@ go.opentelemetry.io/contrib/propagators/ot v1.21.1 h1:3TN5vkXjKYWp0YdMcnUEC/A+pB
+ go.opentelemetry.io/contrib/propagators/ot v1.21.1/go.mod h1:oy0MYCbS/b3cqUDW37wBWtlwBIsutngS++Lklpgh+fc=
+ go.opentelemetry.io/otel v1.37.0 h1:9zhNfelUvx0KBfu/gb+ZgeAfAgtWrfHJZcAqFC228wQ=
+ go.opentelemetry.io/otel v1.37.0/go.mod h1:ehE/umFRLnuLa/vSccNq9oS1ErUlkkK71gMcN34UG8I=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.31.0 h1:K0XaT3DwHAcV4nKLzcQvwAgSyisUghWoY20I7huthMk=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.31.0/go.mod h1:B5Ki776z/MBnVha1Nzwp5arlzBbE3+1jk+pGmaP5HME=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.31.0 h1:FFeLy03iVTXP6ffeN2iXrxfGsZGCjVx0/4KlizjyBwU=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.31.0/go.mod h1:TMu73/k1CP8nBUpDLc71Wj/Kf7ZS9FK5b53VapRsP9o=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.31.0 h1:lUsI2TYsQw2r1IASwoROaCnjdj2cvC2+Jbxvk6nHnWU=
+-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.31.0/go.mod h1:2HpZxxQurfGxJlJDblybejHB6RX6pmExPNe517hREw4=
+-go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.31.0 h1:UGZ1QwZWY67Z6BmckTU+9Rxn04m2bD3gD6Mk0OIOCPk=
+-go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.31.0/go.mod h1:fcwWuDuaObkkChiDlhEpSq9+X1C0omv+s5mBtToAQ64=
+-go.opentelemetry.io/otel/exporters/zipkin v1.31.0 h1:CgucL0tj3717DJnni7HVVB2wExzi8c2zJNEA2BhLMvI=
+-go.opentelemetry.io/otel/exporters/zipkin v1.31.0/go.mod h1:rfzOVNiSwIcWtEC2J8epwG26fiaXlYvLySJ7bwsrtAE=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.37.0 h1:Ahq7pZmv87yiyn3jeFz/LekZmPLLdKejuO3NcK9MssM=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.37.0/go.mod h1:MJTqhM0im3mRLw1i8uGHnCvUEeS7VwRyxlLC78PA18M=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.37.0 h1:EtFWSnwW9hGObjkIdmlnWSydO+Qs8OwzfzXLUPg4xOc=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.37.0/go.mod h1:QjUEoiGCPkvFZ/MjK6ZZfNOS6mfVEVKYE99dFhuN2LI=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.37.0 h1:bDMKF3RUSxshZ5OjOTi8rsHGaPKsAt76FaqgvIUySLc=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.37.0/go.mod h1:dDT67G/IkA46Mr2l9Uj7HsQVwsjASyV9SjGofsiUZDA=
++go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.37.0 h1:SNhVp/9q4Go/XHBkQ1/d5u9P/U+L1yaGPoi0x+mStaI=
++go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.37.0/go.mod h1:tx8OOlGH6R4kLV67YaYO44GFXloEjGPZuMjEkaaqIp4=
++go.opentelemetry.io/otel/exporters/zipkin v1.37.0 h1:Z2apuaRnHEjzDAkpbWNPiksz1R0/FCIrJSjiMA43zwI=
++go.opentelemetry.io/otel/exporters/zipkin v1.37.0/go.mod h1:ofGu/7fG+bpmjZoiPUUmYDJ4vXWxMT57HmGoegx49uw=
+ go.opentelemetry.io/otel/metric v1.37.0 h1:mvwbQS5m0tbmqML4NqK+e3aDiO02vsf/WgbsdpcPoZE=
+ go.opentelemetry.io/otel/metric v1.37.0/go.mod h1:04wGrZurHYKOc+RKeye86GwKiTb9FKm1WHtO+4EVr2E=
+-go.opentelemetry.io/otel/sdk v1.31.0 h1:xLY3abVHYZ5HSfOg3l2E5LUj2Cwva5Y7yGxnSW9H5Gk=
+-go.opentelemetry.io/otel/sdk v1.31.0/go.mod h1:TfRbMdhvxIIr/B2N2LQW2S5v9m3gOQ/08KsbbO5BPT0=
++go.opentelemetry.io/otel/sdk v1.37.0 h1:ItB0QUqnjesGRvNcmAcU0LyvkVyGJ2xftD29bWdDvKI=
++go.opentelemetry.io/otel/sdk v1.37.0/go.mod h1:VredYzxUvuo2q3WRcDnKDjbdvmO0sCzOvVAiY+yUkAg=
++go.opentelemetry.io/otel/sdk/metric v1.37.0 h1:90lI228XrB9jCMuSdA0673aubgRobVZFhbjxHHspCPc=
++go.opentelemetry.io/otel/sdk/metric v1.37.0/go.mod h1:cNen4ZWfiD37l5NhS+Keb5RXVWZWpRE+9WyVCpbo5ps=
+ go.opentelemetry.io/otel/trace v1.37.0 h1:HLdcFNbRQBE2imdSEgm/kwqmQj1Or1l/7bW6mxVK7z4=
+ go.opentelemetry.io/otel/trace v1.37.0/go.mod h1:TlgrlQ+PtQO5XFerSPUYG0JSgGyryXewPGyayAWSBS0=
+-go.opentelemetry.io/proto/otlp v1.3.1 h1:TrMUixzpM0yuc/znrFTP9MMRh8trP93mkCiDVeXrui0=
+-go.opentelemetry.io/proto/otlp v1.3.1/go.mod h1:0X1WI4de4ZsLrrJNLAQbFeLCm3T7yBkR0XqQ7niQU+8=
++go.opentelemetry.io/proto/otlp v1.7.0 h1:jX1VolD6nHuFzOYso2E73H85i92Mv8JQYk0K9vz09os=
++go.opentelemetry.io/proto/otlp v1.7.0/go.mod h1:fSKjH6YJ7HDlwzltzyMj036AJ3ejJLCgCSHGj4efDDo=
+ go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=
+ go.uber.org/atomic v1.11.0/go.mod h1:LUxbIzbOniOlMKjJjyPfpl4v+PKK2cNJn91OQbhoJI0=
+ go.uber.org/automaxprocs v1.6.0 h1:O3y2/QNTOdbF+e/dpXNNW7Rx2hZ4sTIPyybbxyNqTUs=
+@@ -1348,10 +1350,10 @@ google.golang.org/genproto v0.0.0-20200618031413-b414f8b61790/go.mod h1:jDfRM7Fc
+ google.golang.org/genproto v0.0.0-20200729003335-053ba62fc06f/go.mod h1:FWY/as6DDZQgahTzZj3fqbO1CbirC29ZNUFHwi0/+no=
+ google.golang.org/genproto v0.0.0-20200804131852-c06518451d9c/go.mod h1:FWY/as6DDZQgahTzZj3fqbO1CbirC29ZNUFHwi0/+no=
+ google.golang.org/genproto v0.0.0-20200825200019-8632dd797987/go.mod h1:FWY/as6DDZQgahTzZj3fqbO1CbirC29ZNUFHwi0/+no=
+-google.golang.org/genproto/googleapis/api v0.0.0-20241007155032-5fefd90f89a9 h1:T6rh4haD3GVYsgEfWExoCZA2o2FmbNyKpTuAxbEFPTg=
+-google.golang.org/genproto/googleapis/api v0.0.0-20241007155032-5fefd90f89a9/go.mod h1:wp2WsuBYj6j8wUdo3ToZsdxxixbvQNAHqVJrTgi5E5M=
+-google.golang.org/genproto/googleapis/rpc v0.0.0-20241007155032-5fefd90f89a9 h1:QCqS/PdaHTSWGvupk2F/ehwHtGc0/GYkT+3GAcR1CCc=
+-google.golang.org/genproto/googleapis/rpc v0.0.0-20241007155032-5fefd90f89a9/go.mod h1:GX3210XPVPUjJbTUbvwI8f2IpZDMZuPJWDzDuebbviI=
++google.golang.org/genproto/googleapis/api v0.0.0-20250603155806-513f23925822 h1:oWVWY3NzT7KJppx2UKhKmzPq4SRe0LdCijVRwvGeikY=
++google.golang.org/genproto/googleapis/api v0.0.0-20250603155806-513f23925822/go.mod h1:h3c4v36UTKzUiuaOKQ6gr3S+0hovBtUrXzTG/i3+XEc=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822 h1:fc6jSaCT0vBduLYZHYrBBNY4dsWuvgyff9noRNDdBeE=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822/go.mod h1:qQ0YXyHHx3XkvlzUtpXDkS29lDSafHMZBAZDc03LQ3A=
+ google.golang.org/grpc v1.14.0/go.mod h1:yo6s7OP7yaDglbqo1J04qKzAhqBH6lvTonzMVmEdcZw=
+ google.golang.org/grpc v1.16.0/go.mod h1:0JHn/cJsOMiMfNA9+DeHDlAU7KAAB5GDlYFpa9MZMio=
+ google.golang.org/grpc v1.17.0/go.mod h1:6QZJwpn2B+Zp71q/5VxRsJ6NXXVCE5NRUHRo+f3cWCs=
+@@ -1368,8 +1370,8 @@ google.golang.org/grpc v1.29.1/go.mod h1:itym6AZVZYACWQqET3MqgPpjcuV5QH3BxFS3Iji
+ google.golang.org/grpc v1.30.0/go.mod h1:N36X2cJ7JwdamYAgDz+s+rVMFjt3numwzf/HckM8pak=
+ google.golang.org/grpc v1.31.0/go.mod h1:N36X2cJ7JwdamYAgDz+s+rVMFjt3numwzf/HckM8pak=
+ google.golang.org/grpc v1.33.2/go.mod h1:JMHMWHQWaTccqQQlmk3MJZS+GWXOdAesneDmEnv2fbc=
+-google.golang.org/grpc v1.67.1 h1:zWnc1Vrcno+lHZCOofnIMvycFcc0QRGIzm9dhnDX68E=
+-google.golang.org/grpc v1.67.1/go.mod h1:1gLDyUQU7CTLJI90u3nXZ9ekeghjeM7pTDZlqFNg2AA=
++google.golang.org/grpc v1.73.0 h1:VIWSmpI2MegBtTuFt5/JWy2oXxtjJ/e89Z70ImfD2ok=
++google.golang.org/grpc v1.73.0/go.mod h1:50sbHOUqWoCQGI8V2HQLJM0B+LMlIUjNSZmow7EVBQc=
+ google.golang.org/protobuf v0.0.0-20200109180630-ec00e32a8dfd/go.mod h1:DFci5gLYBciE7Vtevhsrf46CRTquxDuWsQurQQe4oz8=
+ google.golang.org/protobuf v0.0.0-20200221191635-4d8936d0db64/go.mod h1:kwYJMbMJ01Woi6D6+Kah6886xMZcty6N08ah7+eCXa0=
+ google.golang.org/protobuf v0.0.0-20200228230310-ab0ca4ff8a60/go.mod h1:cfTl7dwQJ+fmap5saPgwCLgHXTUD7jkjRqWcaiX5VyM=

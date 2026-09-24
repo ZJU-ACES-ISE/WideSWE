@@ -1,0 +1,5 @@
+Allow Bootsnap to substitute the Ruby compiler, and use it so Rails enables frozen string literals by default for new app code.
+
+If `Bootsnap::CompileCache::ISeq.compiler_selector` is set to a proc, it should be called for every loaded Ruby file, allowing code to intercept or replace the compiler. Bootsnap should provide default compilers for `Bootsnap::CompileCache::ISeq::DEFAULT`, `Bootsnap::CompileCache::ISeq::FROZEN_STRING_LITERAL`, and `Bootsnap::CompileCache::ISeq::MUTABLE_STRING_LITERAL`. Provide `Bootsnap.enable_frozen_string_literal(app_only: false)`, and load the Bootsnap config from `config/bootsnap.rb` by default, with `BOOTSNAP_CONFIG` available to select another path.
+
+Rails should enable frozen string literals by default through Bootsnap for the app's own code, not dependencies. New apps that depend on Bootsnap should generate a `config/bootsnap.rb` that calls `Bootsnap.enable_frozen_string_literal(app_only: true)`, require `bootsnap >= 1.24`, and configure RuboCop's `AllCops/StringLiteralsFrozenByDefault` setting consistently with the runtime behavior.

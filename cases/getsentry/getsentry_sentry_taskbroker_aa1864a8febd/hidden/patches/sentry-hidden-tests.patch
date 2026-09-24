@@ -1,0 +1,156 @@
+diff --git a/tests/sentry/taskworker/test_adapters.py b/tests/sentry/taskworker/test_adapters.py
+index ac8e9d9..7f8170f 100644
+--- a/tests/sentry/taskworker/test_adapters.py
++++ b/tests/sentry/taskworker/test_adapters.py
+@@ -1,10 +1,21 @@
++import inspect
++from contextlib import ExitStack
++from typing import Any, Callable
++
++import orjson
+ import pytest
+ from django.test.utils import override_settings
+ from taskbroker_client.registry import TaskRegistry
+ 
+ from sentry.conf.types.kafka_definition import Topic
+ from sentry.silo.base import SiloMode
+-from sentry.taskworker.adapters import SentryMetricsBackend, SentryRouter, make_producer
++from sentry.taskworker.adapters import (
++    SentryMetricsBackend,
++    SentryRouter,
++    make_producer,
++)
++from sentry.taskworker.runtime import app
++from sentry.viewer_context import ActorType, ViewerContext, get_viewer_context, viewer_context_scope
+ 
+ 
+ @pytest.mark.django_db
+@@ -51,3 +62,128 @@ def test_default_router_topic_control_silo() -> None:
+         router = SentryRouter()
+         topic = router.route_namespace("test.tasks.test_router.control")
+         assert topic == Topic.TASKWORKER_CONTROL.value
++
++
++def dispatch_context_hooks(headers: dict[str, str]) -> None:
++    hooks = list(app.context_hooks)
++    assert hooks
++    for hook in hooks:
++        hook.on_dispatch(headers)
++
++
++def run_with_context_hooks(headers: dict[str, str], callback: Callable[[], Any]) -> Any:
++    hooks = list(app.context_hooks)
++    assert hooks
++    wrapped = callback
++    with ExitStack() as stack:
++        for hook in hooks:
++            signature = inspect.signature(hook.on_execute)
++            try:
++                signature.bind(headers, wrapped)
++            except TypeError:
++                stack.enter_context(hook.on_execute(headers))
++            else:
++                wrapped = hook.on_execute(headers, wrapped)
++        return wrapped()
++
++
++class TestViewerContextHook:
++    def test_on_dispatch_with_context(self) -> None:
++        headers: dict[str, str] = {}
++        ctx = ViewerContext(organization_id=42, user_id=7, actor_type=ActorType.USER)
++        with viewer_context_scope(ctx):
++            dispatch_context_hooks(headers)
++
++        payload = orjson.loads(headers["sentry-viewer-context"])
++        assert payload["organization_id"] == 42
++        assert payload["user_id"] == 7
++        assert payload["actor_type"] == "user"
++
++    def test_on_dispatch_without_context(self) -> None:
++        headers: dict[str, str] = {}
++        dispatch_context_hooks(headers)
++
++        assert "sentry-viewer-context" not in headers
++
++    def test_on_dispatch_partial_context(self) -> None:
++        headers: dict[str, str] = {}
++        ctx = ViewerContext(organization_id=42, actor_type=ActorType.SYSTEM)
++        with viewer_context_scope(ctx):
++            dispatch_context_hooks(headers)
++
++        payload = orjson.loads(headers["sentry-viewer-context"])
++        assert payload["organization_id"] == 42
++        assert "user_id" not in payload
++        assert payload["actor_type"] == "system"
++
++    def test_on_execute_restores_context(self) -> None:
++        headers = {
++            "sentry-viewer-context": orjson.dumps(
++                {"organization_id": 42, "user_id": 7, "actor_type": "user"}
++            ).decode(),
++        }
++        observed: list[ViewerContext | None] = []
++        run_with_context_hooks(headers, lambda: observed.append(get_viewer_context()))
++        ctx = observed[0]
++        assert ctx is not None
++        assert ctx.organization_id == 42
++        assert ctx.user_id == 7
++        assert ctx.actor_type == ActorType.USER
++
++        assert get_viewer_context() is None
++
++    def test_on_execute_no_headers(self) -> None:
++        existing = ViewerContext(organization_id=55, actor_type=ActorType.SYSTEM)
++        observed: list[ViewerContext | None] = []
++        with viewer_context_scope(existing):
++            run_with_context_hooks({}, lambda: observed.append(get_viewer_context()))
++            assert get_viewer_context() is existing
++        assert observed == [existing]
++
++    def test_on_execute_partial_headers(self) -> None:
++        headers = {
++            "sentry-viewer-context": orjson.dumps(
++                {"organization_id": 99, "actor_type": "integration"}
++            ).decode(),
++        }
++        observed: list[ViewerContext | None] = []
++        run_with_context_hooks(headers, lambda: observed.append(get_viewer_context()))
++        ctx = observed[0]
++        assert ctx is not None
++        assert ctx.organization_id == 99
++        assert ctx.user_id is None
++        assert ctx.actor_type == ActorType.INTEGRATION
++
++    def test_roundtrip(self) -> None:
++        """Dispatch then execute produces the same ViewerContext."""
++        headers: dict[str, str] = {}
++
++        original = ViewerContext(organization_id=123, user_id=456, actor_type=ActorType.USER)
++        with viewer_context_scope(original):
++            dispatch_context_hooks(headers)
++
++        observed: list[ViewerContext | None] = []
++        run_with_context_hooks(headers, lambda: observed.append(get_viewer_context()))
++        restored = observed[0]
++        assert restored is not None
++        assert restored.organization_id == original.organization_id
++        assert restored.user_id == original.user_id
++        assert restored.actor_type == original.actor_type
++
++    def test_on_execute_malformed_json(self) -> None:
++        headers = {"sentry-viewer-context": "not-valid-json{"}
++        existing = ViewerContext(organization_id=55, actor_type=ActorType.SYSTEM)
++        observed: list[ViewerContext | None] = []
++        with viewer_context_scope(existing):
++            run_with_context_hooks(headers, lambda: observed.append(get_viewer_context()))
++            assert get_viewer_context() is existing
++        assert observed == [existing]
++
++    def test_on_execute_non_dict_json(self) -> None:
++        headers = {"sentry-viewer-context": "[1, 2, 3]"}
++        existing = ViewerContext(organization_id=55, actor_type=ActorType.SYSTEM)
++        observed: list[ViewerContext | None] = []
++        with viewer_context_scope(existing):
++            run_with_context_hooks(headers, lambda: observed.append(get_viewer_context()))
++            assert get_viewer_context() is existing
++        assert observed == [existing]

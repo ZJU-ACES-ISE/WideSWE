@@ -1,0 +1,388 @@
+diff --git a/test/execute/openapi-3-1.js b/test/execute/openapi-3-1.js
+index 866cdcd..cb50ba8 100644
+--- a/test/execute/openapi-3-1.js
++++ b/test/execute/openapi-3-1.js
+@@ -138,7 +138,7 @@ describe('given OpenAPI 3.1.0 definition', () => {
+     const response = await SwaggerClient.execute({
+       spec,
+       operationId: 'getUserList',
+-      parameters: { q: 'search string' },
++      parameters: { q: ['search string'] },
+       securities: { authorized: { BearerAuth: '3492342948239482398' } },
+     });
+ 
+@@ -150,7 +150,7 @@ describe('given OpenAPI 3.1.0 definition', () => {
+       spec,
+       pathName: '/users',
+       method: 'get',
+-      parameters: { q: 'search string' },
++      parameters: { q: ['search string'] },
+       securities: { authorized: { BearerAuth: '3492342948239482398' } },
+     });
+ 
+@@ -164,7 +164,7 @@ describe('given OpenAPI 3.1.0 definition', () => {
+     });
+     const response = await client.execute({
+       operationId: 'getUserList',
+-      parameters: { q: 'search string' },
++      parameters: { q: ['search string'] },
+     });
+ 
+     expect(response.body).toEqual([{ id: 'value' }]);
+@@ -174,7 +174,7 @@ describe('given OpenAPI 3.1.0 definition', () => {
+     const request = SwaggerClient.buildRequest({
+       spec,
+       operationId: 'getUserList',
+-      parameters: { q: 'search string' },
++      parameters: { q: ['search string'] },
+       securities: { authorized: { BearerAuth: '3492342948239482398' } },
+       responseContentType: 'application/json',
+     });
+@@ -195,7 +195,7 @@ describe('given OpenAPI 3.1.0 definition', () => {
+     const request = SwaggerClient.buildRequest({
+       spec,
+       operationId: 'getUserList',
+-      parameters: { q: 'search string' },
++      parameters: { q: ['search string'] },
+       securities: { authorized: { BearerAuth: '3492342948239482398' } },
+       responseContentType: 'application/json',
+       baseURL,
+diff --git a/test/oas3/execute/main.js b/test/oas3/execute/main.js
+index 3155997..9be7617 100644
+--- a/test/oas3/execute/main.js
++++ b/test/oas3/execute/main.js
+@@ -573,6 +573,82 @@ describe('buildRequest - OpenAPI Specification 3.0', () => {
+   });
+ 
+   describe('`schema` parameters', () => {
++    test('should build a request when parameter type is `string` and value is not a stringified object', () => {
++      // Given
++      const spec = {
++        openapi: '3.1.0',
++        paths: {
++          '/users': {
++            get: {
++              operationId: 'myOperation',
++              parameters: [
++                {
++                  in: 'query',
++                  name: 'parameters',
++                  schema: {
++                    type: 'string',
++                  },
++                },
++              ],
++            },
++          },
++        },
++      };
++      // when
++      const req = buildRequest({
++        spec,
++        operationId: 'myOperation',
++        parameters: {
++          parameters: 'test',
++        },
++      });
++
++      expect(req).toEqual({
++        method: 'GET',
++        url: `/users?parameters=test`,
++        credentials: 'same-origin',
++        headers: {},
++      });
++    });
++
++    it('should build a request when parameter type is `string` and value is a stringified object', () => {
++      // Given
++      const spec = {
++        openapi: '3.1.0',
++        paths: {
++          '/users': {
++            get: {
++              operationId: 'myOperation',
++              parameters: [
++                {
++                  in: 'query',
++                  name: 'parameters',
++                  schema: {
++                    type: 'string',
++                  },
++                },
++              ],
++            },
++          },
++        },
++      };
++      // when
++      const req = buildRequest({
++        spec,
++        operationId: 'myOperation',
++        parameters: {
++          parameters: '{"bar":{"baz":"qux"}}',
++        },
++      });
++
++      expect(req).toEqual({
++        method: 'GET',
++        url: `/users?parameters=${escape('{"bar":{"baz":"qux"}}')}`,
++        credentials: 'same-origin',
++        headers: {},
++      });
++    });
++
+     it('should encode JSON values provided as objects', () => {
+       const req = buildRequest({
+         spec: {
+diff --git a/test/oas3/execute/style-explode/query.js b/test/oas3/execute/style-explode/query.js
+index f47b0d1..9468c6d 100644
+--- a/test/oas3/execute/style-explode/query.js
++++ b/test/oas3/execute/style-explode/query.js
+@@ -355,6 +355,46 @@ describe('OAS 3.0 - buildRequest w/ `style` & `explode` - query parameters', ()
+         headers: {},
+       });
+     });
++
++    test('should build a query parameter when type is a union type and value is not a stringified object', () => {
++      // Given
++      const spec = {
++        openapi: '3.1.0',
++        paths: {
++          '/users': {
++            get: {
++              operationId: 'myOperation',
++              parameters: [
++                {
++                  in: 'query',
++                  name: 'parameters',
++                  style: 'form',
++                  explode: true,
++                  schema: {
++                    type: ['string', 'object'],
++                  },
++                },
++              ],
++            },
++          },
++        },
++      };
++      // when
++      const req = buildRequest({
++        spec,
++        operationId: 'myOperation',
++        parameters: {
++          parameters: 'test',
++        },
++      });
++
++      expect(req).toEqual({
++        method: 'GET',
++        url: `/users?parameters=test`,
++        credentials: 'same-origin',
++        headers: {},
++      });
++    });
+   });
+   describe('array values', () => {
+     const VALUE = [3, 4, 5, SAFE_INPUT];
+@@ -508,6 +548,200 @@ describe('OAS 3.0 - buildRequest w/ `style` & `explode` - query parameters', ()
+       });
+     });
+ 
++    test('should build a query parameter in form/explode format with oneOf subschema', () => {
++      // Given
++      const spec = {
++        openapi: '3.0.0',
++        paths: {
++          '/users': {
++            get: {
++              operationId: 'myOperation',
++              parameters: [
++                {
++                  in: 'query',
++                  name: 'parameters',
++                  style: 'form',
++                  explode: true,
++                  schema: {
++                    oneOf: [
++                      {
++                        type: 'string',
++                      },
++                      {
++                        type: 'array',
++                      },
++                    ],
++                  },
++                },
++              ],
++            },
++          },
++        },
++      };
++      // when
++      const req = buildRequest({
++        spec,
++        operationId: 'myOperation',
++        parameters: {
++          parameters: '["a", "b"]',
++        },
++      });
++
++      expect(req).toEqual({
++        method: 'GET',
++        url: `/users?parameters=a&parameters=b`,
++        credentials: 'same-origin',
++        headers: {},
++      });
++    });
++
++    test('should build a query parameter in form/explode format with anyOf subschema', () => {
++      // Given
++      const spec = {
++        openapi: '3.0.0',
++        paths: {
++          '/users': {
++            get: {
++              operationId: 'myOperation',
++              parameters: [
++                {
++                  in: 'query',
++                  name: 'parameters',
++                  style: 'form',
++                  explode: true,
++                  schema: {
++                    anyOf: [
++                      {
++                        type: 'string',
++                      },
++                      {
++                        type: 'array',
++                      },
++                    ],
++                  },
++                },
++              ],
++            },
++          },
++        },
++      };
++      // when
++      const req = buildRequest({
++        spec,
++        operationId: 'myOperation',
++        parameters: {
++          parameters: '["a", "b"]',
++        },
++      });
++
++      expect(req).toEqual({
++        method: 'GET',
++        url: `/users?parameters=a&parameters=b`,
++        credentials: 'same-origin',
++        headers: {},
++      });
++    });
++
++    test('should build a query parameter in form/explode format with nested subschemas', () => {
++      // Given
++      const spec = {
++        openapi: '3.0.0',
++        paths: {
++          '/users': {
++            get: {
++              operationId: 'myOperation',
++              parameters: [
++                {
++                  in: 'query',
++                  name: 'parameters',
++                  style: 'form',
++                  explode: true,
++                  schema: {
++                    anyOf: [
++                      {
++                        oneOf: [
++                          {
++                            oneOf: [
++                              {
++                                anyOf: [
++                                  {
++                                    type: ['string', 'array'],
++                                  },
++                                ],
++                              },
++                            ],
++                          },
++                        ],
++                      },
++                    ],
++                  },
++                },
++              ],
++            },
++          },
++        },
++      };
++      // when
++      const req = buildRequest({
++        spec,
++        operationId: 'myOperation',
++        parameters: {
++          parameters: '["a", "b"]',
++        },
++      });
++
++      expect(req).toEqual({
++        method: 'GET',
++        url: `/users?parameters=a&parameters=b`,
++        credentials: 'same-origin',
++        headers: {},
++      });
++    });
++
++    test('should build a query parameter in form/explode format when type is a union type', () => {
++      // Given
++      const spec = {
++        openapi: '3.0.0',
++        paths: {
++          '/users': {
++            get: {
++              operationId: 'myOperation',
++              parameters: [
++                {
++                  in: 'query',
++                  name: 'parameters',
++                  style: 'form',
++                  explode: true,
++                  schema: {
++                    anyOf: [
++                      {
++                        type: ['string', 'array'],
++                      },
++                    ],
++                  },
++                },
++              ],
++            },
++          },
++        },
++      };
++      // when
++      const req = buildRequest({
++        spec,
++        operationId: 'myOperation',
++        parameters: {
++          parameters: '["a", "b"]',
++        },
++      });
++
++      expect(req).toEqual({
++        method: 'GET',
++        url: `/users?parameters=a&parameters=b`,
++        credentials: 'same-origin',
++        headers: {},
++      });
++    });
++
+     test('should build a query parameter in form/no-explode format', () => {
+       // Given
+       const spec = {

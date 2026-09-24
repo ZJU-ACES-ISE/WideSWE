@@ -1,0 +1,49 @@
+diff --git a/apps/dav/tests/unit/CalDAV/CalendarTest.php b/apps/dav/tests/unit/CalDAV/CalendarTest.php
+index 5f5552dd0f..435e7f4556 100644
+--- a/apps/dav/tests/unit/CalDAV/CalendarTest.php
++++ b/apps/dav/tests/unit/CalDAV/CalendarTest.php
+@@ -236,22 +236,42 @@ class CalendarTest extends TestCase {
+ 				'principal' => 'user2',
+ 				'protected' => true
+ 			];
++			$expectedAcl[] = [
++				'privilege' => '{DAV:}read',
++				'principal' => 'user2/calendar-proxy-read',
++				'protected' => true
++			];
++			$expectedAcl[] = [
++				'privilege' => '{DAV:}read',
++				'principal' => 'user2/calendar-proxy-write',
++				'protected' => true
++			];
+ 			if ($expectsWrite) {
+ 				$expectedAcl[] = [
+ 					'privilege' => '{DAV:}write',
+ 					'principal' => 'user2',
+ 					'protected' => true
+ 				];
++				$expectedAcl[] = [
++					'privilege' => '{DAV:}write',
++					'principal' => 'user2/calendar-proxy-write',
++					'protected' => true
++				];
+ 			} else {
+ 				$expectedAcl[] = [
+ 					'privilege' => '{DAV:}write-properties',
+ 					'principal' => 'user2',
+ 					'protected' => true
+ 				];
++				$expectedAcl[] = [
++					'privilege' => '{DAV:}write-properties',
++					'principal' => 'user2/calendar-proxy-write',
++					'protected' => true
++				];
+ 			}
+ 		}
+-		$this->assertEquals($expectedAcl, $acl);
+-		$this->assertEquals($expectedAcl, $childAcl);
++		$this->assertEqualsCanonicalizing($expectedAcl, $acl);
++		$this->assertEqualsCanonicalizing($expectedAcl, $childAcl);
+ 	}
+ 
+ 	public static function providesReadOnlyInfo(): array {

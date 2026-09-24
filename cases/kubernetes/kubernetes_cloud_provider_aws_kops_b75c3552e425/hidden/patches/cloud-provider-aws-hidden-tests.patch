@@ -1,0 +1,300 @@
+diff --git a/pkg/providers/v1/aws_target_group_attributes_contract_test.go b/pkg/providers/v1/aws_target_group_attributes_contract_test.go
+new file mode 100644
+index 0000000..e9004cd
+--- /dev/null
++++ b/pkg/providers/v1/aws_target_group_attributes_contract_test.go
+@@ -0,0 +1,294 @@
++/*
++Copyright 2025 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package aws
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/aws/aws-sdk-go-v2/aws"
++	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
++	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
++	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
++	v1 "k8s.io/api/core/v1"
++	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	"k8s.io/apimachinery/pkg/util/intstr"
++
++	"k8s.io/cloud-provider-aws/pkg/providers/v1/config"
++)
++
++const targetGroupAttributesAnnotation = "service.beta.kubernetes.io/aws-load-balancer-target-group-attributes"
++
++type targetGroupAttributesClient struct {
++	*MockedFakeELBV2
++	attributes  map[string]map[string]string
++	describeErr error
++	modifyErr   error
++	described   []string
++	modified    []string
++}
++
++func (c *targetGroupAttributesClient) DescribeTargetGroups(ctx context.Context, input *elasticloadbalancingv2.DescribeTargetGroupsInput, options ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeTargetGroupsOutput, error) {
++	if input.LoadBalancerArn != nil {
++		return &elasticloadbalancingv2.DescribeTargetGroupsOutput{TargetGroups: c.TargetGroups}, nil
++	}
++	return c.MockedFakeELBV2.DescribeTargetGroups(ctx, input, options...)
++}
++
++func (c *targetGroupAttributesClient) DescribeTargetGroupAttributes(_ context.Context, input *elasticloadbalancingv2.DescribeTargetGroupAttributesInput, _ ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeTargetGroupAttributesOutput, error) {
++	if c.describeErr != nil {
++		return nil, c.describeErr
++	}
++	arn := aws.ToString(input.TargetGroupArn)
++	c.described = append(c.described, arn)
++	current, ok := c.attributes[arn]
++	if !ok {
++		current = map[string]string{
++			"preserve_client_ip.enabled": "true",
++			"proxy_protocol_v2.enabled":  "false",
++		}
++		c.attributes[arn] = current
++	}
++	result := make([]elbv2types.TargetGroupAttribute, 0, len(current))
++	for key, value := range current {
++		result = append(result, elbv2types.TargetGroupAttribute{Key: aws.String(key), Value: aws.String(value)})
++	}
++	return &elasticloadbalancingv2.DescribeTargetGroupAttributesOutput{Attributes: result}, nil
++}
++
++func (c *targetGroupAttributesClient) ModifyTargetGroupAttributes(_ context.Context, input *elasticloadbalancingv2.ModifyTargetGroupAttributesInput, _ ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.ModifyTargetGroupAttributesOutput, error) {
++	if c.modifyErr != nil {
++		return nil, c.modifyErr
++	}
++	arn := aws.ToString(input.TargetGroupArn)
++	c.modified = append(c.modified, arn)
++	if c.attributes[arn] == nil {
++		c.attributes[arn] = map[string]string{}
++	}
++	for _, attribute := range input.Attributes {
++		c.attributes[arn][aws.ToString(attribute.Key)] = aws.ToString(attribute.Value)
++	}
++	return &elasticloadbalancingv2.ModifyTargetGroupAttributesOutput{Attributes: input.Attributes}, nil
++}
++
++func newTargetGroupAttributesTestCloud(t *testing.T, annotation *string, protocols ...v1.Protocol) (*Cloud, *targetGroupAttributesClient, *v1.Service, []*v1.Node) {
++	t.Helper()
++	awsServices := newMockedFakeAWSServices(TestClusterID)
++	client := &targetGroupAttributesClient{
++		MockedFakeELBV2: &MockedFakeELBV2{
++			Tags:                   make(map[string][]elbv2types.Tag),
++			RegisteredInstances:    make(map[string][]string),
++			LoadBalancerAttributes: make(map[string]map[string]string),
++		},
++		attributes: make(map[string]map[string]string),
++	}
++	awsServices.elbv2 = client
++	cloud, err := newAWSCloud(config.CloudConfig{}, awsServices)
++	if err != nil {
++		t.Fatalf("newAWSCloud() error: %v", err)
++	}
++
++	awsServices.ec2.(*MockedFakeEC2).Subnets = []types.Subnet{{
++		AvailabilityZone: aws.String("us-west-2a"),
++		SubnetId:         aws.String("subnet-abc123de"),
++		Tags: []types.Tag{{
++			Key:   aws.String(cloud.tagging.clusterTagKey()),
++			Value: aws.String("owned"),
++		}},
++	}}
++	awsServices.ec2.(*MockedFakeEC2).RouteTables = []types.RouteTable{{
++		Associations: []types.RouteTableAssociation{{
++			Main:                    aws.Bool(true),
++			RouteTableAssociationId: aws.String("rtbassoc-abc123def456abc78"),
++			RouteTableId:            aws.String("rtb-abc123def456abc78"),
++			SubnetId:                aws.String("subnet-abc123de"),
++		}},
++		RouteTableId: aws.String("rtb-abc123def456abc78"),
++		Routes: []types.Route{{
++			DestinationCidrBlock: aws.String("0.0.0.0/0"),
++			GatewayId:            aws.String("igw-abc123def456abc78"),
++			State:                types.RouteStateActive,
++		}},
++	}}
++	awsServices.ec2.(*MockedFakeEC2).maybeExpectDescribeSecurityGroups(TestClusterID, "k8s-elb-aid")
++
++	annotations := map[string]string{"service.beta.kubernetes.io/aws-load-balancer-type": "nlb"}
++	if annotation != nil {
++		annotations[targetGroupAttributesAnnotation] = *annotation
++	}
++	ports := make([]v1.ServicePort, 0, len(protocols))
++	for i, protocol := range protocols {
++		port := int32(8080 + i)
++		ports = append(ports, v1.ServicePort{
++			Name:       "service-port",
++			Port:       port,
++			NodePort:   31173 + int32(i),
++			TargetPort: intstr.FromInt32(31173 + int32(i)),
++			Protocol:   protocol,
++		})
++	}
++	service := &v1.Service{
++		ObjectMeta: metav1.ObjectMeta{Name: "myservice", Namespace: "default", UID: "id", Annotations: annotations},
++		Spec: v1.ServiceSpec{
++			Type:            v1.ServiceTypeLoadBalancer,
++			Ports:           ports,
++			SessionAffinity: v1.ServiceAffinityNone,
++		},
++	}
++	nodes := []*v1.Node{makeNamedNode(awsServices, 0, "node-a")}
++	return cloud, client, service, nodes
++}
++
++func runTargetGroupAttributesEnsure(t *testing.T, annotation *string, protocols ...v1.Protocol) (*targetGroupAttributesClient, error) {
++	t.Helper()
++	cloud, client, service, nodes := newTargetGroupAttributesTestCloud(t, annotation, protocols...)
++	_, err := cloud.EnsureLoadBalancer(context.Background(), TestClusterName, service, nodes)
++	return client, err
++}
++
++func TestTargetGroupAttributesPublicContract(t *testing.T) {
++	t.Run("applies both requested attributes", func(t *testing.T) {
++		annotation := "preserve_client_ip.enabled=false,proxy_protocol_v2.enabled=true"
++		client, err := runTargetGroupAttributesEnsure(t, &annotation, v1.ProtocolTCP)
++		if err != nil {
++			t.Fatalf("EnsureLoadBalancer() error: %v", err)
++		}
++		if len(client.modified) != 1 {
++			t.Fatalf("ModifyTargetGroupAttributes calls = %d, want 1", len(client.modified))
++		}
++		attributes := client.attributes[client.modified[0]]
++		if attributes["preserve_client_ip.enabled"] != "false" || attributes["proxy_protocol_v2.enabled"] != "true" {
++			t.Fatalf("target group attributes = %v, want requested values", attributes)
++		}
++	})
++
++	t.Run("applies attributes to every target group", func(t *testing.T) {
++		annotation := "proxy_protocol_v2.enabled=true"
++		client, err := runTargetGroupAttributesEnsure(t, &annotation, v1.ProtocolTCP, v1.ProtocolTCP)
++		if err != nil {
++			t.Fatalf("EnsureLoadBalancer() error: %v", err)
++		}
++		if len(client.modified) != 2 {
++			t.Fatalf("ModifyTargetGroupAttributes calls = %d, want 2", len(client.modified))
++		}
++		for _, arn := range client.modified {
++			if client.attributes[arn]["proxy_protocol_v2.enabled"] != "true" {
++				t.Fatalf("target group %q was not updated: %v", arn, client.attributes[arn])
++			}
++		}
++	})
++
++	t.Run("last repeated value wins and entry whitespace is ignored", func(t *testing.T) {
++		annotation := "  preserve_client_ip.enabled=true, preserve_client_ip.enabled=false  "
++		client, err := runTargetGroupAttributesEnsure(t, &annotation, v1.ProtocolTCP)
++		if err != nil {
++			t.Fatalf("EnsureLoadBalancer() error: %v", err)
++		}
++		if len(client.modified) != 1 || client.attributes[client.modified[0]]["preserve_client_ip.enabled"] != "false" {
++			t.Fatalf("last repeated attribute value was not applied: modified=%v attributes=%v", client.modified, client.attributes)
++		}
++	})
++
++	t.Run("matching value is not modified", func(t *testing.T) {
++		annotation := "preserve_client_ip.enabled=true"
++		client, err := runTargetGroupAttributesEnsure(t, &annotation, v1.ProtocolTCP)
++		if err != nil {
++			t.Fatalf("EnsureLoadBalancer() error: %v", err)
++		}
++		if len(client.modified) != 0 {
++			t.Fatalf("ModifyTargetGroupAttributes calls = %d, want 0", len(client.modified))
++		}
++	})
++
++	for _, test := range []struct {
++		name       string
++		annotation *string
++	}{
++		{name: "absent annotation", annotation: nil},
++		{name: "empty annotation", annotation: func() *string { value := ""; return &value }()},
++	} {
++		t.Run(test.name+" preserves existing attributes", func(t *testing.T) {
++			client, err := runTargetGroupAttributesEnsure(t, test.annotation, v1.ProtocolTCP)
++			if err != nil {
++				t.Fatalf("EnsureLoadBalancer() error: %v", err)
++			}
++			if len(client.modified) != 0 {
++				t.Fatalf("ModifyTargetGroupAttributes calls = %d, want 0", len(client.modified))
++			}
++		})
++	}
++
++	for _, test := range []struct {
++		name       string
++		annotation string
++		protocols  []v1.Protocol
++		errorTerms []string
++	}{
++		{name: "empty value", annotation: "preserve_client_ip.enabled=", protocols: []v1.Protocol{v1.ProtocolTCP}, errorTerms: []string{"preserve_client_ip.enabled"}},
++		{name: "unsupported attribute", annotation: "deregistration_delay.timeout_seconds=30", protocols: []v1.Protocol{v1.ProtocolTCP}, errorTerms: []string{"deregistration_delay.timeout_seconds"}},
++		{name: "uppercase true", annotation: "preserve_client_ip.enabled=True", protocols: []v1.Protocol{v1.ProtocolTCP}, errorTerms: []string{"preserve_client_ip.enabled"}},
++		{name: "uppercase false", annotation: "proxy_protocol_v2.enabled=FALSE", protocols: []v1.Protocol{v1.ProtocolTCP}, errorTerms: []string{"proxy_protocol_v2.enabled"}},
++		{name: "value whitespace", annotation: "preserve_client_ip.enabled= true ", protocols: []v1.Protocol{v1.ProtocolTCP}, errorTerms: []string{"preserve_client_ip.enabled"}},
++		{name: "false preserve client IP with UDP", annotation: "preserve_client_ip.enabled=false", protocols: []v1.Protocol{v1.ProtocolUDP}, errorTerms: []string{"client ip", "udp"}},
++		{name: "false preserve client IP with TCP UDP", annotation: "preserve_client_ip.enabled=false", protocols: []v1.Protocol{"TCP_UDP"}, errorTerms: []string{"client ip", "udp"}},
++		{name: "false preserve client IP with mixed ports", annotation: "preserve_client_ip.enabled=false", protocols: []v1.Protocol{v1.ProtocolTCP, v1.ProtocolUDP}, errorTerms: []string{"client ip", "udp"}},
++	} {
++		t.Run("rejects "+test.name, func(t *testing.T) {
++			_, err := runTargetGroupAttributesEnsure(t, &test.annotation, test.protocols...)
++			if err == nil {
++				t.Fatal("EnsureLoadBalancer() succeeded, want annotation validation error")
++			}
++			message := strings.ToLower(err.Error())
++			for _, term := range test.errorTerms {
++				if !strings.Contains(message, term) {
++					t.Fatalf("EnsureLoadBalancer() error = %q, want semantic term %q", err, term)
++				}
++			}
++		})
++	}
++
++	t.Run("allows preserve client IP for UDP", func(t *testing.T) {
++		annotation := "preserve_client_ip.enabled=true"
++		client, err := runTargetGroupAttributesEnsure(t, &annotation, v1.ProtocolUDP)
++		if err != nil {
++			t.Fatalf("EnsureLoadBalancer() error: %v", err)
++		}
++		if len(client.modified) != 0 {
++			t.Fatalf("ModifyTargetGroupAttributes calls = %d, want 0 for matching value", len(client.modified))
++		}
++	})
++
++	t.Run("propagates describe failure", func(t *testing.T) {
++		annotation := "preserve_client_ip.enabled=false"
++		cloud, client, service, nodes := newTargetGroupAttributesTestCloud(t, &annotation, v1.ProtocolTCP)
++		client.describeErr = errors.New("describe failed")
++		if _, err := cloud.EnsureLoadBalancer(context.Background(), TestClusterName, service, nodes); err == nil {
++			t.Fatal("EnsureLoadBalancer() succeeded, want DescribeTargetGroupAttributes error")
++		}
++	})
++
++	t.Run("propagates modify failure", func(t *testing.T) {
++		annotation := "preserve_client_ip.enabled=false"
++		cloud, client, service, nodes := newTargetGroupAttributesTestCloud(t, &annotation, v1.ProtocolTCP)
++		client.modifyErr = errors.New("modify failed")
++		if _, err := cloud.EnsureLoadBalancer(context.Background(), TestClusterName, service, nodes); err == nil {
++			t.Fatal("EnsureLoadBalancer() succeeded, want ModifyTargetGroupAttributes error")
++		}
++	})
++}

@@ -1,0 +1,205 @@
+diff --git a/pinning/pinner/dspinner/pin_test.go b/pinning/pinner/dspinner/pin_test.go
+index c46c905f7..807e97a31 100644
+--- a/pinning/pinner/dspinner/pin_test.go
++++ b/pinning/pinner/dspinner/pin_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"fmt"
+ 	"path"
+ 	"testing"
++	"testing/synctest"
+ 	"time"
+ 
+ 	bs "github.com/ipfs/boxo/blockservice"
+@@ -1419,3 +1420,55 @@ func benchmarkDetails(b *testing.B, count int, details bool) {
+ 		}
+ 	}
+ }
++
++// TestStreamIndexDoesNotBlockWriters verifies that a slow (or blocked)
++// RecursiveKeys/DirectKeys consumer does not keep the pinner's read lock
++// held, which would stall Pin/Unpin/Update writers. This regressed the
++// kubo collab cluster when Provide.Strategy was set to pinned*, causing
++// convoys of stuck pin ls and ipfs add requests.
++//
++// Runs inside a synctest bubble so we can assert "Pin completes while a
++// RecursiveKeys consumer is parked" deterministically. Under the broken
++// code path the streamIndex goroutine would be durably blocked on send
++// while holding p.lock.RLock(), Pin would be durably blocked on Lock(),
++// and synctest would report a deadlock.
++func TestStreamIndexDoesNotBlockWriters(t *testing.T) {
++	for _, detailed := range []bool{false, true} {
++		t.Run(fmt.Sprintf("detailed=%v", detailed), func(t *testing.T) {
++			synctest.Test(t, func(t *testing.T) {
++				ctx := t.Context()
++
++				dstore, dserv := makeStore()
++				p, err := New(ctx, dstore, dserv)
++				require.NoError(t, err)
++
++				initial := makeNodes(8, dserv)
++				pinNodes(initial, p, true)
++
++				// Open a RecursiveKeys stream without consuming
++				// anything. Under the old implementation this held
++				// p.lock.RLock() for the channel's entire lifetime.
++				streamCtx, cancelStream := context.WithCancel(ctx)
++				defer cancelStream()
++				kch := p.RecursiveKeys(streamCtx, detailed)
++
++				// Wait for the streamIndex goroutine to park on its
++				// first send. With the fix it has already released
++				// p.lock.RLock() before parking.
++				synctest.Wait()
++
++				// A fresh node: Pin needs p.lock.Lock(). With the
++				// fix this returns without waiting on the parked
++				// streamIndex goroutine.
++				newNode, _ := randNode()
++				require.NoError(t, dserv.Add(ctx, newNode))
++				require.NoError(t, p.Pin(ctx, newNode, true, ""))
++
++				// Drain the stream so the goroutine exits cleanly.
++				cancelStream()
++				for range kch {
++				}
++			})
++		})
++	}
++}
+
+diff --git a/pinning/pinner/dspinner/pin_test.go b/pinning/pinner/dspinner/pin_test.go
+index 807e97a31..b7a254657 100644
+--- a/pinning/pinner/dspinner/pin_test.go
++++ b/pinning/pinner/dspinner/pin_test.go
+@@ -5,6 +5,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"path"
++	"sync/atomic"
+ 	"testing"
+ 	"testing/synctest"
+ 	"time"
+@@ -1421,6 +1422,123 @@ func benchmarkDetails(b *testing.B, count int, details bool) {
+ 	}
+ }
+ 
++// panicOnQueryDatastore simulates a datastore that panics on Query
++// after being closed. cockroachdb/pebble is the real-world case: its
++// DB.NewIter panics with "pebble: closed" once the DB has been closed.
++// Used to assert that streamIndex's goroutine does not take down the
++// process when the backing datastore is torn down underneath it,
++// regardless of which datastore implementation is in use.
++type panicOnQueryDatastore struct {
++	ds.Batching
++	closed atomic.Bool
++}
++
++func (p *panicOnQueryDatastore) Query(ctx context.Context, q query.Query) (query.Results, error) {
++	if p.closed.Load() {
++		panic("datastore closed")
++	}
++	return p.Batching.Query(ctx, q)
++}
++
++func (p *panicOnQueryDatastore) close() {
++	p.closed.Store(true)
++}
++
++// TestStreamIndexRecoversFromDatastorePanic reproduces the shutdown
++// crash first observed on kubo 0.42.0-dev-f6cba67: when the daemon
++// shuts down, the datastore may close while a detached streamIndex
++// goroutine is about to call Query, and the datastore panics on use
++// after Close. The pinner does not own the datastore's lifecycle, so
++// the goroutine must convert any such panic into an error on the
++// channel instead of crashing the process.
++func TestStreamIndexRecoversFromDatastorePanic(t *testing.T) {
++	ctx := t.Context()
++
++	md := ds.NewMapDatastore()
++	wmd := dssync.MutexWrap(md)
++	inner := &batchWrap{wmd}
++	panicDS := &panicOnQueryDatastore{Batching: inner}
++
++	bstore := blockstore.NewBlockstore(panicDS)
++	bserv := bs.New(bstore, offline.Exchange(bstore))
++	dserv := mdag.NewDAGService(bserv)
++
++	p, err := New(ctx, panicDS, dserv)
++	require.NoError(t, err)
++
++	pinNodes(makeNodes(4, dserv), p, true)
++
++	// Simulate the datastore being closed from under the pinner.
++	panicDS.close()
++
++	kch := p.RecursiveKeys(ctx, false)
++	var got []ipfspin.StreamedPin
++	for sp := range kch {
++		got = append(got, sp)
++	}
++
++	require.Len(t, got, 1, "expected a single error entry, got %d", len(got))
++	require.Error(t, got[0].Err, "expected recovered panic to surface as an error on the channel")
++	require.Contains(t, got[0].Err.Error(), "pin stream interrupted", "error should name the interruption")
++	require.Regexp(t, `(?i)(likely.*shutdown|shutdown.*likely)`, got[0].Err.Error(), "error should identify shutdown as the likely cause")
++}
++
++// queryRecordingDatastore records whether Query was called. Used to
++// assert that streamIndex short-circuits on a pre-cancelled ctx without
++// reaching into the datastore.
++type queryRecordingDatastore struct {
++	ds.Batching
++	queried atomic.Bool
++}
++
++func (q *queryRecordingDatastore) Query(ctx context.Context, qu query.Query) (query.Results, error) {
++	q.queried.Store(true)
++	return q.Batching.Query(ctx, qu)
++}
++
++// TestStreamIndexSkipsQueryOnCancelledContext verifies that streamIndex
++// does not issue a datastore Query when the caller's context is already
++// cancelled. This matters at shutdown: if the caller ctx is cancelled
++// before the datastore closes, we exit cleanly without racing against
++// Close.
++func TestStreamIndexSkipsQueryOnCancelledContext(t *testing.T) {
++	ctx := t.Context()
++
++	md := ds.NewMapDatastore()
++	wmd := dssync.MutexWrap(md)
++	inner := &batchWrap{wmd}
++	recDS := &queryRecordingDatastore{Batching: inner}
++
++	bstore := blockstore.NewBlockstore(recDS)
++	bserv := bs.New(bstore, offline.Exchange(bstore))
++	dserv := mdag.NewDAGService(bserv)
++
++	p, err := New(ctx, recDS, dserv)
++	require.NoError(t, err)
++	pinNodes(makeNodes(3, dserv), p, true)
++
++	// Reset the recorder so we only observe Query calls from the
++	// stream we are about to open.
++	recDS.queried.Store(false)
++
++	cancelled, cancel := context.WithCancel(ctx)
++	cancel()
++
++	kch := p.RecursiveKeys(cancelled, false)
++	var got []ipfspin.StreamedPin
++	for sp := range kch {
++		got = append(got, sp)
++	}
++
++	require.False(t, recDS.queried.Load(), "Query must not be issued on a pre-cancelled context")
++	// The channel may close with zero items (ctx.Done wins the send
++	// select) or one item carrying ctx.Canceled; both are correct. The
++	// invariant we care about is that Query was not issued.
++	for _, sp := range got {
++		require.ErrorIs(t, sp.Err, context.Canceled)
++	}
++}
++
+ // TestStreamIndexDoesNotBlockWriters verifies that a slow (or blocked)
+ // RecursiveKeys/DirectKeys consumer does not keep the pinner's read lock
+ // held, which would stall Pin/Unpin/Update writers. This regressed the

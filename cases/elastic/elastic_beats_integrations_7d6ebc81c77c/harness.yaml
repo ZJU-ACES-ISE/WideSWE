@@ -1,0 +1,36 @@
+task_id: elastic_beats_integrations_7d6ebc81c77c
+hidden_test_patches:
+- repo: beats
+  patch: hidden/patches/beats-hidden-tests.patch
+  test_profile: beats-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - x-pack/filebeat/input/azureeventhub/client_secret_test.go
+  - x-pack/filebeat/input/azureeventhub/config_test.go
+  hidden_file:
+  - x-pack/filebeat/input/azureeventhub/auth_contract_test.go
+  semantic_changes: Replace private-helper, private-config, and exact-error assertions with prompt-visible configuration behavior through the public input manager.
+  source: upstream test changes from elastic/beats PR(s) 47256
+- repo: integrations
+  patch: hidden/patches/integrations-hidden-tests.patch
+  test_profile: integrations-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - packages/m365_defender/data_stream/event/_dev/test/policy/test-all.expected
+  - packages/m365_defender/data_stream/event/_dev/test/policy/test-default.expected
+  hidden_file:
+  - packages/m365_defender/data_stream/event/_dev/test/policy/test-ecosync-client-secret.yml
+  - packages/m365_defender/data_stream/event/_dev/test/policy/semantic_policy_test.sh
+  semantic_changes: Generate real Fleet policies and validate required authentication fields semantically instead of requiring an exact Gold YAML snapshot.
+  source: upstream test changes from elastic/integrations PR(s) 17245
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - beats-hidden
+    - integrations-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

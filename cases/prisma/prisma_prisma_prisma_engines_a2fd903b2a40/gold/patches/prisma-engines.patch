@@ -1,0 +1,99 @@
+diff --git a/schema-engine/connectors/schema-connector/src/filter.rs b/schema-engine/connectors/schema-connector/src/filter.rs
+index 5789a66c3e..c8ebe42a81 100644
+--- a/schema-engine/connectors/schema-connector/src/filter.rs
++++ b/schema-engine/connectors/schema-connector/src/filter.rs
+@@ -9,10 +9,14 @@ pub struct SchemaFilter {
+     /// Prisma will not consider those tables during diffing operations, migration creation, or introspection.
+     /// They are still available for querying at runtime.
+     pub external_tables: Vec<String>,
++    /// Enums that shall be considered "externally" managed. As per prisma.config.ts > enums.external.
++    /// Prisma will not consider those enums during diffing operations, migration creation, or introspection.
++    /// They are still available for querying at runtime.
++    pub external_enums: Vec<String>,
+ }
+ 
+ impl SchemaFilter {
+-    /// Validate that the schema filter contains correctly qualified table names.
++    /// Validate that the schema filter contains correctly qualified table and enum names.
+     pub fn validate(&self, namespaces: Option<&Namespaces>) -> ConnectorResult<()> {
+         let has_explicit_namespaces = namespaces.is_some();
+ 
+@@ -24,6 +28,14 @@ impl SchemaFilter {
+             }
+         }
+ 
++        for enum_name in self.external_enums.iter() {
++            if has_explicit_namespaces && !enum_name.contains(".") {
++                return Err(ConnectorError::user_facing(MissingNamespaceInExternalTables));
++            } else if !has_explicit_namespaces && enum_name.contains(".") {
++                return Err(ConnectorError::user_facing(UnexpectedNamespaceInExternalTables));
++            }
++        }
++
+         Ok(())
+     }
+ }
+@@ -32,14 +44,17 @@ impl From<json_rpc::types::SchemaFilter> for SchemaFilter {
+     fn from(filter: json_rpc::types::SchemaFilter) -> Self {
+         Self {
+             external_tables: filter.external_tables,
++            external_enums: filter.external_enums,
+         }
+     }
+ }
+ 
+ impl From<Option<json_rpc::types::SchemaFilter>> for SchemaFilter {
+     fn from(filter: Option<json_rpc::types::SchemaFilter>) -> Self {
++        let filter = filter.unwrap_or_default();
+         Self {
+-            external_tables: filter.map(|f| f.external_tables).unwrap_or_default(),
++            external_tables: filter.external_tables,
++            external_enums: filter.external_enums,
+         }
+     }
+ }
+diff --git a/schema-engine/connectors/sql-schema-connector/src/sql_schema_differ/differ_database.rs b/schema-engine/connectors/sql-schema-connector/src/sql_schema_differ/differ_database.rs
+index dabb5bdc61..1709f73f23 100644
+--- a/schema-engine/connectors/sql-schema-connector/src/sql_schema_differ/differ_database.rs
++++ b/schema-engine/connectors/sql-schema-connector/src/sql_schema_differ/differ_database.rs
+@@ -353,12 +353,25 @@ impl<'a> DifferDatabase<'a> {
+         all_tables_are_external && !has_enums
+     }
+ 
++    fn is_enum_external(&self, enum_walker: &EnumWalker<'_>) -> bool {
++        self.flavour
++            .contains_table(&self.filter.external_enums, enum_walker.namespace(), enum_walker.name())
++    }
++
+     fn previous_enums(&self) -> impl Iterator<Item = EnumWalker<'a>> {
+-        self.schemas.previous.describer_schema.enum_walkers()
++        self.schemas
++            .previous
++            .describer_schema
++            .enum_walkers()
++            .filter(|e| !self.is_enum_external(e))
+     }
+ 
+     fn next_enums(&self) -> impl Iterator<Item = EnumWalker<'a>> {
+-        self.schemas.next.describer_schema.enum_walkers()
++        self.schemas
++            .next
++            .describer_schema
++            .enum_walkers()
++            .filter(|e| !self.is_enum_external(e))
+     }
+ 
+     fn previous_extensions(&self) -> impl Iterator<Item = ExtensionWalker<'a>> {
+diff --git a/schema-engine/json-rpc-api/src/types.rs b/schema-engine/json-rpc-api/src/types.rs
+index cb4ab56445..4d576f404b 100644
+--- a/schema-engine/json-rpc-api/src/types.rs
++++ b/schema-engine/json-rpc-api/src/types.rs
+@@ -96,6 +96,8 @@ pub struct SchemasWithConfigDir {
+ pub struct SchemaFilter {
+     /// Tables that shall be considered 'externally" managed. As per prisma.config.ts > tables.external.
+     pub external_tables: Vec<String>,
++    /// Enums that shall be considered "externally" managed. As per prisma.config.ts > enums.external.
++    pub external_enums: Vec<String>,
+ }
+ 
+ /// The path to a live database taken as input. For flexibility, this can be Prisma schemas as strings, or only the

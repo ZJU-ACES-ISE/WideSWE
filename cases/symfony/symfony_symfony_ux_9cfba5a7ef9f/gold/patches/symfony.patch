@@ -1,0 +1,279 @@
+diff --git a/src/Symfony/Bundle/TwigBundle/CHANGELOG.md b/src/Symfony/Bundle/TwigBundle/CHANGELOG.md
+index 20d7ff6b5e..dde9f528fc 100644
+--- a/src/Symfony/Bundle/TwigBundle/CHANGELOG.md
++++ b/src/Symfony/Bundle/TwigBundle/CHANGELOG.md
+@@ -1,6 +1,11 @@
+ CHANGELOG
+ =========
+ 
++8.1
++---
++
++ * Add `twig.safe_class` resource tag to register safe classes for Twig's escaper
++
+ 8.0
+ ---
+ 
+diff --git a/src/Symfony/Bundle/TwigBundle/DependencyInjection/Compiler/SafeClassPass.php b/src/Symfony/Bundle/TwigBundle/DependencyInjection/Compiler/SafeClassPass.php
+new file mode 100644
+index 0000000000..f374c20a5e
+--- /dev/null
++++ b/src/Symfony/Bundle/TwigBundle/DependencyInjection/Compiler/SafeClassPass.php
+@@ -0,0 +1,44 @@
++<?php
++
++/*
++ * This file is part of the Symfony package.
++ *
++ * (c) Fabien Potencier <fabien@symfony.com>
++ *
++ * For the full copyright and license information, please view the LICENSE
++ * file that was distributed with this source code.
++ */
++
++namespace Symfony\Bundle\TwigBundle\DependencyInjection\Compiler;
++
++use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
++use Symfony\Component\DependencyInjection\ContainerBuilder;
++use Symfony\Component\DependencyInjection\Exception\InvalidArgumentException;
++
++/**
++ * Registers safe classes for Twig's escaper.
++ */
++class SafeClassPass implements CompilerPassInterface
++{
++    public function process(ContainerBuilder $container): void
++    {
++        if (!$container->hasDefinition('twig.runtime.escaper')) {
++            return;
++        }
++
++        $definition = $container->getDefinition('twig.runtime.escaper');
++
++        foreach ($container->findTaggedResourceIds('twig.safe_class') as $id => $tags) {
++            $class = $container->getDefinition($id)->getClass();
++            foreach ($tags as $tag) {
++                $strategies = $tag['strategy'] ?? null;
++                if (\is_string($strategies)) {
++                    $strategies = [$strategies];
++                } elseif (!\is_array($strategies) || $strategies !== array_filter($strategies, 'is_string')) {
++                    throw new InvalidArgumentException(\sprintf('The "strategy" attribute of the "twig.safe_class" tag on "%s" must be a string or a list of strings.', $id));
++                }
++                $definition->addMethodCall('addSafeClass', [$class, $strategies]);
++            }
++        }
++    }
++}
+diff --git a/src/Symfony/Bundle/TwigBundle/DependencyInjection/TwigExtension.php b/src/Symfony/Bundle/TwigBundle/DependencyInjection/TwigExtension.php
+index af8709cb06..166b0d0509 100644
+--- a/src/Symfony/Bundle/TwigBundle/DependencyInjection/TwigExtension.php
++++ b/src/Symfony/Bundle/TwigBundle/DependencyInjection/TwigExtension.php
+@@ -98,6 +98,8 @@ class TwigExtension extends Extension
+         $container->setParameter('twig.default_path', $config['default_path']);
+         $defaultTwigPath = $container->getParameterBag()->resolveValue($config['default_path']);
+ 
++        $container->getDefinition('twig.runtime.escaper')->replaceArgument(0, $config['charset']);
++
+         $envConfiguratorDefinition = $container->getDefinition('twig.configurator.environment');
+         $envConfiguratorDefinition->replaceArgument(0, $config['date']['format']);
+         $envConfiguratorDefinition->replaceArgument(1, $config['date']['interval_format']);
+diff --git a/src/Symfony/Bundle/TwigBundle/Resources/config/twig.php b/src/Symfony/Bundle/TwigBundle/Resources/config/twig.php
+index 654472b88f..bfa8a87dd7 100644
+--- a/src/Symfony/Bundle/TwigBundle/Resources/config/twig.php
++++ b/src/Symfony/Bundle/TwigBundle/Resources/config/twig.php
+@@ -50,6 +50,7 @@ use Twig\ExtensionSet;
+ use Twig\Loader\ChainLoader;
+ use Twig\Loader\FilesystemLoader;
+ use Twig\Profiler\Profile;
++use Twig\Runtime\EscaperRuntime;
+ use Twig\RuntimeLoader\ContainerRuntimeLoader;
+ use Twig\Template;
+ use Twig\TemplateWrapper;
+@@ -175,6 +176,10 @@ return static function (ContainerConfigurator $container) {
+         ->set('twig.runtime_loader', ContainerRuntimeLoader::class)
+             ->args([abstract_arg('runtime locator')])
+ 
++        ->set('twig.runtime.escaper', EscaperRuntime::class)
++            ->args([abstract_arg('charset, set in TwigExtension')])
++            ->tag('twig.runtime')
++
+         ->set('twig.error_renderer.html', TwigErrorRenderer::class)
+             ->decorate('error_renderer.html')
+             ->args([
+diff --git a/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/Compiler/SafeClassPassTest.php b/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/Compiler/SafeClassPassTest.php
+new file mode 100644
+index 0000000000..ebfd5fc83c
+--- /dev/null
++++ b/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/Compiler/SafeClassPassTest.php
+@@ -0,0 +1,103 @@
++<?php
++
++/*
++ * This file is part of the Symfony package.
++ *
++ * (c) Fabien Potencier <fabien@symfony.com>
++ *
++ * For the full copyright and license information, please view the LICENSE
++ * file that was distributed with this source code.
++ */
++
++namespace Symfony\Bundle\TwigBundle\Tests\DependencyInjection\Compiler;
++
++use PHPUnit\Framework\TestCase;
++use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\SafeClassPass;
++use Symfony\Component\DependencyInjection\ContainerBuilder;
++use Symfony\Component\DependencyInjection\Exception\InvalidArgumentException;
++use Twig\Runtime\EscaperRuntime;
++
++class SafeClassPassTest extends TestCase
++{
++    private ContainerBuilder $container;
++    private SafeClassPass $pass;
++
++    protected function setUp(): void
++    {
++        $this->container = new ContainerBuilder();
++        $this->container->register('twig.runtime.escaper', EscaperRuntime::class);
++        $this->pass = new SafeClassPass();
++    }
++
++    public function testSafeClassWithStringStrategy()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => 'html']);
++
++        $this->pass->process($this->container);
++
++        $this->assertSame(
++            [['addSafeClass', [\stdClass::class, ['html']]]],
++            $this->container->getDefinition('twig.runtime.escaper')->getMethodCalls()
++        );
++    }
++
++    public function testSafeClassWithArrayStrategy()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => ['html', 'js']]);
++
++        $this->pass->process($this->container);
++
++        $this->assertSame(
++            [['addSafeClass', [\stdClass::class, ['html', 'js']]]],
++            $this->container->getDefinition('twig.runtime.escaper')->getMethodCalls()
++        );
++    }
++
++    public function testSafeClassWithMultipleTags()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => 'html'])
++            ->addResourceTag('twig.safe_class', ['strategy' => 'js']);
++
++        $this->pass->process($this->container);
++
++        $calls = $this->container->getDefinition('twig.runtime.escaper')->getMethodCalls();
++        $this->assertContains(['addSafeClass', [\stdClass::class, ['html']]], $calls);
++        $this->assertContains(['addSafeClass', [\stdClass::class, ['js']]], $calls);
++    }
++
++    public function testThrowsOnMissingStrategy()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', []);
++
++        $this->expectException(InvalidArgumentException::class);
++        $this->expectExceptionMessage('The "strategy" attribute of the "twig.safe_class" tag on "my_class" must be a string or a list of strings.');
++
++        $this->pass->process($this->container);
++    }
++
++    public function testThrowsOnInvalidStrategy()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => 123]);
++
++        $this->expectException(InvalidArgumentException::class);
++        $this->expectExceptionMessage('The "strategy" attribute of the "twig.safe_class" tag on "my_class" must be a string or a list of strings.');
++
++        $this->pass->process($this->container);
++    }
++
++    public function testDoesNothingWhenNoEscaperService()
++    {
++        $container = new ContainerBuilder();
++        $container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => 'html']);
++
++        (new SafeClassPass())->process($container);
++
++        $this->assertFalse($container->hasDefinition('twig.runtime.escaper'));
++    }
++}
+diff --git a/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php b/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php
+index 848deed998..8d23a847b8 100644
+--- a/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php
++++ b/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php
+@@ -13,6 +13,7 @@ namespace Symfony\Bundle\TwigBundle\Tests\DependencyInjection;
+ 
+ use PHPUnit\Framework\Attributes\DataProvider;
+ use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\RuntimeLoaderPass;
++use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\SafeClassPass;
+ use Symfony\Bundle\TwigBundle\DependencyInjection\TwigExtension;
+ use Symfony\Bundle\TwigBundle\Tests\DependencyInjection\AcmeBundle\AcmeBundle;
+ use Symfony\Bundle\TwigBundle\Tests\TestCase;
+@@ -29,6 +30,7 @@ use Symfony\Component\Mailer\Mailer;
+ use Symfony\Component\Stopwatch\Stopwatch;
+ use Symfony\Component\Validator\Validator\ValidatorInterface;
+ use Twig\Environment;
++use Twig\Runtime\EscaperRuntime;
+ 
+ class TwigExtensionTest extends TestCase
+ {
+@@ -303,15 +305,27 @@ class TwigExtensionTest extends TestCase
+         $container->register('http_kernel', 'FooClass');
+         $container->register('foo', '%foo%')->addTag('twig.runtime');
+         $container->register('error_renderer.html', HtmlErrorRenderer::class);
++        $container->register('foo_safe')->setClass(\stdClass::class)->addResourceTag('twig.safe_class', ['strategy' => 'html']);
++        $container->register('bar_safe')->setClass(\stdClass::class)->addResourceTag('twig.safe_class', ['strategy' => ['html', 'js']]);
++        $container->addCompilerPass(new SafeClassPass(), PassConfig::TYPE_BEFORE_REMOVING);
+         $container->addCompilerPass(new RuntimeLoaderPass(), PassConfig::TYPE_BEFORE_REMOVING);
+         $container->getCompilerPassConfig()->setRemovingPasses([]);
+         $container->getCompilerPassConfig()->setAfterRemovingPasses([]);
+         $container->compile();
+ 
++        $this->assertTrue($container->hasDefinition('twig.runtime.escaper'));
++        $this->assertSame('UTF-8', $container->getDefinition('twig.runtime.escaper')->getArgument(0));
++
++        $calls = $container->getDefinition('twig.runtime.escaper')->getMethodCalls();
++        $this->assertContains(['addSafeClass', [\stdClass::class, ['html']]], $calls);
++        $this->assertContains(['addSafeClass', [\stdClass::class, ['html', 'js']]], $calls);
++
+         $loader = $container->getDefinition('twig.runtime_loader');
+         $args = $container->getDefinition((string) $loader->getArgument(0))->getArgument(0);
++        $this->assertArrayHasKey(EscaperRuntime::class, $args);
+         $this->assertArrayHasKey(FormRenderer::class, $args);
+         $this->assertArrayHasKey('FooClass', $args);
++        $this->assertEquals('twig.runtime.escaper', $args[EscaperRuntime::class]->getValues()[0]);
+         $this->assertEquals('twig.form.renderer', $args[FormRenderer::class]->getValues()[0]);
+         $this->assertEquals('foo', $args['FooClass']->getValues()[0]);
+     }
+diff --git a/src/Symfony/Bundle/TwigBundle/TwigBundle.php b/src/Symfony/Bundle/TwigBundle/TwigBundle.php
+index e4792d0ef2..99871ae3bc 100644
+--- a/src/Symfony/Bundle/TwigBundle/TwigBundle.php
++++ b/src/Symfony/Bundle/TwigBundle/TwigBundle.php
+@@ -14,6 +14,7 @@ namespace Symfony\Bundle\TwigBundle;
+ use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\AttributeExtensionPass;
+ use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\ExtensionPass;
+ use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\RuntimeLoaderPass;
++use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\SafeClassPass;
+ use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\TwigEnvironmentPass;
+ use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\TwigLoaderPass;
+ use Symfony\Component\DependencyInjection\Compiler\PassConfig;
+@@ -36,6 +37,7 @@ class TwigBundle extends Bundle
+         $container->addCompilerPass(new AttributeExtensionPass());
+         $container->addCompilerPass(new TwigEnvironmentPass());
+         $container->addCompilerPass(new TwigLoaderPass());
++        $container->addCompilerPass(new SafeClassPass(), PassConfig::TYPE_BEFORE_REMOVING);
+         $container->addCompilerPass(new RuntimeLoaderPass(), PassConfig::TYPE_BEFORE_REMOVING);
+     }
+ }

@@ -1,0 +1,1697 @@
+diff --git a/.github/workflows/atlas-ci.yml b/.github/workflows/atlas-ci.yml
+index e113452f..cefe969e 100644
+--- a/.github/workflows/atlas-ci.yml
++++ b/.github/workflows/atlas-ci.yml
+@@ -96,4 +96,4 @@ jobs:
+         run: "vendor/bin/phpunit --group atlas"
+         env:
+           DOCTRINE_MONGODB_SERVER: "mongodb://127.0.0.1:27017/?directConnection=true"
+-          USE_LAZY_GHOST_OBJECTS: ${{ matrix.proxy == 'lazy-ghost' && '1' || '0' }}
++          USE_LAZY_GHOST_OBJECT: ${{ matrix.proxy == 'lazy-ghost' && '1' || '0' }}
+diff --git a/.github/workflows/continuous-integration.yml b/.github/workflows/continuous-integration.yml
+index 16407bfd..d239d6a0 100644
+--- a/.github/workflows/continuous-integration.yml
++++ b/.github/workflows/continuous-integration.yml
+@@ -77,6 +77,13 @@ jobs:
+             dependencies: "highest"
+             symfony-version: "stable"
+             proxy: "proxy-manager"
++          # Test with Native Lazy Objects
++          - php-version: "8.4"
++            mongodb-version: "8.0"
++            driver-version: "stable"
++            dependencies: "highest"
++            symfony-version: "stable"
++            proxy: "native"
+           # Test with extension 1.21
+           - topology: "server"
+             php-version: "8.2"
+@@ -162,5 +169,6 @@ jobs:
+         run: "vendor/bin/phpunit --exclude-group=atlas"
+         env:
+           DOCTRINE_MONGODB_SERVER: ${{ steps.setup-mongodb.outputs.cluster-uri }}
+-          USE_LAZY_GHOST_OBJECTS: ${{ matrix.proxy == 'lazy-ghost' && '1' || '0' }}"
++          USE_LAZY_GHOST_OBJECT: ${{ matrix.proxy == 'lazy-ghost' && '1' || '0' }}"
++          USE_NATIVE_LAZY_OBJECT: ${{ matrix.proxy == 'native' && '1' || '0' }}"
+           CRYPT_SHARED_LIB_PATH: ${{ steps.setup-mongodb.outputs.crypt-shared-lib-path }}
+diff --git a/composer.json b/composer.json
+index 0f9d2fd1..84c07eb1 100644
+--- a/composer.json
++++ b/composer.json
+@@ -71,6 +71,7 @@
+             "Doctrine\\ODM\\MongoDB\\Tests\\": "tests/Doctrine/ODM/MongoDB/Tests",
+             "Documentation\\": "tests/Documentation",
+             "Documents\\": "tests/Documents",
++            "Documents84\\": "tests/Documents84",
+             "Stubs\\": "tests/Stubs",
+             "TestDocuments\\" :"tests/Doctrine/ODM/MongoDB/Tests/Mapping/Driver/fixtures"
+         }
+diff --git a/lib/Doctrine/ODM/MongoDB/Configuration.php b/lib/Doctrine/ODM/MongoDB/Configuration.php
+index 6934bd60..14f0b5d6 100644
+--- a/lib/Doctrine/ODM/MongoDB/Configuration.php
++++ b/lib/Doctrine/ODM/MongoDB/Configuration.php
+@@ -47,6 +47,8 @@ use function is_string;
+ use function trigger_deprecation;
+ use function trim;
+ 
++use const PHP_VERSION_ID;
++
+ /**
+  * Configuration class for the DocumentManager. When setting up your DocumentManager
+  * you can optionally specify an instance of this class as the second argument.
+@@ -145,7 +147,8 @@ class Configuration
+ 
+     private bool $useTransactionalFlush = false;
+ 
+-    private bool $useLazyGhostObject = false;
++    private bool $lazyGhostObject  = false;
++    private bool $nativeLazyObject = false;
+ 
+     private static string $version;
+ 
+@@ -688,24 +691,47 @@ class Configuration
+      */
+     public function setUseLazyGhostObject(bool $flag): void
+     {
++        if ($this->nativeLazyObject) {
++            throw new LogicException('Cannot enable or disable LazyGhostObject when native lazy objects are enabled.');
++        }
++
+         if ($flag === false) {
+             if (! class_exists(ProxyManagerConfiguration::class)) {
+                 throw new LogicException('Package "friendsofphp/proxy-manager-lts" is required to disable LazyGhostObject.');
+             }
+ 
+-            trigger_deprecation(
+-                'doctrine/mongodb-odm',
+-                '2.10',
+-                'Using "friendsofphp/proxy-manager-lts" is deprecated. Use "symfony/var-exporter" LazyGhostObjects instead.',
+-            );
++            trigger_deprecation('doctrine/mongodb-odm', '2.10', 'Using "friendsofphp/proxy-manager-lts" is deprecated. Use "symfony/var-exporter" LazyGhostObjects instead.');
+         }
+ 
+-        $this->useLazyGhostObject = $flag;
++        if ($flag === true && PHP_VERSION_ID >= 80400) {
++            trigger_deprecation('doctrine/mongodb-odm', '2.14', 'Using "symfony/var-exporter" lazy ghost objects is deprecated and will be impossible in Doctrine MongoDB ODM 3.0.');
++        }
++
++        $this->lazyGhostObject = $flag;
+     }
+ 
+     public function isLazyGhostObjectEnabled(): bool
+     {
+-        return $this->useLazyGhostObject;
++        return $this->lazyGhostObject;
++    }
++
++    public function setUseNativeLazyObject(bool $nativeLazyObject): void
++    {
++        if (PHP_VERSION_ID < 80400 && $nativeLazyObject) {
++            throw new LogicException('Native lazy objects require PHP 8.4 or higher.');
++        }
++
++        $this->nativeLazyObject = $nativeLazyObject;
++        $this->lazyGhostObject  = ! $nativeLazyObject || $this->lazyGhostObject;
++    }
++
++    public function isNativeLazyObjectEnabled(): bool
++    {
++        if (PHP_VERSION_ID >= 80400 && ! $this->nativeLazyObject) {
++            trigger_deprecation('doctrine/mongodb-odm', '2.14', 'Not using native lazy objects is deprecated and will be impossible in Doctrine MongoDB ODM 3.0.');
++        }
++
++        return $this->nativeLazyObject;
+     }
+ 
+     /**
+diff --git a/lib/Doctrine/ODM/MongoDB/DocumentManager.php b/lib/Doctrine/ODM/MongoDB/DocumentManager.php
+index b9f440ae..7ed9e3e7 100644
+--- a/lib/Doctrine/ODM/MongoDB/DocumentManager.php
++++ b/lib/Doctrine/ODM/MongoDB/DocumentManager.php
+@@ -10,6 +10,7 @@ use Doctrine\ODM\MongoDB\Mapping\ClassMetadata;
+ use Doctrine\ODM\MongoDB\Mapping\ClassMetadataFactoryInterface;
+ use Doctrine\ODM\MongoDB\Mapping\MappingException;
+ use Doctrine\ODM\MongoDB\Proxy\Factory\LazyGhostProxyFactory;
++use Doctrine\ODM\MongoDB\Proxy\Factory\NativeLazyObjectFactory;
+ use Doctrine\ODM\MongoDB\Proxy\Factory\ProxyFactory;
+ use Doctrine\ODM\MongoDB\Proxy\Factory\StaticProxyFactory;
+ use Doctrine\ODM\MongoDB\Proxy\Resolver\CachingClassNameResolver;
+@@ -31,7 +32,6 @@ use MongoDB\Database;
+ use MongoDB\Driver\ClientEncryption;
+ use MongoDB\Driver\ReadPreference;
+ use MongoDB\GridFS\Bucket;
+-use ProxyManager\Proxy\GhostObjectInterface;
+ use RuntimeException;
+ use Throwable;
+ 
+@@ -179,11 +179,13 @@ class DocumentManager implements ObjectManager
+             $this->config->getAutoGenerateHydratorClasses(),
+         );
+ 
+-        $this->unitOfWork        = new UnitOfWork($this, $this->eventManager, $this->hydratorFactory);
+-        $this->schemaManager     = new SchemaManager($this, $this->metadataFactory);
+-        $this->proxyFactory      = $this->config->isLazyGhostObjectEnabled()
+-            ? new LazyGhostProxyFactory($this, $this->config->getProxyDir(), $this->config->getProxyNamespace(), $this->config->getAutoGenerateProxyClasses())
+-            : new StaticProxyFactory($this);
++        $this->unitOfWork    = new UnitOfWork($this, $this->eventManager, $this->hydratorFactory);
++        $this->schemaManager = new SchemaManager($this, $this->metadataFactory);
++        $this->proxyFactory  = match (true) {
++            $this->config->isNativeLazyObjectEnabled() => new NativeLazyObjectFactory($this),
++            $this->config->isLazyGhostObjectEnabled() => new LazyGhostProxyFactory($this, $this->config->getProxyDir(), $this->config->getProxyNamespace(), $this->config->getAutoGenerateProxyClasses()),
++            default => new StaticProxyFactory($this),
++        };
+         $this->repositoryFactory = $this->config->getRepositoryFactory();
+     }
+ 
+@@ -607,7 +609,7 @@ class DocumentManager implements ObjectManager
+      * @param mixed           $identifier
+      * @param class-string<T> $documentName
+      *
+-     * @return T|(T&GhostObjectInterface<T>)
++     * @return T
+      *
+      * @template T of object
+      */
+@@ -624,9 +626,8 @@ class DocumentManager implements ObjectManager
+             return $document;
+         }
+ 
+-        /** @var T&GhostObjectInterface<T> $document */
+         $document = $this->proxyFactory->getProxy($class, $identifier);
+-        $this->unitOfWork->registerManaged($document, $identifier, []);
++        $this->unitOfWork->registerManaged($document, $identifier, [$class->identifier => $identifier]);
+ 
+         return $document;
+     }
+diff --git a/lib/Doctrine/ODM/MongoDB/Hydrator/HydratorFactory.php b/lib/Doctrine/ODM/MongoDB/Hydrator/HydratorFactory.php
+index e9542f5b..5a821677 100644
+--- a/lib/Doctrine/ODM/MongoDB/Hydrator/HydratorFactory.php
++++ b/lib/Doctrine/ODM/MongoDB/Hydrator/HydratorFactory.php
+@@ -33,6 +33,7 @@ use function substr;
+ use function uniqid;
+ 
+ use const DIRECTORY_SEPARATOR;
++use const PHP_VERSION_ID;
+ 
+ /**
+  * The HydratorFactory class is responsible for instantiating a correct hydrator
+@@ -187,7 +188,7 @@ EOF
+         if (array_key_exists('%1$s', $data) && ($data['%1$s'] !== null || ($this->class->fieldMappings['%2$s']['nullable'] ?? false))) {
+             $value = $data['%1$s'];
+             %3$s
+-            $this->class->reflFields['%2$s']->setValue($document, $return === null ? null : clone $return);
++            $this->class->propertyAccessors['%2$s']->setValue($document, $return === null ? null : clone $return);
+             $hydratedData['%2$s'] = $return;
+         }
+ 
+@@ -210,7 +211,7 @@ EOF
+             } else {
+                 \$return = null;
+             }
+-            \$this->class->reflFields['%2\$s']->setValue(\$document, \$return);
++            \$this->class->propertyAccessors['%2\$s']->setValue(\$document, \$return);
+             \$hydratedData['%2\$s'] = \$return;
+         }
+ 
+@@ -239,7 +240,7 @@ EOF
+                 $return = $this->dm->getReference($className, $id);
+             }
+ 
+-            $this->class->reflFields['%2$s']->setValue($document, $return);
++            $this->class->propertyAccessors['%2$s']->setValue($document, $return);
+             $hydratedData['%2$s'] = $return;
+         }
+ 
+@@ -256,7 +257,7 @@ EOF
+ 
+         $className = $this->class->fieldMappings['%2$s']['targetDocument'];
+         $return = $this->dm->getRepository($className)->%3$s($document);
+-        $this->class->reflFields['%2$s']->setValue($document, $return);
++        $this->class->propertyAccessors['%2$s']->setValue($document, $return);
+         $hydratedData['%2$s'] = $return;
+ 
+ EOF
+@@ -280,7 +281,7 @@ EOF
+         );
+         $sort = $this->class->fieldMappings['%2$s']['sort'] ?? [];
+         $return = $this->dm->getUnitOfWork()->getDocumentPersister($className)->load($criteria, null, [], 0, $sort);
+-        $this->class->reflFields['%2$s']->setValue($document, $return);
++        $this->class->propertyAccessors['%2$s']->setValue($document, $return);
+         $hydratedData['%2$s'] = $return;
+ 
+ EOF
+@@ -307,7 +308,7 @@ EOF
+         if ($mongoData) {
+             $return->setMongoData($mongoData);
+         }
+-        $this->class->reflFields['%2$s']->setValue($document, $return);
++        $this->class->propertyAccessors['%2$s']->setValue($document, $return);
+         $hydratedData['%2$s'] = $return;
+ 
+ EOF
+@@ -345,7 +346,7 @@ EOF
+                 }
+             }
+ 
+-            $this->class->reflFields['%2$s']->setValue($document, $return);
++            $this->class->propertyAccessors['%2$s']->setValue($document, $return);
+             $hydratedData['%2$s'] = $return;
+         }
+ 
+@@ -450,6 +451,10 @@ EOF
+             }
+         }
+ 
++        if (PHP_VERSION_ID >= 80400) {
++            $metadata->reflClass->markLazyObjectAsInitialized($document);
++        }
++
+         if ($document instanceof InternalProxy) {
+             // Skip initialization to not load any object data
+             $document->__setInitialized(true);
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadata.php b/lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadata.php
+index 3088a770..04ca7c11 100644
+--- a/lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadata.php
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadata.php
+@@ -15,6 +15,9 @@ use Doctrine\ODM\MongoDB\Id\IdGenerator;
+ use Doctrine\ODM\MongoDB\LockException;
+ use Doctrine\ODM\MongoDB\Mapping\Annotations\EncryptQuery;
+ use Doctrine\ODM\MongoDB\Mapping\Annotations\TimeSeries;
++use Doctrine\ODM\MongoDB\Mapping\PropertyAccessors\EnumPropertyAccessor;
++use Doctrine\ODM\MongoDB\Mapping\PropertyAccessors\PropertyAccessor;
++use Doctrine\ODM\MongoDB\Mapping\PropertyAccessors\PropertyAccessorFactory;
+ use Doctrine\ODM\MongoDB\Proxy\InternalProxy;
+ use Doctrine\ODM\MongoDB\Types\Incrementable;
+ use Doctrine\ODM\MongoDB\Types\Type;
+@@ -23,7 +26,6 @@ use Doctrine\ODM\MongoDB\Utility\CollectionHelper;
+ use Doctrine\Persistence\Mapping\ClassMetadata as BaseClassMetadata;
+ use Doctrine\Persistence\Mapping\ReflectionService;
+ use Doctrine\Persistence\Mapping\RuntimeReflectionService;
+-use Doctrine\Persistence\Reflection\EnumReflectionProperty;
+ use InvalidArgumentException;
+ use LogicException;
+ use MongoDB\BSON\Decimal128;
+@@ -61,6 +63,8 @@ use function strtolower;
+ use function strtoupper;
+ use function trigger_deprecation;
+ 
++use const PHP_VERSION_ID;
++
+ /**
+  * A <tt>ClassMetadata</tt> instance holds all the object-document mapping metadata
+  * of a document and it's references.
+@@ -638,10 +642,15 @@ use function trigger_deprecation;
+     /**
+      * The ReflectionProperty instances of the mapped class.
+      *
+-     * @var ReflectionProperty[]
++     * @deprecated Since 2.13, use $propertyAccessors instead.
++     *
++     * @var LegacyReflectionFields|array<ReflectionProperty>
+      */
+     public $reflFields = [];
+ 
++    /** @var array<string, PropertyAccessors\PropertyAccessor> */
++    public array $propertyAccessors = [];
++
+     /**
+      * READ-ONLY: The inheritance mapping type used by the class.
+      *
+@@ -870,6 +879,7 @@ use function trigger_deprecation;
+         $this->rootDocumentName  = $documentName;
+         $this->reflectionService = new RuntimeReflectionService();
+         $this->reflClass         = new ReflectionClass($documentName);
++        $this->reflFields        = new LegacyReflectionFields($this, $this->reflectionService);
+         $this->setCollection($this->reflClass->getShortName());
+         $this->instantiator = new Instantiator();
+     }
+@@ -1498,21 +1508,40 @@ use function trigger_deprecation;
+     /**
+      * Gets the ReflectionProperties of the mapped class.
+      *
+-     * @return ReflectionProperty[]
++     * @deprecated Since 2.13, use getPropertyAccessors() instead.
++     *
++     * @return array<ReflectionProperty>|LegacyReflectionFields
+      */
+-    public function getReflectionProperties(): array
++    public function getReflectionProperties(): array|LegacyReflectionFields
+     {
+         return $this->reflFields;
+     }
+ 
++    /**
++     * Gets the ReflectionProperties of the mapped class.
++     *
++     * @return PropertyAccessor[] An array of PropertyAccessor instances.
++     */
++    public function getPropertyAccessors(): array
++    {
++        return $this->propertyAccessors;
++    }
++
+     /**
+      * Gets a ReflectionProperty for a specific field of the mapped class.
++     *
++     * @deprecated Since 2.13, use getPropertyAccessor() instead.
+      */
+     public function getReflectionProperty(string $name): ReflectionProperty
+     {
+         return $this->reflFields[$name];
+     }
+ 
++    public function getPropertyAccessor(string $name): PropertyAccessor|null
++    {
++        return $this->propertyAccessors[$name] ?? null;
++    }
++
+     /** @return class-string<T> */
+     public function getName(): string
+     {
+@@ -1915,7 +1944,7 @@ use function trigger_deprecation;
+     public function setIdentifierValue(object $document, $id): void
+     {
+         $id = $this->getPHPIdentifierValue($id);
+-        $this->reflFields[$this->identifier]->setValue($document, $id);
++        $this->propertyAccessors[$this->identifier]->setValue($document, $id);
+     }
+ 
+     /**
+@@ -1925,7 +1954,7 @@ use function trigger_deprecation;
+      */
+     public function getIdentifierValue(object $document)
+     {
+-        return $this->reflFields[$this->identifier]->getValue($document);
++        return $this->propertyAccessors[$this->identifier]->getValue($document);
+     }
+ 
+     /**
+@@ -1963,9 +1992,11 @@ use function trigger_deprecation;
+             $document->__load();
+         } elseif ($document instanceof GhostObjectInterface && ! $document->isProxyInitialized()) {
+             $document->initializeProxy();
++        } elseif (PHP_VERSION_ID >= 80400) {
++            $this->reflClass->initializeLazyObject($document);
+         }
+ 
+-        $this->reflFields[$field]->setValue($document, $value);
++        $this->propertyAccessors[$field]->setValue($document, $value);
+     }
+ 
+     /**
+@@ -1979,9 +2010,11 @@ use function trigger_deprecation;
+             $document->__load();
+         } elseif ($document instanceof GhostObjectInterface && $field !== $this->identifier && ! $document->isProxyInitialized()) {
+             $document->initializeProxy();
++        } elseif (PHP_VERSION_ID >= 80400 && $field !== $this->identifier && $this->reflClass->isUninitializedLazyObject($document)) {
++            $this->reflClass->initializeLazyObject($document);
+         }
+ 
+-        return $this->reflFields[$field]->getValue($document);
++        return $this->propertyAccessors[$field]->getValue($document);
+     }
+ 
+     /**
+@@ -2567,8 +2600,11 @@ use function trigger_deprecation;
+             $this->associationMappings[$mapping['fieldName']] = $mapping;
+         }
+ 
+-        $reflProp = $this->reflectionService->getAccessibleProperty($this->name, $mapping['fieldName']);
+-        assert($reflProp instanceof ReflectionProperty);
++        $accessor = PropertyAccessorFactory::createPropertyAccessor($this->name, $mapping['fieldName']);
++
++        if (PHP_VERSION_ID >= 80400 && $accessor->getUnderlyingReflector()->isVirtual()) {
++            throw MappingException::mappingVirtualPropertyNotAllowed($this->name, $mapping['fieldName']);
++        }
+ 
+         if (isset($mapping['enumType'])) {
+             if (! enum_exists($mapping['enumType'])) {
+@@ -2580,10 +2616,10 @@ use function trigger_deprecation;
+                 throw MappingException::nonBackedEnumMapped($this->name, $mapping['fieldName'], $mapping['enumType']);
+             }
+ 
+-            $reflProp = new EnumReflectionProperty($reflProp, $mapping['enumType']);
++            $accessor = new EnumPropertyAccessor($accessor, $mapping['enumType']);
+         }
+ 
+-        $this->reflFields[$mapping['fieldName']] = $reflProp;
++        $this->propertyAccessors[$mapping['fieldName']] = $accessor;
+ 
+         return $mapping;
+     }
+@@ -2595,9 +2631,10 @@ use function trigger_deprecation;
+      * That means any metadata properties that are not set or empty or simply have
+      * their default value are NOT serialized.
+      *
+-     * Parts that are also NOT serialized because they can not be properly unserialized:
++     * Parts that are also NOT serialized because they cannot be properly unserialized:
+      *      - reflClass (ReflectionClass)
+      *      - reflFields (ReflectionProperty array)
++     *      - propertyAccessors (ReflectionProperty array)
+      *
+      * @return array The names of all the fields that should be serialized.
+      */
+@@ -2699,24 +2736,24 @@ use function trigger_deprecation;
+     }
+ 
+     /**
+-     * Restores some state that can not be serialized/unserialized.
++     * Restores some state that cannot be serialized/unserialized.
+      */
+-    public function __wakeup()
++    public function __wakeup(): void
+     {
+         // Restore ReflectionClass and properties
+-        $this->reflectionService = new RuntimeReflectionService();
+         $this->reflClass         = new ReflectionClass($this->name);
+         $this->instantiator      = new Instantiator();
++        $this->reflectionService = new RuntimeReflectionService();
++        $this->reflFields        = new LegacyReflectionFields($this, $this->reflectionService);
+ 
+         foreach ($this->fieldMappings as $field => $mapping) {
+-            $prop = $this->reflectionService->getAccessibleProperty($mapping['declared'] ?? $this->name, $field);
+-            assert($prop instanceof ReflectionProperty);
++            $accessor = PropertyAccessorFactory::createPropertyAccessor($mapping['declared'] ?? $this->name, $field);
+ 
+             if (isset($mapping['enumType'])) {
+-                $prop = new EnumReflectionProperty($prop, $mapping['enumType']);
++                $accessor = new EnumPropertyAccessor($accessor, $mapping['enumType']);
+             }
+ 
+-            $this->reflFields[$field] = $prop;
++            $this->propertyAccessors[$field] = $accessor;
+         }
+     }
+ 
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadataFactory.php b/lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadataFactory.php
+index 87b073d7..6f02bde6 100644
+--- a/lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadataFactory.php
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadataFactory.php
+@@ -31,6 +31,8 @@ use function interface_exists;
+ use function trigger_deprecation;
+ use function ucfirst;
+ 
++use const PHP_VERSION_ID;
++
+ /**
+  * The ClassMetadataFactory is used to create ClassMetadata objects that contain all the
+  * metadata mapping informations of a class which describes how a class should be mapped
+@@ -117,6 +119,17 @@ final class ClassMetadataFactory extends AbstractClassMetadataFactory implements
+ 
+     protected function wakeupReflection(ClassMetadataInterface $class, ReflectionService $reflService): void
+     {
++        if (PHP_VERSION_ID < 80400) {
++            return;
++        }
++
++        foreach ($class->propertyAccessors as $propertyAccessor) {
++            $property = $propertyAccessor->getUnderlyingReflector();
++
++            if ($property->isVirtual()) {
++                throw MappingException::mappingVirtualPropertyNotAllowed($class->name, $property->getName());
++            }
++        }
+     }
+ 
+     protected function initializeReflection(ClassMetadataInterface $class, ReflectionService $reflService): void
+@@ -241,12 +254,12 @@ final class ClassMetadataFactory extends AbstractClassMetadataFactory implements
+                 $class->setIdGenerator(new ObjectIdGenerator());
+                 break;
+             case 'uuid':
+-                $reflectionProperty = $class->getReflectionProperty($identifierMapping['fieldName']);
+-                if (! $reflectionProperty->getType() instanceof ReflectionNamedType) {
++                $type = $class->propertyAccessors[$identifierMapping['fieldName']]->getUnderlyingReflector()->getType();
++                if (! $type instanceof ReflectionNamedType) {
+                     throw MappingException::autoIdGeneratorNeedsType($class->name, $identifierMapping['fieldName']);
+                 }
+ 
+-                $class->setIdGenerator(new SymfonyUuidGenerator($reflectionProperty->getType()->getName()));
++                $class->setIdGenerator(new SymfonyUuidGenerator($type->getName()));
+                 break;
+             default:
+                 throw MappingException::unsupportedTypeForAutoGenerator(
+@@ -348,8 +361,8 @@ final class ClassMetadataFactory extends AbstractClassMetadataFactory implements
+             $subClass->addInheritedFieldMapping($mapping);
+         }
+ 
+-        foreach ($parentClass->reflFields as $name => $field) {
+-            $subClass->reflFields[$name] = $field;
++        foreach ($parentClass->propertyAccessors as $name => $field) {
++            $subClass->propertyAccessors[$name] = $field;
+         }
+     }
+ 
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/LegacyReflectionFields.php b/lib/Doctrine/ODM/MongoDB/Mapping/LegacyReflectionFields.php
+new file mode 100644
+index 00000000..138f6fa6
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/LegacyReflectionFields.php
+@@ -0,0 +1,136 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Mapping;
++
++use ArrayAccess;
++use Countable;
++use Doctrine\ODM\MongoDB\Mapping\PropertyAccessors\ReflectionReadonlyProperty;
++use Doctrine\Persistence\Mapping\ReflectionService;
++use Doctrine\Persistence\Reflection\EnumReflectionProperty;
++use Generator;
++use IteratorAggregate;
++use OutOfBoundsException;
++use ReflectionProperty;
++use Traversable;
++
++use function array_keys;
++use function assert;
++use function count;
++use function trigger_deprecation;
++
++/**
++ * @internal
++ *
++ * @template-implements ArrayAccess<string, ReflectionProperty|null>
++ * @template-implements IteratorAggregate<string, ReflectionProperty|null>
++ */
++class LegacyReflectionFields implements ArrayAccess, IteratorAggregate, Countable
++{
++    /** @var array<string, ReflectionProperty|null> */
++    private array $reflFields = [];
++
++    public function __construct(private ClassMetadata $classMetadata, private ReflectionService $reflectionService)
++    {
++    }
++
++    /** @param string $offset */
++    public function offsetExists($offset): bool // phpcs:ignore
++    {
++        trigger_deprecation('doctrine/mongodb-odm', '2.14', 'Access to ClassMetadata::$reflFields is deprecated and will be removed in Doctrine ODM 3.0.');
++
++        return isset($this->classMetadata->propertyAccessors[$offset]);
++    }
++
++    /**
++     * @param string $field
++     *
++     * @psalm-suppress LessSpecificImplementedReturnType
++     */
++    public function offsetGet($field): mixed // phpcs:ignore
++    {
++        if (isset($this->reflFields[$field])) {
++            return $this->reflFields[$field];
++        }
++
++        trigger_deprecation('doctrine/mongodb-odm', '2.14', 'Access to ClassMetadata::$reflFields is deprecated and will be removed in Doctrine ODM 3.0.');
++
++        if (! isset($this->classMetadata->propertyAccessors[$field])) {
++            throw new OutOfBoundsException('Unknown field: ' . $this->classMetadata->name . ' ::$' . $field);
++        }
++
++        $className = $this->classMetadata->fieldMappings[$field]['inherited']
++            ?? $this->classMetadata->fieldMappings[$field]['declared']
++            ?? $this->classMetadata->associationMappings[$field]['declared']
++            ?? $this->classMetadata->name;
++
++        $this->reflFields[$field] = $this->getAccessibleProperty($className, $field);
++
++        if (isset($this->classMetadata->fieldMappings[$field])) {
++            if ($this->classMetadata->fieldMappings[$field]['enumType'] ?? null) {
++                $this->reflFields[$field] = new EnumReflectionProperty(
++                    $this->reflFields[$field],
++                    $this->classMetadata->fieldMappings[$field]['enumType'],
++                );
++            }
++        }
++
++        return $this->reflFields[$field];
++    }
++
++    /**
++     * @param string             $offset
++     * @param ReflectionProperty $value
++     */
++    public function offsetSet($offset, $value): void // phpcs:ignore
++    {
++        $this->reflFields[$offset] = $value;
++    }
++
++    /** @param string $offset */
++    public function offsetUnset($offset): void // phpcs:ignore
++    {
++        unset($this->reflFields[$offset]);
++    }
++
++    /** @psalm-param class-string $class */
++    private function getAccessibleProperty(string $class, string $field): ReflectionProperty
++    {
++        $reflectionProperty = $this->reflectionService->getAccessibleProperty($class, $field);
++
++        assert($reflectionProperty !== null);
++
++        if ($reflectionProperty->isReadOnly()) {
++            $declaringClass = $reflectionProperty->class;
++            if ($declaringClass !== $class) {
++                $reflectionProperty = $this->reflectionService->getAccessibleProperty($declaringClass, $field);
++
++                assert($reflectionProperty !== null);
++            }
++
++            $reflectionProperty = new ReflectionReadonlyProperty($reflectionProperty);
++        }
++
++        return $reflectionProperty;
++    }
++
++    /** @return Generator<string, ReflectionProperty> */
++    public function getIterator(): Traversable
++    {
++        trigger_deprecation('doctrine/mongodb-odm', '2.14', 'Access to ClassMetadata::$reflFields is deprecated and will be removed in Doctrine ODM 3.0.');
++
++        $keys = array_keys($this->classMetadata->propertyAccessors);
++
++        foreach ($keys as $key) {
++            yield $key => $this->offsetGet($key);
++        }
++    }
++
++    public function count(): int
++    {
++        trigger_deprecation('doctrine/mongodb-odm', '2.14', 'Access to ClassMetadata::$reflFields is deprecated and will be removed in Doctrine ODM 3.0.');
++
++        return count($this->classMetadata->propertyAccessors);
++    }
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/MappingException.php b/lib/Doctrine/ODM/MongoDB/Mapping/MappingException.php
+index abd19c15..d91b95e5 100644
+--- a/lib/Doctrine/ODM/MongoDB/Mapping/MappingException.php
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/MappingException.php
+@@ -337,4 +337,13 @@ final class MappingException extends BaseMappingException
+             $identifierFieldName,
+         ));
+     }
++
++    public static function mappingVirtualPropertyNotAllowed(string $entityName, string $propertyName): self
++    {
++        return new self(sprintf(
++            'Mapping virtual property "%s" on document "%s" is not allowed.',
++            $propertyName,
++            $entityName,
++        ));
++    }
+ }
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/EnumPropertyAccessor.php b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/EnumPropertyAccessor.php
+new file mode 100644
+index 00000000..eba80a3b
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/EnumPropertyAccessor.php
+@@ -0,0 +1,85 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Mapping\PropertyAccessors;
++
++use BackedEnum;
++use ReflectionProperty;
++
++use function array_map;
++use function is_array;
++use function reset;
++
++/** @internal */
++class EnumPropertyAccessor implements PropertyAccessor
++{
++    /** @param class-string<BackedEnum> $enumType */
++    public function __construct(private PropertyAccessor $parent, private string $enumType)
++    {
++    }
++
++    public function setValue(object $object, mixed $value): void
++    {
++        if ($value !== null) {
++            $value = $this->toEnum($value);
++        }
++
++        $this->parent->setValue($object, $value);
++    }
++
++    public function getValue(object $object): mixed
++    {
++        $enum = $this->parent->getValue($object);
++
++        if ($enum === null) {
++            return null;
++        }
++
++        return $this->fromEnum($enum);
++    }
++
++    /**
++     * @param BackedEnum|BackedEnum[] $enum
++     *
++     * @return ($enum is BackedEnum ? (string|int) : (string[]|int[]))
++     */
++    private function fromEnum($enum) // phpcs:ignore
++    {
++        if (is_array($enum)) {
++            return array_map(static function (BackedEnum $enum) {
++                return $enum->value;
++            }, $enum);
++        }
++
++        return $enum->value;
++    }
++
++    /**
++     * @phpstan-param BackedEnum|BackedEnum[]|int|string|int[]|string[] $value
++     *
++     * @return ($value is int|string|BackedEnum ? BackedEnum : BackedEnum[])
++     */
++    private function toEnum($value): BackedEnum|array
++    {
++        if ($value instanceof BackedEnum) {
++            return $value;
++        }
++
++        if (is_array($value)) {
++            $v = reset($value);
++            if ($v instanceof BackedEnum) {
++                return $value;
++            }
++
++            return array_map([$this->enumType, 'from'], $value);
++        }
++
++        return $this->enumType::from($value);
++    }
++
++    public function getUnderlyingReflector(): ReflectionProperty
++    {
++        return $this->parent->getUnderlyingReflector();
++    }
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ObjectCastPropertyAccessor.php b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ObjectCastPropertyAccessor.php
+new file mode 100644
+index 00000000..dced04ae
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ObjectCastPropertyAccessor.php
+@@ -0,0 +1,72 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Mapping\PropertyAccessors;
++
++use Doctrine\ODM\MongoDB\Proxy\InternalProxy;
++use ProxyManager\Proxy\GhostObjectInterface;
++use ReflectionProperty;
++
++use function ltrim;
++
++/** @internal */
++class ObjectCastPropertyAccessor implements PropertyAccessor
++{
++    /** @param class-string $class */
++    public static function fromNames(string $class, string $name): self
++    {
++        $reflectionProperty = new ReflectionProperty($class, $name);
++
++        $key = match (true) {
++            $reflectionProperty->isPrivate() => "\0" . ltrim($class, '\\') . "\0" . $name,
++            $reflectionProperty->isProtected() => "\0*\0" . $name,
++            default => $name,
++        };
++
++        return new self($reflectionProperty, $key);
++    }
++
++    public static function fromReflectionProperty(ReflectionProperty $reflectionProperty): self
++    {
++        $name = $reflectionProperty->getName();
++
++        $key = match (true) {
++            $reflectionProperty->isPrivate() => "\0" . ltrim($reflectionProperty->getDeclaringClass()->getName(), '\\') . "\0" . $name,
++            $reflectionProperty->isProtected() => "\0*\0" . $name,
++            default => $name,
++        };
++
++        return new self($reflectionProperty, $key);
++    }
++
++    private function __construct(private ReflectionProperty $reflectionProperty, private string $key)
++    {
++    }
++
++    public function setValue(object $object, mixed $value): void
++    {
++        if ($object instanceof InternalProxy && ! $object->__isInitialized()) {
++            $object->__setInitialized(true);
++            $this->reflectionProperty->setValue($object, $value);
++            $object->__setInitialized(false);
++        } elseif ($object instanceof GhostObjectInterface && ! $object->isProxyInitialized()) {
++            $initializer = $object->getProxyInitializer();
++            $object->setProxyInitializer();
++            $this->reflectionProperty->setValue($object, $value);
++            $object->setProxyInitializer($initializer);
++        } else {
++            $this->reflectionProperty->setValue($object, $value);
++        }
++    }
++
++    public function getValue(object $object): mixed
++    {
++        return ((array) $object)[$this->key] ?? null;
++    }
++
++    public function getUnderlyingReflector(): ReflectionProperty
++    {
++        return $this->reflectionProperty;
++    }
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/PropertyAccessor.php b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/PropertyAccessor.php
+new file mode 100644
+index 00000000..da46932d
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/PropertyAccessor.php
+@@ -0,0 +1,27 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Mapping\PropertyAccessors;
++
++use ReflectionProperty;
++
++/**
++ * A property accessor is a class that allows to read and write properties on objects regardless of visibility.
++ *
++ * We use them while creating objects from database rows in {@see UnitOfWork::getOrCreateDocument()} or when
++ * computing changesets from objects that are about to be written back to the database in {@see UnitOfWork::computeChangeSet()}.
++ *
++ * This abstraction over ReflectionProperty is necessary, because for several features of either Doctrine or PHP, we
++ * need to handle edge cases in reflection at a central location in the code.
++ *
++ * @internal
++ */
++interface PropertyAccessor
++{
++    public function setValue(object $object, mixed $value): void;
++
++    public function getValue(object $object): mixed;
++
++    public function getUnderlyingReflector(): ReflectionProperty;
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/PropertyAccessorFactory.php b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/PropertyAccessorFactory.php
+new file mode 100644
+index 00000000..5b7aef17
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/PropertyAccessorFactory.php
+@@ -0,0 +1,33 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Mapping\PropertyAccessors;
++
++use ReflectionProperty;
++
++use const PHP_VERSION_ID;
++
++/** @internal */
++class PropertyAccessorFactory
++{
++    /** @phpstan-param class-string $className */
++    public static function createPropertyAccessor(string $className, string $propertyName): PropertyAccessor
++    {
++        $reflectionProperty = new ReflectionProperty($className, $propertyName);
++
++        $accessor = PHP_VERSION_ID >= 80400
++            ? RawValuePropertyAccessor::fromReflectionProperty($reflectionProperty)
++            : ObjectCastPropertyAccessor::fromReflectionProperty($reflectionProperty);
++
++        if ($reflectionProperty->hasType() && ! $reflectionProperty->getType()->allowsNull()) {
++            $accessor = new TypedNoDefaultPropertyAccessor($accessor, $reflectionProperty);
++        }
++
++        if ($reflectionProperty->isReadOnly()) {
++            $accessor = new ReadonlyAccessor($accessor, $reflectionProperty);
++        }
++
++        return $accessor;
++    }
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/RawValuePropertyAccessor.php b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/RawValuePropertyAccessor.php
+new file mode 100644
+index 00000000..d84beb85
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/RawValuePropertyAccessor.php
+@@ -0,0 +1,72 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Mapping\PropertyAccessors;
++
++use Doctrine\ODM\MongoDB\Proxy\InternalProxy;
++use LogicException;
++use ProxyManager\Proxy\GhostObjectInterface;
++use ReflectionProperty;
++
++use function ltrim;
++
++use const PHP_VERSION_ID;
++
++/**
++ * This is a PHP 8.4 and up only class and replaces {@see ObjectCastPropertyAccessor}.
++ *
++ * It works based on the raw values of a property, which for a case of property hooks
++ * is the backed value. If we kept using setValue/getValue, this would go through the hooks,
++ * which potentially change the data.
++ *
++ * @internal
++ */
++class RawValuePropertyAccessor implements PropertyAccessor
++{
++    public static function fromReflectionProperty(ReflectionProperty $reflectionProperty): self
++    {
++        $name = $reflectionProperty->getName();
++
++        $key = match (true) {
++            $reflectionProperty->isPrivate() => "\0" . ltrim($reflectionProperty->getDeclaringClass()->getName(), '\\') . "\0" . $name,
++            $reflectionProperty->isProtected() => "\0*\0" . $name,
++            default => $name,
++        };
++
++        return new self($reflectionProperty, $key);
++    }
++
++    private function __construct(private ReflectionProperty $reflectionProperty, private string $key)
++    {
++        if (PHP_VERSION_ID < 80400) {
++            throw new LogicException('This class requires PHP 8.4 or higher.');
++        }
++    }
++
++    public function setValue(object $object, mixed $value): void
++    {
++        if ($object instanceof InternalProxy && ! $object->__isInitialized()) {
++            $object->__setInitialized(true);
++            $this->reflectionProperty->setRawValue($object, $value);
++            $object->__setInitialized(false);
++        } elseif ($object instanceof GhostObjectInterface && ! $object->isProxyInitialized()) {
++            $initializer = $object->getProxyInitializer();
++            $object->setProxyInitializer(null);
++            $this->reflectionProperty->setRawValue($object, $value);
++            $object->setProxyInitializer($initializer);
++        } else {
++            $this->reflectionProperty->setRawValueWithoutLazyInitialization($object, $value);
++        }
++    }
++
++    public function getValue(object $object): mixed
++    {
++        return ((array) $object)[$this->key] ?? null;
++    }
++
++    public function getUnderlyingReflector(): ReflectionProperty
++    {
++        return $this->reflectionProperty;
++    }
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ReadonlyAccessor.php b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ReadonlyAccessor.php
+new file mode 100644
+index 00000000..4e255aae
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ReadonlyAccessor.php
+@@ -0,0 +1,53 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Mapping\PropertyAccessors;
++
++use InvalidArgumentException;
++use LogicException;
++use ReflectionProperty;
++
++use function sprintf;
++
++/** @internal */
++class ReadonlyAccessor implements PropertyAccessor
++{
++    public function __construct(private PropertyAccessor $parent, private ReflectionProperty $reflectionProperty)
++    {
++        if (! $this->reflectionProperty->isReadOnly()) {
++            throw new InvalidArgumentException(sprintf(
++                '%s::$%s must be readonly property',
++                $this->reflectionProperty->getDeclaringClass()->getName(),
++                $this->reflectionProperty->getName(),
++            ));
++        }
++    }
++
++    public function setValue(object $object, mixed $value): void
++    {
++        if (! $this->reflectionProperty->isInitialized($object)) {
++            $this->parent->setValue($object, $value);
++
++            return;
++        }
++
++        if ($this->parent->getValue($object) !== $value) {
++            throw new LogicException(sprintf(
++                'Attempting to change readonly property %s::$%s.',
++                $this->reflectionProperty->getDeclaringClass()->getName(),
++                $this->reflectionProperty->getName(),
++            ));
++        }
++    }
++
++    public function getValue(object $object): mixed
++    {
++        return $this->parent->getValue($object);
++    }
++
++    public function getUnderlyingReflector(): ReflectionProperty
++    {
++        return $this->reflectionProperty;
++    }
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ReflectionReadonlyProperty.php b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ReflectionReadonlyProperty.php
+new file mode 100644
+index 00000000..e49b9f87
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ReflectionReadonlyProperty.php
+@@ -0,0 +1,49 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Mapping\PropertyAccessors;
++
++use InvalidArgumentException;
++use LogicException;
++use ReflectionProperty;
++
++use function assert;
++use function func_get_args;
++use function func_num_args;
++use function is_object;
++use function sprintf;
++
++/** @internal */
++final class ReflectionReadonlyProperty extends ReflectionProperty
++{
++    public function __construct(
++        private readonly ReflectionProperty $wrappedProperty,
++    ) {
++        if (! $wrappedProperty->isReadOnly()) {
++            throw new InvalidArgumentException('Given property is not readonly.');
++        }
++
++        parent::__construct($wrappedProperty->class, $wrappedProperty->name);
++    }
++
++    public function getValue(object|null $object = null): mixed
++    {
++        return $this->wrappedProperty->getValue(...func_get_args());
++    }
++
++    public function setValue(mixed $objectOrValue, mixed $value = null): void
++    {
++        if (func_num_args() < 2 || $objectOrValue === null || ! $this->isInitialized($objectOrValue)) {
++            $this->wrappedProperty->setValue(...func_get_args());
++
++            return;
++        }
++
++        assert(is_object($objectOrValue));
++
++        if (parent::getValue($objectOrValue) !== $value) {
++            throw new LogicException(sprintf('Attempting to change readonly property %s::$%s.', $this->class, $this->name));
++        }
++    }
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/TypedNoDefaultPropertyAccessor.php b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/TypedNoDefaultPropertyAccessor.php
+new file mode 100644
+index 00000000..027c9564
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/TypedNoDefaultPropertyAccessor.php
+@@ -0,0 +1,69 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Mapping\PropertyAccessors;
++
++use Closure;
++use InvalidArgumentException;
++use ReflectionProperty;
++
++use function assert;
++use function sprintf;
++
++/** @internal */
++class TypedNoDefaultPropertyAccessor implements PropertyAccessor
++{
++    private Closure|null $unsetter = null;
++
++    public function __construct(private PropertyAccessor $parent, private ReflectionProperty $reflectionProperty)
++    {
++        if (! $this->reflectionProperty->hasType()) {
++            throw new InvalidArgumentException(sprintf(
++                '%s::$%s must have a type when used with TypedNoDefaultPropertyAccessor',
++                $this->reflectionProperty->getDeclaringClass()->getName(),
++                $this->reflectionProperty->getName(),
++            ));
++        }
++
++        if ($this->reflectionProperty->getType()->allowsNull()) {
++            throw new InvalidArgumentException(sprintf(
++                '%s::$%s must not be nullable when used with TypedNoDefaultPropertyAccessor',
++                $this->reflectionProperty->getDeclaringClass()->getName(),
++                $this->reflectionProperty->getName(),
++            ));
++        }
++    }
++
++    public function setValue(object $object, mixed $value): void
++    {
++        if ($value === null) {
++            if ($this->unsetter === null) {
++                $propertyName   = $this->reflectionProperty->getName();
++                $this->unsetter = function () use ($propertyName): void {
++                    unset($this->$propertyName);
++                };
++            }
++
++            $unsetter = $this->unsetter->bindTo($object, $this->reflectionProperty->getDeclaringClass()->getName());
++
++            assert($unsetter instanceof Closure);
++
++            $unsetter();
++
++            return;
++        }
++
++        $this->parent->setValue($object, $value);
++    }
++
++    public function getValue(object $object): mixed
++    {
++        return $this->reflectionProperty->isInitialized($object) ? $this->parent->getValue($object) : null;
++    }
++
++    public function getUnderlyingReflector(): ReflectionProperty
++    {
++        return $this->reflectionProperty;
++    }
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/Persisters/CollectionPersister.php b/lib/Doctrine/ODM/MongoDB/Persisters/CollectionPersister.php
+index 8b99e0cc..e65b500a 100644
+--- a/lib/Doctrine/ODM/MongoDB/Persisters/CollectionPersister.php
++++ b/lib/Doctrine/ODM/MongoDB/Persisters/CollectionPersister.php
+@@ -455,7 +455,7 @@ final class CollectionPersister
+         $id        = $class->getDatabaseIdentifierValue($this->uow->getDocumentIdentifier($document));
+         $query     = ['_id' => $id];
+         if ($class->isVersioned) {
+-            $query[$class->fieldMappings[$class->versionField]['name']] = $class->reflFields[$class->versionField]->getValue($document);
++            $query[$class->fieldMappings[$class->versionField]['name']] = $class->propertyAccessors[$class->versionField]->getValue($document);
+         }
+ 
+         $collection = $this->dm->getDocumentCollection($className);
+diff --git a/lib/Doctrine/ODM/MongoDB/Persisters/DocumentPersister.php b/lib/Doctrine/ODM/MongoDB/Persisters/DocumentPersister.php
+index 1bf370fc..c74c668f 100644
+--- a/lib/Doctrine/ODM/MongoDB/Persisters/DocumentPersister.php
++++ b/lib/Doctrine/ODM/MongoDB/Persisters/DocumentPersister.php
+@@ -211,12 +211,12 @@ final class DocumentPersister
+             // Set the initial version for each insert
+             if ($this->class->isVersioned) {
+                 $versionMapping = $this->class->fieldMappings[$this->class->versionField];
+-                $nextVersion    = $this->class->reflFields[$this->class->versionField]->getValue($document);
++                $nextVersion    = $this->class->propertyAccessors[$this->class->versionField]->getValue($document);
+                 $type           = Type::getType($versionMapping['type']);
+                 assert($type instanceof Versionable);
+                 if ($nextVersion === null) {
+                     $nextVersion = $type->getNextVersion(null);
+-                    $this->class->reflFields[$this->class->versionField]->setValue($document, $nextVersion);
++                    $this->class->propertyAccessors[$this->class->versionField]->setValue($document, $nextVersion);
+                 }
+ 
+                 $data[$versionMapping['name']] = $type->convertToDatabaseValue($nextVersion);
+@@ -289,12 +289,12 @@ final class DocumentPersister
+         // Set the initial version for each upsert
+         if ($this->class->isVersioned) {
+             $versionMapping = $this->class->fieldMappings[$this->class->versionField];
+-            $nextVersion    = $this->class->reflFields[$this->class->versionField]->getValue($document);
++            $nextVersion    = $this->class->propertyAccessors[$this->class->versionField]->getValue($document);
+             $type           = Type::getType($versionMapping['type']);
+             assert($type instanceof Versionable);
+             if ($nextVersion === null) {
+                 $nextVersion = $type->getNextVersion(null);
+-                $this->class->reflFields[$this->class->versionField]->setValue($document, $nextVersion);
++                $this->class->propertyAccessors[$this->class->versionField]->setValue($document, $nextVersion);
+             }
+ 
+             $data['$set'][$versionMapping['name']] = $type->convertToDatabaseValue($nextVersion);
+@@ -374,7 +374,7 @@ final class DocumentPersister
+         $nextVersion = null;
+         if ($this->class->isVersioned) {
+             $versionMapping = $this->class->fieldMappings[$this->class->versionField];
+-            $currentVersion = $this->class->reflFields[$this->class->versionField]->getValue($document);
++            $currentVersion = $this->class->propertyAccessors[$this->class->versionField]->getValue($document);
+             $type           = Type::getType($versionMapping['type']);
+             assert($type instanceof Versionable);
+             $nextVersion                             = $type->getNextVersion($currentVersion);
+@@ -386,7 +386,7 @@ final class DocumentPersister
+             // Include locking logic so that if the document object in memory is currently
+             // locked then it will remove it, otherwise it ensures the document is not locked.
+             if ($this->class->isLockable) {
+-                $isLocked    = $this->class->reflFields[$this->class->lockField]->getValue($document);
++                $isLocked    = $this->class->propertyAccessors[$this->class->lockField]->getValue($document);
+                 $lockMapping = $this->class->fieldMappings[$this->class->lockField];
+                 if ($isLocked) {
+                     $update['$unset'] = [$lockMapping['name'] => true];
+@@ -405,7 +405,7 @@ final class DocumentPersister
+             }
+ 
+             if ($this->class->isVersioned) {
+-                $this->class->reflFields[$this->class->versionField]->setValue($document, $nextVersion);
++                $this->class->propertyAccessors[$this->class->versionField]->setValue($document, $nextVersion);
+             }
+         }
+ 
+@@ -615,7 +615,7 @@ final class DocumentPersister
+         $lockMapping = $this->class->fieldMappings[$this->class->lockField];
+         assert($this->collection instanceof Collection);
+         $this->collection->updateOne($criteria, ['$set' => [$lockMapping['name'] => $lockMode]]);
+-        $this->class->reflFields[$this->class->lockField]->setValue($document, $lockMode);
++        $this->class->propertyAccessors[$this->class->lockField]->setValue($document, $lockMode);
+     }
+ 
+     /**
+@@ -628,7 +628,7 @@ final class DocumentPersister
+         $lockMapping = $this->class->fieldMappings[$this->class->lockField];
+         assert($this->collection instanceof Collection);
+         $this->collection->updateOne($criteria, ['$unset' => [$lockMapping['name'] => true]]);
+-        $this->class->reflFields[$this->class->lockField]->setValue($document, null);
++        $this->class->propertyAccessors[$this->class->lockField]->setValue($document, null);
+     }
+ 
+     /**
+diff --git a/lib/Doctrine/ODM/MongoDB/Persisters/PersistenceBuilder.php b/lib/Doctrine/ODM/MongoDB/Persisters/PersistenceBuilder.php
+index beb53ee4..13026941 100644
+--- a/lib/Doctrine/ODM/MongoDB/Persisters/PersistenceBuilder.php
++++ b/lib/Doctrine/ODM/MongoDB/Persisters/PersistenceBuilder.php
+@@ -366,8 +366,7 @@ final class PersistenceBuilder
+                 continue;
+             }
+ 
+-            // Inline ClassMetadata::getFieldValue()
+-            $rawValue = $class->reflFields[$mapping['fieldName']]->getValue($embeddedDocument);
++            $rawValue = $class->propertyAccessors[$mapping['fieldName']]->getValue($embeddedDocument);
+ 
+             $value = null;
+ 
+diff --git a/lib/Doctrine/ODM/MongoDB/Proxy/Factory/NativeLazyObjectFactory.php b/lib/Doctrine/ODM/MongoDB/Proxy/Factory/NativeLazyObjectFactory.php
+new file mode 100644
+index 00000000..35552cfb
+--- /dev/null
++++ b/lib/Doctrine/ODM/MongoDB/Proxy/Factory/NativeLazyObjectFactory.php
+@@ -0,0 +1,97 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Doctrine\ODM\MongoDB\Proxy\Factory;
++
++use Doctrine\ODM\MongoDB\DocumentManager;
++use Doctrine\ODM\MongoDB\DocumentNotFoundException;
++use Doctrine\ODM\MongoDB\Mapping\ClassMetadata;
++use Doctrine\ODM\MongoDB\UnitOfWork;
++use Doctrine\ODM\MongoDB\Utility\LifecycleEventManager;
++use Doctrine\Persistence\NotifyPropertyChanged;
++use LogicException;
++use ReflectionClass;
++use WeakMap;
++
++use function count;
++
++use const PHP_VERSION_ID;
++
++/** @internal */
++class NativeLazyObjectFactory implements ProxyFactory
++{
++    /** @var WeakMap<object, bool>|null */
++    private static ?WeakMap $lazyObjects = null;
++
++    private readonly UnitOfWork $unitOfWork;
++    private readonly LifecycleEventManager $lifecycleEventManager;
++
++    public function __construct(
++        DocumentManager $documentManager,
++    ) {
++        if (PHP_VERSION_ID < 80400) {
++            throw new LogicException('Native lazy objects require PHP 8.4 or higher.');
++        }
++
++        $this->unitOfWork            = $documentManager->getUnitOfWork();
++        $this->lifecycleEventManager = new LifecycleEventManager($documentManager, $this->unitOfWork, $documentManager->getEventManager());
++    }
++
++    public function generateProxyClasses(array $classes): int
++    {
++        // Nothing to generate, that's the point of native lazy objects
++
++        return count($classes);
++    }
++
++    public function getProxy(ClassMetadata $metadata, $identifier): object
++    {
++        $proxy = $metadata->reflClass->newLazyGhost(function (object $object) use (
++            $identifier,
++            $metadata,
++        ): void {
++            $original = $this->unitOfWork->getDocumentPersister($metadata->name)->load([$metadata->identifier => $identifier], $object);
++
++            if ($object instanceof NotifyPropertyChanged) {
++                $object->addPropertyChangedListener($this->unitOfWork);
++            }
++
++            if ($original !== null) {
++                return;
++            }
++
++            if (! $this->lifecycleEventManager->documentNotFound($object, $identifier)) {
++                throw DocumentNotFoundException::documentNotFound($metadata->name, $identifier);
++            }
++        }, ReflectionClass::SKIP_INITIALIZATION_ON_SERIALIZE);
++
++        $metadata->propertyAccessors[$metadata->identifier]->setValue($proxy, $identifier);
++
++        if (isset(self::$lazyObjects)) {
++            self::$lazyObjects[$proxy] = true;
++        }
++
++        return $proxy;
++    }
++
++    /** @internal Only for tests */
++    public static function enableTracking(bool $enabled = true): void
++    {
++        if ($enabled) {
++            self::$lazyObjects ??= new WeakMap();
++        } else {
++            self::$lazyObjects = null;
++        }
++    }
++
++    /** @internal Only for tests */
++    public static function isLazyObject(object $object): bool
++    {
++        if (! isset(self::$lazyObjects)) {
++            throw new LogicException('Lazy object tracking is not enabled.');
++        }
++
++        return self::$lazyObjects->offsetExists($object);
++    }
++}
+diff --git a/lib/Doctrine/ODM/MongoDB/UnitOfWork.php b/lib/Doctrine/ODM/MongoDB/UnitOfWork.php
+index f6b9b28c..47fb4233 100644
+--- a/lib/Doctrine/ODM/MongoDB/UnitOfWork.php
++++ b/lib/Doctrine/ODM/MongoDB/UnitOfWork.php
+@@ -52,6 +52,8 @@ use function spl_object_id;
+ use function sprintf;
+ use function trigger_deprecation;
+ 
++use const PHP_VERSION_ID;
++
+ /**
+  * The UnitOfWork is responsible for tracking changes to objects during an
+  * "object-level" transaction and for writing out changes to the database
+@@ -616,7 +618,7 @@ final class UnitOfWork implements PropertyChangedListener
+     {
+         $class      = $this->dm->getClassMetadata($document::class);
+         $actualData = [];
+-        foreach ($class->reflFields as $name => $refProp) {
++        foreach ($class->propertyAccessors as $name => $refProp) {
+             $mapping = $class->fieldMappings[$name];
+             // skip not saved fields
+             if (isset($mapping['notSaved']) && $mapping['notSaved'] === true) {
+@@ -637,7 +639,7 @@ final class UnitOfWork implements PropertyChangedListener
+                 $coll = $this->dm->getConfiguration()->getPersistentCollectionFactory()->create($this->dm, $mapping, $value);
+                 $coll->setOwner($document, $mapping);
+                 $coll->setDirty(! $value->isEmpty());
+-                $class->reflFields[$name]->setValue($document, $coll);
++                $class->propertyAccessors[$name]->setValue($document, $coll);
+                 $actualData[$name] = $coll;
+             } else {
+                 $actualData[$name] = $value;
+@@ -863,7 +865,7 @@ final class UnitOfWork implements PropertyChangedListener
+         );
+ 
+         foreach ($associationMappings as $mapping) {
+-            $value = $class->reflFields[$mapping['fieldName']]->getValue($document);
++            $value = $class->propertyAccessors[$mapping['fieldName']]->getValue($document);
+ 
+             if ($value === null) {
+                 continue;
+@@ -1274,7 +1276,7 @@ final class UnitOfWork implements PropertyChangedListener
+                     continue;
+                 }
+ 
+-                $value = $class->reflFields[$fieldMapping['fieldName']]->getValue($document);
++                $value = $class->propertyAccessors[$fieldMapping['fieldName']]->getValue($document);
+                 if (! ($value instanceof PersistentCollectionInterface)) {
+                     continue;
+                 }
+@@ -1938,8 +1940,8 @@ final class UnitOfWork implements PropertyChangedListener
+             }
+ 
+             if ($class->isVersioned) {
+-                $managedCopyVersion = $class->reflFields[$class->versionField]->getValue($managedCopy);
+-                $documentVersion    = $class->reflFields[$class->versionField]->getValue($document);
++                $managedCopyVersion = $class->propertyAccessors[$class->versionField]->getValue($managedCopy);
++                $documentVersion    = $class->propertyAccessors[$class->versionField]->getValue($document);
+ 
+                 // Throw exception if versions don't match
+                 if ($managedCopyVersion !== $documentVersion) {
+@@ -1990,7 +1992,7 @@ final class UnitOfWork implements PropertyChangedListener
+                                         ->dm
+                                         ->getProxyFactory()
+                                         ->getProxy($targetClass, $relatedId);
+-                                    $this->registerManaged($other, $relatedId, []);
++                                    $this->registerManaged($other, $relatedId, [$targetClass->identifier => $relatedId]);
+                                 }
+                             }
+ 
+@@ -2054,12 +2056,12 @@ final class UnitOfWork implements PropertyChangedListener
+             $prevClass  = $this->dm->getClassMetadata($prevManagedCopy::class);
+ 
+             if ($assoc['type'] === ClassMetadata::ONE) {
+-                $prevClass->reflFields[$assocField]->setValue($prevManagedCopy, $managedCopy);
++                $prevClass->propertyAccessors[$assocField]->setValue($prevManagedCopy, $managedCopy);
+             } else {
+-                $prevClass->reflFields[$assocField]->getValue($prevManagedCopy)->add($managedCopy);
++                $prevClass->propertyAccessors[$assocField]->getValue($prevManagedCopy)->add($managedCopy);
+ 
+                 if ($assoc['type'] === ClassMetadata::MANY && isset($assoc['mappedBy'])) {
+-                    $class->reflFields[$assoc['mappedBy']]->setValue($managedCopy, $prevManagedCopy);
++                    $class->propertyAccessors[$assoc['mappedBy']]->setValue($managedCopy, $prevManagedCopy);
+                 }
+             }
+         }
+@@ -2180,7 +2182,7 @@ final class UnitOfWork implements PropertyChangedListener
+         );
+ 
+         foreach ($associationMappings as $mapping) {
+-            $relatedDocuments = $class->reflFields[$mapping['fieldName']]->getValue($document);
++            $relatedDocuments = $class->propertyAccessors[$mapping['fieldName']]->getValue($document);
+             if ($relatedDocuments instanceof Collection || is_array($relatedDocuments)) {
+                 if ($relatedDocuments instanceof PersistentCollectionInterface) {
+                     // Unwrap so that foreach() does not initialize
+@@ -2209,7 +2211,7 @@ final class UnitOfWork implements PropertyChangedListener
+                 continue;
+             }
+ 
+-            $relatedDocuments = $class->reflFields[$mapping['fieldName']]->getValue($document);
++            $relatedDocuments = $class->propertyAccessors[$mapping['fieldName']]->getValue($document);
+             if ($relatedDocuments instanceof Collection || is_array($relatedDocuments)) {
+                 if ($relatedDocuments instanceof PersistentCollectionInterface) {
+                     // Unwrap so that foreach() does not initialize
+@@ -2240,10 +2242,10 @@ final class UnitOfWork implements PropertyChangedListener
+         );
+ 
+         foreach ($associationMappings as $assoc) {
+-            $relatedDocuments = $class->reflFields[$assoc['fieldName']]->getValue($document);
++            $relatedDocuments = $class->propertyAccessors[$assoc['fieldName']]->getValue($document);
+ 
+             if ($relatedDocuments instanceof Collection || is_array($relatedDocuments)) {
+-                if ($relatedDocuments === $class->reflFields[$assoc['fieldName']]->getValue($managedCopy)) {
++                if ($relatedDocuments === $class->propertyAccessors[$assoc['fieldName']]->getValue($managedCopy)) {
+                     // Collections are the same, so there is nothing to do
+                     continue;
+                 }
+@@ -2272,7 +2274,7 @@ final class UnitOfWork implements PropertyChangedListener
+         );
+ 
+         foreach ($associationMappings as $fieldName => $mapping) {
+-            $relatedDocuments = $class->reflFields[$fieldName]->getValue($document);
++            $relatedDocuments = $class->propertyAccessors[$fieldName]->getValue($document);
+ 
+             if ($relatedDocuments instanceof Collection || is_array($relatedDocuments)) {
+                 if ($relatedDocuments instanceof PersistentCollectionInterface) {
+@@ -2330,7 +2332,7 @@ final class UnitOfWork implements PropertyChangedListener
+ 
+             $this->initializeObject($document);
+ 
+-            $relatedDocuments = $class->reflFields[$mapping['fieldName']]->getValue($document);
++            $relatedDocuments = $class->propertyAccessors[$mapping['fieldName']]->getValue($document);
+             if ($relatedDocuments instanceof Collection || is_array($relatedDocuments)) {
+                 // If its a PersistentCollection initialization is intended! No unwrap!
+                 foreach ($relatedDocuments as $relatedDocument) {
+@@ -2365,7 +2367,7 @@ final class UnitOfWork implements PropertyChangedListener
+             }
+ 
+             if ($lockVersion !== null) {
+-                $documentVersion = $class->reflFields[$class->versionField]->getValue($document);
++                $documentVersion = $class->propertyAccessors[$class->versionField]->getValue($document);
+                 if ($documentVersion !== $lockVersion) {
+                     throw LockException::lockFailedVersionMissmatch($document, $lockVersion, $documentVersion);
+                 }
+@@ -2483,7 +2485,7 @@ final class UnitOfWork implements PropertyChangedListener
+             $this->initializeObject($coll); // we have to do this otherwise the cols share state
+             $newValue = clone $coll;
+             $newValue->setOwner($document, $class->fieldMappings[$propName]);
+-            $class->reflFields[$propName]->setValue($document, $newValue);
++            $class->propertyAccessors[$propName]->setValue($document, $newValue);
+             if ($this->isScheduledForUpdate($document)) {
+                 // @todo following line should be superfluous once collections are stored in change sets
+                 $this->setOriginalDocumentProperty(spl_object_id($document), $propName, $newValue);
+@@ -2783,12 +2785,14 @@ final class UnitOfWork implements PropertyChangedListener
+             $document = $this->identityMap[$class->name][$serializedId];
+             $oid      = spl_object_id($document);
+             if ($this->isUninitializedObject($document)) {
+-                if ($document instanceof InternalProxy) {
++                if ($this->dm->getConfiguration()->isNativeLazyObjectEnabled()) {
++                    $class->reflClass->markLazyObjectAsInitialized($document);
++                } elseif ($document instanceof InternalProxy) {
+                     $document->__setInitialized(true);
+                 } elseif ($document instanceof GhostObjectInterface) {
+                     $document->setProxyInitializer(null);
+                 } else {
+-                    throw new \RuntimeException(sprintf('Expected uninitialized proxy or ghost object from class "%s"', $document::name));
++                    throw new \RuntimeException(sprintf('Expected uninitialized proxy or ghost object from class "%s"', $document::class));
+                 }
+ 
+                 $overrideLocalValues = true;
+@@ -3076,6 +3080,8 @@ final class UnitOfWork implements PropertyChangedListener
+             $obj->initializeProxy();
+         } elseif ($obj instanceof PersistentCollectionInterface) {
+             $obj->initialize();
++        } elseif (PHP_VERSION_ID >= 80400) {
++            $this->dm->getClassMetadata($obj::class)->reflClass->initializeLazyObject($obj);
+         }
+     }
+ 
+@@ -3087,9 +3093,10 @@ final class UnitOfWork implements PropertyChangedListener
+     public function isUninitializedObject(object $obj): bool
+     {
+         return match (true) {
+-            $obj instanceof InternalProxy => $obj->__isInitialized() === false,
+-            $obj instanceof GhostObjectInterface => $obj->isProxyInitialized() === false,
+-            $obj instanceof PersistentCollectionInterface => $obj->isInitialized() === false,
++            $obj instanceof InternalProxy => ! $obj->__isInitialized(),
++            $obj instanceof GhostObjectInterface => ! $obj->isProxyInitialized(),
++            $obj instanceof PersistentCollectionInterface => ! $obj->isInitialized(),
++            $this->dm->getConfiguration()->isNativeLazyObjectEnabled() => $this->dm->getClassMetadata($obj::class)->reflClass->isUninitializedLazyObject($obj),
+             default => false
+         };
+     }
+diff --git a/lib/Doctrine/ODM/MongoDB/Utility/LifecycleEventManager.php b/lib/Doctrine/ODM/MongoDB/Utility/LifecycleEventManager.php
+index ca7ef669..4214c015 100644
+--- a/lib/Doctrine/ODM/MongoDB/Utility/LifecycleEventManager.php
++++ b/lib/Doctrine/ODM/MongoDB/Utility/LifecycleEventManager.php
+@@ -213,7 +213,7 @@ final class LifecycleEventManager
+     private function cascadePreUpdate(ClassMetadata $class, object $document, ?Session $session = null): void
+     {
+         foreach ($class->getEmbeddedFieldsMappings() as $mapping) {
+-            $value = $class->reflFields[$mapping['fieldName']]->getValue($document);
++            $value = $class->propertyAccessors[$mapping['fieldName']]->getValue($document);
+             if ($value === null) {
+                 continue;
+             }
+@@ -241,7 +241,7 @@ final class LifecycleEventManager
+     private function cascadePostUpdate(ClassMetadata $class, object $document, ?Session $session = null): void
+     {
+         foreach ($class->getEmbeddedFieldsMappings() as $mapping) {
+-            $value = $class->reflFields[$mapping['fieldName']]->getValue($document);
++            $value = $class->propertyAccessors[$mapping['fieldName']]->getValue($document);
+             if ($value === null) {
+                 continue;
+             }
+@@ -281,7 +281,7 @@ final class LifecycleEventManager
+     private function cascadePostPersist(ClassMetadata $class, object $document, ?Session $session = null): void
+     {
+         foreach ($class->getEmbeddedFieldsMappings() as $mapping) {
+-            $value = $class->reflFields[$mapping['fieldName']]->getValue($document);
++            $value = $class->propertyAccessors[$mapping['fieldName']]->getValue($document);
+             if ($value === null) {
+                 continue;
+             }
+diff --git a/phpstan-baseline.neon b/phpstan-baseline.neon
+index b123bec6..3674e98f 100644
+--- a/phpstan-baseline.neon
++++ b/phpstan-baseline.neon
+@@ -384,18 +384,6 @@ parameters:
+ 			count: 1
+ 			path: lib/Doctrine/ODM/MongoDB/Mapping/Annotations/SearchIndex.php
+ 
+-		-
+-			message: '#^Call to function assert\(\) with true will always evaluate to true\.$#'
+-			identifier: function.alreadyNarrowedType
+-			count: 1
+-			path: lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadata.php
+-
+-		-
+-			message: '#^Instanceof between Doctrine\\Persistence\\Reflection\\RuntimeReflectionProperty and ReflectionProperty will always evaluate to true\.$#'
+-			identifier: instanceof.alwaysTrue
+-			count: 1
+-			path: lib/Doctrine/ODM/MongoDB/Mapping/ClassMetadata.php
+-
+ 		-
+ 			message: '#^Method Doctrine\\ODM\\MongoDB\\Mapping\\ClassMetadata\:\:addInheritedAssociationMapping\(\) has Doctrine\\ODM\\MongoDB\\Mapping\\MappingException in PHPDoc @throws tag but it''s not thrown\.$#'
+ 			identifier: throws.unusedType
+@@ -498,6 +486,18 @@ parameters:
+ 			count: 1
+ 			path: lib/Doctrine/ODM/MongoDB/Mapping/Driver/XmlDriver.php
+ 
++		-
++			message: '#^Parameter \#1 \$initializer of method ProxyManager\\Proxy\\GhostObjectInterface\<object\>\:\:setProxyInitializer\(\) expects \(Closure\(ProxyManager\\Proxy\\GhostObjectInterface\<object\>\=, string\=, array\<string, mixed\>\=, Closure\|null\=, array\<string, mixed\>\=\)\: bool\)\|null, \(Closure\(ProxyManager\\Proxy\\GhostObjectInterface\<object\>\=, string, array\<string, mixed\>\=, Closure\|null\=, array\<string, mixed\>\=\)\: bool\)\|null given\.$#'
++			identifier: argument.type
++			count: 1
++			path: lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/ObjectCastPropertyAccessor.php
++
++		-
++			message: '#^Parameter \#1 \$initializer of method ProxyManager\\Proxy\\GhostObjectInterface\<object\>\:\:setProxyInitializer\(\) expects \(Closure\(ProxyManager\\Proxy\\GhostObjectInterface\<object\>\=, string\=, array\<string, mixed\>\=, Closure\|null\=, array\<string, mixed\>\=\)\: bool\)\|null, \(Closure\(ProxyManager\\Proxy\\GhostObjectInterface\<object\>\=, string, array\<string, mixed\>\=, Closure\|null\=, array\<string, mixed\>\=\)\: bool\)\|null given\.$#'
++			identifier: argument.type
++			count: 1
++			path: lib/Doctrine/ODM/MongoDB/Mapping/PropertyAccessors/RawValuePropertyAccessor.php
++
+ 		-
+ 			message: '#^Call to function is_object\(\) with Doctrine\\Common\\Collections\\Collection will always evaluate to true\.$#'
+ 			identifier: function.alreadyNarrowedType
+diff --git a/phpunit.xml.dist b/phpunit.xml.dist
+index 3860390b..f2bb19eb 100644
+--- a/phpunit.xml.dist
++++ b/phpunit.xml.dist
+@@ -29,6 +29,6 @@
+         <ini name="error_reporting" value="-1"/>
+         <const name="DOCTRINE_MONGODB_SERVER" value="mongodb://localhost:27017" />
+         <const name="DOCTRINE_MONGODB_DATABASE" value="doctrine_odm_tests" />
+-        <env name="USE_LAZY_GHOST_OBJECTS" value="1"/>
++        <env name="USE_LAZY_GHOST_OBJECT" value="1"/>
+     </php>
+ </phpunit>

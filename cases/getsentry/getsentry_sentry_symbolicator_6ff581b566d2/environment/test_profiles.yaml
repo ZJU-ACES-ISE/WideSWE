@@ -1,0 +1,31 @@
+profiles:
+  rust_proguard-hidden:
+    repo: rust-proguard
+    workdir: repos/getsentry/rust-proguard
+    command: cargo test --test r8 -- --nocapture
+    docker_image: ecosyncbench/deps/getsentry-rust195:6ff581b566d2
+    status: implemented
+    test_files:
+    - tests/r8.rs
+  sentry-hidden:
+    repo: sentry
+    workdir: repos/getsentry/sentry
+    command: uv run python -m pytest -q tests/sentry/test_stacktraces.py
+    docker_image: ecosyncbench/deps/getsentry-sentry-py313:506f7e5653e8
+    status: implemented
+    test_files:
+    - tests/sentry/test_stacktraces.py
+  symbolicator-hidden:
+    repo: symbolicator
+    workdir: repos/getsentry/symbolicator
+    command: cargo test -p symbolicator-proguard --test integration -- --nocapture
+    docker_image: ecosyncbench/deps/getsentry-rust195:6ff581b566d2
+    status: implemented
+    test_files:
+    - crates/symbolicator-proguard/tests/integration/proguard.rs
+    - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__basic_source_lookup.snap
+    - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__remap_exception.snap
+    - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__resolving_inline.snap
+    - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__rewrite_frames.snap
+    - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__source_lookup_with_proguard.snap
+    - tests/fixtures/proguard/rewrite_frames/proguard.txt

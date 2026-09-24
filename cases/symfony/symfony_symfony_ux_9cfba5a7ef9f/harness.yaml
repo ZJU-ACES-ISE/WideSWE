@@ -1,0 +1,42 @@
+task_id: symfony_symfony_ux_9cfba5a7ef9f
+hidden_test_patches:
+- repo: symfony
+  patch: hidden/patches/symfony-hidden-tests.patch
+  test_profile: symfony-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/Compiler/SafeClassPassTest.php
+  - src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php
+  hidden_file: *id001
+  semantic_changes: accepts equivalent per-tag or aggregated safe-class registration and checks InvalidArgumentException without fixing its message
+  source: upstream test changes from symfony/symfony PR 63929
+- repo: ux
+  patch: hidden/patches/ux-hidden-tests.patch
+  test_profile: ux-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - src/TwigComponent/tests/Unit/DependencyInjection/TwigComponentExtensionTest.php
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from symfony/ux PR 3455
+- repo: Twig
+  patch: hidden/patches/Twig-hidden-tests.patch
+  test_profile: twig-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - tests/Extension/EscaperTest.php
+  hidden_file: *id003
+  semantic_changes: none
+  source: upstream test changes from twigphp/Twig PR 4795
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - symfony-hidden
+    - ux-hidden
+    - twig-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

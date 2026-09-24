@@ -1,0 +1,21 @@
+profiles:
+  sentry_python-hidden:
+    repo: sentry-python
+    workdir: repos/getsentry/sentry-python
+    command: ./environment/run_profile.sh sentry_python-hidden
+    public_smoke_command: tox_root=/cache/tox/$ECOSYNC_PROFILE_NAME; tox_env=py3.10-common;
+      if [ ! -x "$tox_root/$tox_env/bin/python" ] || ! "$tox_root/$tox_env/bin/python"
+      -c "import pytest, sentry_sdk" >/dev/null 2>&1; then python -m tox --workdir
+      "$tox_root" -q --notest -e "$tox_env"; fi; PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+      "$tox_root/$tox_env/bin/python" -m pytest -q -o addopts="" tests/test_scope.py
+    status: ready
+    test_files:
+    - tests/integrations/celery/test_celery.py
+    - tests/integrations/httpx/test_httpx.py
+  sentry_ruby-hidden:
+    repo: sentry-ruby
+    workdir: repos/getsentry/sentry-ruby
+    command: ./environment/run_profile.sh sentry_ruby-hidden
+    status: ready
+    test_files:
+    - sentry-ruby/spec/sentry/net/http_spec.rb

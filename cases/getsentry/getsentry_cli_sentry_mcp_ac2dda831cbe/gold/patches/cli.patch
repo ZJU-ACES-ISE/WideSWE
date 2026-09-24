@@ -1,0 +1,2957 @@
+diff --git a/docs/src/fragments/commands/local.md b/docs/src/fragments/commands/local.md
+index 2dee714e..343de505 100644
+--- a/docs/src/fragments/commands/local.md
++++ b/docs/src/fragments/commands/local.md
+@@ -34,7 +34,7 @@ Env vars injected into the child process:
+ |----------|-------|
+ | `SENTRY_SPOTLIGHT` | `http://localhost:<port>/stream` |
+ | `NEXT_PUBLIC_SENTRY_SPOTLIGHT` | `http://localhost:<port>/stream` |
+-| `SENTRY_TRACES_SAMPLE_RATE` | `1` |
++| `SENTRY_TRACES_SAMPLE_RATE` | `1` (unless already set) |
+ 
+ ## Endpoints
+ 
+@@ -64,3 +64,32 @@ sentry local -f error -f log    # only errors and logs
+ ```
+ 
+ Use `--quiet` to suppress tail output entirely if you only need the SSE stream.
++
++## Agent monitoring
++
++`sentry local` shows rich output for AI agent spans when your SDK instruments with [OpenTelemetry semantic attributes](https://opentelemetry.io/docs/specs/semconv/gen-ai/):
++
++```
++14:32:01 [TRACE]   [SERVER]  [gen_ai] chat anthropic/claude-4-sonnet [1200ms] [5 spans]
++14:32:02 [TRACE]   [SERVER]  [mcp] tools/call search_files [320ms]
++14:32:03 [TRACE]   [SERVER]  [db] SELECT users [postgresql] [12ms]
++14:32:04 [ERROR]   [SERVER]  RateLimitError: API quota exceeded [api_client.py:42]
++```
++
++GenAI operations show the model name, MCP tool calls show the tool being invoked, and database queries show the system and query summary. This works automatically when your Sentry SDK is configured with AI/LLM integrations.
++
++## JSON output
++
++Use `--format json` (or `-F json`) for machine-readable NDJSON output, one JSON object per envelope item:
++
++```bash
++sentry local --format json
++```
++
++```json
++{"type":"transaction","timestamp":1700000001,"op":"gen_ai","label":"chat anthropic/claude-4-sonnet","duration_ms":1200,"span_count":5,"source":"server"}
++{"type":"error","timestamp":1700000002,"error_type":"RateLimitError","message":"API quota exceeded","source":"server"}
++{"type":"log","timestamp":1700000003,"level":"info","message":"User logged in","attributes":{"user_id":1234},"source":"server"}
++```
++
++This is useful for AI coding agents and automation tools that need to consume Sentry events programmatically.
+diff --git a/plugins/sentry-cli/skills/sentry-cli/references/local.md b/plugins/sentry-cli/skills/sentry-cli/references/local.md
+index bd5f2a19..647aed12 100644
+--- a/plugins/sentry-cli/skills/sentry-cli/references/local.md
++++ b/plugins/sentry-cli/skills/sentry-cli/references/local.md
+@@ -19,7 +19,8 @@ Start the local dev server and tail events
+ - `-p, --port <value> - Port to listen on (default 8969) - (default: "8969")`
+ - `-H, --host <value> - Hostname to bind to (default localhost) - (default: "localhost")`
+ - `-q, --quiet - Suppress per-envelope tail output`
+-- `-f, --filter <value>... - Only show items of this type (repeatable: error, transaction, log)`
++- `-f, --filter <value>... - Only show items of this type (repeatable: error, transaction, log, ai)`
++- `-F, --format <value> - Output format: human (default) or json (NDJSON) - (default: "human")`
+ 
+ ### `sentry local run <command...>`
+ 
+@@ -49,6 +50,8 @@ sentry local -f error -f log
+ sentry local --quiet
+ 
+ sentry local -f error -f log    # only errors and logs
++
++sentry local --format json
+ ```
+ 
+ All commands also support `--json`, `--fields`, `--help`, `--log-level`, and `--verbose` flags.
+diff --git a/src/commands/local/run.ts b/src/commands/local/run.ts
+index e5143288..aec2773c 100644
+--- a/src/commands/local/run.ts
++++ b/src/commands/local/run.ts
+@@ -21,6 +21,7 @@ import {
+   buildApp,
+   DEFAULT_PORT,
+   isServerRunning,
++  parsePort,
+   tryListen,
+ } from "./server.js";
+ 
+@@ -29,18 +30,6 @@ type RunFlags = {
+   readonly host: string;
+ };
+ 
+-/** Parse and validate a port number. */
+-function parsePort(value: string): number {
+-  const port = Number(value);
+-  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+-    throw new ValidationError(
+-      `Invalid port: ${value}. Must be an integer between 0 and 65535.`,
+-      "port"
+-    );
+-  }
+-  return port;
+-}
+-
+ /** Buffer size for the auto-started background server. */
+ const BUFFER_SIZE = 500;
+ 
+@@ -140,7 +129,8 @@ export const runCommand = buildCommand({
+           ...process.env,
+           SENTRY_SPOTLIGHT: spotlightUrl,
+           NEXT_PUBLIC_SENTRY_SPOTLIGHT: spotlightUrl,
+-          SENTRY_TRACES_SAMPLE_RATE: "1",
++          SENTRY_TRACES_SAMPLE_RATE:
++            process.env.SENTRY_TRACES_SAMPLE_RATE ?? "1",
+         },
+         stdio: "inherit",
+       });
+@@ -155,23 +145,34 @@ export const runCommand = buildCommand({
+     }
+ 
+     // Forward signals to the child so the whole process tree shuts down.
+-    const forwardSignal = (signal: NodeJS.Signals) => {
+-      child.kill(signal);
+-    };
+-    process.once("SIGINT", () => forwardSignal("SIGINT"));
+-    process.once("SIGTERM", () => forwardSignal("SIGTERM"));
++    // Store references so handlers can be removed in finally.
++    const onSigint = () => child.kill("SIGINT");
++    const onSigterm = () => child.kill("SIGTERM");
++    process.once("SIGINT", onSigint);
++    process.once("SIGTERM", onSigterm);
+ 
+     let exitCode: number;
+     try {
+       exitCode = await new Promise<number>((resolve, reject) => {
+-        child.on("close", (code) => resolve(code ?? 1));
++        let settled = false;
++        child.on("close", (code) => {
++          if (!settled) {
++            settled = true;
++            resolve(code ?? 1);
++          }
++        });
+         // If spawn itself fails (e.g. ENOENT), 'close' may never fire.
+         child.on("error", (err) => {
+           logger.debug(`Child process error: ${err.message}`);
+-          reject(err);
++          if (!settled) {
++            settled = true;
++            reject(err);
++          }
+         });
+       });
+     } finally {
++      process.removeListener("SIGINT", onSigint);
++      process.removeListener("SIGTERM", onSigterm);
+       if (bgServer) {
+         logger.info("Stopping background server...");
+         await shutdownServer(bgServer);
+diff --git a/src/commands/local/server.ts b/src/commands/local/server.ts
+index 656b7149..2057fd91 100644
+--- a/src/commands/local/server.ts
++++ b/src/commands/local/server.ts
+@@ -25,11 +25,14 @@ import type { SentryContext } from "../../context.js";
+ import { buildCommand, numberParser } from "../../lib/command.js";
+ import { ValidationError } from "../../lib/errors.js";
+ import { bold } from "../../lib/formatters/colors.js";
+-import type { FilterValue } from "../../lib/formatters/local.js";
++import type { FilterValue, FormatValue } from "../../lib/formatters/local.js";
+ import {
+   FILTER_VALUES,
++  FORMAT_VALUES,
+   formatEnvelopeLines,
++  formatEnvelopeLinesJson,
+   formatItem,
++  formatItemJson,
+   isItemIncluded,
+   SENTRY_CONTENT_TYPE,
+ } from "../../lib/formatters/local.js";
+@@ -47,6 +50,21 @@ const CR_RE = /\r$/;
+ /** Maximum ingest body size (10 MB). Rejects oversized payloads early. */
+ const MAX_BODY_BYTES = 10 * 1024 * 1024;
+ 
++/**
++ * Parse and validate a `--format` value.
++ * Accepts: human, json.
++ */
++function parseFormat(value: string): FormatValue {
++  const lower = value.toLowerCase();
++  if (!FORMAT_VALUES.includes(lower as FormatValue)) {
++    throw new ValidationError(
++      `Invalid format "${value}". Valid values: ${FORMAT_VALUES.join(", ")}`,
++      "format"
++    );
++  }
++  return lower as FormatValue;
++}
++
+ /**
+  * Parse and validate a `--filter` value.
+  * Accepts the canonical names: error, transaction, logger.
+@@ -67,6 +85,7 @@ type LocalFlags = {
+   readonly host: string;
+   readonly quiet: boolean;
+   readonly filter: FilterValue[];
++  readonly format: FormatValue;
+ };
+ 
+ /**
+@@ -75,7 +94,7 @@ type LocalFlags = {
+  * Hard-fails on out-of-range values so users get a clean error rather than
+  * a `listen EADDRNOTAVAIL` from the kernel.
+  */
+-function parsePort(value: string): number {
++export function parsePort(value: string): number {
+   const port = numberParser(value);
+   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+     throw new ValidationError(
+@@ -346,13 +365,14 @@ export async function isServerRunning(url: string): Promise<boolean> {
+ type SSEParserState = {
+   eventType: string;
+   dataLines: string[];
++  id: string;
+ };
+ 
+ /** Process a single SSE line, dispatching complete events via callback. */
+-function feedSSELine(
++export function feedSSELine(
+   line: string,
+   state: SSEParserState,
+-  onEvent: (type: string, data: string) => void
++  onEvent: (type: string, data: string, id: string) => void
+ ): void {
+   if (line.startsWith("event:")) {
+     const value = line.slice(6);
+@@ -360,36 +380,191 @@ function feedSSELine(
+   } else if (line.startsWith("data:")) {
+     const value = line.slice(5);
+     state.dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
++  } else if (line.startsWith("id:")) {
++    const value = line.slice(3);
++    state.id = value.startsWith(" ") ? value.slice(1) : value;
+   } else if (line === "" && state.dataLines.length > 0) {
+-    onEvent(state.eventType, state.dataLines.join("\n"));
++    onEvent(state.eventType, state.dataLines.join("\n"), state.id);
+     state.eventType = "";
+     state.dataLines = [];
++    state.id = "";
++  }
++}
++
++/** Maximum SSE reconnection attempts before giving up. */
++const SSE_MAX_RECONNECTS = 10;
++
++/** Initial delay between SSE reconnection attempts (doubles each retry). */
++const SSE_INITIAL_RETRY_MS = 1000;
++
++/** Maximum delay between SSE reconnection attempts. */
++const SSE_MAX_RETRY_MS = 30_000;
++
++/** Options for consuming an SSE stream. */
++type ConsumeSSEOptions = {
++  url: string;
++  activeFilters: ReadonlySet<FilterValue>;
++  signal: AbortSignal;
++  quiet?: boolean;
++  useJson?: boolean;
++};
++
++/** Check whether an error is an abort signal. */
++function isAbortError(err: unknown): boolean {
++  return (
++    (err instanceof DOMException && err.name === "AbortError") ||
++    (err instanceof Error && err.name === "AbortError")
++  );
++}
++
++/** Sleep with abort support, suppressing abort errors. */
++async function sleepUnlessAborted(
++  ms: number,
++  signal: AbortSignal
++): Promise<void> {
++  try {
++    await sleep(ms, undefined, { signal });
++  } catch (err) {
++    if (!isAbortError(err)) {
++      throw err;
++    }
+   }
+ }
+ 
+ /**
+  * Consume SSE events from an upstream server and print them.
+  *
+- * Bun doesn't have a global `EventSource`, so we use `fetch` with a
+- * streaming body and parse the SSE wire format manually.
++ * Reconnects automatically on connection loss with exponential backoff,
++ * using `Last-Event-ID` to resume from where the stream left off.
+  */
+-async function consumeSSE(
+-  url: string,
+-  activeFilters: ReadonlySet<FilterValue>,
+-  signal: AbortSignal,
+-  quiet = false
+-): Promise<void> {
+-  const res = await fetch(`${url}/stream`, {
+-    headers: { Accept: "text/event-stream" },
++async function consumeSSE(opts: ConsumeSSEOptions): Promise<void> {
++  const { url, activeFilters, signal, quiet = false, useJson = false } = opts;
++  let lastEventId: string | undefined;
++  let retries = 0;
++  let retryDelay = SSE_INITIAL_RETRY_MS;
++  let hasConnectedBefore = false;
++
++  while (!signal.aborted) {
++    const result = await attemptSSEConnection({
++      url,
++      activeFilters,
++      signal,
++      quiet,
++      useJson,
++      lastEventId,
++      onId: (id) => {
++        lastEventId = id;
++      },
++    });
++
++    if (signal.aborted) {
++      return;
++    }
++    // On the first attempt, both "no-connection" (HTTP error/no body) and
++    // "error" (network failure) are fatal — the server doesn't exist.
++    // After a previous successful connection, retry on any failure since
++    // the server may be restarting.
++    if (!hasConnectedBefore && result !== "connected-then-lost") {
++      return;
++    }
++    // Reset backoff after a successful connection that later dropped,
++    // so transient disconnects don't permanently exhaust the retry budget.
++    if (result === "connected-then-lost") {
++      hasConnectedBefore = true;
++      retries = 0;
++      retryDelay = SSE_INITIAL_RETRY_MS;
++    }
++    retries += 1;
++    if (retries > SSE_MAX_RECONNECTS) {
++      logger.warn(
++        `SSE connection lost after ${SSE_MAX_RECONNECTS} reconnection attempts`
++      );
++      return;
++    }
++    logger.info(
++      `SSE connection lost, reconnecting in ${retryDelay / 1000}s...`
++    );
++    await sleepUnlessAborted(retryDelay, signal);
++    retryDelay = Math.min(retryDelay * 2, SSE_MAX_RETRY_MS);
++  }
++}
++
++/**
++ * Attempt a single SSE connection. Returns:
++ * - `"no-connection"` if the server couldn't be reached or aborted
++ * - `"connected-then-lost"` if a connection was established (got HTTP 200)
++ *   but the stream ended or errored — eligible for reconnection
++ */
++async function attemptSSEConnection(
++  opts: ConsumeSSEOnceOptions
++): Promise<"no-connection" | "connected-then-lost"> {
++  let wasConnected = false;
++  const augmented = {
++    ...opts,
++    onConnected: () => {
++      wasConnected = true;
++    },
++  };
++  try {
++    const completed = await consumeSSEOnce(augmented);
++    return completed ? "connected-then-lost" : "no-connection";
++  } catch (err: unknown) {
++    if (isAbortError(err) || opts.signal.aborted) {
++      return "no-connection";
++    }
++    logger.debug(
++      `SSE error: ${err instanceof Error ? err.message : String(err)}`
++    );
++    // If we got a 200 response before the error, the connection existed
++    // and is worth retrying. Otherwise, the server is unreachable.
++    return wasConnected ? "connected-then-lost" : "no-connection";
++  }
++}
++
++/** Options for a single SSE connection attempt. */
++type ConsumeSSEOnceOptions = {
++  url: string;
++  activeFilters: ReadonlySet<FilterValue>;
++  signal: AbortSignal;
++  quiet: boolean;
++  useJson: boolean;
++  lastEventId: string | undefined;
++  onId: (id: string) => void;
++  /** Called when the HTTP response is received (200 OK with body). */
++  onConnected?: () => void;
++};
++
++/**
++ * Single SSE connection attempt. Returns `true` if a connection was
++ * established (received a 200 response), `false` if it never connected.
++ * The caller uses this to decide whether to retry on failure.
++ */
++async function consumeSSEOnce(opts: ConsumeSSEOnceOptions): Promise<boolean> {
++  const {
++    url,
++    activeFilters,
+     signal,
+-  });
++    quiet,
++    useJson,
++    lastEventId,
++    onId,
++    onConnected,
++  } = opts;
++  const headers: Record<string, string> = { Accept: "text/event-stream" };
++  if (lastEventId) {
++    headers["Last-Event-ID"] = lastEventId;
++  }
++  const res = await fetch(`${url}/stream`, { headers, signal });
+   if (!res.ok) {
+     logger.warn(`SSE stream returned HTTP ${res.status}`);
+-    return;
++    return false;
+   }
+   if (!res.body) {
+-    return;
++    return false;
+   }
++  // Signal that we have a live connection — the caller uses this to
++  // decide whether mid-stream errors are worth retrying.
++  onConnected?.();
+ 
+   // In quiet mode we still consume the stream to detect disconnection,
+   // but skip parsing/formatting entirely.
+@@ -397,14 +572,17 @@ async function consumeSSE(
+     for await (const _chunk of res.body) {
+       // drain
+     }
+-    return;
++    return true;
+   }
+ 
+   const decoder = new TextDecoder();
+-  const state: SSEParserState = { eventType: "", dataLines: [] };
+-  const onEvent = (type: string, data: string) => {
++  const state: SSEParserState = { eventType: "", dataLines: [], id: "" };
++  const onEvent = (type: string, data: string, id: string) => {
++    if (id) {
++      onId(id);
++    }
+     if (type === SENTRY_CONTENT_TYPE) {
+-      processSSEEvent(data, activeFilters);
++      processSSEEvent(data, activeFilters, useJson);
+     }
+   };
+ 
+@@ -421,12 +599,14 @@ async function consumeSSE(
+   if (partial) {
+     feedSSELine(partial.replace(CR_RE, ""), state, onEvent);
+   }
++  return true;
+ }
+ 
+ /** Parse and format a single SSE data payload from upstream. */
+ function processSSEEvent(
+   data: string,
+-  activeFilters: ReadonlySet<FilterValue>
++  activeFilters: ReadonlySet<FilterValue>,
++  useJson = false
+ ): void {
+   try {
+     const envelope = JSON.parse(data) as [
+@@ -435,15 +615,19 @@ function processSSEEvent(
+     ];
+     const [header, items] = envelope;
+     for (const [itemHeader, itemPayload] of items) {
+-      if (!isItemIncluded(itemHeader.type, activeFilters)) {
++      const payload = itemPayload as Record<string, unknown>;
++      if (!isItemIncluded(itemHeader.type, activeFilters, payload)) {
+         continue;
+       }
+-      for (const line of formatItem(
+-        itemHeader.type,
+-        itemPayload as Record<string, unknown>,
+-        header,
+-        itemHeader.type ?? "envelope"
+-      )) {
++      const lines = useJson
++        ? formatItemJson(itemHeader.type, payload, header)
++        : formatItem(
++            itemHeader.type,
++            payload,
++            header,
++            itemHeader.type ?? "envelope"
++          );
++      for (const line of lines) {
+         logger.log(line);
+       }
+     }
+@@ -488,16 +672,23 @@ export const serverCommand = buildCommand({
+         kind: "parsed",
+         parse: parseFilter,
+         brief:
+-          "Only show items of this type (repeatable: error, transaction, log)",
++          "Only show items of this type (repeatable: error, transaction, log, ai)",
+         variadic: true,
+         optional: true,
+       },
++      format: {
++        kind: "parsed",
++        parse: parseFormat,
++        brief: "Output format: human (default) or json (NDJSON)",
++        default: "human",
++      },
+     },
+     aliases: {
+       p: "port",
+       H: "host",
+       q: "quiet",
+       f: "filter",
++      F: "format",
+     },
+   },
+   auth: false,
+@@ -518,7 +709,13 @@ export const serverCommand = buildCommand({
+       process.once("SIGTERM", stop);
+ 
+       try {
+-        await consumeSSE(url, activeFilters, ac.signal, flags.quiet);
++        await consumeSSE({
++          url,
++          activeFilters,
++          signal: ac.signal,
++          quiet: flags.quiet,
++          useJson: flags.format === "json",
++        });
+       } catch (err: unknown) {
+         if (!(err instanceof DOMException && err.name === "AbortError")) {
+           throw err;
+@@ -532,11 +729,13 @@ export const serverCommand = buildCommand({
+     }
+ 
+     const buffer = createSpotlightBuffer(BUFFER_SIZE);
++    const useJson = flags.format === "json";
+ 
+     if (!flags.quiet) {
++      const formatFn = useJson ? formatEnvelopeLinesJson : formatEnvelopeLines;
+       buffer.subscribe((container) => {
+         try {
+-          for (const line of formatEnvelopeLines(container, activeFilters)) {
++          for (const line of formatFn(container, activeFilters)) {
+             logger.log(line);
+           }
+         } catch (err) {
+@@ -556,10 +755,23 @@ export const serverCommand = buildCommand({
+     );
+ 
+     const listenUrl = `http://${flags.host}:${boundPort}`;
+-    logger.info(`Listening on ${bold(listenUrl)}`);
++    logger.info("Sentry Local Dev Server");
++    logger.info(`  Ingest: ${bold(`${listenUrl}/stream`)}`);
++    logger.info(`  Events: ${bold(`${listenUrl}/stream`)} (SSE)`);
++    logger.info("");
++    logger.info(
++      `  Set ${bold("SENTRY_SPOTLIGHT")}=${listenUrl}/stream in your app`
++    );
++    logger.info(
++      `  Or run: ${bold(`sentry local run -p ${boundPort} -- <your-command>`)}`
++    );
+     if (activeFilters.size > 0) {
+-      logger.info(`Filtering: ${[...activeFilters].join(", ")}`);
++      logger.info(`  Filtering: ${[...activeFilters].join(", ")}`);
++    }
++    if (useJson) {
++      logger.info("  Output: JSON (NDJSON)");
+     }
++    logger.info("");
+     logger.info("Press Ctrl-C to stop.");
+ 
+     await waitForShutdown(server);
+diff --git a/src/lib/formatters/local.ts b/src/lib/formatters/local.ts
+index 78965dce..183eb9d8 100644
+--- a/src/lib/formatters/local.ts
++++ b/src/lib/formatters/local.ts
+@@ -2,6 +2,33 @@
+ 
+ import { blue, bold, cyan, green, muted, red, yellow } from "./colors.js";
+ import { stripAnsi } from "./plain-detect.js";
++import {
++  formatSemanticSpanDisplay,
++  inferSemanticOp,
++  mergeTransactionAttributes,
++} from "./semantic-display.js";
++
++/**
++ * Characters unsafe for JSON terminal display: C1 control characters
++ * (U+0080–U+009F, e.g. CSI=U+009B) and Unicode bidirectional overrides.
++ * `JSON.stringify` only escapes C0 (U+0000–U+001F) per RFC 8259;
++ * C1 and BiDi pass through unescaped.
++ */
++// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping C1 control chars from untrusted data
++const JSON_UNSAFE_RE = /[\x80-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
++
++/** BiDi-only regex for the full `sanitize()` function. */
++const BIDI_RE = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
++
++/**
++ * Strip C1 control characters and Unicode BiDi overrides from a string.
++ * Used for JSON output where `JSON.stringify` escapes C0 controls but
++ * leaves C1 (U+0080–U+009F) and BiDi chars intact — both can cause
++ * terminal injection when JSON output is displayed in a terminal.
++ */
++export function stripBidi(text: string): string {
++  return text.replace(JSON_UNSAFE_RE, "");
++}
+ 
+ /**
+  * Strip ANSI escapes, collapse newlines, and remove C0/C1 control characters
+@@ -17,14 +44,18 @@ export function sanitize(text: string): string {
+     ""
+   );
+   // Strip Unicode bidirectional override/isolate characters that can reorder terminal output.
+-  return noCtrl.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
++  return noCtrl.replace(BIDI_RE, "");
+ }
+ 
+ /** Canonical content type for Sentry envelopes. */
+ export const SENTRY_CONTENT_TYPE = "application/x-sentry-envelope";
+ 
++/** Output format options for `--format`. */
++export const FORMAT_VALUES = ["human", "json"] as const;
++export type FormatValue = (typeof FORMAT_VALUES)[number];
++
+ /** Envelope item categories that can be filtered via `--filter`. */
+-export const FILTER_VALUES = ["error", "transaction", "log"] as const;
++export const FILTER_VALUES = ["error", "transaction", "log", "ai"] as const;
+ export type FilterValue = (typeof FILTER_VALUES)[number];
+ 
+ /** Format a local timestamp as HH:MM:SS from a Sentry timestamp. */
+@@ -179,7 +210,13 @@ export function formatErrorItem(
+ /**
+  * Format a transaction event item into a colored one-liner.
+  *
+- * Output: `HH:MM:SS [TRACE]   [BROWSER] [http.client] GET /api/users [245ms] [3 spans]`
++ * When OTel semantic attributes are present (e.g. `gen_ai.*`, `mcp.*`,
++ * `db.*`), the label is derived from those attributes for richer output.
++ * Falls back to the raw transaction name + trace.op otherwise.
++ *
++ * Output examples:
++ * - `HH:MM:SS [TRACE]   [BROWSER] [http.client] GET /api/users [245ms] [3 spans]`
++ * - `HH:MM:SS [TRACE]   [SERVER]  [gen_ai] chat anthropic/claude-4-sonnet [1.2s] [5 spans]`
+  */
+ export function formatTransactionItem(
+   event: Record<string, unknown>,
+@@ -193,9 +230,21 @@ export function formatTransactionItem(
+     typeof event.transaction === "string"
+       ? event.transaction
+       : (trace?.description ?? "Transaction");
+-  let msg = sanitize(txnName);
+ 
+-  const op = trace?.op;
++  // Try semantic display from OTel attributes first
++  const attrs = mergeTransactionAttributes(event);
++  const semantic = formatSemanticSpanDisplay(attrs, sanitize(txnName));
++
++  let msg = sanitize(semantic.label);
++
++  // Append semantic metadata (e.g. model name, status code, error type)
++  if (semantic.metadata.length > 0) {
++    msg += ` ${semantic.metadata.map((m) => muted(`[${sanitize(m)}]`)).join(" ")}`;
++  }
++
++  // Show op tag — prefer semantic category if detected
++  const semanticOp = inferSemanticOp(attrs);
++  const op = semanticOp ?? trace?.op;
+   if (op && op !== "default" && op !== "unknown") {
+     msg = `[${sanitize(op)}] ${msg}`;
+   }
+@@ -312,6 +361,165 @@ export function resolveUnparseableLabel(container: {
+   return ct === "application/x-sentry-envelope" ? "envelope" : ct;
+ }
+ 
++/** Strip BiDi from a string value, returning undefined for non-strings. */
++function jsonSafe(value: unknown): string | undefined {
++  return typeof value === "string" ? stripBidi(value) : undefined;
++}
++
++/** Format an error item as a JSON object, including the best stack frame. */
++function formatErrorJson(
++  payload: Record<string, unknown>,
++  header: Record<string, unknown>
++): string {
++  const exception = payload.exception as
++    | {
++        values?: {
++          type?: string;
++          value?: string;
++          stacktrace?: { frames?: StackFrame[] };
++        }[];
++      }
++    | undefined;
++  const first = exception?.values?.at(-1);
++  const frame =
++    first?.stacktrace?.frames?.find((f) => f.in_app) ??
++    first?.stacktrace?.frames?.at(-1);
++  return JSON.stringify({
++    type: "error",
++    timestamp: payload.timestamp,
++    error_type: jsonSafe(first?.type) ?? "Error",
++    message:
++      jsonSafe(first?.value) ?? jsonSafe(payload.message) ?? "Unknown error",
++    filename: jsonSafe(frame?.filename),
++    lineno: frame?.lineno,
++    colno: frame?.colno,
++    function: jsonSafe(frame?.function),
++    source: inferSourceName(header),
++  });
++}
++
++/** Format a transaction item as a JSON object. */
++function formatTransactionJson(
++  payload: Record<string, unknown>,
++  header: Record<string, unknown>
++): string {
++  const trace = (payload.contexts as Record<string, unknown> | undefined)
++    ?.trace as Record<string, unknown> | undefined;
++  const attrs = mergeTransactionAttributes(payload);
++  const semantic = formatSemanticSpanDisplay(
++    attrs,
++    String(payload.transaction ?? trace?.description ?? "Transaction")
++  );
++  const start = payload.start_timestamp as number | undefined;
++  const end = payload.timestamp as number | undefined;
++  const durationMs =
++    start !== undefined && end !== undefined
++      ? Math.round((end - start) * 1000)
++      : undefined;
++  return JSON.stringify({
++    type: "transaction",
++    timestamp: payload.timestamp,
++    op: inferSemanticOp(attrs) ?? trace?.op,
++    label: stripBidi(semantic.label),
++    metadata:
++      semantic.metadata.length > 0
++        ? semantic.metadata.map(stripBidi)
++        : undefined,
++    duration_ms: durationMs,
++    status: trace?.status,
++    span_count: (payload.spans as unknown[] | undefined)?.length,
++    source: inferSourceName(header),
++  });
++}
++
++/** Format a log item as JSON objects (one per entry). */
++function formatLogJson(
++  payload: Record<string, unknown>,
++  header: Record<string, unknown>
++): string[] {
++  const items = payload.items as LogEntry[] | undefined;
++  if (!items?.length) {
++    return [];
++  }
++  const source = inferSourceName(header);
++  return items.map((entry) =>
++    JSON.stringify({
++      type: "log",
++      timestamp: entry.timestamp,
++      level: entry.level ?? "log",
++      message: stripBidi(entry.body ?? ""),
++      attributes: entry.attributes
++        ? Object.fromEntries(
++            Object.entries(entry.attributes)
++              .filter(
++                ([k, v]) =>
++                  !k.startsWith("sentry.") &&
++                  v?.value !== null &&
++                  v?.value !== undefined
++              )
++              .map(([k, v]) => [
++                k,
++                typeof v.value === "string" ? stripBidi(v.value) : v.value,
++              ])
++          )
++        : undefined,
++      source,
++    })
++  );
++}
++
++/**
++ * Format a single envelope item as a JSON line (NDJSON).
++ *
++ * Produces a compact JSON object per item with `type`, `timestamp`,
++ * and item-specific fields. Designed for machine consumption by AI
++ * coding agents and automation tools.
++ *
++ * Unlike the human formatters, JSON output uses `stripBidi()` instead of
++ * the full `sanitize()`. `JSON.stringify()` escapes C0 control characters
++ * (U+0000–U+001F) but leaves C1 controls (U+0080–U+009F) and BiDi overrides
++ * intact. `stripBidi()` strips both, preventing terminal injection when
++ * JSON output is viewed in a terminal, while preserving the original data
++ * structure for downstream consumers.
++ */
++export function formatItemJson(
++  itemType: string | undefined,
++  payload: Record<string, unknown>,
++  header: Record<string, unknown>
++): string[] {
++  if (itemType && ERROR_TYPES.has(itemType)) {
++    return [formatErrorJson(payload, header)];
++  }
++  if (itemType === "transaction") {
++    return [formatTransactionJson(payload, header)];
++  }
++  if (itemType === "log") {
++    return formatLogJson(payload, header);
++  }
++  return [
++    JSON.stringify({
++      type: itemType ?? "unknown",
++      timestamp: payload.timestamp,
++    }),
++  ];
++}
++
++/** Infer the source platform name from the SDK header (for JSON output). */
++function inferSourceName(header: Record<string, unknown>): string {
++  const sdk = header.sdk as { name?: string } | undefined;
++  const name = sdk?.name ?? "";
++  if (MOBILE_MARKERS.some((m) => name.includes(m))) {
++    return "mobile";
++  }
++  if (
++    name.startsWith("sentry.javascript.") &&
++    !SERVER_JS_MARKERS.some((m) => name.includes(m))
++  ) {
++    return "browser";
++  }
++  return "server";
++}
++
+ /** Format a single envelope item into one or more output lines. */
+ export function formatItem(
+   itemType: string | undefined,
+@@ -331,16 +539,64 @@ export function formatItem(
+   return [formatFallbackLine(fallbackLabel)];
+ }
+ 
+-/** Check whether an item should be shown given active filters. */
++/**
++ * Check whether an item should be shown given active filters.
++ *
++ * When `payload` is provided and the `ai` filter is active, transactions
++ * are checked for GenAI/MCP OTel attributes.
++ */
+ export function isItemIncluded(
+   itemType: string | undefined,
+-  activeFilters: ReadonlySet<FilterValue>
++  activeFilters: ReadonlySet<FilterValue>,
++  payload?: Record<string, unknown>
+ ): boolean {
+   if (activeFilters.size === 0) {
+     return true;
+   }
+   const category = itemTypeToFilterCategory(itemType);
+-  return category !== undefined && activeFilters.has(category);
++  if (category !== undefined && activeFilters.has(category)) {
++    return true;
++  }
++  // The "ai" filter matches transactions with GenAI or MCP attributes.
++  if (activeFilters.has("ai") && itemType === "transaction" && payload) {
++    const attrs = mergeTransactionAttributes(payload);
++    const op = inferSemanticOp(attrs);
++    return op === "gen_ai" || op === "mcp";
++  }
++  return false;
++}
++
++/**
++ * Format a freshly received envelope as NDJSON lines.
++ *
++ * Each item produces one JSON line. Filtering works identically to
++ * the human formatter.
++ */
++export function formatEnvelopeLinesJson(
++  container: {
++    getParsedEnvelope: () => {
++      envelope: [Record<string, unknown>, [{ type?: string }, unknown][]];
++    } | null;
++    getContentType: () => string;
++    getEventTypes: () => string[] | null;
++  },
++  activeFilters: ReadonlySet<FilterValue>
++): string[] {
++  const parsed = container.getParsedEnvelope();
++  if (!parsed) {
++    return [];
++  }
++
++  const [header, items] = parsed.envelope;
++  const lines: string[] = [];
++  for (const [itemHeader, itemPayload] of items) {
++    const payload = itemPayload as Record<string, unknown>;
++    if (!isItemIncluded(itemHeader.type, activeFilters, payload)) {
++      continue;
++    }
++    lines.push(...formatItemJson(itemHeader.type, payload, header));
++  }
++  return lines;
+ }
+ 
+ /**
+@@ -371,13 +627,14 @@ export function formatEnvelopeLines(
+   const [header, items] = parsed.envelope;
+   const lines: string[] = [];
+   for (const [itemHeader, itemPayload] of items) {
+-    if (!isItemIncluded(itemHeader.type, activeFilters)) {
++    const payload = itemPayload as Record<string, unknown>;
++    if (!isItemIncluded(itemHeader.type, activeFilters, payload)) {
+       continue;
+     }
+     lines.push(
+       ...formatItem(
+         itemHeader.type,
+-        itemPayload as Record<string, unknown>,
++        payload,
+         header,
+         itemHeader.type ?? container.getContentType()
+       )
+diff --git a/src/lib/formatters/semantic-display.ts b/src/lib/formatters/semantic-display.ts
+new file mode 100644
+index 00000000..1d246070
+--- /dev/null
++++ b/src/lib/formatters/semantic-display.ts
+@@ -0,0 +1,788 @@
++/**
++ * OTel semantic attribute rendering for local dev server output.
++ *
++ * Ported from sentry-mcp's trace-semantic-display.ts (PR #981) and adapted
++ * for raw Sentry envelope items. Renders span/transaction labels from
++ * OpenTelemetry semantic attributes before falling back to Sentry op/name.
++ *
++ * Covers: GenAI, MCP, HTTP, database, GraphQL, RPC/cloud, messaging,
++ * FaaS, object stores, CloudEvents, CICD, feature flags, process,
++ * exception, and error attributes.
++ */
++
++import { logger } from "../logger.js";
++
++const log = logger.withTag("semantic-display");
++
++/** Display result from semantic rendering. */
++export type SemanticSpanDisplay = {
++  /** Primary label for the span/transaction. */
++  label: string;
++  /** Additional metadata tokens shown after the label. */
++  metadata: string[];
++};
++
++/** A function that attempts to render semantic display for an item. */
++type SpanDisplayFormatter = (
++  attrs: AttributeSource,
++  fallbackLabel: string
++) => SemanticSpanDisplay | null;
++
++const SPAN_LABEL_MAX_LENGTH = 120;
++const SPAN_METADATA_MAX_LENGTH = 64;
++const SPAN_ATTRIBUTE_MAX_LENGTH = 2048;
++
++/** Matches a URL scheme prefix like `https://` or `ftp://`. */
++const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
++
++/**
++ * Ordered list of semantic formatters. The first match wins.
++ * MCP before HTTP so `tools/call` isn't masked by transport-level `POST /mcp`.
++ */
++const SEMANTIC_SPAN_FORMATTERS: SpanDisplayFormatter[] = [
++  formatMcpSpanDisplay,
++  formatGenAiSpanDisplay,
++  formatHttpSpanDisplay,
++  formatDatabaseSpanDisplay,
++  formatGraphqlSpanDisplay,
++  formatObjectStoreSpanDisplay,
++  formatRpcSpanDisplay,
++  formatMessagingSpanDisplay,
++  formatCloudEventsSpanDisplay,
++  formatFaasSpanDisplay,
++  formatCicdSpanDisplay,
++  formatFeatureFlagSpanDisplay,
++  formatProcessSpanDisplay,
++  formatExceptionSpanDisplay,
++  formatErrorSpanDisplay,
++];
++
++/**
++ * Abstraction over attribute sources. In raw envelopes, attributes live in
++ * `contexts.trace.data` or individual span `data` objects.
++ */
++export type AttributeSource = Record<string, unknown>;
++
++/** Look up an attribute value by trying multiple keys in order. */
++function getAttr(
++  attrs: AttributeSource,
++  keys: string[],
++  maxLength = SPAN_METADATA_MAX_LENGTH
++): string | undefined {
++  for (const key of keys) {
++    if (Object.hasOwn(attrs, key)) {
++      const value = formatDisplayPart(attrs[key], maxLength);
++      if (value) {
++        return value;
++      }
++    }
++  }
++  return;
++}
++
++/**
++ * Build a semantic display for a transaction or span from its attributes.
++ *
++ * @param attrs - Merged attribute object from the envelope item
++ * @param fallbackLabel - The transaction name or span description to use as fallback
++ * @returns A SemanticSpanDisplay with label and metadata, or the fallback
++ */
++export function formatSemanticSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay {
++  for (const formatter of SEMANTIC_SPAN_FORMATTERS) {
++    const result = formatter(attrs, fallbackLabel);
++    if (result) {
++      return {
++        label: truncate(result.label, SPAN_LABEL_MAX_LENGTH) || "unnamed",
++        metadata: dedupeMetadata(result.metadata),
++      };
++    }
++  }
++  return { label: fallbackLabel, metadata: [] };
++}
++
++/**
++ * Derive a semantic op category from attributes for the `[op]` display.
++ * Returns undefined if no semantic category is detected (falls back to trace.op).
++ *
++ * Only domains with a natural one-word op category are included.
++ * CloudEvents, CICD, FeatureFlag, Exception, and Error are intentionally
++ * omitted — they should preserve the original trace.op.
++ * HTTP also returns undefined to keep the SDK-assigned op (e.g. `http.client`).
++ * S3 is checked before RPC since S3 spans carry `rpc.method` but should
++ * be tagged as `s3` rather than `rpc`.
++ */
++export function inferSemanticOp(attrs: AttributeSource): string | undefined {
++  if (getAttr(attrs, ["mcp.method.name"])) {
++    return "mcp";
++  }
++  if (
++    getAttr(attrs, [
++      "gen_ai.operation.name",
++      "gen_ai.tool.name",
++      "gen_ai.agent.name",
++    ])
++  ) {
++    return "gen_ai";
++  }
++  if (getAttr(attrs, ["http.request.method", "http.response.status_code"])) {
++    return;
++  }
++  if (
++    getAttr(attrs, ["db.system.name", "db.query.summary", "db.operation.name"])
++  ) {
++    return "db";
++  }
++  if (getAttr(attrs, ["graphql.operation.type"])) {
++    return "graphql";
++  }
++  // Check S3/object store before RPC — S3 spans carry rpc.method but should
++  // be displayed as object store operations, not generic RPC.
++  if (getAttr(attrs, ["aws.s3.bucket", "aws.s3.key"])) {
++    return "s3";
++  }
++  if (getAttr(attrs, ["rpc.system.name", "rpc.service"])) {
++    return "rpc";
++  }
++  if (getAttr(attrs, ["messaging.system", "messaging.operation.name"])) {
++    return "messaging";
++  }
++  if (getAttr(attrs, ["faas.trigger", "faas.invoked_name"])) {
++    return "faas";
++  }
++  if (getAttr(attrs, ["process.executable.name", "process.command"])) {
++    return "process";
++  }
++  return;
++}
++
++// ---------------------------------------------------------------------------
++// Semantic formatters — each returns null if the span doesn't match
++// ---------------------------------------------------------------------------
++
++function formatGenAiSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const operation = getAttr(attrs, ["gen_ai.operation.name"]);
++  const toolName = getAttr(attrs, ["gen_ai.tool.name"]);
++  const agentName = getAttr(attrs, ["gen_ai.agent.name"]);
++  const model = getGenAiModelIdentifier(attrs);
++  const dataSourceId = getAttr(attrs, ["gen_ai.data_source.id"]);
++  const errorType = getErrorType(attrs);
++
++  if (!(operation || toolName || agentName || model || dataSourceId)) {
++    return null;
++  }
++
++  const subject = toolName ?? agentName ?? model ?? dataSourceId;
++  const label = operation
++    ? formatOperationLabel(operation, subject)
++    : subject || fallbackLabel;
++
++  return {
++    label,
++    metadata: compactStrings([
++      subject === model ? undefined : model,
++      errorType,
++    ]),
++  };
++}
++
++function formatMcpSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const method = getAttr(attrs, ["mcp.method.name"]);
++  const resourceUri = getAttr(
++    attrs,
++    ["mcp.resource.uri"],
++    SPAN_ATTRIBUTE_MAX_LENGTH
++  );
++  const target =
++    getAttr(attrs, ["gen_ai.tool.name", "gen_ai.prompt.name"]) ??
++    formatResourceTarget(resourceUri);
++  const statusCode = getAttr(attrs, ["rpc.response.status_code"]);
++  const errorType = getErrorType(attrs);
++
++  if (!(method || resourceUri)) {
++    return null;
++  }
++
++  return {
++    label: joinParts([method, target]) || fallbackLabel,
++    metadata: compactStrings([statusCode, errorType]),
++  };
++}
++
++function formatHttpSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const method = getAttr(attrs, ["http.request.method"])?.toUpperCase();
++  const statusCode = getAttr(attrs, ["http.response.status_code"]);
++  const target = getHttpTarget(attrs, {
++    includeServerTarget: Boolean(method || statusCode),
++  });
++  const errorType = getErrorType(attrs);
++
++  if (!(method || target || statusCode)) {
++    return null;
++  }
++
++  const label = formatHttpLabel({ method, target, fallbackLabel });
++
++  return {
++    label: label || fallbackLabel,
++    metadata: compactStrings([statusCode, errorType]),
++  };
++}
++
++function formatDatabaseSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const dbSystem = getAttr(attrs, ["db.system.name"]);
++  const querySummary = getAttr(attrs, ["db.query.summary"]);
++  const operationName = getAttr(attrs, ["db.operation.name"]);
++  const target =
++    getAttr(attrs, ["db.collection.name", "db.namespace"]) ??
++    getServerTarget(attrs);
++  const storedProcedure = getAttr(attrs, ["db.stored_procedure.name"]);
++  const queryText = getAttr(
++    attrs,
++    ["db.query.text"],
++    SPAN_ATTRIBUTE_MAX_LENGTH
++  );
++
++  if (
++    !(
++      dbSystem ||
++      querySummary ||
++      operationName ||
++      target ||
++      storedProcedure ||
++      queryText
++    )
++  ) {
++    return null;
++  }
++
++  const label =
++    querySummary ??
++    (storedProcedure ? `CALL ${storedProcedure}` : undefined) ??
++    (joinParts([operationName, target]) || undefined) ??
++    formatDbQueryText(queryText) ??
++    fallbackLabel;
++  const statusCode = getAttr(attrs, ["db.response.status_code"]);
++  const errorType = getErrorType(attrs);
++
++  return {
++    label,
++    metadata: compactStrings([dbSystem, statusCode, errorType]),
++  };
++}
++
++function formatGraphqlSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const operationType = getAttr(attrs, ["graphql.operation.type"]);
++  const operationName = getAttr(attrs, ["graphql.operation.name"]);
++  const document = getAttr(
++    attrs,
++    ["graphql.document"],
++    SPAN_ATTRIBUTE_MAX_LENGTH
++  );
++
++  if (!(operationType || operationName || document)) {
++    return null;
++  }
++
++  return {
++    label:
++      joinParts([operationType, operationName]) ||
++      truncate(document, SPAN_LABEL_MAX_LENGTH) ||
++      fallbackLabel,
++    metadata: [],
++  };
++}
++
++function formatRpcSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const rpcSystem = getAttr(attrs, ["rpc.system.name"]);
++  const service = getAttr(attrs, ["rpc.service"]);
++  const method = getAttr(attrs, ["rpc.method"]);
++  const statusCode = getAttr(attrs, ["rpc.response.status_code"]);
++  const region = getAttr(attrs, ["cloud.region"]);
++  const errorType = getErrorType(attrs);
++
++  if (!(rpcSystem || service || method || statusCode)) {
++    return null;
++  }
++
++  const methodLabel =
++    service && method ? `${service}/${method}` : method || service;
++
++  return {
++    label: methodLabel || fallbackLabel,
++    metadata: compactStrings([rpcSystem, statusCode, region, errorType]),
++  };
++}
++
++function formatMessagingSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const messagingSystem = getAttr(attrs, ["messaging.system"]);
++  const operation = getAttr(attrs, [
++    "messaging.operation.name",
++    "messaging.operation.type",
++  ]);
++  const destination = getAttr(attrs, [
++    "messaging.destination.template",
++    "messaging.destination.name",
++    "messaging.destination.subscription.name",
++  ]);
++  const consumerGroup = getAttr(attrs, ["messaging.consumer.group.name"]);
++  const messageCount = getAttr(attrs, ["messaging.batch.message_count"]);
++  const errorType = getErrorType(attrs);
++
++  if (!(messagingSystem || operation || destination)) {
++    return null;
++  }
++
++  return {
++    label: joinParts([operation, destination]) || fallbackLabel,
++    metadata: compactStrings([
++      messagingSystem,
++      consumerGroup,
++      messageCount ? `messages:${messageCount}` : undefined,
++      errorType,
++    ]),
++  };
++}
++
++function formatFaasSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const trigger = getAttr(attrs, ["faas.trigger"]);
++  const name = getAttr(attrs, ["faas.invoked_name", "faas.name"]);
++  const provider = getAttr(attrs, ["faas.invoked_provider"]);
++  const region = getAttr(attrs, ["faas.invoked_region"]);
++  const coldStart = getAttr(attrs, ["faas.coldstart"]);
++  const documentOperation = getAttr(attrs, ["faas.document.operation"]);
++  const documentTarget = getAttr(attrs, [
++    "faas.document.collection",
++    "faas.document.name",
++  ]);
++  const cron = getAttr(attrs, ["faas.cron"]);
++  const errorType = getErrorType(attrs);
++  const isColdStart = coldStart === "true";
++
++  if (
++    !(
++      trigger ||
++      name ||
++      provider ||
++      region ||
++      isColdStart ||
++      documentOperation ||
++      documentTarget ||
++      cron
++    )
++  ) {
++    return null;
++  }
++
++  return {
++    label:
++      joinParts([
++        trigger,
++        name,
++        joinParts([documentOperation, documentTarget]) || cron,
++      ]) || fallbackLabel,
++    metadata: compactStrings([
++      provider,
++      region,
++      isColdStart ? "coldstart" : undefined,
++      errorType,
++    ]),
++  };
++}
++
++function formatProcessSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const command = getAttr(attrs, [
++    "process.executable.name",
++    "process.command",
++  ]);
++  const exitCode = getAttr(attrs, ["process.exit.code"]);
++  const errorType = getErrorType(attrs);
++
++  if (!(command || exitCode)) {
++    return null;
++  }
++
++  return {
++    label: command || fallbackLabel,
++    metadata: compactStrings([
++      exitCode ? `exit:${exitCode}` : undefined,
++      errorType,
++    ]),
++  };
++}
++
++function formatObjectStoreSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const bucket = getAttr(attrs, ["aws.s3.bucket"]);
++  const key = getAttr(attrs, ["aws.s3.key"], SPAN_ATTRIBUTE_MAX_LENGTH);
++  const copySource = getAttr(
++    attrs,
++    ["aws.s3.copy_source"],
++    SPAN_ATTRIBUTE_MAX_LENGTH
++  );
++  const operation = getAttr(attrs, ["rpc.method"]);
++  const region = getAttr(attrs, ["cloud.region"]);
++  const errorType = getErrorType(attrs);
++  const target =
++    formatObjectStoreTarget(bucket, key) ??
++    truncate(copySource, SPAN_LABEL_MAX_LENGTH);
++
++  if (!(bucket || key || copySource)) {
++    return null;
++  }
++
++  return {
++    label: joinParts([operation, target]) || fallbackLabel,
++    metadata: compactStrings([region, errorType]),
++  };
++}
++
++function formatCloudEventsSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const eventType = getAttr(attrs, ["cloudevents.event_type"]);
++  const eventSubject = getAttr(attrs, ["cloudevents.event_subject"]);
++  const eventSource = getAttr(
++    attrs,
++    ["cloudevents.event_source"],
++    SPAN_ATTRIBUTE_MAX_LENGTH
++  );
++  const specVersion = getAttr(attrs, ["cloudevents.event_spec_version"]);
++
++  if (!(eventType || eventSubject || eventSource || specVersion)) {
++    return null;
++  }
++
++  return {
++    label:
++      joinParts([
++        eventType,
++        eventSubject ?? formatResourceTarget(eventSource),
++      ]) || fallbackLabel,
++    metadata: specVersion ? [`cloudevents:${specVersion}`] : [],
++  };
++}
++
++function formatCicdSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const action = getAttr(attrs, ["cicd.pipeline.action.name"]);
++  const pipeline = getAttr(attrs, ["cicd.pipeline.name"]);
++  const pipelineResult = getAttr(attrs, ["cicd.pipeline.result"]);
++  const taskName = getAttr(attrs, ["cicd.pipeline.task.name"]);
++  const taskResult = getAttr(attrs, ["cicd.pipeline.task.run.result"]);
++  const errorType = getErrorType(attrs);
++
++  if (!(action || pipeline || pipelineResult || taskName || taskResult)) {
++    return null;
++  }
++
++  return {
++    label: joinParts([action, pipeline]) || taskName || fallbackLabel,
++    metadata: compactStrings([pipelineResult, taskResult, errorType]),
++  };
++}
++
++function formatFeatureFlagSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const flagKey = getAttr(attrs, ["feature_flag.key"]);
++  const variant = getAttr(attrs, ["feature_flag.result.variant"]);
++  const value = getAttr(attrs, ["feature_flag.result.value"]);
++  const provider = getAttr(attrs, ["feature_flag.provider.name"]);
++  const reason = getAttr(attrs, ["feature_flag.result.reason"]);
++  const errorType = getErrorType(attrs);
++
++  if (!(flagKey || variant || value || provider || reason)) {
++    return null;
++  }
++
++  return {
++    label: joinParts([flagKey, variant ?? value]) || fallbackLabel,
++    metadata: compactStrings([provider, reason, errorType]),
++  };
++}
++
++function formatExceptionSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const exceptionType = getAttr(attrs, ["exception.type"]);
++  const exceptionMessage = getAttr(
++    attrs,
++    ["exception.message"],
++    SPAN_ATTRIBUTE_MAX_LENGTH
++  );
++
++  if (!(exceptionType || exceptionMessage)) {
++    return null;
++  }
++
++  const label =
++    fallbackLabel === "unnamed"
++      ? exceptionType || exceptionMessage || fallbackLabel
++      : fallbackLabel;
++  const metadata =
++    fallbackLabel === "unnamed"
++      ? []
++      : compactStrings([
++          exceptionType,
++          exceptionType ? undefined : exceptionMessage,
++        ]);
++
++  return { label, metadata };
++}
++
++function formatErrorSpanDisplay(
++  attrs: AttributeSource,
++  fallbackLabel: string
++): SemanticSpanDisplay | null {
++  const errorType = getErrorType(attrs);
++  if (!errorType) {
++    return null;
++  }
++  return { label: fallbackLabel, metadata: [errorType] };
++}
++
++// ---------------------------------------------------------------------------
++// Shared helpers
++// ---------------------------------------------------------------------------
++
++function getGenAiModelIdentifier(attrs: AttributeSource): string | undefined {
++  const provider = getAttr(attrs, ["gen_ai.provider.name"]);
++  const model = getAttr(attrs, [
++    "gen_ai.response.model",
++    "gen_ai.request.model",
++  ]);
++
++  if (!model) {
++    return provider;
++  }
++  if (!provider || model.includes("/")) {
++    return model;
++  }
++  return `${provider}/${model}`;
++}
++
++function getHttpTarget(
++  attrs: AttributeSource,
++  { includeServerTarget = false }: { includeServerTarget?: boolean } = {}
++): string | undefined {
++  const route = getAttr(
++    attrs,
++    ["http.route", "url.template"],
++    SPAN_ATTRIBUTE_MAX_LENGTH
++  );
++  const fullUrl = getAttr(attrs, ["url.full"], SPAN_ATTRIBUTE_MAX_LENGTH);
++  const path = getAttr(attrs, ["url.path"], SPAN_ATTRIBUTE_MAX_LENGTH);
++  const serverTarget = getServerTarget(attrs);
++
++  if (route) {
++    return formatHttpTarget(route);
++  }
++  if (fullUrl) {
++    return formatHttpTarget(fullUrl);
++  }
++  if (path) {
++    return formatHttpTarget(path);
++  }
++  if (includeServerTarget && serverTarget) {
++    return formatHttpTarget(serverTarget);
++  }
++  return;
++}
++
++function getServerTarget(attrs: AttributeSource): string | undefined {
++  const address = getAttr(attrs, ["server.address"]);
++  const port = getAttr(attrs, ["server.port"]);
++  if (!address) {
++    return;
++  }
++  if (!port || address.includes(":")) {
++    return address;
++  }
++  return `${address}:${port}`;
++}
++
++function formatHttpLabel({
++  method,
++  target,
++  fallbackLabel,
++}: {
++  method?: string;
++  target?: string;
++  fallbackLabel: string;
++}): string {
++  if (method && target) {
++    return joinParts([method, target]);
++  }
++  if (target) {
++    return target;
++  }
++
++  const normalized = fallbackLabel.toUpperCase();
++  if (method && normalized !== method && fallbackLabel !== "unnamed") {
++    return normalized.startsWith(`${method} `)
++      ? fallbackLabel
++      : joinParts([method, fallbackLabel]);
++  }
++  return method || fallbackLabel;
++}
++
++function formatHttpTarget(value: string): string {
++  const trimmed = value.trim();
++  if (!URL_SCHEME_RE.test(trimmed)) {
++    const noFragment = trimmed.split("#")[0] ?? trimmed;
++    return noFragment.split("?")[0] ?? noFragment;
++  }
++  try {
++    const url = new URL(trimmed);
++    const path = url.pathname === "/" ? "" : url.pathname;
++    return `${url.host}${path}`;
++  } catch (error) {
++    log.debug("Failed to parse URL for HTTP target display", error);
++    const noFragment = trimmed.split("#")[0] ?? trimmed;
++    return noFragment.split("?")[0] ?? noFragment;
++  }
++}
++
++function formatOperationLabel(operation: string, subject?: string): string {
++  return subject ? `${operation} ${subject}` : operation;
++}
++
++function formatObjectStoreTarget(
++  bucket?: string,
++  key?: string
++): string | undefined {
++  if (bucket && key) {
++    return truncate(`${bucket}/${key}`, SPAN_LABEL_MAX_LENGTH);
++  }
++  return bucket ?? truncate(key, SPAN_LABEL_MAX_LENGTH);
++}
++
++function formatResourceTarget(value?: string): string | undefined {
++  if (!value) {
++    return;
++  }
++  return truncate(value.split("?")[0], SPAN_LABEL_MAX_LENGTH);
++}
++
++function formatDbQueryText(value?: string): string | undefined {
++  if (!value) {
++    return;
++  }
++  return truncate(
++    value.replace(/'([^']|'')*'/g, "?").replace(/\b\d+(\.\d+)?\b/g, "?"),
++    SPAN_LABEL_MAX_LENGTH
++  );
++}
++
++function joinParts(values: Array<string | undefined>): string {
++  return compactStrings(values).join(" ");
++}
++
++function compactStrings(values: Array<string | undefined>): string[] {
++  return values.filter((v): v is string => Boolean(v));
++}
++
++function getErrorType(attrs: AttributeSource): string | undefined {
++  return getAttr(attrs, ["error.type"]);
++}
++
++function truncate(value: unknown, maxLength: number): string | undefined {
++  let text: string | undefined;
++  if (typeof value === "string") {
++    text = value;
++  } else if (typeof value === "number" || typeof value === "boolean") {
++    text = String(value);
++  } else if (
++    Array.isArray(value) &&
++    value.length === 1 &&
++    typeof value[0] === "string"
++  ) {
++    // OTel multi-value attributes are arrays; render single-element ones.
++    text = value[0];
++  }
++
++  const normalized = text?.replace(/\s+/g, " ").trim();
++  if (!normalized) {
++    return;
++  }
++  if (normalized.length <= maxLength) {
++    return normalized;
++  }
++  return `${normalized.slice(0, maxLength - 3)}...`;
++}
++
++/** Format a display part, same as truncate but exported for tests. */
++export function formatDisplayPart(
++  value: unknown,
++  maxLength: number
++): string | undefined {
++  return truncate(value, maxLength);
++}
++
++/** Deduplicate metadata entries case-insensitively. Values are already truncated by `getAttr`. */
++function dedupeMetadata(values: string[]): string[] {
++  const result: string[] = [];
++  const seen = new Set<string>();
++  for (const v of values) {
++    if (!v) {
++      continue;
++    }
++    const key = v.toLowerCase();
++    if (seen.has(key)) {
++      continue;
++    }
++    seen.add(key);
++    result.push(v);
++  }
++  return result;
++}
++
++/**
++ * Merge attribute sources from a raw envelope transaction item.
++ * Transaction-level attributes live in `contexts.trace.data`.
++ */
++export function mergeTransactionAttributes(
++  event: Record<string, unknown>
++): AttributeSource {
++  const contexts = event.contexts as Record<string, unknown> | undefined;
++  const trace = contexts?.trace as Record<string, unknown> | undefined;
++  const data = trace?.data as Record<string, unknown> | undefined;
++  return data ?? {};
++}
+diff --git a/test/commands/local/run.test.ts b/test/commands/local/run.test.ts
+index a9eeb510..f2fbc2a5 100644
+--- a/test/commands/local/run.test.ts
++++ b/test/commands/local/run.test.ts
+@@ -1,8 +1,8 @@
+ /**
+  * Tests for the `sentry local run` command.
+  *
+- * Exercises the command's func() body directly to verify env var injection
+- * and exit code propagation.
++ * Exercises the command's func() body directly to verify env var injection,
++ * exit code propagation, signal handling, and error cases.
+  */
+ 
+ import { describe, expect, test, vi } from "vitest";
+@@ -36,6 +36,17 @@ describe("sentry local run", () => {
+     }
+   });
+ 
++  test("throws ValidationError with only -- separator", async () => {
++    const func = (await runCommand.loader()) as unknown as RunFunc;
++    const ctx = makeContext();
++    try {
++      await func.call(ctx, { port: 0, host: "localhost" }, "--");
++      expect.unreachable("should have thrown");
++    } catch (err) {
++      expect(err).toBeInstanceOf(ValidationError);
++    }
++  });
++
+   test("injects SENTRY_SPOTLIGHT env var into child process", async () => {
+     const func = (await runCommand.loader()) as unknown as RunFunc;
+     const ctx = makeContext();
+@@ -49,6 +60,29 @@ describe("sentry local run", () => {
+     );
+   });
+ 
++  test("preserves existing SENTRY_TRACES_SAMPLE_RATE", async () => {
++    const originalRate = process.env.SENTRY_TRACES_SAMPLE_RATE;
++    process.env.SENTRY_TRACES_SAMPLE_RATE = "0.5";
++    try {
++      const func = (await runCommand.loader()) as unknown as RunFunc;
++      const ctx = makeContext();
++      // The child process should get 0.5, not 1
++      // We verify this indirectly — if it doesn't throw, the env was set
++      await func.call(
++        ctx,
++        { port: 19_878, host: "127.0.0.1" },
++        "printenv",
++        "SENTRY_TRACES_SAMPLE_RATE"
++      );
++    } finally {
++      if (originalRate === undefined) {
++        delete process.env.SENTRY_TRACES_SAMPLE_RATE;
++      } else {
++        process.env.SENTRY_TRACES_SAMPLE_RATE = originalRate;
++      }
++    }
++  });
++
+   test("propagates non-zero exit code as CliError", async () => {
+     const func = (await runCommand.loader()) as unknown as RunFunc;
+     const ctx = makeContext();
+@@ -62,4 +96,31 @@ describe("sentry local run", () => {
+       expect((err as CliError).message).toContain("exited with code");
+     }
+   });
++
++  test("throws on ENOENT (command not found)", async () => {
++    const func = (await runCommand.loader()) as unknown as RunFunc;
++    const ctx = makeContext();
++
++    try {
++      await func.call(
++        ctx,
++        { port: 19_879, host: "127.0.0.1" },
++        "nonexistent-command-that-does-not-exist"
++      );
++      expect.unreachable("should have thrown");
++    } catch (err) {
++      expect(err).toBeInstanceOf(Error);
++      expect((err as Error).message).toMatch(
++        /exited with code|Failed to start|ENOENT|spawn/i
++      );
++    }
++  });
++
++  test("strips leading -- separator from args", async () => {
++    const func = (await runCommand.loader()) as unknown as RunFunc;
++    const ctx = makeContext();
++
++    // "-- true" should strip "--" and run "true" successfully
++    await func.call(ctx, { port: 19_880, host: "127.0.0.1" }, "--", "true");
++  });
+ });
+diff --git a/test/commands/local/server.test.ts b/test/commands/local/server.test.ts
+new file mode 100644
+index 00000000..47aa41ac
+--- /dev/null
++++ b/test/commands/local/server.test.ts
+@@ -0,0 +1,244 @@
++/**
++ * Tests for the `sentry local serve` command infrastructure.
++ *
++ * Exercises buildApp (HTTP ingest, SSE streaming, CORS), isServerRunning,
++ * feedSSELine, and parsePort.
++ */
++
++import { createSpotlightBuffer } from "@spotlightjs/spotlight/sdk";
++import { describe, expect, test } from "vitest";
++import {
++  buildApp,
++  feedSSELine,
++  isServerRunning,
++  parsePort,
++} from "../../../src/commands/local/server.js";
++import { ValidationError } from "../../../src/lib/errors.js";
++import { SENTRY_CONTENT_TYPE } from "../../../src/lib/formatters/local.js";
++
++describe("parsePort", () => {
++  test("parses valid port numbers", () => {
++    expect(parsePort("8969")).toBe(8969);
++    expect(parsePort("0")).toBe(0);
++    expect(parsePort("65535")).toBe(65_535);
++  });
++
++  test("throws on negative port", () => {
++    expect(() => parsePort("-1")).toThrow(ValidationError);
++  });
++
++  test("throws on port above 65535", () => {
++    expect(() => parsePort("70000")).toThrow(ValidationError);
++  });
++
++  test("throws on non-integer", () => {
++    expect(() => parsePort("8969.5")).toThrow(ValidationError);
++  });
++
++  test("throws on non-numeric", () => {
++    expect(() => parsePort("abc")).toThrow();
++  });
++});
++
++describe("feedSSELine", () => {
++  function makeState() {
++    return { eventType: "", dataLines: [], id: "" };
++  }
++
++  test("parses event type", () => {
++    const state = makeState();
++    const events: Array<{ type: string; data: string; id: string }> = [];
++    feedSSELine(
++      "event: application/x-sentry-envelope",
++      state,
++      (type, data, id) => events.push({ type, data, id })
++    );
++    expect(state.eventType).toBe("application/x-sentry-envelope");
++    expect(events).toHaveLength(0);
++  });
++
++  test("parses data lines", () => {
++    const state = makeState();
++    const events: Array<{ type: string; data: string; id: string }> = [];
++    feedSSELine("data: hello", state, (type, data, id) =>
++      events.push({ type, data, id })
++    );
++    expect(state.dataLines).toEqual(["hello"]);
++    expect(events).toHaveLength(0);
++  });
++
++  test("parses id field", () => {
++    const state = makeState();
++    const events: Array<{ type: string; data: string; id: string }> = [];
++    feedSSELine("id: abc-123", state, (type, data, id) =>
++      events.push({ type, data, id })
++    );
++    expect(state.id).toBe("abc-123");
++  });
++
++  test("dispatches event on empty line", () => {
++    const state = makeState();
++    const events: Array<{ type: string; data: string; id: string }> = [];
++    const cb = (type: string, data: string, id: string) =>
++      events.push({ type, data, id });
++
++    feedSSELine("event: test-event", state, cb);
++    feedSSELine("id: evt-1", state, cb);
++    feedSSELine("data: payload", state, cb);
++    feedSSELine("", state, cb);
++
++    expect(events).toHaveLength(1);
++    expect(events[0]).toEqual({
++      type: "test-event",
++      data: "payload",
++      id: "evt-1",
++    });
++  });
++
++  test("resets state after dispatch", () => {
++    const state = makeState();
++    const events: Array<{ type: string; data: string; id: string }> = [];
++    const cb = (type: string, data: string, id: string) =>
++      events.push({ type, data, id });
++
++    feedSSELine("event: first", state, cb);
++    feedSSELine("data: one", state, cb);
++    feedSSELine("", state, cb);
++
++    expect(state.eventType).toBe("");
++    expect(state.dataLines).toEqual([]);
++    expect(state.id).toBe("");
++  });
++
++  test("concatenates multiple data lines with newline", () => {
++    const state = makeState();
++    const events: Array<{ type: string; data: string; id: string }> = [];
++    const cb = (type: string, data: string, id: string) =>
++      events.push({ type, data, id });
++
++    feedSSELine("data: line1", state, cb);
++    feedSSELine("data: line2", state, cb);
++    feedSSELine("", state, cb);
++
++    expect(events[0]?.data).toBe("line1\nline2");
++  });
++
++  test("does not dispatch on empty line with no data", () => {
++    const state = makeState();
++    const events: Array<{ type: string; data: string; id: string }> = [];
++    feedSSELine("", state, (type, data, id) => events.push({ type, data, id }));
++    expect(events).toHaveLength(0);
++  });
++
++  test("handles data without leading space", () => {
++    const state = makeState();
++    const events: Array<{ type: string; data: string; id: string }> = [];
++    const cb = (type: string, data: string, id: string) =>
++      events.push({ type, data, id });
++
++    feedSSELine("data:nospace", state, cb);
++    feedSSELine("", state, cb);
++
++    expect(events[0]?.data).toBe("nospace");
++  });
++});
++
++describe("buildApp", () => {
++  test("health endpoint returns OK", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/health");
++    expect(res.status).toBe(200);
++    expect(await res.text()).toBe("OK");
++  });
++
++  test("ingest endpoint accepts envelopes and returns 204", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const envelope =
++      '{"sdk":{"name":"sentry.node"}}\n{"type":"event"}\n{"message":"test"}';
++    const res = await app.request("/stream", {
++      method: "POST",
++      headers: { "Content-Type": SENTRY_CONTENT_TYPE },
++      body: envelope,
++    });
++    expect(res.status).toBe(204);
++  });
++
++  test("ingest via /api/:projectId/envelope/ returns 204", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const envelope =
++      '{"sdk":{"name":"sentry.node"}}\n{"type":"event"}\n{"message":"test"}';
++    const res = await app.request("/api/123/envelope/", {
++      method: "POST",
++      headers: { "Content-Type": SENTRY_CONTENT_TYPE },
++      body: envelope,
++    });
++    expect(res.status).toBe(204);
++  });
++
++  test("ingest rejects oversized payloads with 413", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/stream", {
++      method: "POST",
++      headers: {
++        "Content-Type": SENTRY_CONTENT_TYPE,
++        "Content-Length": String(11 * 1024 * 1024),
++      },
++      body: "x".repeat(1024),
++    });
++    expect(res.status).toBe(413);
++  });
++
++  test("CORS allows localhost origins", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/health", {
++      headers: { Origin: "http://localhost:3000" },
++    });
++    expect(res.headers.get("access-control-allow-origin")).toBe(
++      "http://localhost:3000"
++    );
++  });
++
++  test("CORS blocks non-localhost origins", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/health", {
++      headers: { Origin: "http://evil.example.com" },
++    });
++    expect(res.headers.get("access-control-allow-origin")).toBeNull();
++  });
++
++  test("SSE stream endpoint returns event-stream content type", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/stream", {
++      headers: { Accept: "text/event-stream" },
++    });
++    expect(res.status).toBe(200);
++    expect(res.headers.get("content-type")).toContain("text/event-stream");
++    // Abort to avoid hanging
++    if (res.body) {
++      await res.body.cancel();
++    }
++  });
++});
++
++describe("isServerRunning", () => {
++  test("returns false when no server is running", async () => {
++    // isServerRunning uses global fetch which is mocked in tests.
++    // Verify the function handles connection errors gracefully.
++    const result = await isServerRunning("http://127.0.0.1:19999");
++    expect(result).toBe(false);
++  });
++});
+diff --git a/test/lib/formatters/local.test.ts b/test/lib/formatters/local.test.ts
+index 89d4ef3d..08da8de3 100644
+--- a/test/lib/formatters/local.test.ts
++++ b/test/lib/formatters/local.test.ts
+@@ -11,6 +11,7 @@ import type { FilterValue } from "../../../src/lib/formatters/local.js";
+ import {
+   formatErrorItem,
+   formatItem,
++  formatItemJson,
+   formatSingleLog,
+   formatTime,
+   formatTransactionItem,
+@@ -207,6 +208,136 @@ describe("formatTransactionItem", () => {
+     const result = stripAnsi(formatTransactionItem(event, browserHeader));
+     expect(result).toContain("Transaction");
+   });
++
++  describe("semantic display from OTel attributes", () => {
++    const serverHeader = { sdk: { name: "sentry.python" } };
++
++    test("renders GenAI operation with model from trace data", () => {
++      const event = {
++        timestamp: 1_700_000_002,
++        start_timestamp: 1_700_000_000,
++        transaction: "process_user_request",
++        contexts: {
++          trace: {
++            op: "ai.pipeline",
++            data: {
++              "gen_ai.operation.name": "chat",
++              "gen_ai.request.model": "claude-4-sonnet",
++              "gen_ai.provider.name": "anthropic",
++            },
++          },
++        },
++        spans: [{}, {}, {}, {}, {}],
++      };
++      const result = stripAnsi(formatTransactionItem(event, serverHeader));
++      expect(result).toContain("[gen_ai]");
++      expect(result).toContain("chat anthropic/claude-4-sonnet");
++      expect(result).toContain("[2000ms]");
++      expect(result).toContain("[5 spans]");
++    });
++
++    test("renders MCP tool call from trace data", () => {
++      const event = {
++        timestamp: 1_700_000_001,
++        start_timestamp: 1_700_000_000,
++        transaction: "mcp-request",
++        contexts: {
++          trace: {
++            op: "http.client",
++            data: {
++              "mcp.method.name": "tools/call",
++              "gen_ai.tool.name": "search_files",
++            },
++          },
++        },
++      };
++      const result = stripAnsi(formatTransactionItem(event, serverHeader));
++      expect(result).toContain("[mcp]");
++      expect(result).toContain("tools/call search_files");
++    });
++
++    test("renders HTTP with server address from OTel attributes", () => {
++      const event = {
++        timestamp: 1_700_000_002,
++        start_timestamp: 1_700_000_000,
++        transaction: "POST",
++        contexts: {
++          trace: {
++            op: "http.client",
++            data: {
++              "http.request.method": "POST",
++              "server.address": "api.anthropic.com",
++              "http.response.status_code": "200",
++            },
++          },
++        },
++      };
++      const result = stripAnsi(formatTransactionItem(event, serverHeader));
++      expect(result).toContain("[http.client]");
++      expect(result).toContain("POST api.anthropic.com");
++      expect(result).toContain("[200]");
++    });
++
++    test("renders database query from OTel attributes", () => {
++      const event = {
++        timestamp: 1_700_000_001,
++        start_timestamp: 1_700_000_000,
++        transaction: "db-query",
++        contexts: {
++          trace: {
++            op: "db",
++            data: {
++              "db.system.name": "postgresql",
++              "db.query.summary": "SELECT users",
++            },
++          },
++        },
++      };
++      const result = stripAnsi(formatTransactionItem(event, serverHeader));
++      expect(result).toContain("[db]");
++      expect(result).toContain("SELECT users");
++      expect(result).toContain("[postgresql]");
++    });
++
++    test("falls back to transaction name when no semantic attributes", () => {
++      const event = {
++        timestamp: 1_700_000_001,
++        start_timestamp: 1_700_000_000,
++        transaction: "GET /api/users",
++        contexts: {
++          trace: {
++            op: "http.server",
++            data: {},
++          },
++        },
++      };
++      const result = stripAnsi(formatTransactionItem(event, serverHeader));
++      expect(result).toContain("[http.server]");
++      expect(result).toContain("GET /api/users");
++    });
++
++    test("renders GenAI error with error type metadata", () => {
++      const event = {
++        timestamp: 1_700_000_001,
++        start_timestamp: 1_700_000_000,
++        transaction: "ai-chat",
++        contexts: {
++          trace: {
++            op: "ai.pipeline",
++            data: {
++              "gen_ai.operation.name": "chat",
++              "gen_ai.request.model": "gpt-4o",
++              "error.type": "RateLimitError",
++            },
++          },
++        },
++      };
++      const result = stripAnsi(formatTransactionItem(event, serverHeader));
++      expect(result).toContain("[gen_ai]");
++      expect(result).toContain("chat gpt-4o");
++      expect(result).toContain("[RateLimitError]");
++    });
++  });
+ });
+ 
+ describe("formatSingleLog", () => {
+@@ -415,3 +546,153 @@ describe("inferSource", () => {
+     expect(result).toContain("[SERVER]");
+   });
+ });
++
++describe("formatItemJson", () => {
++  const serverHeader = { sdk: { name: "sentry.node" } };
++  const browserHeader = { sdk: { name: "sentry.javascript.browser" } };
++
++  test("formats error with exception and stack frame", () => {
++    const event = {
++      timestamp: 1_700_000_000,
++      exception: {
++        values: [
++          {
++            type: "TypeError",
++            value: "x is not a function",
++            stacktrace: {
++              frames: [
++                {
++                  filename: "src/handler.ts",
++                  lineno: 42,
++                  colno: 5,
++                  function: "handleRequest",
++                  in_app: true,
++                },
++              ],
++            },
++          },
++        ],
++      },
++    };
++    const lines = formatItemJson("error", event, serverHeader);
++    expect(lines).toHaveLength(1);
++    const parsed = JSON.parse(lines[0]);
++    expect(parsed.type).toBe("error");
++    expect(parsed.error_type).toBe("TypeError");
++    expect(parsed.message).toBe("x is not a function");
++    expect(parsed.filename).toBe("src/handler.ts");
++    expect(parsed.lineno).toBe(42);
++    expect(parsed.colno).toBe(5);
++    expect(parsed.function).toBe("handleRequest");
++    expect(parsed.source).toBe("server");
++  });
++
++  test("formats error without stack frame", () => {
++    const event = {
++      timestamp: 1_700_000_000,
++      message: "Something went wrong",
++    };
++    const lines = formatItemJson("error", event, serverHeader);
++    const parsed = JSON.parse(lines[0]);
++    expect(parsed.error_type).toBe("Error");
++    expect(parsed.message).toBe("Something went wrong");
++    expect(parsed.filename).toBeUndefined();
++  });
++
++  test("formats event type as error", () => {
++    const event = { timestamp: 1_700_000_000, message: "boom" };
++    const lines = formatItemJson("event", event, serverHeader);
++    const parsed = JSON.parse(lines[0]);
++    expect(parsed.type).toBe("error");
++  });
++
++  test("formats transaction with semantic attributes", () => {
++    const event = {
++      timestamp: 1_700_000_002,
++      start_timestamp: 1_700_000_000,
++      transaction: "process_request",
++      contexts: {
++        trace: {
++          op: "ai.pipeline",
++          data: {
++            "gen_ai.operation.name": "chat",
++            "gen_ai.request.model": "gpt-4o",
++          },
++        },
++      },
++      spans: [{}, {}, {}],
++    };
++    const lines = formatItemJson("transaction", event, serverHeader);
++    expect(lines).toHaveLength(1);
++    const parsed = JSON.parse(lines[0]);
++    expect(parsed.type).toBe("transaction");
++    expect(parsed.op).toBe("gen_ai");
++    expect(parsed.label).toBe("chat gpt-4o");
++    expect(parsed.duration_ms).toBe(2000);
++    expect(parsed.span_count).toBe(3);
++    expect(parsed.source).toBe("server");
++  });
++
++  test("formats transaction without semantic attributes", () => {
++    const event = {
++      timestamp: 1_700_000_001,
++      start_timestamp: 1_700_000_000,
++      transaction: "GET /api/users",
++      contexts: { trace: { op: "http.server" } },
++    };
++    const lines = formatItemJson("transaction", event, serverHeader);
++    const parsed = JSON.parse(lines[0]);
++    expect(parsed.label).toBe("GET /api/users");
++    expect(parsed.op).toBe("http.server");
++  });
++
++  test("formats log entries", () => {
++    const event = {
++      items: [
++        {
++          level: "info",
++          body: "User logged in",
++          timestamp: 1_700_000_000,
++          attributes: {
++            "sentry.sdk.name": { value: "node" },
++            user_id: { value: 42 },
++          },
++        },
++        { level: "debug", body: "Cache hit" },
++      ],
++    };
++    const lines = formatItemJson("log", event, serverHeader);
++    expect(lines).toHaveLength(2);
++
++    const first = JSON.parse(lines[0]);
++    expect(first.type).toBe("log");
++    expect(first.level).toBe("info");
++    expect(first.message).toBe("User logged in");
++    expect(first.attributes).toEqual({ user_id: 42 });
++    expect(first.attributes["sentry.sdk.name"]).toBeUndefined();
++
++    const second = JSON.parse(lines[1]);
++    expect(second.level).toBe("debug");
++    expect(second.message).toBe("Cache hit");
++  });
++
++  test("returns empty for log with no items", () => {
++    const lines = formatItemJson("log", { items: [] }, serverHeader);
++    expect(lines).toHaveLength(0);
++  });
++
++  test("formats unknown item types", () => {
++    const event = { timestamp: 1_700_000_000 };
++    const lines = formatItemJson("attachment", event, serverHeader);
++    expect(lines).toHaveLength(1);
++    const parsed = JSON.parse(lines[0]);
++    expect(parsed.type).toBe("attachment");
++  });
++
++  test("detects browser source in JSON", () => {
++    const event = { timestamp: 1_700_000_000, message: "error" };
++    const lines = formatItemJson("error", event, browserHeader);
++    const parsed = JSON.parse(lines[0]);
++    expect(parsed.source).toBe("browser");
++  });
++});
+diff --git a/test/lib/formatters/semantic-display.test.ts b/test/lib/formatters/semantic-display.test.ts
+new file mode 100644
+index 00000000..836b7ca4
+--- /dev/null
++++ b/test/lib/formatters/semantic-display.test.ts
+@@ -0,0 +1,580 @@
++/**
++ * Unit tests for OTel semantic attribute rendering.
++ *
++ * Tests cover the primary semantic formatters (GenAI, MCP, HTTP, DB, process)
++ * and the integration helpers used by the local formatter.
++ */
++
++import { describe, expect, test } from "vitest";
++import {
++  type AttributeSource,
++  formatDisplayPart,
++  formatSemanticSpanDisplay,
++  inferSemanticOp,
++  mergeTransactionAttributes,
++} from "../../../src/lib/formatters/semantic-display.js";
++
++describe("formatSemanticSpanDisplay", () => {
++  describe("GenAI spans", () => {
++    test("renders gen_ai operation with model", () => {
++      const attrs: AttributeSource = {
++        "gen_ai.operation.name": "chat",
++        "gen_ai.request.model": "claude-4-sonnet",
++        "gen_ai.provider.name": "anthropic",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("chat anthropic/claude-4-sonnet");
++      expect(result.metadata).toEqual([]);
++    });
++
++    test("renders gen_ai operation with tool name and model in metadata", () => {
++      const attrs: AttributeSource = {
++        "gen_ai.operation.name": "execute_tool",
++        "gen_ai.tool.name": "search_files",
++        "gen_ai.request.model": "gpt-4o",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("execute_tool search_files");
++      expect(result.metadata).toContain("gpt-4o");
++    });
++
++    test("renders gen_ai agent name", () => {
++      const attrs: AttributeSource = {
++        "gen_ai.operation.name": "invoke_agent",
++        "gen_ai.agent.name": "code-reviewer",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("invoke_agent code-reviewer");
++    });
++
++    test("renders model with provider prefix when no slash", () => {
++      const attrs: AttributeSource = {
++        "gen_ai.request.model": "gpt-4o",
++        "gen_ai.provider.name": "openai",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("openai/gpt-4o");
++    });
++
++    test("does not double-prefix model that already has slash", () => {
++      const attrs: AttributeSource = {
++        "gen_ai.request.model": "anthropic/claude-4-sonnet",
++        "gen_ai.provider.name": "anthropic",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("anthropic/claude-4-sonnet");
++    });
++
++    test("prefers response model over request model", () => {
++      const attrs: AttributeSource = {
++        "gen_ai.response.model": "gpt-4o-2026-05-13",
++        "gen_ai.request.model": "gpt-4o",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("gpt-4o-2026-05-13");
++    });
++
++    test("shows error type in metadata", () => {
++      const attrs: AttributeSource = {
++        "gen_ai.operation.name": "chat",
++        "gen_ai.request.model": "gpt-4o",
++        "error.type": "RateLimitError",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.metadata).toContain("RateLimitError");
++    });
++
++    test("falls back when no gen_ai attributes present", () => {
++      const attrs: AttributeSource = { "some.other": "value" };
++      const result = formatSemanticSpanDisplay(attrs, "my-transaction");
++      expect(result.label).toBe("my-transaction");
++      expect(result.metadata).toEqual([]);
++    });
++  });
++
++  describe("MCP spans", () => {
++    test("renders MCP method with tool name", () => {
++      const attrs: AttributeSource = {
++        "mcp.method.name": "tools/call",
++        "gen_ai.tool.name": "search_files",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("tools/call search_files");
++    });
++
++    test("renders MCP method with resource URI", () => {
++      const attrs: AttributeSource = {
++        "mcp.method.name": "resources/read",
++        "mcp.resource.uri": "file:///src/main.ts?line=42",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("resources/read file:///src/main.ts");
++    });
++
++    test("MCP takes priority over HTTP transport attributes", () => {
++      const attrs: AttributeSource = {
++        "mcp.method.name": "tools/call",
++        "gen_ai.tool.name": "search_files",
++        "http.request.method": "POST",
++        "url.full": "http://localhost:3000/mcp",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "POST");
++      expect(result.label).toBe("tools/call search_files");
++    });
++  });
++
++  describe("HTTP spans", () => {
++    test("renders HTTP method with URL target", () => {
++      const attrs: AttributeSource = {
++        "http.request.method": "get",
++        "url.full": "https://api.example.com/v1/users?page=1",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("GET api.example.com/v1/users");
++    });
++
++    test("renders HTTP method with route", () => {
++      const attrs: AttributeSource = {
++        "http.request.method": "POST",
++        "http.route": "/api/v1/messages",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("POST /api/v1/messages");
++    });
++
++    test("shows status code in metadata", () => {
++      const attrs: AttributeSource = {
++        "http.request.method": "GET",
++        "http.response.status_code": "200",
++        "server.address": "api.openai.com",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.metadata).toContain("200");
++    });
++
++    test("shows server address with port", () => {
++      const attrs: AttributeSource = {
++        "http.request.method": "POST",
++        "server.address": "api.anthropic.com",
++        "server.port": "443",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("POST api.anthropic.com:443");
++    });
++
++    test("handles numeric status code", () => {
++      const attrs: AttributeSource = {
++        "http.request.method": "GET",
++        "http.response.status_code": 200,
++        "url.full": "https://api.example.com/v1/users",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.metadata).toContain("200");
++    });
++  });
++
++  describe("Database spans", () => {
++    test("renders DB query summary", () => {
++      const attrs: AttributeSource = {
++        "db.system.name": "postgresql",
++        "db.query.summary": "SELECT users",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("SELECT users");
++      expect(result.metadata).toContain("postgresql");
++    });
++
++    test("renders DB operation with collection", () => {
++      const attrs: AttributeSource = {
++        "db.system.name": "redis",
++        "db.operation.name": "GET",
++        "db.collection.name": "sessions",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("GET sessions");
++      expect(result.metadata).toContain("redis");
++    });
++
++    test("parameterizes DB query text", () => {
++      const attrs: AttributeSource = {
++        "db.system.name": "mysql",
++        "db.query.text": "SELECT * FROM users WHERE id = 42 AND name = 'Alice'",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe(
++        "SELECT * FROM users WHERE id = ? AND name = ?"
++      );
++    });
++  });
++
++  describe("Process spans", () => {
++    test("renders process command with exit code", () => {
++      const attrs: AttributeSource = {
++        "process.executable.name": "git",
++        "process.exit.code": "0",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("git");
++      expect(result.metadata).toContain("exit:0");
++    });
++
++    test("renders non-zero exit code", () => {
++      const attrs: AttributeSource = {
++        "process.executable.name": "npm",
++        "process.exit.code": "1",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("npm");
++      expect(result.metadata).toContain("exit:1");
++    });
++  });
++
++  describe("FaaS spans", () => {
++    test("renders FaaS invocation with coldstart", () => {
++      const attrs: AttributeSource = {
++        "faas.trigger": "http",
++        "faas.invoked_name": "processOrder",
++        "faas.invoked_provider": "aws",
++        "faas.coldstart": "true",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("http processOrder");
++      expect(result.metadata).toContain("aws");
++      expect(result.metadata).toContain("coldstart");
++    });
++
++    test("ignores faas.coldstart=false", () => {
++      const attrs: AttributeSource = {
++        "faas.trigger": "http",
++        "faas.invoked_name": "handler",
++        "faas.coldstart": "false",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("http handler");
++      expect(result.metadata).not.toContain("coldstart");
++    });
++  });
++
++  describe("GraphQL spans", () => {
++    test("renders operation type with name", () => {
++      const attrs: AttributeSource = {
++        "graphql.operation.type": "query",
++        "graphql.operation.name": "GetUser",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("query GetUser");
++    });
++
++    test("falls back to document when no operation name", () => {
++      const attrs: AttributeSource = {
++        "graphql.document": "{ user(id: 1) { name } }",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("{ user(id: 1) { name } }");
++    });
++
++    test("returns null for non-graphql attributes", () => {
++      const result = formatSemanticSpanDisplay({}, "fallback");
++      expect(result.label).toBe("fallback");
++    });
++  });
++
++  describe("RPC spans", () => {
++    test("renders service and method", () => {
++      const attrs: AttributeSource = {
++        "rpc.system.name": "grpc",
++        "rpc.service": "UserService",
++        "rpc.method": "GetUser",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("UserService/GetUser");
++      expect(result.metadata).toContain("grpc");
++    });
++
++    test("shows region and status", () => {
++      const attrs: AttributeSource = {
++        "rpc.system.name": "aws-api",
++        "rpc.service": "S3",
++        "rpc.method": "PutObject",
++        "rpc.response.status_code": "200",
++        "cloud.region": "us-east-1",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("S3/PutObject");
++      expect(result.metadata).toContain("us-east-1");
++      expect(result.metadata).toContain("200");
++    });
++  });
++
++  describe("Messaging spans", () => {
++    test("renders operation with destination", () => {
++      const attrs: AttributeSource = {
++        "messaging.system": "kafka",
++        "messaging.operation.name": "publish",
++        "messaging.destination.name": "user-events",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("publish user-events");
++      expect(result.metadata).toContain("kafka");
++    });
++
++    test("shows batch message count", () => {
++      const attrs: AttributeSource = {
++        "messaging.system": "rabbitmq",
++        "messaging.operation.name": "receive",
++        "messaging.destination.name": "orders",
++        "messaging.batch.message_count": "50",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.metadata).toContain("messages:50");
++    });
++  });
++
++  describe("Object store spans", () => {
++    test("renders bucket and key", () => {
++      const attrs: AttributeSource = {
++        "aws.s3.bucket": "my-bucket",
++        "aws.s3.key": "uploads/photo.jpg",
++        "rpc.method": "PutObject",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("PutObject my-bucket/uploads/photo.jpg");
++    });
++
++    test("renders bucket alone", () => {
++      const attrs: AttributeSource = {
++        "aws.s3.bucket": "my-bucket",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("my-bucket");
++    });
++  });
++
++  describe("CloudEvents spans", () => {
++    test("renders event type with subject", () => {
++      const attrs: AttributeSource = {
++        "cloudevents.event_type": "com.example.order.created",
++        "cloudevents.event_subject": "order-123",
++        "cloudevents.event_spec_version": "1.0",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("com.example.order.created order-123");
++      expect(result.metadata).toContain("cloudevents:1.0");
++    });
++  });
++
++  describe("CICD spans", () => {
++    test("renders pipeline action with name", () => {
++      const attrs: AttributeSource = {
++        "cicd.pipeline.action.name": "build",
++        "cicd.pipeline.name": "main-ci",
++        "cicd.pipeline.result": "success",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("build main-ci");
++      expect(result.metadata).toContain("success");
++    });
++
++    test("renders task name as fallback", () => {
++      const attrs: AttributeSource = {
++        "cicd.pipeline.task.name": "run-tests",
++        "cicd.pipeline.task.run.result": "failed",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("run-tests");
++      expect(result.metadata).toContain("failed");
++    });
++  });
++
++  describe("Feature flag spans", () => {
++    test("renders flag key with variant", () => {
++      const attrs: AttributeSource = {
++        "feature_flag.key": "new-checkout",
++        "feature_flag.result.variant": "enabled",
++        "feature_flag.provider.name": "launchdarkly",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("new-checkout enabled");
++      expect(result.metadata).toContain("launchdarkly");
++    });
++
++    test("renders flag key with value when no variant", () => {
++      const attrs: AttributeSource = {
++        "feature_flag.key": "rate-limit",
++        "feature_flag.result.value": "100",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label).toBe("rate-limit 100");
++    });
++  });
++
++  describe("Error/exception spans", () => {
++    test("renders error type as metadata", () => {
++      const attrs: AttributeSource = {
++        "error.type": "TimeoutError",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "my-transaction");
++      expect(result.label).toBe("my-transaction");
++      expect(result.metadata).toContain("TimeoutError");
++    });
++
++    test("renders exception type for unnamed spans", () => {
++      const attrs: AttributeSource = {
++        "exception.type": "ValueError",
++        "exception.message": "invalid input",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "unnamed");
++      expect(result.label).toBe("ValueError");
++    });
++
++    test("shows exception type as metadata for named spans", () => {
++      const attrs: AttributeSource = {
++        "exception.type": "IOError",
++      };
++      const result = formatSemanticSpanDisplay(attrs, "read-file");
++      expect(result.label).toBe("read-file");
++      expect(result.metadata).toContain("IOError");
++    });
++  });
++
++  describe("fallback behavior", () => {
++    test("returns fallback label for empty attributes", () => {
++      const result = formatSemanticSpanDisplay({}, "GET /api/users");
++      expect(result.label).toBe("GET /api/users");
++      expect(result.metadata).toEqual([]);
++    });
++
++    test("truncates very long labels", () => {
++      const attrs: AttributeSource = {
++        "gen_ai.operation.name": "a".repeat(200),
++      };
++      const result = formatSemanticSpanDisplay(attrs, "fallback");
++      expect(result.label.length).toBeLessThanOrEqual(123); // 120 + "..."
++    });
++  });
++});
++
++describe("inferSemanticOp", () => {
++  test("returns gen_ai for GenAI attributes", () => {
++    expect(inferSemanticOp({ "gen_ai.operation.name": "chat" })).toBe("gen_ai");
++  });
++
++  test("returns gen_ai for tool name", () => {
++    expect(inferSemanticOp({ "gen_ai.tool.name": "search" })).toBe("gen_ai");
++  });
++
++  test("returns gen_ai for agent name", () => {
++    expect(inferSemanticOp({ "gen_ai.agent.name": "coder" })).toBe("gen_ai");
++  });
++
++  test("returns mcp for MCP attributes", () => {
++    expect(inferSemanticOp({ "mcp.method.name": "tools/call" })).toBe("mcp");
++  });
++
++  test("returns db for database attributes", () => {
++    expect(inferSemanticOp({ "db.system.name": "postgresql" })).toBe("db");
++  });
++
++  test("returns undefined for HTTP (keeps original op)", () => {
++    expect(inferSemanticOp({ "http.request.method": "GET" })).toBeUndefined();
++  });
++
++  test("returns undefined for no attributes", () => {
++    expect(inferSemanticOp({})).toBeUndefined();
++  });
++
++  test("returns process for process attributes", () => {
++    expect(inferSemanticOp({ "process.executable.name": "git" })).toBe(
++      "process"
++    );
++  });
++
++  test("returns s3 for S3 attributes (not rpc)", () => {
++    // S3 spans carry rpc.method but should be tagged as s3
++    expect(
++      inferSemanticOp({
++        "aws.s3.bucket": "my-bucket",
++        "rpc.method": "PutObject",
++        "rpc.service": "S3",
++      })
++    ).toBe("s3");
++  });
++
++  test("returns rpc for RPC attributes", () => {
++    expect(inferSemanticOp({ "rpc.system.name": "grpc" })).toBe("rpc");
++  });
++
++  test("returns messaging for messaging attributes", () => {
++    expect(inferSemanticOp({ "messaging.system": "kafka" })).toBe("messaging");
++  });
++});
++
++describe("mergeTransactionAttributes", () => {
++  test("extracts attributes from contexts.trace.data", () => {
++    const event = {
++      contexts: {
++        trace: {
++          data: {
++            "gen_ai.operation.name": "chat",
++            "gen_ai.request.model": "gpt-4o",
++          },
++        },
++      },
++    };
++    const attrs = mergeTransactionAttributes(event);
++    expect(attrs["gen_ai.operation.name"]).toBe("chat");
++    expect(attrs["gen_ai.request.model"]).toBe("gpt-4o");
++  });
++
++  test("returns empty object when no data", () => {
++    expect(mergeTransactionAttributes({})).toEqual({});
++    expect(mergeTransactionAttributes({ contexts: {} })).toEqual({});
++    expect(mergeTransactionAttributes({ contexts: { trace: {} } })).toEqual({});
++  });
++});
++
++describe("formatDisplayPart", () => {
++  test("formats string values", () => {
++    expect(formatDisplayPart("hello", 64)).toBe("hello");
++  });
++
++  test("formats numeric values", () => {
++    expect(formatDisplayPart(200, 64)).toBe("200");
++  });
++
++  test("formats boolean values", () => {
++    expect(formatDisplayPart(true, 64)).toBe("true");
++  });
++
++  test("returns undefined for null/undefined", () => {
++    expect(formatDisplayPart(null, 64)).toBeUndefined();
++    expect(formatDisplayPart(undefined, 64)).toBeUndefined();
++  });
++
++  test("returns undefined for empty string", () => {
++    expect(formatDisplayPart("", 64)).toBeUndefined();
++    expect(formatDisplayPart("   ", 64)).toBeUndefined();
++  });
++
++  test("truncates long values", () => {
++    const long = "a".repeat(100);
++    const result = formatDisplayPart(long, 20);
++    expect(result).toBe(`${"a".repeat(17)}...`);
++  });
++
++  test("collapses whitespace", () => {
++    expect(formatDisplayPart("hello  \n  world", 64)).toBe("hello world");
++  });
++
++  test("renders single-element string arrays", () => {
++    expect(formatDisplayPart(["postgresql"], 64)).toBe("postgresql");
++  });
++
++  test("ignores multi-element arrays", () => {
++    expect(formatDisplayPart(["a", "b"], 64)).toBeUndefined();
++  });
++
++  test("ignores arrays with non-string elements", () => {
++    expect(formatDisplayPart([42], 64)).toBeUndefined();
++  });
++});

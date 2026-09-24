@@ -1,0 +1,189 @@
+diff --git a/packages/eas-cli/src/user/__tests__/SessionManager-test.ts b/packages/eas-cli/src/user/__tests__/SessionManager-test.ts
+index 40168a0..38c4feb 100644
+--- a/packages/eas-cli/src/user/__tests__/SessionManager-test.ts
++++ b/packages/eas-cli/src/user/__tests__/SessionManager-test.ts
+@@ -1,20 +1,28 @@
+ import fs from 'fs-extra';
+ import { vol } from 'memfs';
++import http from 'http';
+ import path from 'path';
+ 
+ import { ApiV2Error } from '../../ApiV2Error';
+ import { AnalyticsWithOrchestration } from '../../analytics/AnalyticsManager';
+-import { ApiV2Client } from '../../api';
++import { ApiV2Client, getExpoWebsiteBaseUrl } from '../../api';
+ import Log from '../../log';
+ import { promptAsync, selectAsync } from '../../prompts';
+ import { getStateJsonPath } from '../../utils/paths';
+ import SessionManager, { UserSecondFactorDeviceMethod } from '../SessionManager';
+-import { fetchSessionSecretAndSsoUserAsync } from '../fetchSessionSecretAndSsoUser';
++import { fetchUserAsync } from '../fetchUser';
+ import { fetchSessionSecretAndUserAsync } from '../fetchSessionSecretAndUser';
+ 
+ jest.mock('../../prompts');
+ jest.mock('../../log');
+ jest.mock('fs');
++jest.mock('@oclif/core', () => ({
++  Errors: {
++    error: (message: string): never => {
++      throw new Error(message);
++    },
++  },
++}));
+ jest.mock('../../graphql/queries/UserQuery', () => ({
+   UserQuery: {
+     currentUserAsync: async () => ({
+@@ -25,8 +33,11 @@ jest.mock('../../graphql/queries/UserQuery', () => ({
+   },
+ }));
+ jest.mock('../fetchSessionSecretAndUser');
+-jest.mock('../fetchSessionSecretAndSsoUser');
++jest.mock('../fetchUser');
+ jest.mock('../../api');
++jest.mock('better-opn');
++
++const openBrowserAsync = jest.requireMock('better-opn') as jest.Mock;
+ 
+ const authStub: any = {
+   sessionSecret: 'SESSION_SECRET',
+@@ -43,10 +54,51 @@ const analytics: AnalyticsWithOrchestration = {
+   flushAsync: jest.fn(async (): Promise<void> => {}),
+ };
+ 
++type BrowserCallbackResult = {
++  browserUrl: URL;
++  statusCode: number | undefined;
++  location: string | undefined;
++};
++
++function mockBrowserCallback(sessionSecret?: string): Promise<BrowserCallbackResult> {
++  return new Promise<BrowserCallbackResult>((resolve, reject) => {
++    openBrowserAsync.mockImplementation(async (rawUrl: string) => {
++      const browserUrl = new URL(
++        typeof rawUrl === 'string' ? rawUrl : (rawUrl as unknown as { url: string }).url
++      );
++      const callbackUrlValue = browserUrl.searchParams.get('app_redirect_uri');
++      if (!callbackUrlValue) {
++        reject(new Error('Browser login URL is missing app_redirect_uri'));
++        return false;
++      }
++
++      const callbackUrl = new URL(callbackUrlValue);
++      if (sessionSecret) {
++        callbackUrl.searchParams.set('session_secret', sessionSecret);
++      }
++
++      const request = http.get(callbackUrl, response => {
++        response.resume();
++        response.on('end', () => {
++          resolve({
++            browserUrl,
++            statusCode: response.statusCode,
++            location: response.headers.location,
++          });
++        });
++      });
++      request.on('error', reject);
++      return false;
++    });
++  });
++}
++
+ beforeEach(() => {
+   vol.reset();
+   jest.resetModules();
+   jest.clearAllMocks();
++  jest.mocked(getExpoWebsiteBaseUrl).mockReturnValue('https://expo.dev');
++  jest.mocked(fetchUserAsync).mockResolvedValue({ id: 'USER_ID', username: 'USERNAME' });
+   process.env = { ...OLD_ENV }; // Make a copy
+ });
+ 
+@@ -156,26 +208,55 @@ describe(SessionManager, () => {
+     });
+   });
+ 
+-  describe('ssoLoginAsync', () => {
+-    it('saves user data to ~/.expo/state.json', async () => {
+-      jest.mocked(fetchSessionSecretAndSsoUserAsync).mockResolvedValue({
+-        sessionSecret: 'SESSION_SECRET',
+-        id: 'USER_ID',
+-        username: 'USERNAME',
++  describe('browser authentication', () => {
++    it('keeps SSO in the SSO browser flow and saves the session', async () => {
++      const callback = mockBrowserCallback('SESSION_SECRET');
++      const sessionManager = new SessionManager(analytics);
++
++      await sessionManager.showLoginPromptAsync({ sso: true });
++
++      const result = await callback;
++      expect(result.browserUrl.pathname).toBe('/sso-login');
++      expect(result.statusCode).toBe(302);
++      expect(new URL(result.location!).origin).toBe('https://expo.dev');
++      expect(await fs.readJSON(getStateJsonPath())).toMatchObject({
++        auth: {
++          sessionSecret: 'SESSION_SECRET',
++          userId: 'USER_ID',
++          username: 'USERNAME',
++        },
+       });
++    });
++
++    it('uses the regular browser flow and saves the session', async () => {
++      const callback = mockBrowserCallback('SESSION_SECRET');
+       const sessionManager = new SessionManager(analytics);
+-      await sessionManager['ssoLoginAsync']();
+-      expect(await fs.readFile(getStateJsonPath(), 'utf8')).toMatchInlineSnapshot(`
+-        "{
+-          "auth": {
+-            "sessionSecret": "SESSION_SECRET",
+-            "userId": "USER_ID",
+-            "username": "USERNAME",
+-            "currentConnection": "Browser-Flow-Authentication"
+-          }
+-        }
+-        "
+-      `);
++
++      await sessionManager.showLoginPromptAsync({ browser: true } as any);
++
++      const result = await callback;
++      expect(result.browserUrl.pathname).toBe('/login');
++      expect(result.statusCode).toBe(302);
++      expect(new URL(result.location!).origin).toBe('https://expo.dev');
++      expect(await fs.readJSON(getStateJsonPath())).toMatchObject({
++        auth: {
++          sessionSecret: 'SESSION_SECRET',
++          userId: 'USER_ID',
++          username: 'USERNAME',
++        },
++      });
++    });
++
++    it('redirects browser callback failures to expo.dev', async () => {
++      const callback = mockBrowserCallback();
++      const sessionManager = new SessionManager(analytics);
++
++      await expect(sessionManager.showLoginPromptAsync({ browser: true } as any)).rejects.toThrow();
++      expect(openBrowserAsync).toHaveBeenCalled();
++
++      const result = await callback;
++      expect(result.statusCode).toBe(302);
++      expect(new URL(result.location!).origin).toBe('https://expo.dev');
+     });
+   });
+ 
+@@ -288,11 +369,13 @@ describe(SessionManager, () => {
+ 
+     it('calls SSO login if the sso flag is true', async () => {
+       const sessionManager = new SessionManager(analytics);
++      const callback = mockBrowserCallback('SESSION_SECRET');
+ 
+       // SSO login
+       await sessionManager.showLoginPromptAsync({ sso: true });
++      await callback;
+       expect(promptAsync).not.toHaveBeenCalled();
+-      expect(fetchSessionSecretAndSsoUserAsync).toHaveBeenCalled();
++      expect(openBrowserAsync).toHaveBeenCalled();
+     });
+   });
+ 

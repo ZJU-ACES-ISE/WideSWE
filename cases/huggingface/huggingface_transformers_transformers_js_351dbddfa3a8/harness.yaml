@@ -1,0 +1,32 @@
+task_id: huggingface_transformers_transformers_js_351dbddfa3a8
+hidden_test_patches:
+- repo: transformers
+  patch: hidden/patches/transformers-hidden-tests.patch
+  test_profile: transformers-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/models/cohere_asr/__init__.py
+  - tests/models/cohere_asr/test_modeling_cohere_asr.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from huggingface/transformers PR(s) 45023
+- repo: transformers.js
+  patch: hidden/patches/transformers.js-hidden-tests.patch
+  test_profile: transformers_js-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - packages/transformers/tests/models/cohere_asr/test_feature_extraction_cohere_asr.js
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from huggingface/transformers.js PR(s) 1610
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - transformers-hidden
+    - transformers_js-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

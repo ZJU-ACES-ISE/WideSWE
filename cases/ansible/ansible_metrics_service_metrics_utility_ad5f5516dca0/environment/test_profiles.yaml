@@ -1,0 +1,44 @@
+profiles:
+  metrics_service-hidden:
+    repo: metrics-service
+    workdir: repos/ansible/metrics-service
+    command: environment/run_profile.sh metrics_service-hidden
+    status: implemented
+    docker_service: ansible-metrics-python
+    dependency_image: ecosyncbench/base/ansible-django-py:3.12
+    test_files:
+    - tests/unit/tasks/collectors/test_collect_daily_metrics.py
+    - tests/unit/tasks/test_cron_scheduler.py
+    - tests/unit/tasks/test_task_groups.py
+    public_smoke_command: uv run pytest -q -o addopts="" tests/test_simple.py
+  metrics_utility-hidden:
+    repo: metrics-utility
+    workdir: repos/ansible/metrics-utility
+    command: environment/run_profile.sh metrics_utility-hidden
+    status: implemented
+    docker_service: ansible-metrics-python
+    dependency_image: ecosyncbench/base/ansible-django-py:3.12
+    test_files:
+    - metrics_utility/test/gather/test_feature_flags_service_gather.py
+    - metrics_utility/test/library/test_collectors_task_executions_service.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_all.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_all_no_events.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job1.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job2.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job3.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job4.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job5.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job6.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job7.py
+    - metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job8.py
+    - metrics_utility/test/test_anonymized_rollups/helpers.py
+    - metrics_utility/test/test_anonymized_rollups/test_anonymized_rollups_module.py
+    - metrics_utility/test/test_anonymized_rollups/test_feature_flags_anonymized_rollup.py
+    - metrics_utility/test/test_anonymized_rollups/test_from_gather_to_json.py
+    - metrics_utility/test/test_anonymized_rollups/test_jobs_anonymized_rollups.py
+    - metrics_utility/test/test_anonymized_rollups/test_json.py
+    - metrics_utility/test/test_anonymized_rollups/test_multiple_files.py
+    - metrics_utility/test/test_anonymized_rollups/test_task_executions_anonymized_rollup.py
+    - tools/anonymized_db_perf_data/rollup_performance_test.py
+    - tools/docker/dab_feature_flags.sql
+    public_smoke_command: uv run pytest -q -o addopts="" metrics_utility/test/library/test_csv_utils.py

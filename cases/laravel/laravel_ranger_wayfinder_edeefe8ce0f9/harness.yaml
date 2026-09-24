@@ -1,0 +1,34 @@
+task_id: laravel_ranger_wayfinder_edeefe8ce0f9
+hidden_test_patches:
+- repo: ranger
+  patch: hidden/patches/ranger-hidden-tests.patch
+  test_profile: ranger-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/Feature/EnumsTest.php
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from laravel/ranger PR(s) 19
+- repo: wayfinder
+  patch: hidden/patches/wayfinder-hidden-tests.patch
+  test_profile: wayfinder-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/Enums.test.ts
+  - workbench/app/Enums/UnitEnum.php
+  hidden_file: *id002
+  semantic_changes:
+  - Includes the upstream UnitEnum input fixture so existing and new enum tests
+    execute instead of failing test-file collection on a Gold-only fixture.
+  source: upstream test changes from laravel/wayfinder PR(s) 165
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - ranger-hidden
+    - wayfinder-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

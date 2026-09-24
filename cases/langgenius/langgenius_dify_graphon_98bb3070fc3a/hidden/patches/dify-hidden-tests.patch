@@ -1,0 +1,1185 @@
+diff --git a/api/providers/trace/trace-arize-phoenix/tests/unit_tests/arize_phoenix_trace/test_arize_phoenix_trace.py b/api/providers/trace/trace-arize-phoenix/tests/unit_tests/arize_phoenix_trace/test_arize_phoenix_trace.py
+index e9ecc2e..6ca9588 100644
+--- a/api/providers/trace/trace-arize-phoenix/tests/unit_tests/arize_phoenix_trace/test_arize_phoenix_trace.py
++++ b/api/providers/trace/trace-arize-phoenix/tests/unit_tests/arize_phoenix_trace/test_arize_phoenix_trace.py
+@@ -1,7 +1,9 @@
++import json
+ from datetime import UTC, datetime, timedelta
+-from typing import cast
++from typing import Any, cast
+ from unittest.mock import MagicMock, patch
+ 
++import dify_trace_arize_phoenix.arize_phoenix_trace as arize_phoenix_trace_module
+ import pytest
+ from dify_trace_arize_phoenix.arize_phoenix_trace import (
+     ArizePhoenixDataTrace,
+@@ -13,9 +15,10 @@ from dify_trace_arize_phoenix.arize_phoenix_trace import (
+     wrap_span_metadata,
+ )
+ from dify_trace_arize_phoenix.config import ArizeConfig, PhoenixConfig
++from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
+ from opentelemetry.sdk.trace import Tracer
+ from opentelemetry.semconv.trace import SpanAttributes as OTELSpanAttributes
+-from opentelemetry.trace import StatusCode
++from opentelemetry.trace import Span, SpanContext, StatusCode, TraceFlags, TraceState, get_current_span
+ 
+ from core.ops.entities.trace_entity import (
+     DatasetRetrievalTraceInfo,
+@@ -24,6 +27,8 @@ from core.ops.entities.trace_entity import (
+     ModerationTraceInfo,
+     SuggestedQuestionTraceInfo,
+     ToolTraceInfo,
++    TraceTaskName,
++    WorkflowNodeTraceInfo,
+     WorkflowTraceInfo,
+ )
+ 
+@@ -73,6 +78,121 @@ def _make_message_info(**kwargs):
+     return MessageTraceInfo(**defaults)
+ 
+ 
++def _get_start_span_call(start_span_mock, *, span_name: str):
++    for call in start_span_mock.call_args_list:
++        if call.kwargs.get("name") == span_name:
++            return call
++    raise AssertionError(f"Could not find start_span call with name={span_name!r}")
++
++
++def _get_workflow_span_calls(start_span_mock):
++    calls = []
++    for call in start_span_mock.call_args_list:
++        attributes = call.kwargs.get("attributes", {})
++        metadata = json.loads(attributes.get(SpanAttributes.METADATA, "{}"))
++        if metadata.get("trace_entity_type") == "workflow" and not metadata.get("node_execution_id"):
++            calls.append(call)
++    return calls
++
++
++def _get_node_span_call(start_span_mock, *, execution_id: str):
++    for call in start_span_mock.call_args_list:
++        attributes = call.kwargs.get("attributes", {})
++        metadata = json.loads(attributes.get(SpanAttributes.METADATA, "{}"))
++        if execution_id in {metadata.get("node_id"), metadata.get("node_execution_id")}:
++            return call
++    raise AssertionError(f"Could not find node span call for execution_id={execution_id!r}")
++
++
++def _install_labeled_spans(trace_instance):
++    trace_instance.carrier = {}
++
++    def start_span(*args, **kwargs):
++        attributes = kwargs.get("attributes", {})
++        metadata = json.loads(attributes.get(SpanAttributes.METADATA, "{}"))
++        label = metadata.get("node_execution_id") or metadata.get("node_id") or "workflow"
++        span = MagicMock(name=f"{label}-span")
++        span._context_label = label
++        return span
++
++    trace_instance.tracer.start_span.side_effect = start_span
++
++
++def _make_node_execution(**kwargs):
++    defaults = {
++        "node_type": "tool",
++        "status": "succeeded",
++        "inputs": {},
++        "outputs": {},
++        "created_at": _dt(),
++        "elapsed_time": 1.0,
++        "process_data": {},
++        "metadata": {},
++        "title": "Node",
++        "id": "node-execution-1",
++        "node_execution_id": "node-execution-1",
++        "node_id": "node-1",
++        "predecessor_node_id": None,
++        "index": 1,
++        "iteration_id": None,
++        "loop_id": None,
++        "parallel_id": None,
++        "finished_at": None,
++        "error": None,
++    }
++    defaults.update(kwargs)
++    metadata = dict(defaults.get("metadata") or {})
++    for field in ("iteration_id", "loop_id", "parallel_id"):
++        if defaults.get(field) is not None:
++            metadata.setdefault(field, defaults[field])
++    defaults["metadata"] = metadata
++    node_execution = MagicMock()
++    for key, value in defaults.items():
++        setattr(node_execution, key, value)
++    return node_execution
++
++
++def _make_workflow_trace_info(**kwargs) -> WorkflowTraceInfo:
++    defaults = {
++        "workflow_id": "workflow-1",
++        "tenant_id": "tenant-1",
++        "workflow_run_id": "workflow-run-1",
++        "workflow_run_elapsed_time": 1.0,
++        "workflow_run_status": "succeeded",
++        "workflow_run_inputs": {"input": "value"},
++        "workflow_run_outputs": {"output": "value"},
++        "workflow_run_version": "1.0",
++        "total_tokens": 10,
++        "file_list": ["file-1"],
++        "query": "hello",
++        "metadata": {"app_id": "app-1"},
++        "start_time": _dt(),
++        "end_time": _dt() + timedelta(seconds=1),
++    }
++    defaults.update(kwargs)
++    return WorkflowTraceInfo(**defaults)
++
++
++def _make_workflow_node_trace_info(**kwargs) -> WorkflowNodeTraceInfo:
++    defaults = {
++        "workflow_id": "workflow-1",
++        "workflow_run_id": "workflow-run-1",
++        "tenant_id": "tenant-1",
++        "node_execution_id": "node-execution-1",
++        "node_id": "node-1",
++        "node_type": "tool",
++        "title": "Node 1",
++        "status": "succeeded",
++        "elapsed_time": 1.0,
++        "index": 1,
++        "metadata": {"app_id": "app-1"},
++        "start_time": _dt(),
++        "end_time": _dt() + timedelta(seconds=1),
++    }
++    defaults.update(kwargs)
++    return WorkflowNodeTraceInfo(**defaults)
++
++
+ # --- Utility Function Tests ---
+ 
+ 
+@@ -173,12 +293,21 @@ def test_setup_tracer_exception():
+ 
+ @pytest.fixture
+ def trace_instance():
+-    with patch("dify_trace_arize_phoenix.arize_phoenix_trace.setup_tracer") as mock_setup:
++    with (
++        patch("dify_trace_arize_phoenix.arize_phoenix_trace.setup_tracer") as mock_setup,
++        patch(
++            "dify_trace_arize_phoenix.arize_phoenix_trace.redis_client",
++            new=MagicMock(),
++            create=True,
++        ) as mock_redis,
++    ):
+         mock_tracer = MagicMock(spec=Tracer)
+         mock_processor = MagicMock()
+         mock_setup.return_value = (mock_tracer, mock_processor)
+         config = ArizeConfig(endpoint="http://a.com", api_key="k", space_id="s", project="p")
+-        return ArizePhoenixDataTrace(config)
++        instance = ArizePhoenixDataTrace(config)
++        cast(Any, instance)._mock_redis_client = mock_redis
++        yield instance
+ 
+ 
+ def test_trace_dispatch(trace_instance):
+@@ -273,23 +402,444 @@ def test_workflow_trace_no_app_id(mock_db, trace_instance):
+ 
+ 
+ @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+-def test_message_trace_success(mock_db, trace_instance):
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
++def test_workflow_trace_reuses_stable_root_for_same_top_level_workflow_run(
++    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
++):
++    mock_db.engine = MagicMock()
++    first_info = _make_workflow_info(message_id="message-1", workflow_run_id="workflow-run-1")
++    second_info = _make_workflow_info(message_id="message-2", workflow_run_id="workflow-run-1")
++    repo = MagicMock()
++    repo.get_by_workflow_execution.return_value = []
++    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
++
++    with patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()):
++        trace_instance.workflow_trace(first_info)
++        trace_instance.workflow_trace(second_info)
++
++    workflow_span_calls = _get_workflow_span_calls(trace_instance.tracer.start_span)
++    assert len(workflow_span_calls) == 2
++    assert len(trace_instance.tracer.start_span.call_args_list) == 3
++    assert {
++        call.kwargs["attributes"][SpanAttributes.SESSION_ID] for call in workflow_span_calls
++    } == {"workflow-run-1"}
++
++
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
++def test_workflow_trace_bridges_nested_workflow_to_outer_tool_span_across_instances(
++    mock_sessionmaker,
++    mock_repo_factory,
++    mock_db,
++    trace_instance,
++):
++    mock_db.engine = MagicMock()
++    outer_info = _make_workflow_info(workflow_run_id="outer-workflow-run-1")
++    nested_info = _make_workflow_info(
++        workflow_run_id="nested-workflow-run-1",
++        metadata={
++            "app_id": "app1",
++            "parent_trace_context": {
++                "parent_workflow_run_id": "outer-workflow-run-1",
++                "parent_node_execution_id": "outer-tool-execution-1",
++            },
++        },
++    )
++    repo = MagicMock()
++    repo.get_by_workflow_execution.side_effect = [
++        [
++            _make_node_execution(
++                id="outer-tool-execution-1",
++                node_execution_id="outer-tool-execution-1",
++                node_id="outer-tool-node-1",
++                node_type="tool",
++            )
++        ],
++        [],
++    ]
++    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
++
++    root_span = MagicMock(name="root-span", spec=Span)
++    workflow_span = MagicMock(name="outer-workflow-span", spec=Span)
++    tool_span = MagicMock(name="outer-tool-span", spec=Span)
++    nested_workflow_span = MagicMock(name="nested-workflow-span", spec=Span)
++    root_span.get_span_context.return_value = SpanContext(
++        trace_id=0x11111111111111111111111111111111,
++        span_id=0x1111111111111111,
++        is_remote=False,
++        trace_flags=TraceFlags.SAMPLED,
++        trace_state=TraceState(),
++    )
++    workflow_span.get_span_context.return_value = SpanContext(
++        trace_id=0x11111111111111111111111111111111,
++        span_id=0x2222222222222222,
++        is_remote=False,
++        trace_flags=TraceFlags.SAMPLED,
++        trace_state=TraceState(),
++    )
++    tool_span_context = SpanContext(
++        trace_id=0x11111111111111111111111111111111,
++        span_id=0x3333333333333333,
++        is_remote=False,
++        trace_flags=TraceFlags.SAMPLED,
++        trace_state=TraceState(),
++    )
++    tool_span.get_span_context.return_value = tool_span_context
++    nested_workflow_span.get_span_context.return_value = SpanContext(
++        trace_id=tool_span_context.trace_id,
++        span_id=0x4444444444444444,
++        is_remote=False,
++        trace_flags=TraceFlags.SAMPLED,
++        trace_state=TraceState(),
++    )
++    trace_instance.tracer.start_span.side_effect = [root_span, workflow_span, tool_span]
++
++    def inject_current_span(carrier):
++        span_context = get_current_span().get_span_context()
++        carrier["traceparent"] = (
++            f"00-{span_context.trace_id:032x}-{span_context.span_id:016x}-{int(span_context.trace_flags):02x}"
++        )
++
++    with (
++        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
++        patch.object(trace_instance.propagator, "inject", side_effect=inject_current_span),
++    ):
++        trace_instance.workflow_trace(outer_info)
++
++    assert trace_instance._mock_redis_client.setex.called
++    stored_payload = trace_instance._mock_redis_client.setex.call_args_list[-1].args[-1]
++    trace_instance._mock_redis_client.get.return_value = stored_payload
++
++    nested_trace = ArizePhoenixDataTrace(trace_instance.arize_phoenix_config)
++    nested_trace.tracer = MagicMock(spec=Tracer)
++    nested_trace.tracer.start_span.return_value = nested_workflow_span
++
++    with patch.object(nested_trace, "get_service_account_with_tenant", return_value=MagicMock()):
++        nested_trace.workflow_trace(nested_info)
++
++    nested_call = _get_workflow_span_calls(nested_trace.tracer.start_span)[0]
++    restored_parent = get_current_span(nested_call.kwargs["context"]).get_span_context()
++    assert restored_parent.trace_id == tool_span_context.trace_id
++    assert restored_parent.span_id == tool_span_context.span_id
++
++
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
++def test_workflow_trace_keeps_nested_conversation_session_while_reusing_parent_root_context(
++    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
++):
++    mock_db.engine = MagicMock()
++    info = _make_workflow_info(
++        conversation_id="conversation-1",
++        message_id="message-1",
++        workflow_run_id="workflow-run-1",
++        metadata={
++            "app_id": "app1",
++            "parent_trace_context": {
++                "parent_workflow_run_id": "outer-workflow-run-1",
++            },
++        },
++    )
++    repo = MagicMock()
++    node_execution = _make_node_execution(
++        id="node-execution-1",
++        node_execution_id="node-execution-1",
++        node_id="node-1",
++        node_type="tool",
++    )
++    repo.get_by_workflow_execution.return_value = [node_execution]
++    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
++
++    with patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()):
++        trace_instance.workflow_trace(info)
++
++    workflow_span_call = _get_workflow_span_calls(trace_instance.tracer.start_span)[0]
++    node_span_call = _get_node_span_call(trace_instance.tracer.start_span, execution_id="node-execution-1")
++    assert workflow_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "conversation-1"
++    assert node_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "conversation-1"
++
++
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
++def test_workflow_trace_parents_serial_nodes_to_resolved_predecessor_span(
++    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
++):
++    mock_db.engine = MagicMock()
++    info = _make_workflow_info()
++    repo = MagicMock()
++    second_node = _make_node_execution(
++        id="node-execution-2",
++        node_execution_id="node-execution-2",
++        node_id="node-2",
++        node_type="llm",
++        index=2,
++        predecessor_node_id="node-1",
++        process_data={
++            "prompts": [{"role": "user", "content": "hi"}],
++            "model_provider": "openai",
++            "model_name": "gpt-4",
++        },
++    )
++    first_node = _make_node_execution(
++        id="node-execution-1",
++        node_execution_id="node-execution-1",
++        node_id="node-1",
++        node_type="tool",
++        index=1,
++    )
++    repo.get_by_workflow_execution.return_value = [second_node, first_node]
++    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
++
++    _install_labeled_spans(trace_instance)
++
++    with (
++        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
++        patch.object(trace_instance, "ensure_root_span", return_value={}),
++        patch.object(trace_instance.propagator, "extract", return_value="root-context"),
++        patch(
++            "dify_trace_arize_phoenix.arize_phoenix_trace.set_span_in_context",
++            side_effect=lambda span: f"context:{span._context_label}",
++        ),
++    ):
++        trace_instance.workflow_trace(info)
++
++    first_node_call = _get_node_span_call(trace_instance.tracer.start_span, execution_id="node-execution-1")
++    second_node_call = _get_node_span_call(trace_instance.tracer.start_span, execution_id="node-execution-2")
++    assert first_node_call.kwargs["context"] == "context:workflow"
++    assert second_node_call.kwargs["context"] == "context:node-execution-1"
++
++
++@pytest.mark.parametrize(
++    ("enclosing_node_type", "structured_field"),
++    [
++        ("loop", "loop_id"),
++        ("iteration", "iteration_id"),
++    ],
++)
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
++def test_workflow_trace_parents_structured_start_nodes_to_enclosing_structure_span(
++    mock_sessionmaker,
++    mock_repo_factory,
++    mock_db,
++    trace_instance,
++    enclosing_node_type,
++    structured_field,
++):
++    mock_db.engine = MagicMock()
++    info = _make_workflow_info()
++    repo = MagicMock()
++    enclosing_node = _make_node_execution(
++        id=f"{enclosing_node_type}-execution-1",
++        node_execution_id=f"{enclosing_node_type}-execution-1",
++        node_id=f"{enclosing_node_type}-node-1",
++        node_type=enclosing_node_type,
++        index=1,
++    )
++    structured_kwargs = {structured_field: f"{enclosing_node_type}-node-1"}
++    start_node = _make_node_execution(
++        id="start-execution-1",
++        node_execution_id="start-execution-1",
++        node_id="start-node-1",
++        node_type="start",
++        index=2,
++        **structured_kwargs,
++    )
++    repo.get_by_workflow_execution.return_value = [start_node, enclosing_node]
++    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
++
++    _install_labeled_spans(trace_instance)
++
++    with (
++        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
++        patch.object(trace_instance, "ensure_root_span", return_value={}),
++        patch.object(trace_instance.propagator, "extract", return_value="root-context"),
++        patch(
++            "dify_trace_arize_phoenix.arize_phoenix_trace.set_span_in_context",
++            side_effect=lambda span: f"context:{span._context_label}",
++        ),
++    ):
++        trace_instance.workflow_trace(info)
++
++    start_node_call = _get_node_span_call(trace_instance.tracer.start_span, execution_id="start-execution-1")
++    assert start_node_call.kwargs["context"] == f"context:{enclosing_node_type}-execution-1"
++
++
++@pytest.mark.parametrize(
++    ("enclosing_node_type", "structured_field"),
++    [
++        ("loop", "loop_id"),
++        ("iteration", "iteration_id"),
++    ],
++)
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
++def test_workflow_trace_keeps_duplicate_body_node_children_under_enclosing_structure(
++    mock_sessionmaker,
++    mock_repo_factory,
++    mock_db,
++    trace_instance,
++    enclosing_node_type,
++    structured_field,
++):
++    mock_db.engine = MagicMock()
++    info = _make_workflow_info()
++    repo = MagicMock()
++    enclosing_node = _make_node_execution(
++        id=f"{enclosing_node_type}-execution-1",
++        node_execution_id=f"{enclosing_node_type}-execution-1",
++        node_id=f"{enclosing_node_type}-node-1",
++        node_type=enclosing_node_type,
++        index=1,
++    )
++    structured_kwargs = {structured_field: f"{enclosing_node_type}-node-1"}
++    repeated_body_node_1 = _make_node_execution(
++        id="body-execution-1",
++        node_execution_id="body-execution-1",
++        node_id="body-node-1",
++        node_type="tool",
++        index=2,
++        **structured_kwargs,
++    )
++    repeated_body_node_2 = _make_node_execution(
++        id="body-execution-2",
++        node_execution_id="body-execution-2",
++        node_id="body-node-1",
++        node_type="tool",
++        index=3,
++        **structured_kwargs,
++    )
++    child_node = _make_node_execution(
++        id="child-execution-1",
++        node_execution_id="child-execution-1",
++        node_id="child-node-1",
++        node_type="llm",
++        index=4,
++        predecessor_node_id="body-node-1",
++        process_data={
++            "prompts": [{"role": "user", "content": "hi"}],
++            "model_provider": "openai",
++            "model_name": "gpt-4",
++        },
++        **structured_kwargs,
++    )
++    repo.get_by_workflow_execution.return_value = [
++        child_node,
++        repeated_body_node_1,
++        repeated_body_node_2,
++        enclosing_node,
++    ]
++    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
++
++    _install_labeled_spans(trace_instance)
++
++    with (
++        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
++        patch.object(trace_instance, "ensure_root_span", return_value={}),
++        patch.object(trace_instance.propagator, "extract", return_value="root-context"),
++        patch(
++            "dify_trace_arize_phoenix.arize_phoenix_trace.set_span_in_context",
++            side_effect=lambda span: f"context:{span._context_label}",
++        ),
++    ):
++        trace_instance.workflow_trace(info)
++
++    child_node_call = _get_node_span_call(trace_instance.tracer.start_span, execution_id="child-execution-1")
++    assert child_node_call.kwargs["context"] == f"context:{enclosing_node_type}-execution-1"
++
++
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
++def test_workflow_trace_falls_back_to_workflow_span_for_parallel_like_ambiguous_predecessors(
++    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
++):
++    mock_db.engine = MagicMock()
++    info = _make_workflow_info()
++    repo = MagicMock()
++    child_node = _make_node_execution(
++        id="child-execution-1",
++        node_execution_id="child-execution-1",
++        node_id="child-node-1",
++        node_type="llm",
++        index=3,
++        predecessor_node_id="parallel-node-1",
++        process_data={
++            "prompts": [{"role": "user", "content": "hi"}],
++            "model_provider": "openai",
++            "model_name": "gpt-4",
++        },
++    )
++    first_parallel_node = _make_node_execution(
++        id="parallel-execution-1",
++        node_execution_id="parallel-execution-1",
++        node_id="parallel-node-1",
++        node_type="tool",
++        index=1,
++        parallel_id="parallel-1",
++    )
++    second_parallel_node = _make_node_execution(
++        id="parallel-execution-2",
++        node_execution_id="parallel-execution-2",
++        node_id="parallel-node-1",
++        node_type="tool",
++        index=2,
++        parallel_id="parallel-2",
++    )
++    repo.get_by_workflow_execution.return_value = [child_node, first_parallel_node, second_parallel_node]
++    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
++
++    _install_labeled_spans(trace_instance)
++
++    with (
++        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
++        patch.object(trace_instance, "ensure_root_span", return_value={}),
++        patch.object(trace_instance.propagator, "extract", return_value="root-context"),
++        patch(
++            "dify_trace_arize_phoenix.arize_phoenix_trace.set_span_in_context",
++            side_effect=lambda span: f"context:{span._context_label}",
++        ),
++    ):
++        trace_instance.workflow_trace(info)
++
++    child_node_call = _get_node_span_call(trace_instance.tracer.start_span, execution_id="child-execution-1")
++    assert child_node_call.kwargs["context"] == "context:workflow"
++
++
++@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
++def test_message_trace_keeps_conversation_id_as_session(mock_db, trace_instance):
+     mock_db.engine = MagicMock()
+     info = _make_message_info()
+     info.message_data = MagicMock()
+-    info.message_data.from_account_id = "acc1"
++    info.message_data.conversation_id = "conversation-2"
++    info.message_data.from_account_id = "acc2"
+     info.message_data.from_end_user_id = None
+-    info.message_data.query = "q"
+-    info.message_data.answer = "a"
+-    info.message_data.status = "s"
+-    info.message_data.model_id = "m"
+-    info.message_data.model_provider = "p"
++    info.message_data.query = "q2"
++    info.message_data.answer = "a2"
++    info.message_data.status = "s2"
++    info.message_data.model_id = "m2"
++    info.message_data.model_provider = "p2"
+     info.message_data.message_metadata = "{}"
+     info.message_data.error = None
+     info.error = None
+ 
++    root_span = MagicMock()
++    message_span = MagicMock()
++    llm_span = MagicMock()
++    trace_instance.tracer.start_span.side_effect = [root_span, message_span, llm_span]
++
+     trace_instance.message_trace(info)
+-    assert trace_instance.tracer.start_span.call_count >= 1
++
++    message_span_call = _get_start_span_call(
++        trace_instance.tracer.start_span, span_name=TraceTaskName.MESSAGE_TRACE.value
++    )
++    assert message_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "conversation-2"
+ 
+ 
+ @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+diff --git a/api/providers/trace/trace-arize-phoenix/tests/unit_tests/test_arize_phoenix_trace.py b/api/providers/trace/trace-arize-phoenix/tests/unit_tests/test_arize_phoenix_trace.py
+deleted file mode 100644
+index a01c63a..0000000
+--- a/api/providers/trace/trace-arize-phoenix/tests/unit_tests/test_arize_phoenix_trace.py
++++ /dev/null
+@@ -1,36 +0,0 @@
+-from dify_trace_arize_phoenix.arize_phoenix_trace import _NODE_TYPE_TO_SPAN_KIND, _get_node_span_kind
+-from openinference.semconv.trace import OpenInferenceSpanKindValues
+-
+-from graphon.enums import BUILT_IN_NODE_TYPES, BuiltinNodeTypes
+-
+-
+-class TestGetNodeSpanKind:
+-    """Tests for _get_node_span_kind helper."""
+-
+-    def test_all_node_types_are_mapped_correctly(self):
+-        """Ensure every built-in node type is mapped to the correct span kind."""
+-        # Mappings for node types that have a specialised span kind.
+-        special_mappings = {
+-            BuiltinNodeTypes.LLM: OpenInferenceSpanKindValues.LLM,
+-            BuiltinNodeTypes.KNOWLEDGE_RETRIEVAL: OpenInferenceSpanKindValues.RETRIEVER,
+-            BuiltinNodeTypes.TOOL: OpenInferenceSpanKindValues.TOOL,
+-            BuiltinNodeTypes.AGENT: OpenInferenceSpanKindValues.AGENT,
+-        }
+-
+-        # Test that every built-in node type is mapped to the correct span kind.
+-        # Node types not in `special_mappings` should default to CHAIN.
+-        for node_type in BUILT_IN_NODE_TYPES:
+-            expected_span_kind = special_mappings.get(node_type, OpenInferenceSpanKindValues.CHAIN)
+-            actual_span_kind = _get_node_span_kind(node_type)
+-            assert actual_span_kind == expected_span_kind, (
+-                f"Node type {node_type!r} was mapped to {actual_span_kind}, but {expected_span_kind} was expected."
+-            )
+-
+-    def test_unknown_string_defaults_to_chain(self):
+-        """An unrecognised node type string should still return CHAIN."""
+-        assert _get_node_span_kind("some-future-node-type") == OpenInferenceSpanKindValues.CHAIN
+-
+-    def test_stale_dataset_retrieval_not_in_mapping(self):
+-        """The old 'dataset_retrieval' string was never a valid NodeType value;
+-        make sure it is not present in the mapping dictionary."""
+-        assert "dataset_retrieval" not in _NODE_TYPE_TO_SPAN_KIND
+diff --git a/api/tests/unit_tests/core/app/apps/test_workflow_app_generator.py b/api/tests/unit_tests/core/app/apps/test_workflow_app_generator.py
+index 0e9f8b6..a826134 100644
+--- a/api/tests/unit_tests/core/app/apps/test_workflow_app_generator.py
++++ b/api/tests/unit_tests/core/app/apps/test_workflow_app_generator.py
+@@ -5,6 +5,8 @@ from pytest_mock import MockerFixture
+ 
+ from core.app.apps.workflow.app_generator import SKIP_PREPARE_USER_INPUTS_KEY, WorkflowAppGenerator
+ 
++# Parent trace propagation is covered through the workflow tool runtime boundary.
++
+ 
+ def test_should_prepare_user_inputs_defaults_to_true():
+     args = {"inputs": {}}
+diff --git a/api/tests/unit_tests/core/app/workflow/test_persistence_layer.py b/api/tests/unit_tests/core/app/workflow/test_persistence_layer.py
+index 7e87c08..9cefa97 100644
+--- a/api/tests/unit_tests/core/app/workflow/test_persistence_layer.py
++++ b/api/tests/unit_tests/core/app/workflow/test_persistence_layer.py
+@@ -7,6 +7,7 @@ import pytest
+ 
+ from core.app.entities.app_invoke_entities import WorkflowAppGenerateEntity
+ from core.app.workflow.layers.persistence import PersistenceWorkflowInfo, WorkflowPersistenceLayer
++from core.ops.ops_trace_manager import TraceTask, TraceTaskName
+ from core.workflow.system_variables import SystemVariableKey, build_system_variables
+ from graphon.entities import WorkflowNodeExecution
+ from graphon.entities.pause_reason import SchedulingPause
+@@ -217,6 +218,59 @@ class TestWorkflowPersistenceLayer:
+         assert exec_repo.saved[-1].status == WorkflowExecutionStatus.FAILED
+         assert trace_tasks
+ 
++    def test_handle_graph_run_succeeded_enqueues_parent_trace_context(self, monkeypatch):
++        trace_tasks: list[TraceTask] = []
++        trace_manager = SimpleNamespace(user_id="user", add_trace_task=lambda task: trace_tasks.append(task))
++        layer, _, _, _ = _make_layer(
++            extras={
++                "external_trace_id": "trace",
++                "parent_trace_context": {
++                    "parent_workflow_run_id": "outer-workflow-run-1",
++                    "parent_node_execution_id": "outer-node-execution-1",
++                },
++            },
++            trace_manager=trace_manager,
++        )
++        layer._handle_graph_run_started()
++
++        captured: dict[str, object] = {}
++
++        def fake_workflow_trace(
++            self: TraceTask,
++            *,
++            workflow_run_id: str | None,
++            conversation_id: str | None,
++            user_id: str | None,
++            total_tokens_override: int | None = None,
++        ):
++            captured["trace_type"] = self.trace_type
++            captured["external_trace_id"] = self.kwargs.get("external_trace_id")
++            captured["parent_trace_context"] = self.kwargs.get("parent_trace_context")
++            captured["workflow_run_id"] = workflow_run_id
++            return {"ok": True}
++
++        monkeypatch.setattr(TraceTask, "workflow_trace", fake_workflow_trace)
++
++        layer._handle_graph_run_succeeded(GraphRunSucceededEvent(outputs={"ok": True}))
++
++        assert trace_tasks
++        trace_task = trace_tasks[0]
++        assert trace_task.trace_type == TraceTaskName.WORKFLOW_TRACE
++        assert trace_task.kwargs["external_trace_id"] == "trace"
++        assert trace_task.kwargs["parent_trace_context"] == {
++            "parent_workflow_run_id": "outer-workflow-run-1",
++            "parent_node_execution_id": "outer-node-execution-1",
++        }
++
++        trace_task.execute()
++
++        assert captured["trace_type"] == TraceTaskName.WORKFLOW_TRACE
++        assert captured["external_trace_id"] == "trace"
++        assert captured["parent_trace_context"] == {
++            "parent_workflow_run_id": "outer-workflow-run-1",
++            "parent_node_execution_id": "outer-node-execution-1",
++        }
++
+     def test_handle_graph_run_aborted_sets_status(self):
+         layer, exec_repo, _, _ = _make_layer()
+         layer._handle_graph_run_started()
+diff --git a/api/tests/unit_tests/core/helper/test_trace_id_helper.py b/api/tests/unit_tests/core/helper/test_trace_id_helper.py
+index 27bfe1a..403e8e9 100644
+--- a/api/tests/unit_tests/core/helper/test_trace_id_helper.py
++++ b/api/tests/unit_tests/core/helper/test_trace_id_helper.py
+@@ -2,6 +2,8 @@ import pytest
+ 
+ from core.helper.trace_id_helper import extract_external_trace_id_from_args, get_external_trace_id, is_valid_trace_id
+ 
++# Private parent-context representations are intentionally tested through runtime behavior.
++
+ 
+ class DummyRequest:
+     def __init__(self, headers=None, args=None, json=None, is_json=False):
+diff --git a/api/tests/unit_tests/core/tools/workflow_as_tool/test_tool.py b/api/tests/unit_tests/core/tools/workflow_as_tool/test_tool.py
+index 72a73dd..f8b0063 100644
+--- a/api/tests/unit_tests/core/tools/workflow_as_tool/test_tool.py
++++ b/api/tests/unit_tests/core/tools/workflow_as_tool/test_tool.py
+@@ -6,6 +6,8 @@ database access mocked and predictable in tests.
+ """
+ 
+ import json
++from collections.abc import Mapping
++from dataclasses import fields, is_dataclass
+ from types import SimpleNamespace
+ from typing import Any
+ from unittest.mock import MagicMock, Mock, patch
+@@ -23,8 +25,13 @@ from core.tools.entities.tool_entities import (
+     ToolProviderType,
+ )
+ from core.tools.errors import ToolInvokeError
++from core.tools.tool_manager import ToolManager
+ from core.tools.workflow_as_tool.tool import WorkflowTool
++from core.workflow.node_runtime import DifyToolNodeRuntime
++from core.workflow.system_variables import build_system_variables
+ from graphon.file import FILE_MODEL_IDENTITY, FileTransferMethod, FileType
++from graphon.nodes.tool.entities import ToolNodeData, ToolProviderType as GraphToolProviderType
++from tests.workflow_test_utils import build_test_run_context, build_test_variable_pool
+ 
+ 
+ class StubScalars:
+@@ -147,6 +154,107 @@ def test_workflow_tool_does_not_use_pause_state_config(monkeypatch: pytest.Monke
+     assert call_kwargs["pause_state_config"] is None
+ 
+ 
++def _contains_mapping(value: object, expected: Mapping[str, str], seen: set[int] | None = None) -> bool:
++    seen = seen or set()
++    if id(value) in seen:
++        return False
++    seen.add(id(value))
++
++    if isinstance(value, Mapping):
++        if all(value.get(key) == expected_value for key, expected_value in expected.items()):
++            return True
++        children = value.values()
++    elif is_dataclass(value) and not isinstance(value, type):
++        children = (getattr(value, field.name) for field in fields(value))
++    elif hasattr(value, "model_dump"):
++        children = (value.model_dump(),)
++    elif isinstance(value, (list, tuple, set)):
++        children = value
++    else:
++        return False
++    return any(_contains_mapping(child, expected, seen) for child in children)
++
++
++def test_workflow_tool_propagates_private_parent_context_without_overwriting_inputs(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    tool = _build_tool()
++    tool.entity.parameters = [
++        ToolParameter.get_simple_instance(
++            name="parent_workflow_run_id",
++            llm_description="User workflow input",
++            typ=ToolParameter.ToolParameterType.STRING,
++            required=False,
++        ),
++        ToolParameter.get_simple_instance(
++            name="parent_node_execution_id",
++            llm_description="User node input",
++            typ=ToolParameter.ToolParameterType.STRING,
++            required=False,
++        ),
++    ]
++    monkeypatch.setattr(tool, "_get_app", lambda *args, **kwargs: None)
++    monkeypatch.setattr(tool, "_get_workflow", lambda *args, **kwargs: None)
++    monkeypatch.setattr(tool, "_resolve_user", lambda *args, **kwargs: Mock())
++
++    generate_mock = MagicMock(return_value={"data": {}})
++    monkeypatch.setattr("core.app.apps.workflow.app_generator.WorkflowAppGenerator.generate", generate_mock)
++
++    runtime = DifyToolNodeRuntime(build_test_run_context(app_id="app-1"))
++    variable_pool = build_test_variable_pool(
++        variables=build_system_variables(
++            conversation_id="conversation-1",
++            workflow_execution_id="outer-workflow-run-1",
++        )
++    )
++    node_data = ToolNodeData.model_validate(
++        {
++            "type": "tool",
++            "title": "Workflow Tool",
++            "provider_id": "provider",
++            "provider_type": GraphToolProviderType.WORKFLOW,
++            "provider_name": "provider",
++            "tool_name": "lookup",
++            "tool_label": "Lookup",
++            "tool_configurations": {},
++            "tool_parameters": {},
++        }
++    )
++
++    with patch.object(ToolManager, "get_workflow_tool_runtime", return_value=tool):
++        handle = runtime.get_runtime(
++            node_id="tool-node",
++            node_data=node_data,
++            variable_pool=variable_pool,
++            node_execution_id="outer-node-execution-1",
++        )
++        list(
++            runtime.invoke(
++                tool_runtime=handle,
++                tool_parameters={
++                    "parent_workflow_run_id": "user-workflow-input",
++                    "parent_node_execution_id": "user-node-input",
++                },
++                workflow_call_depth=0,
++                provider_name="provider",
++            )
++        )
++
++    generator_args = generate_mock.call_args.kwargs["args"]
++    assert generator_args["inputs"] == {
++        "parent_workflow_run_id": "user-workflow-input",
++        "parent_node_execution_id": "user-node-input",
++    }
++    private_args = {key: value for key, value in generator_args.items() if key != "inputs"}
++    assert _contains_mapping(
++        private_args,
++        {
++            "parent_workflow_run_id": "outer-workflow-run-1",
++            "parent_node_execution_id": "outer-node-execution-1",
++        },
++    )
++
++
+ def test_workflow_tool_should_generate_variable_messages_for_outputs(monkeypatch: pytest.MonkeyPatch):
+     """Test that WorkflowTool should generate variable messages when there are outputs"""
+     tool = _build_tool()
+diff --git a/api/tests/unit_tests/core/workflow/nodes/tool/test_tool_node.py b/api/tests/unit_tests/core/workflow/nodes/tool/test_tool_node.py
+index f17c95f..7555f19 100644
+--- a/api/tests/unit_tests/core/workflow/nodes/tool/test_tool_node.py
++++ b/api/tests/unit_tests/core/workflow/nodes/tool/test_tool_node.py
+@@ -15,9 +15,9 @@ from graphon.model_runtime.entities.llm_entities import LLMUsage
+ from graphon.node_events import StreamChunkEvent, StreamCompletedEvent
+ from graphon.nodes.tool.entities import ToolNodeData
+ from graphon.nodes.tool_runtime_entities import ToolRuntimeHandle, ToolRuntimeMessage
+-from graphon.runtime import GraphRuntimeState, VariablePool
++from graphon.runtime import GraphRuntimeState
+ from graphon.variables.segments import ArrayFileSegment
+-from tests.workflow_test_utils import build_test_graph_init_params
++from tests.workflow_test_utils import build_test_graph_init_params, build_test_variable_pool
+ 
+ if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
+     from graphon.nodes.tool.tool_node import ToolNode
+@@ -106,7 +106,7 @@ def tool_node(monkeypatch) -> ToolNode:
+         call_depth=0,
+     )
+ 
+-    variable_pool = VariablePool.from_bootstrap(system_variables=build_system_variables(user_id="user-id"))
++    variable_pool = build_test_variable_pool(variables=build_system_variables(user_id="user-id"))
+     graph_runtime_state = GraphRuntimeState(variable_pool=variable_pool, start_at=0.0)
+ 
+     config = graph_config["nodes"][0]
+@@ -234,3 +234,4 @@ def test_image_link_messages_use_tool_file_id_metadata(tool_node: ToolNode):
+     files_segment = completed_events[0].node_run_result.outputs["files"]
+     assert isinstance(files_segment, ArrayFileSegment)
+     assert files_segment.value == [file_obj]
++
+diff --git a/api/tests/unit_tests/core/workflow/nodes/tool/test_tool_node_runtime.py b/api/tests/unit_tests/core/workflow/nodes/tool/test_tool_node_runtime.py
+index 438af21..3741cb3 100644
+--- a/api/tests/unit_tests/core/workflow/nodes/tool/test_tool_node_runtime.py
++++ b/api/tests/unit_tests/core/workflow/nodes/tool/test_tool_node_runtime.py
+@@ -87,6 +87,7 @@ def test_invoke_creates_callback_and_converts_messages(runtime: DifyToolNodeRunt
+             node_id="node-id",
+             node_data=_build_tool_node_data(),
+             variable_pool=variable_pool,
++            node_execution_id="node-execution-id",
+         )
+         messages = list(
+             runtime.invoke(
+@@ -140,7 +141,12 @@ def test_get_runtime_converts_graph_provider_type_for_tool_manager(runtime: Dify
+     node_data = _build_tool_node_data()
+ 
+     with patch.object(ToolManager, "get_workflow_tool_runtime", return_value=MagicMock()) as runtime_mock:
+-        tool_runtime = runtime.get_runtime(node_id="node-id", node_data=node_data, variable_pool=None)
++        tool_runtime = runtime.get_runtime(
++            node_id="node-id",
++            node_data=node_data,
++            variable_pool=None,
++            node_execution_id="node-execution-id",
++        )
+ 
+     assert not hasattr(tool_runtime, "conversation_id")
+     workflow_tool = runtime_mock.call_args.args[3]
+diff --git a/api/tests/unit_tests/core/workflow/test_node_runtime.py b/api/tests/unit_tests/core/workflow/test_node_runtime.py
+index 0d13151..548ac00 100644
+--- a/api/tests/unit_tests/core/workflow/test_node_runtime.py
++++ b/api/tests/unit_tests/core/workflow/test_node_runtime.py
+@@ -34,6 +34,8 @@ from graphon.nodes.human_input.entities import HumanInputNodeData
+ from graphon.nodes.tool.entities import ToolNodeData, ToolProviderType
+ from tests.workflow_test_utils import build_test_run_context
+ 
++# Workflow-as-tool trace context is exercised through the public runtime protocol.
++
+ 
+ def _build_model_schema() -> AIModelEntity:
+     return AIModelEntity(
+diff --git a/api/tests/unit_tests/tasks/test_ops_trace_task.py b/api/tests/unit_tests/tasks/test_ops_trace_task.py
+new file mode 100644
+index 0000000..a485015
+--- /dev/null
++++ b/api/tests/unit_tests/tasks/test_ops_trace_task.py
+@@ -0,0 +1,200 @@
++import ast
++import inspect
++import json
++import sys
++import textwrap
++from contextlib import contextmanager
++from types import ModuleType
++from unittest.mock import MagicMock, patch
++
++import pytest
++from celery.exceptions import Retry
++
++from core.ops.entities.config_entity import OPS_TRACE_FAILED_KEY
++from tasks.ops_trace_task import process_trace_tasks
++
++
++@contextmanager
++def fake_app_context():
++    yield
++
++
++class FakeCurrentApp:
++    def app_context(self):
++        return fake_app_context()
++
++
++def _install_trace_manager(
++    trace_instance: MagicMock,
++    *,
++    enterprise_enabled: bool = False,
++    enterprise_trace_cls: MagicMock | None = None,
++) -> dict[str, ModuleType]:
++    ops_trace_manager_module = ModuleType("core.ops.ops_trace_manager")
++
++    class StubOpsTraceManager:
++        @staticmethod
++        def get_ops_trace_instance(app_id: str) -> MagicMock:
++            return trace_instance
++
++    telemetry_module = ModuleType("extensions.ext_enterprise_telemetry")
++    telemetry_module.is_enabled = lambda: enterprise_enabled
++
++    ops_trace_manager_module.OpsTraceManager = StubOpsTraceManager
++    modules = {
++        "core.ops.ops_trace_manager": ops_trace_manager_module,
++        "extensions.ext_enterprise_telemetry": telemetry_module,
++    }
++    if enterprise_trace_cls is not None:
++        enterprise_module = ModuleType("enterprise")
++        enterprise_telemetry_module = ModuleType("enterprise.telemetry")
++        enterprise_trace_module = ModuleType("enterprise.telemetry.enterprise_trace")
++        enterprise_trace_module.EnterpriseOtelTrace = enterprise_trace_cls
++        modules.update(
++            {
++                "enterprise": enterprise_module,
++                "enterprise.telemetry": enterprise_telemetry_module,
++                "enterprise.telemetry.enterprise_trace": enterprise_trace_module,
++            }
++        )
++    return modules
++
++
++def _make_payload() -> str:
++    return json.dumps({"trace_info": {}, "trace_info_type": None})
++
++
++def _retryable_dispatch_error() -> Exception:
++    """Find the implementation's dedicated exception branch that schedules a retry."""
++    run = process_trace_tasks.run
++    tree = ast.parse(textwrap.dedent(inspect.getsource(run)))
++    for handler in (node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)):
++        schedules_retry = any(
++            isinstance(node, ast.Attribute) and node.attr == "retry" for statement in handler.body for node in ast.walk(statement)
++        )
++        if not schedules_retry or not isinstance(handler.type, ast.Name):
++            continue
++        exception_type = run.__globals__.get(handler.type.id)
++        if not isinstance(exception_type, type) or not issubclass(exception_type, Exception):
++            continue
++        if exception_type in {Exception, BaseException, Retry}:
++            continue
++        try:
++            return exception_type("transient trace parent is not ready")
++        except TypeError:
++            return exception_type()
++    raise AssertionError("trace dispatch has no dedicated bounded-retry signal")
++
++
++def _run_task(file_info: dict[str, object], retries: int = 0) -> None:
++    process_trace_tasks.push_request(retries=retries)
++    try:
++        process_trace_tasks.run(file_info)
++    finally:
++        process_trace_tasks.pop_request()
++
++
++def test_process_trace_tasks_retries_transient_dispatch_and_preserves_payload():
++    file_info = {"app_id": "app-id", "file_id": "file-id"}
++    trace_instance = MagicMock()
++    pending_error = _retryable_dispatch_error()
++    trace_instance.trace.side_effect = pending_error
++
++    with (
++        patch.dict(sys.modules, _install_trace_manager(trace_instance)),
++        patch("tasks.ops_trace_task.current_app", FakeCurrentApp()),
++        patch("tasks.ops_trace_task.storage.load", return_value=_make_payload()),
++        patch("tasks.ops_trace_task.storage.delete") as mock_delete,
++        patch("tasks.ops_trace_task.redis_client.incr") as mock_incr,
++        patch.object(process_trace_tasks, "retry", side_effect=Retry()) as mock_retry,
++        pytest.raises(Retry),
++    ):
++        _run_task(file_info)
++
++    mock_retry.assert_called_once()
++    assert mock_retry.call_args.kwargs.get("exc") is pending_error
++    mock_delete.assert_not_called()
++    mock_incr.assert_not_called()
++
++
++def test_process_trace_tasks_retry_does_not_duplicate_enterprise_trace():
++    file_info: dict[str, object] = {"app_id": "app-id", "file_id": "file-id"}
++    trace_instance = MagicMock()
++    pending_error = _retryable_dispatch_error()
++    trace_instance.trace.side_effect = [pending_error, None]
++    enterprise_tracer = MagicMock()
++    enterprise_trace_cls = MagicMock(return_value=enterprise_tracer)
++    stored_payload = _make_payload()
++
++    def save_payload(_path, payload):
++        nonlocal stored_payload
++        stored_payload = payload.decode() if isinstance(payload, bytes) else payload
++
++    with (
++        patch.dict(
++            sys.modules,
++            _install_trace_manager(
++                trace_instance,
++                enterprise_enabled=True,
++                enterprise_trace_cls=enterprise_trace_cls,
++            ),
++        ),
++        patch("tasks.ops_trace_task.current_app", FakeCurrentApp()),
++        patch("tasks.ops_trace_task.storage.load", side_effect=lambda _path: stored_payload),
++        patch("tasks.ops_trace_task.storage.save", side_effect=save_payload),
++        patch("tasks.ops_trace_task.storage.delete") as mock_delete,
++        patch("tasks.ops_trace_task.redis_client.incr") as mock_incr,
++        patch.object(process_trace_tasks, "retry", side_effect=Retry()) as mock_retry,
++    ):
++        with pytest.raises(Retry):
++            _run_task(file_info)
++
++        retry_args = mock_retry.call_args.kwargs.get("args")
++        retry_file_info = retry_args[0] if retry_args else file_info
++        _run_task(retry_file_info, retries=1)
++
++    assert enterprise_tracer.trace.call_count == 1
++    assert trace_instance.trace.call_count == 2
++    mock_delete.assert_called_once()
++    mock_incr.assert_not_called()
++
++
++def test_process_trace_tasks_has_positive_bounded_retry_policy():
++    assert 0 < process_trace_tasks.max_retries < 100
++    assert process_trace_tasks.default_retry_delay > 0
++
++
++def test_process_trace_tasks_deletes_payload_on_success():
++    file_info = {"app_id": "app-id", "file_id": "file-id"}
++    trace_instance = MagicMock()
++
++    with (
++        patch.dict(sys.modules, _install_trace_manager(trace_instance)),
++        patch("tasks.ops_trace_task.current_app", FakeCurrentApp()),
++        patch("tasks.ops_trace_task.storage.load", return_value=_make_payload()),
++        patch("tasks.ops_trace_task.storage.delete") as mock_delete,
++        patch("tasks.ops_trace_task.redis_client.incr") as mock_incr,
++    ):
++        _run_task(file_info)
++
++    trace_instance.trace.assert_called_once_with({})
++    mock_delete.assert_called_once_with("ops_trace/app-id/file-id.json")
++    mock_incr.assert_not_called()
++
++
++def test_process_trace_tasks_deletes_payload_and_counts_terminal_failure():
++    file_info = {"app_id": "app-id", "file_id": "file-id"}
++    trace_instance = MagicMock()
++    trace_instance.trace.side_effect = RuntimeError("trace failed")
++
++    with (
++        patch.dict(sys.modules, _install_trace_manager(trace_instance)),
++        patch("tasks.ops_trace_task.current_app", FakeCurrentApp()),
++        patch("tasks.ops_trace_task.storage.load", return_value=_make_payload()),
++        patch("tasks.ops_trace_task.storage.delete") as mock_delete,
++        patch("tasks.ops_trace_task.redis_client.incr") as mock_incr,
++    ):
++        _run_task(file_info)
++
++    mock_delete.assert_called_once_with("ops_trace/app-id/file-id.json")
++    mock_incr.assert_called_once_with(f"{OPS_TRACE_FAILED_KEY}_app-id")

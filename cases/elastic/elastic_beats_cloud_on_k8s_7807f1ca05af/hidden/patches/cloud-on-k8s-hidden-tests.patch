@@ -1,0 +1,102 @@
+diff --git a/pkg/controller/elasticsearch/stackmon/sidecar_test.go b/pkg/controller/elasticsearch/stackmon/sidecar_test.go
+index 25f21b0f..8a3cdfe1 100644
+--- a/pkg/controller/elasticsearch/stackmon/sidecar_test.go
++++ b/pkg/controller/elasticsearch/stackmon/sidecar_test.go
+@@ -14,6 +14,7 @@ import (
+ 	"github.com/stretchr/testify/require"
+ 	corev1 "k8s.io/api/core/v1"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	"sigs.k8s.io/yaml"
+ 
+ 	commonv1 "github.com/elastic/cloud-on-k8s/v3/pkg/apis/common/v1"
+ 	esv1 "github.com/elastic/cloud-on-k8s/v3/pkg/apis/elasticsearch/v1"
+@@ -218,3 +219,89 @@ func TestMetricbeatConfig(t *testing.T) {
+ 		})
+ 	}
+ }
++
++type querylogFilesetConfig struct {
++	Enabled bool `json:"enabled"`
++	Var     struct {
++		Paths []string `json:"paths"`
++	} `json:"var"`
++	CloseTimeout    string `json:"close_timeout"`
++	FieldsUnderRoot bool   `json:"fields_under_root"`
++}
++
++type elasticsearchFilebeatModule struct {
++	Module   string                 `json:"module"`
++	Querylog *querylogFilesetConfig `json:"querylog"`
++}
++
++type renderedFilebeatConfig struct {
++	Filebeat struct {
++		Modules []elasticsearchFilebeatModule `json:"modules"`
++	} `json:"filebeat"`
++}
++
++func TestQuerylogFilebeatConfig(t *testing.T) {
++	tests := []struct {
++		name         string
++		version      string
++		wantQuerylog bool
++	}{
++		{name: "pre 9.4.0", version: "8.17.0", wantQuerylog: false},
++		{name: "post 9.4.0 with querylog", version: "9.4.0", wantQuerylog: true},
++		{name: "9.4.0 SNAPSHOT with querylog", version: "9.4.0-SNAPSHOT", wantQuerylog: true},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			es := esv1.Elasticsearch{
++				ObjectMeta: metav1.ObjectMeta{
++					Name:      "sample",
++					Namespace: "aerospace",
++				},
++				Spec: esv1.ElasticsearchSpec{Version: tt.version},
++			}
++			es.Spec.Monitoring.Logs.ElasticsearchRefs = []commonv1.ObjectSelector{{
++				Name:      "logs",
++				Namespace: "observability",
++			}}
++			monitoring.GetLogsAssociation(&es)[0].SetAssociationConf(&commonv1.AssociationConf{
++				AuthSecretName: "sample-observability-logs-beat-es-mon-user",
++				AuthSecretKey:  "aerospace-sample-observability-logs-beat-es-mon-user",
++				URL:            "http://logs-es-http.observability.svc:9200",
++				Version:        tt.version,
++			})
++
++			fakeClient := k8s.NewFakeClient(&corev1.Secret{
++				ObjectMeta: metav1.ObjectMeta{
++					Name:      "sample-observability-logs-beat-es-mon-user",
++					Namespace: "aerospace",
++				},
++				Data: map[string][]byte{
++					"aerospace-sample-observability-logs-beat-es-mon-user": []byte("1234567890"),
++				},
++			})
++
++			sidecar, err := Filebeat(context.Background(), fakeClient, es, metadata.Metadata{})
++			require.NoError(t, err)
++			configBytes, ok := sidecar.ConfigSecret.Data["filebeat.yml"]
++			require.True(t, ok)
++
++			var config renderedFilebeatConfig
++			require.NoError(t, yaml.Unmarshal(configBytes, &config))
++			require.Len(t, config.Filebeat.Modules, 1)
++			assert.Equal(t, "elasticsearch", config.Filebeat.Modules[0].Module)
++
++			querylog := config.Filebeat.Modules[0].Querylog
++			if !tt.wantQuerylog {
++				assert.Nil(t, querylog)
++				return
++			}
++
++			require.NotNil(t, querylog)
++			assert.True(t, querylog.Enabled)
++			assert.Equal(t, []string{"/usr/share/elasticsearch/logs/*_querylog.json"}, querylog.Var.Paths)
++			assert.Equal(t, "2h", querylog.CloseTimeout)
++			assert.True(t, querylog.FieldsUnderRoot)
++		})
++	}
++}

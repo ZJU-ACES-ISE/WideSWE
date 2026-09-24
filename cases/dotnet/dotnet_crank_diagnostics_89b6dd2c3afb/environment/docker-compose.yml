@@ -1,0 +1,46 @@
+services:
+  crank-hidden:
+    image: ecosyncbench/base/dotnet-sdk:8.0
+    working_dir: /workspace/repos/dotnet/crank
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    - ${ECOSYNC_DOTNET_CACHE_ROOT}:/ecosync-dotnet-cache
+    - ${ECOSYNC_MODERN_LINUX_SHIM}:/opt/ecosync/fake-modern-linux.so:ro
+    - ${ECOSYNC_TASK_DIR}/environment/kernel-osrelease:/tmp/ecosync-kernel-osrelease:ro
+    - ${ECOSYNC_TASK_DIR}/environment/fake-tracefs:/sys/kernel/tracing:ro
+    environment:
+      NUGET_PACKAGES: /ecosync-dotnet-cache/nuget
+      NUGET_HTTP_CACHE_PATH: /ecosync-dotnet-cache/nuget-http
+      DOTNET_CLI_HOME: /ecosync-dotnet-cache/dotnet-home
+      LD_PRELOAD: /opt/ecosync/fake-modern-linux.so
+    command:
+    - bash
+    - -lc
+    - >
+      mkdir -p /workspace/.ecosyncbench/test-reports &&
+      dotnet test test/Microsoft.Crank.UnitTests/Microsoft.Crank.UnitTests.csproj
+      --logger "trx;LogFileName=crank-hidden.trx"
+      --results-directory /workspace/.ecosyncbench/test-reports
+      --filter "FullyQualifiedName~EcoSyncDotNetTraceContractTests"
+  diagnostics-hidden:
+    image: ecosyncbench/base/dotnet-sdk:10.0
+    working_dir: /workspace/repos/dotnet/diagnostics
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    - ${ECOSYNC_DOTNET_CACHE_ROOT}:/ecosync-dotnet-cache
+    environment:
+      NUGET_PACKAGES: /ecosync-dotnet-cache/nuget
+      NUGET_HTTP_CACHE_PATH: /ecosync-dotnet-cache/nuget-http
+      DOTNET_CLI_HOME: /ecosync-dotnet-cache/dotnet-home
+      ECOSYNC_DOTNET_TEST_ROOT: /ecosync-dotnet-cache/dotnet-test
+    command:
+    - bash
+    - -lc
+    - >
+      mkdir -p /workspace/.ecosyncbench/test-reports "$$ECOSYNC_DOTNET_TEST_ROOT" artifacts &&
+      rm -rf artifacts/dotnet-test &&
+      ln -s "$$ECOSYNC_DOTNET_TEST_ROOT" artifacts/dotnet-test &&
+      dotnet test src/tests/dotnet-trace/DotnetTrace.UnitTests.csproj
+      --logger "trx;LogFileName=diagnostics-hidden.trx"
+      --results-directory /workspace/.ecosyncbench/test-reports
+      --filter "FullyQualifiedName~EcoSyncCollectLinuxRedirectedIoTests"

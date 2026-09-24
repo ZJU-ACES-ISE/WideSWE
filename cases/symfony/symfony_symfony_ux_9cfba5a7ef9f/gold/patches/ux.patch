@@ -1,0 +1,145 @@
+diff --git a/src/TwigComponent/src/DependencyInjection/Compiler/TwigComponentPass.php b/src/TwigComponent/src/DependencyInjection/Compiler/TwigComponentPass.php
+index 0725798c..6f27124d 100644
+--- a/src/TwigComponent/src/DependencyInjection/Compiler/TwigComponentPass.php
++++ b/src/TwigComponent/src/DependencyInjection/Compiler/TwigComponentPass.php
+@@ -28,8 +28,12 @@ final class TwigComponentPass implements CompilerPassInterface
+ {
+     public function process(ContainerBuilder $container): void
+     {
+-        $componentConfig = [];
++        if ($container->hasDefinition('twig') && $container->hasDefinition('ux.twig_component.twig.lexer')) {
++            $container->getDefinition('twig')
++                ->addMethodCall('setLexer', [new Reference('ux.twig_component.twig.lexer')]);
++        }
+ 
++        $componentConfig = [];
+         $componentReferences = [];
+         $componentClassMap = [];
+         $componentNames = [];
+diff --git a/src/TwigComponent/src/DependencyInjection/TwigComponentExtension.php b/src/TwigComponent/src/DependencyInjection/TwigComponentExtension.php
+index e339a404..8bf1f4fa 100644
+--- a/src/TwigComponent/src/DependencyInjection/TwigComponentExtension.php
++++ b/src/TwigComponent/src/DependencyInjection/TwigComponentExtension.php
+@@ -11,6 +11,7 @@
+ 
+ namespace Symfony\UX\TwigComponent\DependencyInjection;
+ 
++use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\SafeClassPass;
+ use Symfony\Component\Config\Definition\Builder\ArrayNodeDefinition;
+ use Symfony\Component\Config\Definition\Builder\TreeBuilder;
+ use Symfony\Component\Config\Definition\ConfigurationInterface;
+@@ -30,6 +31,7 @@ use Symfony\Component\DependencyInjection\Reference;
+ use Symfony\UX\TwigComponent\Attribute\AsTwigComponent;
+ use Symfony\UX\TwigComponent\CacheWarmer\TwigComponentCacheWarmer;
+ use Symfony\UX\TwigComponent\Command\TwigComponentDebugCommand;
++use Symfony\UX\TwigComponent\ComponentAttributes;
+ use Symfony\UX\TwigComponent\ComponentFactory;
+ use Symfony\UX\TwigComponent\ComponentProperties;
+ use Symfony\UX\TwigComponent\ComponentRenderer;
+@@ -123,11 +125,17 @@ final class TwigComponentExtension extends Extension implements ConfigurationInt
+             ->addTag('twig.runtime')
+         ;
+ 
+-        $container->register('ux.twig_component.twig.lexer', ComponentLexer::class);
++        $container->register('ux.twig_component.twig.lexer', ComponentLexer::class)
++            ->setArguments([new Reference('twig')]);
+ 
+-        $container->register('ux.twig_component.twig.environment_configurator', TwigEnvironmentConfigurator::class)
+-            ->setDecoratedService(new Reference('twig.configurator.environment'))
+-            ->setArguments([new Reference('ux.twig_component.twig.environment_configurator.inner')]);
++        if (class_exists(SafeClassPass::class)) {
++            $container->register(ComponentAttributes::class)
++                ->addResourceTag('twig.safe_class', ['strategy' => 'html']);
++        } else {
++            $container->register('ux.twig_component.twig.environment_configurator', TwigEnvironmentConfigurator::class)
++                ->setDecoratedService(new Reference('twig.configurator.environment'))
++                ->setArguments([new Reference('ux.twig_component.twig.environment_configurator.inner')]);
++        }
+ 
+         $container->register('ux.twig_component.command.debug', TwigComponentDebugCommand::class)
+             ->setArguments([
+diff --git a/src/TwigComponent/src/Twig/TwigEnvironmentConfigurator.php b/src/TwigComponent/src/Twig/TwigEnvironmentConfigurator.php
+index 4b952a10..32280e81 100644
+--- a/src/TwigComponent/src/Twig/TwigEnvironmentConfigurator.php
++++ b/src/TwigComponent/src/Twig/TwigEnvironmentConfigurator.php
+@@ -19,6 +19,8 @@ use Twig\Runtime\EscaperRuntime;
+ 
+ /**
+  * @final
++ *
++ * @internal since symfony/ux-twig-component 2.36, this class will be removed once symfony/twig-bundle >= 8.1 is required
+  */
+ class TwigEnvironmentConfigurator
+ {
+@@ -31,8 +33,6 @@ class TwigEnvironmentConfigurator
+     {
+         $this->decorated->configure($environment);
+ 
+-        $environment->setLexer(new ComponentLexer($environment));
+-
+         if (class_exists(EscaperRuntime::class)) {
+             $environment->getRuntime(EscaperRuntime::class)->addSafeClass(ComponentAttributes::class, ['html']);
+         } elseif ($environment->hasExtension(EscaperExtension::class)) {
+diff --git a/src/TwigComponent/tests/Unit/DependencyInjection/TwigComponentExtensionTest.php b/src/TwigComponent/tests/Unit/DependencyInjection/TwigComponentExtensionTest.php
+index 08ef8994..bea78bd1 100644
+--- a/src/TwigComponent/tests/Unit/DependencyInjection/TwigComponentExtensionTest.php
++++ b/src/TwigComponent/tests/Unit/DependencyInjection/TwigComponentExtensionTest.php
+@@ -12,9 +12,12 @@
+ namespace Symfony\UX\TwigComponent\Tests\Unit\DependencyInjection;
+ 
+ use PHPUnit\Framework\TestCase;
++use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\SafeClassPass;
+ use Symfony\Component\DependencyInjection\ContainerBuilder;
+ use Symfony\Component\DependencyInjection\ParameterBag\ParameterBag;
++use Symfony\UX\TwigComponent\ComponentAttributes;
+ use Symfony\UX\TwigComponent\DependencyInjection\TwigComponentExtension;
++use Symfony\UX\TwigComponent\Twig\TwigEnvironmentConfigurator;
+ use Symfony\UX\TwigComponent\TwigComponentBundle;
+ 
+ /**
+@@ -84,6 +87,45 @@ class TwigComponentExtensionTest extends TestCase
+         $this->assertFalse($container->hasDefinition('ux.twig_component.data_collector'));
+     }
+ 
++    public function testSafeClassPassIntegration()
++    {
++        if (!class_exists(SafeClassPass::class)) {
++            $this->markTestSkipped('Requires symfony/twig-bundle >= 8.1 with SafeClassPass support');
++        }
++
++        $container = $this->createContainer();
++        $container->registerExtension(new TwigComponentExtension());
++        $container->loadFromExtension('twig_component', [
++            'defaults' => [],
++            'anonymous_template_directory' => 'components/',
++        ]);
++        $this->compileContainer($container);
++
++        $this->assertFalse($container->hasDefinition('ux.twig_component.twig.environment_configurator'));
++        $this->assertTrue($container->hasDefinition(ComponentAttributes::class));
++        $def = $container->getDefinition(ComponentAttributes::class);
++        $this->assertTrue($def->hasTag('twig.safe_class'));
++        $this->assertSame([['strategy' => 'html']], $def->getTag('twig.safe_class'));
++    }
++
++    public function testFallbackToEnvironmentConfiguratorWithoutSafeClassPass()
++    {
++        if (class_exists(SafeClassPass::class)) {
++            $this->markTestSkipped('Only relevant with symfony/twig-bundle < 8.1 without SafeClassPass support');
++        }
++
++        $container = $this->createContainer();
++        $container->registerExtension(new TwigComponentExtension());
++        $container->loadFromExtension('twig_component', [
++            'defaults' => [],
++            'anonymous_template_directory' => 'components/',
++        ]);
++        $this->compileContainer($container);
++
++        $this->assertTrue($container->hasDefinition('ux.twig_component.twig.environment_configurator'));
++        $this->assertSame(TwigEnvironmentConfigurator::class, $container->getDefinition('ux.twig_component.twig.environment_configurator')->getClass());
++    }
++
+     private function createContainer()
+     {
+         $container = new ContainerBuilder(new ParameterBag([

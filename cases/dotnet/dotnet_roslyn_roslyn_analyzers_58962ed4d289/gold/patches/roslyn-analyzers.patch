@@ -1,0 +1,154 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 7514fc74d..adeebae1f 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -27,6 +27,12 @@
+ 
+     <NoWarn>$(NoWarn);NU1701</NoWarn>
+ 
++    <!--
++      Analyzers currently reference Microsoft.CodeAnalysis.Workspaces which triggers this warning.
++      RS1038: Compiler extensions should be implemented in assemblies with compiler-provided references
++    -->
++    <NoWarn>$(NoWarn);RS1038</NoWarn>
++
+     <!-- Do not warn about the version of analyzers being used in this project -->
+     <_SkipUpgradeNetAnalyzersNuGetWarning>true</_SkipUpgradeNetAnalyzersNuGetWarning>
+     <!-- TODO: Enable Nullable for test and non-shipping projects -->
+diff --git a/eng/Versions.props b/eng/Versions.props
+index 817c9c14e..3a5c09eae 100644
+--- a/eng/Versions.props
++++ b/eng/Versions.props
+@@ -59,11 +59,11 @@
+     <!-- Versions for tests and general utility execution. -->
+     <!-- This version is for utility and executable assemblies. The version here should not overlap with any of the surface
+          area versions. -->
+-    <MicrosoftCodeAnalysisVersionForTests>4.9.0-3.final</MicrosoftCodeAnalysisVersionForTests>
++    <MicrosoftCodeAnalysisVersionForTests>5.0.0-2.25374.24</MicrosoftCodeAnalysisVersionForTests>
+     <MicrosoftCodeAnalysisVersionForExecution>4.6.0-1.final</MicrosoftCodeAnalysisVersionForExecution>
+     <MicrosoftCodeAnalysisCSharpCodeStyleVersion>4.6.0</MicrosoftCodeAnalysisCSharpCodeStyleVersion>
+     <MicrosoftCodeAnalysisVisualBasicCodeStyleVersion>4.6.0</MicrosoftCodeAnalysisVisualBasicCodeStyleVersion>
+-    <DogfoodAnalyzersVersion>3.3.4</DogfoodAnalyzersVersion>
++    <DogfoodAnalyzersVersion>$(MicrosoftCodeAnalysisVersionForTests)</DogfoodAnalyzersVersion>
+     <DogfoodNetAnalyzersVersion>8.0.0-preview1.22621.6</DogfoodNetAnalyzersVersion>
+     <MicrosoftCodeAnalysisBannedApiAnalyzersVersion>$(DogfoodAnalyzersVersion)</MicrosoftCodeAnalysisBannedApiAnalyzersVersion>
+     <MicrosoftCodeAnalysisAnalyzersVersion>$(DogfoodAnalyzersVersion)</MicrosoftCodeAnalysisAnalyzersVersion>
+diff --git a/src/NetAnalyzers/Core/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStatic.cs b/src/NetAnalyzers/Core/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStatic.cs
+index 6c6e5c192..7df5c0183 100644
+--- a/src/NetAnalyzers/Core/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStatic.cs
++++ b/src/NetAnalyzers/Core/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStatic.cs
+@@ -130,6 +130,11 @@ namespace Microsoft.CodeQuality.Analyzers.QualityGuidelines
+                             // This member cannot be made static.
+                             isInstanceReferenced = true;
+                         }
++                        else if (operation.Parameter.ContainingSymbol is ITypeSymbol { TypeKind: ITypeSymbolExtensions.ExtensionTypeKind })
++                        {
++                            // We're referencing an extension receiver.
++                            isInstanceReferenced = true;
++                        }
+                     }, OperationKind.ParameterReference);
+ 
+                     context.RegisterOperationBlockEndAction(context =>
+diff --git a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/DefineAccessorsForAttributeArgumentsTests.Fixer.cs b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/DefineAccessorsForAttributeArgumentsTests.Fixer.cs
+index aee63869f..76f88090a 100644
+--- a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/DefineAccessorsForAttributeArgumentsTests.Fixer.cs
++++ b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/DefineAccessorsForAttributeArgumentsTests.Fixer.cs
+@@ -153,7 +153,6 @@ public sealed class InternalGetterTestAttribute : Attribute
+     public string Name
+     {
+         get { return m_name; }
+-
+         internal set { m_name = value; }
+     }
+ }");
+@@ -198,7 +197,6 @@ public sealed class InternalGetterTestAttribute : Attribute
+     public string Name
+     {
+         get { return m_name; }
+-
+         internal set { m_name = value; }
+     }
+ }");
+@@ -285,7 +283,6 @@ public sealed class PublicSetterTestAttribute : Attribute
+     public string Name
+     {
+         get { return m_name; }
+-
+         internal set { m_name = value; }
+     }
+ }");
+diff --git a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/ImplementStandardExceptionConstructorsTests.Fixer.cs b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/ImplementStandardExceptionConstructorsTests.Fixer.cs
+index 0192f1c45..bf5895733 100644
+--- a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/ImplementStandardExceptionConstructorsTests.Fixer.cs
++++ b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/ImplementStandardExceptionConstructorsTests.Fixer.cs
+@@ -1,4 +1,4 @@
+-// Copyright (c) Microsoft.  All Rights Reserved.  Licensed under the MIT license.  See License.txt in the project root for license information.
++﻿// Copyright (c) Microsoft.  All Rights Reserved.  Licensed under the MIT license.  See License.txt in the project root for license information.
+ 
+ using System.Threading.Tasks;
+ using Xunit;
+diff --git a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OperatorOverloadsHaveNamedAlternatesTests.Fixer.cs b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OperatorOverloadsHaveNamedAlternatesTests.Fixer.cs
+index 178b6707f..81dea4076 100644
+--- a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OperatorOverloadsHaveNamedAlternatesTests.Fixer.cs
++++ b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OperatorOverloadsHaveNamedAlternatesTests.Fixer.cs
+@@ -206,7 +206,6 @@ public class C
+ public class C
+ {
+     public static C operator +(C left, C right) { return new C(); }
+-
+     public static C Add(C left, C right) { return new C(); }
+ }
+ ",
+@@ -235,7 +234,6 @@ public class C
+ {
+     public static bool operator true(C item) { return true; }
+     public static bool operator false(C item) { return false; }
+-
+     public bool IsTrue => true;
+ }
+ ",
+diff --git a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OperatorsShouldHaveSymmetricalOverloadsTests.Fixer.cs b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OperatorsShouldHaveSymmetricalOverloadsTests.Fixer.cs
+index 8162e254f..734e13e44 100644
+--- a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OperatorsShouldHaveSymmetricalOverloadsTests.Fixer.cs
++++ b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OperatorsShouldHaveSymmetricalOverloadsTests.Fixer.cs
+@@ -1,4 +1,4 @@
+-// Copyright (c) Microsoft.  All Rights Reserved.  Licensed under the MIT license.  See License.txt in the project root for license information.
++﻿// Copyright (c) Microsoft.  All Rights Reserved.  Licensed under the MIT license.  See License.txt in the project root for license information.
+ 
+ using System.Threading.Tasks;
+ using Xunit;
+diff --git a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OverrideEqualsAndOperatorEqualsOnValueTypesTests.Fixer.cs b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OverrideEqualsAndOperatorEqualsOnValueTypesTests.Fixer.cs
+index d732c5743..f1ad8d8ff 100644
+--- a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OverrideEqualsAndOperatorEqualsOnValueTypesTests.Fixer.cs
++++ b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/ApiDesignGuidelines/OverrideEqualsAndOperatorEqualsOnValueTypesTests.Fixer.cs
+@@ -1,4 +1,4 @@
+-// Copyright (c) Microsoft.  All Rights Reserved.  Licensed under the MIT license.  See License.txt in the project root for license information.
++﻿// Copyright (c) Microsoft.  All Rights Reserved.  Licensed under the MIT license.  See License.txt in the project root for license information.
+ 
+ using System.Threading.Tasks;
+ using Xunit;
+diff --git a/src/PerformanceTests/Utilities/Common/EmptyAnalyzer.cs b/src/PerformanceTests/Utilities/Common/EmptyAnalyzer.cs
+index ff26aa6c3..c45e623b6 100644
+--- a/src/PerformanceTests/Utilities/Common/EmptyAnalyzer.cs
++++ b/src/PerformanceTests/Utilities/Common/EmptyAnalyzer.cs
+@@ -6,6 +6,7 @@ using Microsoft.CodeAnalysis.Diagnostics;
+ 
+ namespace PerfUtilities
+ {
++#pragma warning disable RS1041 // Compiler extensions should be implemented in assemblies targeting netstandard2.0
+     [DiagnosticAnalyzer(LanguageNames.CSharp, LanguageNames.VisualBasic)]
+     public class EmptyAnalyzer : DiagnosticAnalyzer
+     {
+diff --git a/src/Utilities/Compiler/Extensions/ITypeSymbolExtensions.cs b/src/Utilities/Compiler/Extensions/ITypeSymbolExtensions.cs
+index 737b63e89..414be4e5a 100644
+--- a/src/Utilities/Compiler/Extensions/ITypeSymbolExtensions.cs
++++ b/src/Utilities/Compiler/Extensions/ITypeSymbolExtensions.cs
+@@ -12,6 +12,8 @@ namespace Analyzer.Utilities.Extensions
+ {
+     internal static class ITypeSymbolExtensions
+     {
++        public const TypeKind ExtensionTypeKind = (TypeKind)14;
++
+ #if CODEANALYSIS_V3_OR_BETTER
+         public static bool IsAssignableTo(
+             [NotNullWhen(returnValue: true)] this ITypeSymbol? fromSymbol,

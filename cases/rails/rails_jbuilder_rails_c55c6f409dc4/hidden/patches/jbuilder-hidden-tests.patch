@@ -1,0 +1,61 @@
+diff --git a/test/scaffold_api_controller_generator_test.rb b/test/scaffold_api_controller_generator_test.rb
+index 546749b..932ad1b 100644
+--- a/test/scaffold_api_controller_generator_test.rb
++++ b/test/scaffold_api_controller_generator_test.rb
+@@ -24,12 +24,20 @@ class ScaffoldApiControllerGeneratorTest < Rails::Generators::TestCase
+         assert_match %r{@post = Post\.new\(post_params\)}, m
+         assert_match %r{@post\.save}, m
+         assert_match %r{render :show, status: :created, location: @post}, m
+-        assert_match %r{render json: @post\.errors, status: :unprocessable_entity}, m
++        if Gem::Version.new(Rack::RELEASE) < Gem::Version.new("3.1")
++          assert_match %r{render json: @post\.errors, status: :unprocessable_entity}, m
++        else
++          assert_match %r{render json: @post\.errors, status: :unprocessable_content}, m
++        end
+       end
+ 
+       assert_instance_method :update, content do |m|
+         assert_match %r{render :show, status: :ok, location: @post}, m
+-        assert_match %r{render json: @post.errors, status: :unprocessable_entity}, m
++        if Gem::Version.new(Rack::RELEASE) < Gem::Version.new("3.1")
++          assert_match %r{render json: @post.errors, status: :unprocessable_entity}, m
++        else
++          assert_match %r{render json: @post.errors, status: :unprocessable_content}, m
++        end
+       end
+ 
+       assert_instance_method :destroy, content do |m|
+diff --git a/test/scaffold_controller_generator_test.rb b/test/scaffold_controller_generator_test.rb
+index 048df2a..e68aa25 100644
+--- a/test/scaffold_controller_generator_test.rb
++++ b/test/scaffold_controller_generator_test.rb
+@@ -33,15 +33,25 @@ class ScaffoldControllerGeneratorTest < Rails::Generators::TestCase
+         assert_match %r{@post\.save}, m
+         assert_match %r{format\.html \{ redirect_to @post, notice: "Post was successfully created\." \}}, m
+         assert_match %r{format\.json \{ render :show, status: :created, location: @post \}}, m
+-        assert_match %r{format\.html \{ render :new, status: :unprocessable_entity \}}, m
+-        assert_match %r{format\.json \{ render json: @post\.errors, status: :unprocessable_entity \}}, m
++        if Gem::Version.new(Rack::RELEASE) < Gem::Version.new("3.1")
++          assert_match %r{format\.html \{ render :new, status: :unprocessable_entity \}}, m
++          assert_match %r{format\.json \{ render json: @post\.errors, status: :unprocessable_entity \}}, m
++        else
++          assert_match %r{format\.html \{ render :new, status: :unprocessable_content \}}, m
++          assert_match %r{format\.json \{ render json: @post\.errors, status: :unprocessable_content \}}, m
++        end
+       end
+ 
+       assert_instance_method :update, content do |m|
+         assert_match %r{format\.html \{ redirect_to @post, notice: "Post was successfully updated\.", status: :see_other \}}, m
+         assert_match %r{format\.json \{ render :show, status: :ok, location: @post \}}, m
+-        assert_match %r{format\.html \{ render :edit, status: :unprocessable_entity \}}, m
+-        assert_match %r{format\.json \{ render json: @post.errors, status: :unprocessable_entity \}}, m
++        if Gem::Version.new(Rack::RELEASE) < Gem::Version.new("3.1")
++          assert_match %r{format\.html \{ render :edit, status: :unprocessable_entity \}}, m
++          assert_match %r{format\.json \{ render json: @post.errors, status: :unprocessable_entity \}}, m
++        else
++          assert_match %r{format\.html \{ render :edit, status: :unprocessable_content \}}, m
++          assert_match %r{format\.json \{ render json: @post.errors, status: :unprocessable_content \}}, m
++        end
+       end
+ 
+       assert_instance_method :destroy, content do |m|

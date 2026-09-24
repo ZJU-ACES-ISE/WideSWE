@@ -1,0 +1,6171 @@
+diff --git a/package.json b/package.json
+index 00b23050b..f4efa6f74 100644
+--- a/package.json
++++ b/package.json
+@@ -131,8 +131,8 @@
+     "url-or-path": "2.6.1",
+     "vnopts": "2.0.3",
+     "wcwidth.js": "2.0.0",
+-    "yaml": "1.10.3",
+-    "yaml-unist-parser": "2.2.1"
++    "yaml": "2.9.0",
++    "yaml-unist-parser": "3.1.0"
+   },
+   "devDependencies": {
+     "@babel/generator": "8.0.0-rc.6",
+diff --git a/scripts/build/packages/prettier.js b/scripts/build/packages/prettier.js
+index ce7ae1154..f675125bf 100644
+--- a/scripts/build/packages/prettier.js
++++ b/scripts/build/packages/prettier.js
+@@ -762,7 +762,33 @@ const pluginFiles = [
+     ],
+   },
+   "src/plugins/html.js",
+-  "src/plugins/yaml.js",
++  {
++    input: "src/plugins/yaml.js",
++    replaceModule: [
++      {
++        module: getPackageFile("yaml/browser/dist/schema/yaml-1.1/binary.js"),
++        process(text) {
++          // We don't care about content of `binary`
++          text = text.replace(
++            "onError('This environment does not support reading binary tags; either Buffer or atob is required');",
++            "",
++          );
++          return text;
++        },
++      },
++      // `Error#cause` for Node.js v14
++      {
++        module: getPackageFile("yaml-unist-parser/dist/yaml-syntax-error.mjs"),
++        process(text) {
++          text = text.replace(
++            "this.code = error.code;",
++            "this.cause ??= error; this.code = error.code;",
++          );
++          return text;
++        },
++      },
++    ],
++  },
+ ];
+ 
+ function createPluginModule(file) {
+diff --git a/src/language-yaml/massage-ast/index.js b/src/language-yaml/massage-ast/index.js
+index 8415a9285..1fa1ae0ff 100644
+--- a/src/language-yaml/massage-ast/index.js
++++ b/src/language-yaml/massage-ast/index.js
+@@ -32,6 +32,11 @@ function massageAstNode(original, cloned /* , parent */) {
+           .map((line) => line.replace(/[ \t]+$/, ""))
+           .join("\n");
+       }
++
++      // TODO: Fix this
++      if (original.chomping === "clip" || original.chomping === "strip") {
++        cloned.value = original.value.trimEnd();
++      }
+       break;
+   }
+ }
+diff --git a/src/language-yaml/parser-yaml.js b/src/language-yaml/parser-yaml.js
+index 2277cd9af..dbac8097a 100644
+--- a/src/language-yaml/parser-yaml.js
++++ b/src/language-yaml/parser-yaml.js
+@@ -1,27 +1,21 @@
+-import { parse as parseYaml } from "yaml-unist-parser/lib/parse.js";
++import { parse as parseYaml, YAMLSyntaxError } from "yaml-unist-parser";
+ import createError from "../common/parser-create-error.js";
+ import { locEnd, locStart } from "./loc.js";
+ import { hasIgnorePragma, hasPragma } from "./pragma.js";
+ 
+-const parseOptions = {
+-  allowDuplicateKeysInMap: true,
+-};
++/**
++@import {ParseOptions} from "yaml-unist-parser";
++*/
++
++/** @type {ParseOptions} */
++const parseOptions = { uniqueKeys: false };
+ 
+ function parse(text) {
++  let root;
+   try {
+-    const root = parseYaml(text, parseOptions);
+-
+-    /**
+-     * suppress `comment not printed` error
+-     *
+-     * comments are handled in printer-yaml.js without using `printComment`
+-     * so that it'll always throw errors even if we printed it correctly
+-     */
+-    delete root.comments;
+-
+-    return root;
+-  } catch (/** @type {any} */ error) {
+-    if (error?.position) {
++    root = parseYaml(text, parseOptions);
++  } catch (error) {
++    if (error instanceof YAMLSyntaxError) {
+       throw createError(error.message, {
+         loc: error.position,
+         cause: error,
+@@ -31,6 +25,16 @@ function parse(text) {
+     /* c8 ignore next */
+     throw error;
+   }
++
++  /**
++   * suppress `comment not printed` error
++   *
++   * comments are handled in printer-yaml.js without using `printComment`
++   * so that it'll always throw errors even if we printed it correctly
++   */
++  delete root.comments;
++
++  return root;
+ }
+ 
+ export const yaml = {
+diff --git a/tests/config/format-test/failed-format-tests.js b/tests/config/format-test/failed-format-tests.js
+index 4d7ec50ef..53bbd584e 100644
+--- a/tests/config/format-test/failed-format-tests.js
++++ b/tests/config/format-test/failed-format-tests.js
+@@ -105,6 +105,10 @@ const disabledTests = new Map(
+       "js/import/long-module-name/import-defer.js",
+       "js/import/long-module-name/import-source.js",
+     ],
++    yaml: [
++      // Bug: https://github.com/eemeli/yaml/issues/646
++      "yaml/spec/spec-example-2-11-mapping-between-sequences.yml",
++    ],
+   }).map(([parser, tests]) => [
+     parser,
+     new Set(tests.map((file) => path.join(FORMAT_TEST_DIRECTORY, file))),
+diff --git a/tests/format/yaml/_errors_/__snapshots__/format.test.js.snap b/tests/format/yaml/_errors_/__snapshots__/format.test.js.snap
+index 3df988fa8..87e4f8411 100644
+--- a/tests/format/yaml/_errors_/__snapshots__/format.test.js.snap
++++ b/tests/format/yaml/_errors_/__snapshots__/format.test.js.snap
+@@ -1,18 +1,12 @@
+ // Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+ 
+ exports[`block-scalar-with-spaces-only.yml format 1`] = `
+-"Block scalars with more-indented leading empty lines must use an explicit indentation indicator (1:21)
+-> 1 | empty block scalar: >
+-    |                     ^
+-> 2 |  
+-    | ^
+-> 3 |   
+-    | ^^
+-> 4 |    
+-    | ^^^
++"Block scalars with more-indented leading empty lines must use an explicit indentation indicator (5:2)
++  3 |   
++  4 |    
+ > 5 |  # comment
+-    | ^^^^^^^^^^
+-> 6 |
+-    | ^
++    |  ^
++  6 |
++Cause: Block scalars with more-indented leading empty lines must use an explicit indentation indicator
+ Cause: Block scalars with more-indented leading empty lines must use an explicit indentation indicator"
+ `;
+diff --git a/tests/format/yaml/block-value/__snapshots__/format.test.js.snap b/tests/format/yaml/block-value/__snapshots__/format.test.js.snap
+index 02745198b..5ec500cae 100644
+--- a/tests/format/yaml/block-value/__snapshots__/format.test.js.snap
++++ b/tests/format/yaml/block-value/__snapshots__/format.test.js.snap
+@@ -1,110 +1,110 @@
+ // Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+ 
+-exports[`snippet: "foo: >+\\n  x\\n  \\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n   \\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-  
++   
+ 
+ =====================================output=====================================
+ foo: >+
+   x
+-
++   
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n  \\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n   \\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-  
++   
+ 
+ 
+ =====================================output=====================================
+ foo: >+
+   x
+-
++   
+ 
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n  \\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n   \\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-  
++   
+ 
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
+-
++   
+ 
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n  \\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n   \\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-  
++   
+ 
+ 
+ 
+ =====================================output=====================================
+ foo: >+
+   x
+-
++   
+ 
+ 
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n  \\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n   \\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-  
++   
+ 
+ 
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
+-
++   
+ 
+ 
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n  \\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n   \\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-  
++   
+ 
+ 
+ 
+@@ -112,7 +112,7 @@ foo: >+
+ =====================================output=====================================
+ foo: >+
+   x
+-
++   
+ 
+ 
+ 
+@@ -120,14 +120,14 @@ foo: >+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n  \\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n   \\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-  
++   
+ 
+ 
+ 
+@@ -135,7 +135,7 @@ foo: >+
+ =====================================output=====================================
+ foo: >+
+   x
+-
++   
+ 
+ 
+ 
+@@ -143,14 +143,14 @@ foo: >+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n  \\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n   \\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-  
++   
+ 
+ 
+ 
+@@ -159,7 +159,7 @@ foo: >+
+ =====================================output=====================================
+ foo: >+
+   x
+-
++   
+ 
+ 
+ 
+@@ -168,137 +168,175 @@ foo: >+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n  \\t\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
++  	
+ 
+ =====================================output=====================================
+ foo: >+
+   x
++  	
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n" format 2`] = `
++exports[`snippet: "foo: >+\\n  x\\n  \\t\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
++  	
++
+ 
+ =====================================output=====================================
+ foo: >+
+   x
++  	
++
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n" format 3`] = `
++exports[`snippet: "foo: >+\\n  x\\n  \\t\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
++  	
+ 
++...
+ =====================================output=====================================
+ foo: >+
+   x
++  	
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n  \\t\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
++  	
++
+ 
+ 
+ =====================================output=====================================
+ foo: >+
+   x
++  	
++
+ 
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n" format 2`] = `
++exports[`snippet: "foo: >+\\n  x\\n  \\t\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
++  	
+ 
+ 
++...
+ =====================================output=====================================
+ foo: >+
+   x
++  	
+ 
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n" format 3`] = `
++exports[`snippet: "foo: >+\\n  x\\n  \\t\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
++  	
++
++
+ 
+ 
+ =====================================output=====================================
+ foo: >+
+   x
++  	
++
++
+ 
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n" format 4`] = `
++exports[`snippet: "foo: >+\\n  x\\n  \\t\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
++  	
++
+ 
+ 
++...
+ =====================================output=====================================
+ foo: >+
+   x
++  	
++
+ 
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n  \\t\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
++  	
++
++
++
+ 
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
++  	
++
++
++
+ 
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >+\\n  x\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -306,16 +344,14 @@ parsers: ["yaml"]
+ foo: >+
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >+\\n  x\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -323,16 +359,14 @@ parsers: ["yaml"]
+ foo: >+
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -340,18 +374,14 @@ parsers: ["yaml"]
+ foo: >+
+   x
+ 
+-
+-
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+-
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -360,17 +390,15 @@ foo: >+
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -379,17 +407,15 @@ foo: >+
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -398,17 +424,15 @@ foo: >+
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -417,17 +441,15 @@ foo: >+
+   x
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -435,18 +457,16 @@ parsers: ["yaml"]
+ foo: >+
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -454,18 +474,16 @@ parsers: ["yaml"]
+ foo: >+
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -473,18 +491,16 @@ parsers: ["yaml"]
+ foo: >+
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -494,18 +510,16 @@ foo: >+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -515,18 +529,16 @@ foo: >+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -536,18 +548,16 @@ foo: >+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -557,18 +567,16 @@ foo: >+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -577,19 +585,17 @@ foo: >+
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -598,19 +604,17 @@ foo: >+
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -619,19 +623,17 @@ foo: >+
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -640,19 +642,17 @@ foo: >+
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -663,7 +663,6 @@ foo: >+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >+
+   x
+@@ -671,11 +670,10 @@ foo: >+
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -686,7 +684,6 @@ foo: >+
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >+
+   x
+@@ -694,11 +691,10 @@ foo: >+
+ 
+ 
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -709,7 +705,6 @@ foo: >+
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >+
+   x
+@@ -717,11 +712,10 @@ foo: >+
+ 
+ 
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -732,7 +726,6 @@ foo: >+
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >+
+   x
+@@ -740,11 +733,10 @@ foo: >+
+ 
+ 
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -754,7 +746,6 @@ foo: >+
+ 
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >+
+@@ -762,12 +753,11 @@ foo: >+
+ 
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -777,8 +767,6 @@ foo: >+
+ 
+ 
+ 
+-
+-
+ ...
+ =====================================output=====================================
+ foo: >+
+@@ -786,78 +774,87 @@ foo: >+
+ 
+ 
+ 
+-
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\t\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-	
+ 
++
++
++...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
++
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\t\\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-	
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\t\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-	
+ 
+-...
++
++
++
++
+ =====================================output=====================================
+ foo: >+
+   x
+ 
+ 
+-...
++
++
++
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\t\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-	
+ 
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: >+
+   x
+@@ -865,17 +862,19 @@ foo: >+
+ 
+ 
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\t\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-	
++
++
+ 
+ 
+ ...
+@@ -885,22 +884,23 @@ foo: >+
+ 
+ 
+ 
++
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\t\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-	
+ 
+ 
+ 
+ 
++...
+ =====================================output=====================================
+ foo: >+
+   x
+@@ -908,18 +908,18 @@ foo: >+
+ 
+ 
+ 
+-
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\t\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-	
++
+ 
+ 
+ 
+@@ -935,14 +935,14 @@ foo: >+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >+\\n  x\\n\\t\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >+\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >+
+   x
+-	
++
+ 
+ 
+ 
+@@ -1365,14 +1365,14 @@ foo: >+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n  \\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n   \\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-  
++   
+ 
+ =====================================output=====================================
+ foo: >
+@@ -1381,14 +1381,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n  \\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n   \\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-  
++   
+ 
+ 
+ =====================================output=====================================
+@@ -1398,14 +1398,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n  \\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n   \\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-  
++   
+ 
+ ...
+ =====================================output=====================================
+@@ -1416,14 +1416,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n  \\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n   \\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-  
++   
+ 
+ 
+ 
+@@ -1434,14 +1434,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n  \\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n   \\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-  
++   
+ 
+ 
+ ...
+@@ -1453,14 +1453,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n  \\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n   \\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-  
++   
+ 
+ 
+ 
+@@ -1472,14 +1472,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n  \\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n   \\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-  
++   
+ 
+ 
+ 
+@@ -1492,14 +1492,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n  \\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n   \\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-  
++   
+ 
+ 
+ 
+@@ -1513,13 +1513,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n  \\t\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
++  	
+ 
+ =====================================output=====================================
+ foo: >
+@@ -1528,13 +1529,15 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n" format 2`] = `
++exports[`snippet: "foo: >\\n  x\\n  \\t\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
++  	
++
+ 
+ =====================================output=====================================
+ foo: >
+@@ -1543,28 +1546,33 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n" format 3`] = `
++exports[`snippet: "foo: >\\n  x\\n  \\t\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
++  	
+ 
++...
+ =====================================output=====================================
+ foo: >
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n  \\t\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
++  	
++
+ 
+ 
+ =====================================output=====================================
+@@ -1574,29 +1582,35 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n" format 2`] = `
++exports[`snippet: "foo: >\\n  x\\n  \\t\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
++  	
+ 
+ 
++...
+ =====================================output=====================================
+ foo: >
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n" format 3`] = `
++exports[`snippet: "foo: >\\n  x\\n  \\t\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
++  	
++
++
+ 
+ 
+ =====================================output=====================================
+@@ -1606,29 +1620,37 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n" format 4`] = `
++exports[`snippet: "foo: >\\n  x\\n  \\t\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
++  	
++
+ 
+ 
++...
+ =====================================output=====================================
+ foo: >
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n  \\t\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
++  	
++
++
++
+ 
+ ...
+ =====================================output=====================================
+@@ -1639,7 +1661,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >\\n  x\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1647,16 +1669,14 @@ parsers: ["yaml"]
+ foo: >
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: >
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >\\n  x\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1664,16 +1684,14 @@ parsers: ["yaml"]
+ foo: >
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: >
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1681,8 +1699,6 @@ parsers: ["yaml"]
+ foo: >
+   x
+ 
+-
+-
+ =====================================output=====================================
+ foo: >
+   x
+@@ -1690,7 +1706,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1699,7 +1715,6 @@ foo: >
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >
+   x
+@@ -1707,7 +1722,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1716,7 +1731,6 @@ foo: >
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >
+   x
+@@ -1724,7 +1738,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1733,7 +1747,6 @@ foo: >
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >
+   x
+@@ -1741,7 +1754,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1750,16 +1763,14 @@ foo: >
+   x
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1767,7 +1778,6 @@ parsers: ["yaml"]
+ foo: >
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >
+@@ -1777,7 +1787,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1785,7 +1795,6 @@ parsers: ["yaml"]
+ foo: >
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >
+@@ -1795,7 +1804,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1803,7 +1812,6 @@ parsers: ["yaml"]
+ foo: >
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >
+@@ -1813,7 +1821,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1823,7 +1831,6 @@ foo: >
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >
+   x
+@@ -1831,7 +1838,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1841,7 +1848,6 @@ foo: >
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >
+   x
+@@ -1849,7 +1855,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1859,7 +1865,6 @@ foo: >
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >
+   x
+@@ -1867,7 +1872,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1877,7 +1882,6 @@ foo: >
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >
+   x
+@@ -1885,7 +1889,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1894,7 +1898,6 @@ foo: >
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >
+@@ -1904,7 +1907,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1913,7 +1916,6 @@ foo: >
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >
+@@ -1923,7 +1925,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1932,7 +1934,6 @@ foo: >
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >
+@@ -1942,7 +1943,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1951,7 +1952,6 @@ foo: >
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >
+@@ -1961,7 +1961,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1972,7 +1972,6 @@ foo: >
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >
+   x
+@@ -1980,7 +1979,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -1991,16 +1990,14 @@ foo: >
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2011,16 +2008,14 @@ foo: >
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2031,16 +2026,14 @@ foo: >
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2050,7 +2043,6 @@ foo: >
+ 
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >
+@@ -2060,7 +2052,7 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2070,8 +2062,6 @@ foo: >
+ 
+ 
+ 
+-
+-
+ ...
+ =====================================output=====================================
+ foo: >
+@@ -2081,83 +2071,92 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\t\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-	
+ 
++
++
++...
+ =====================================output=====================================
+ foo: >
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\t\\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-	
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: >
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\t\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-	
+ 
+-...
++
++
++
++
+ =====================================output=====================================
+ foo: >
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\t\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-	
+ 
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: >
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\t\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-	
++
++
+ 
+ 
+ ...
+@@ -2169,33 +2168,34 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\t\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-	
+ 
+ 
+ 
+ 
++...
+ =====================================output=====================================
+ foo: >
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\t\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-	
++
+ 
+ 
+ 
+@@ -2208,14 +2208,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >\\n  x\\n\\t\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >
+   x
+-	
++
+ 
+ 
+ 
+@@ -2601,14 +2601,14 @@ foo: >
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n  \\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n   \\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-  
++   
+ 
+ =====================================output=====================================
+ foo: >-
+@@ -2617,14 +2617,14 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n  \\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n   \\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-  
++   
+ 
+ 
+ =====================================output=====================================
+@@ -2634,14 +2634,14 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n  \\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n   \\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-  
++   
+ 
+ ...
+ =====================================output=====================================
+@@ -2652,14 +2652,14 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n  \\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n   \\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-  
++   
+ 
+ 
+ 
+@@ -2670,14 +2670,14 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n  \\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n   \\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-  
++   
+ 
+ 
+ ...
+@@ -2689,14 +2689,14 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n  \\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n   \\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-  
++   
+ 
+ 
+ 
+@@ -2708,14 +2708,14 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n  \\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n   \\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-  
++   
+ 
+ 
+ 
+@@ -2728,14 +2728,14 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n  \\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n   \\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-  
++   
+ 
+ 
+ 
+@@ -2749,13 +2749,14 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n  \\t\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
++  	
+ 
+ =====================================output=====================================
+ foo: >-
+@@ -2764,13 +2765,15 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n" format 2`] = `
++exports[`snippet: "foo: >-\\n  x\\n  \\t\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
++  	
++
+ 
+ =====================================output=====================================
+ foo: >-
+@@ -2779,28 +2782,33 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n" format 3`] = `
++exports[`snippet: "foo: >-\\n  x\\n  \\t\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
++  	
+ 
++...
+ =====================================output=====================================
+ foo: >-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n  \\t\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
++  	
++
+ 
+ 
+ =====================================output=====================================
+@@ -2810,29 +2818,35 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n" format 2`] = `
++exports[`snippet: "foo: >-\\n  x\\n  \\t\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
++  	
+ 
+ 
++...
+ =====================================output=====================================
+ foo: >-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n" format 3`] = `
++exports[`snippet: "foo: >-\\n  x\\n  \\t\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
++  	
++
++
+ 
+ 
+ =====================================output=====================================
+@@ -2842,29 +2856,37 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n" format 4`] = `
++exports[`snippet: "foo: >-\\n  x\\n  \\t\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
++  	
++
+ 
+ 
++...
+ =====================================output=====================================
+ foo: >-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n  \\t\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
++  	
++
++
++
+ 
+ ...
+ =====================================output=====================================
+@@ -2875,7 +2897,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >-\\n  x\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2883,16 +2905,14 @@ parsers: ["yaml"]
+ foo: >-
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: >-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >-\\n  x\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2900,16 +2920,14 @@ parsers: ["yaml"]
+ foo: >-
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: >-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2917,8 +2935,6 @@ parsers: ["yaml"]
+ foo: >-
+   x
+ 
+-
+-
+ =====================================output=====================================
+ foo: >-
+   x
+@@ -2926,7 +2942,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2935,7 +2951,6 @@ foo: >-
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >-
+   x
+@@ -2943,7 +2958,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2952,7 +2967,6 @@ foo: >-
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >-
+   x
+@@ -2960,7 +2974,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2969,7 +2983,6 @@ foo: >-
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >-
+   x
+@@ -2977,7 +2990,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -2986,16 +2999,14 @@ foo: >-
+   x
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3003,7 +3014,6 @@ parsers: ["yaml"]
+ foo: >-
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >-
+@@ -3013,7 +3023,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3021,7 +3031,6 @@ parsers: ["yaml"]
+ foo: >-
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >-
+@@ -3031,7 +3040,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3039,7 +3048,6 @@ parsers: ["yaml"]
+ foo: >-
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >-
+@@ -3049,7 +3057,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3059,7 +3067,6 @@ foo: >-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >-
+   x
+@@ -3067,7 +3074,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3077,7 +3084,6 @@ foo: >-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >-
+   x
+@@ -3085,7 +3091,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3095,7 +3101,6 @@ foo: >-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >-
+   x
+@@ -3103,7 +3108,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3113,7 +3118,6 @@ foo: >-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >-
+   x
+@@ -3121,7 +3125,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3130,7 +3134,6 @@ foo: >-
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >-
+@@ -3140,7 +3143,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3149,7 +3152,6 @@ foo: >-
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >-
+@@ -3159,7 +3161,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3168,7 +3170,6 @@ foo: >-
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >-
+@@ -3178,7 +3179,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3187,7 +3188,6 @@ foo: >-
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >-
+@@ -3197,7 +3197,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3208,7 +3208,6 @@ foo: >-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: >-
+   x
+@@ -3216,7 +3215,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3227,16 +3226,14 @@ foo: >-
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3247,16 +3244,14 @@ foo: >-
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3267,16 +3262,14 @@ foo: >-
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: >-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3286,7 +3279,6 @@ foo: >-
+ 
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: >-
+@@ -3296,7 +3288,7 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -3306,8 +3298,6 @@ foo: >-
+ 
+ 
+ 
+-
+-
+ ...
+ =====================================output=====================================
+ foo: >-
+@@ -3317,83 +3307,92 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\t\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-	
+ 
++
++
++...
+ =====================================output=====================================
+ foo: >-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\t\\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-	
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: >-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\t\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-	
+ 
+-...
++
++
++
++
+ =====================================output=====================================
+ foo: >-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\t\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-	
+ 
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: >-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\t\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-	
++
++
+ 
+ 
+ ...
+@@ -3405,33 +3404,34 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\t\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-	
+ 
+ 
+ 
+ 
++...
+ =====================================output=====================================
+ foo: >-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\t\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-	
++
+ 
+ 
+ 
+@@ -3444,14 +3444,14 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: >-\\n  x\\n\\t\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: >-\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: >-
+   x
+-	
++
+ 
+ 
+ 
+@@ -3837,111 +3837,111 @@ foo: >-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n  \\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n   \\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-  
++   
+ 
+ =====================================output=====================================
+ foo: |+
+   x
+-
++   
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n  \\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n   \\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-  
++   
+ 
+ 
+ =====================================output=====================================
+ foo: |+
+   x
+-
++   
+ 
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n  \\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n   \\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-  
++   
+ 
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
+-
++   
+ 
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n  \\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n   \\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-  
++   
+ 
+ 
+ 
+ =====================================output=====================================
+ foo: |+
+   x
+-
++   
+ 
+ 
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n  \\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n   \\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-  
++   
+ 
+ 
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
+-
++   
+ 
+ 
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n  \\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n   \\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-  
++   
+ 
+ 
+ 
+@@ -3949,7 +3949,7 @@ foo: |+
+ =====================================output=====================================
+ foo: |+
+   x
+-
++   
+ 
+ 
+ 
+@@ -3957,14 +3957,14 @@ foo: |+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n  \\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n   \\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-  
++   
+ 
+ 
+ 
+@@ -3972,7 +3972,7 @@ foo: |+
+ =====================================output=====================================
+ foo: |+
+   x
+-
++   
+ 
+ 
+ 
+@@ -3980,14 +3980,14 @@ foo: |+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n  \\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n   \\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-  
++   
+ 
+ 
+ 
+@@ -3996,7 +3996,7 @@ foo: |+
+ =====================================output=====================================
+ foo: |+
+   x
+-
++   
+ 
+ 
+ 
+@@ -4005,137 +4005,175 @@ foo: |+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n  \\t\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
++  	
+ 
+ =====================================output=====================================
+ foo: |+
+   x
++  	
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n" format 2`] = `
++exports[`snippet: "foo: |+\\n  x\\n  \\t\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
++  	
++
+ 
+ =====================================output=====================================
+ foo: |+
+   x
++  	
++
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n" format 3`] = `
++exports[`snippet: "foo: |+\\n  x\\n  \\t\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
++  	
+ 
++...
+ =====================================output=====================================
+ foo: |+
+   x
++  	
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n  \\t\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
++  	
++
+ 
+ 
+ =====================================output=====================================
+ foo: |+
+   x
++  	
++
+ 
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n" format 2`] = `
++exports[`snippet: "foo: |+\\n  x\\n  \\t\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
++  	
+ 
+ 
++...
+ =====================================output=====================================
+ foo: |+
+   x
++  	
+ 
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n" format 3`] = `
++exports[`snippet: "foo: |+\\n  x\\n  \\t\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
++  	
++
++
+ 
+ 
+ =====================================output=====================================
+ foo: |+
+   x
++  	
++
++
+ 
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n" format 4`] = `
++exports[`snippet: "foo: |+\\n  x\\n  \\t\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
++  	
++
+ 
+ 
++...
+ =====================================output=====================================
+ foo: |+
+   x
++  	
++
+ 
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n  \\t\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
++  	
++
++
++
+ 
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
++  	
++
++
++
+ 
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |+\\n  x\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4143,16 +4181,14 @@ parsers: ["yaml"]
+ foo: |+
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |+\\n  x\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4160,16 +4196,14 @@ parsers: ["yaml"]
+ foo: |+
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4177,18 +4211,14 @@ parsers: ["yaml"]
+ foo: |+
+   x
+ 
+-
+-
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+-
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4197,17 +4227,15 @@ foo: |+
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4216,17 +4244,15 @@ foo: |+
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4235,17 +4261,15 @@ foo: |+
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4254,17 +4278,15 @@ foo: |+
+   x
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4272,18 +4294,16 @@ parsers: ["yaml"]
+ foo: |+
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4291,18 +4311,16 @@ parsers: ["yaml"]
+ foo: |+
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4310,18 +4328,16 @@ parsers: ["yaml"]
+ foo: |+
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4331,18 +4347,16 @@ foo: |+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4352,18 +4366,16 @@ foo: |+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4373,18 +4385,16 @@ foo: |+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4394,18 +4404,16 @@ foo: |+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4414,19 +4422,17 @@ foo: |+
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4435,19 +4441,17 @@ foo: |+
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4456,19 +4460,17 @@ foo: |+
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4477,19 +4479,17 @@ foo: |+
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4500,7 +4500,6 @@ foo: |+
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |+
+   x
+@@ -4508,11 +4507,10 @@ foo: |+
+ 
+ 
+ 
+-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4523,7 +4521,6 @@ foo: |+
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |+
+   x
+@@ -4531,11 +4528,10 @@ foo: |+
+ 
+ 
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4546,7 +4542,6 @@ foo: |+
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |+
+   x
+@@ -4554,11 +4549,10 @@ foo: |+
+ 
+ 
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4569,7 +4563,6 @@ foo: |+
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |+
+   x
+@@ -4577,11 +4570,10 @@ foo: |+
+ 
+ 
+ 
+-...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4591,7 +4583,6 @@ foo: |+
+ 
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |+
+@@ -4599,12 +4590,11 @@ foo: |+
+ 
+ 
+ 
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -4614,8 +4604,6 @@ foo: |+
+ 
+ 
+ 
+-
+-
+ ...
+ =====================================output=====================================
+ foo: |+
+@@ -4623,78 +4611,87 @@ foo: |+
+ 
+ 
+ 
+-
+-
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\t\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-	
+ 
++
++
++...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
++
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\t\\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-	
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\t\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-	
+ 
+-...
++
++
++
++
+ =====================================output=====================================
+ foo: |+
+   x
+ 
+ 
+-...
++
++
++
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\t\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-	
+ 
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: |+
+   x
+@@ -4702,17 +4699,19 @@ foo: |+
+ 
+ 
+ 
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\t\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-	
++
++
+ 
+ 
+ ...
+@@ -4722,22 +4721,23 @@ foo: |+
+ 
+ 
+ 
++
+ ...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\t\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-	
+ 
+ 
+ 
+ 
++...
+ =====================================output=====================================
+ foo: |+
+   x
+@@ -4745,18 +4745,18 @@ foo: |+
+ 
+ 
+ 
+-
++...
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\t\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-	
++
+ 
+ 
+ 
+@@ -4772,14 +4772,14 @@ foo: |+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |+\\n  x\\n\\t\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |+\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |+
+   x
+-	
++
+ 
+ 
+ 
+@@ -5202,14 +5202,14 @@ foo: |+
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n  \\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n   \\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-  
++   
+ 
+ =====================================output=====================================
+ foo: |
+@@ -5218,14 +5218,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n  \\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n   \\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-  
++   
+ 
+ 
+ =====================================output=====================================
+@@ -5235,14 +5235,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n  \\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n   \\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-  
++   
+ 
+ ...
+ =====================================output=====================================
+@@ -5253,14 +5253,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n  \\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n   \\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-  
++   
+ 
+ 
+ 
+@@ -5271,14 +5271,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n  \\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n   \\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-  
++   
+ 
+ 
+ ...
+@@ -5290,14 +5290,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n  \\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n   \\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-  
++   
+ 
+ 
+ 
+@@ -5309,14 +5309,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n  \\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n   \\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-  
++   
+ 
+ 
+ 
+@@ -5329,14 +5329,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n  \\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n   \\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-  
++   
+ 
+ 
+ 
+@@ -5350,13 +5350,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n  \\t\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
++  	
+ 
+ =====================================output=====================================
+ foo: |
+@@ -5365,13 +5366,15 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n" format 2`] = `
++exports[`snippet: "foo: |\\n  x\\n  \\t\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
++  	
++
+ 
+ =====================================output=====================================
+ foo: |
+@@ -5380,28 +5383,33 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n" format 3`] = `
++exports[`snippet: "foo: |\\n  x\\n  \\t\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
++  	
+ 
++...
+ =====================================output=====================================
+ foo: |
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n  \\t\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
++  	
++
+ 
+ 
+ =====================================output=====================================
+@@ -5411,29 +5419,35 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n" format 2`] = `
++exports[`snippet: "foo: |\\n  x\\n  \\t\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
++  	
+ 
+ 
++...
+ =====================================output=====================================
+ foo: |
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n" format 3`] = `
++exports[`snippet: "foo: |\\n  x\\n  \\t\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
++  	
++
++
+ 
+ 
+ =====================================output=====================================
+@@ -5443,29 +5457,37 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n" format 4`] = `
++exports[`snippet: "foo: |\\n  x\\n  \\t\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
++  	
++
+ 
+ 
++...
+ =====================================output=====================================
+ foo: |
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n  \\t\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
++  	
++
++
++
+ 
+ ...
+ =====================================output=====================================
+@@ -5476,7 +5498,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |\\n  x\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5484,16 +5506,14 @@ parsers: ["yaml"]
+ foo: |
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: |
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |\\n  x\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5501,16 +5521,14 @@ parsers: ["yaml"]
+ foo: |
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: |
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5518,8 +5536,6 @@ parsers: ["yaml"]
+ foo: |
+   x
+ 
+-
+-
+ =====================================output=====================================
+ foo: |
+   x
+@@ -5527,7 +5543,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5536,7 +5552,6 @@ foo: |
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |
+   x
+@@ -5544,7 +5559,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5553,7 +5568,6 @@ foo: |
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |
+   x
+@@ -5561,7 +5575,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5570,7 +5584,6 @@ foo: |
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |
+   x
+@@ -5578,7 +5591,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5587,16 +5600,14 @@ foo: |
+   x
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5604,7 +5615,6 @@ parsers: ["yaml"]
+ foo: |
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |
+@@ -5614,7 +5624,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5622,7 +5632,6 @@ parsers: ["yaml"]
+ foo: |
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |
+@@ -5632,7 +5641,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5640,7 +5649,6 @@ parsers: ["yaml"]
+ foo: |
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |
+@@ -5650,7 +5658,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5660,7 +5668,6 @@ foo: |
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |
+   x
+@@ -5668,7 +5675,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5678,7 +5685,6 @@ foo: |
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |
+   x
+@@ -5686,7 +5692,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5696,7 +5702,6 @@ foo: |
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |
+   x
+@@ -5704,7 +5709,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5714,7 +5719,6 @@ foo: |
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |
+   x
+@@ -5722,7 +5726,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5731,7 +5735,6 @@ foo: |
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |
+@@ -5741,7 +5744,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5750,7 +5753,6 @@ foo: |
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |
+@@ -5760,7 +5762,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5769,7 +5771,6 @@ foo: |
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |
+@@ -5779,7 +5780,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5788,7 +5789,6 @@ foo: |
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |
+@@ -5798,7 +5798,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5809,7 +5809,6 @@ foo: |
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |
+   x
+@@ -5817,7 +5816,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5828,16 +5827,14 @@ foo: |
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5848,16 +5845,14 @@ foo: |
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5868,16 +5863,14 @@ foo: |
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5887,7 +5880,6 @@ foo: |
+ 
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |
+@@ -5897,7 +5889,7 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -5907,8 +5899,6 @@ foo: |
+ 
+ 
+ 
+-
+-
+ ...
+ =====================================output=====================================
+ foo: |
+@@ -5918,83 +5908,92 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\t\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-	
+ 
++
++
++...
+ =====================================output=====================================
+ foo: |
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\t\\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-	
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: |
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\t\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-	
+ 
+-...
++
++
++
++
+ =====================================output=====================================
+ foo: |
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\t\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-	
+ 
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: |
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\t\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-	
++
++
+ 
+ 
+ ...
+@@ -6006,33 +6005,34 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\t\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-	
+ 
+ 
+ 
+ 
++...
+ =====================================output=====================================
+ foo: |
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\t\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-	
++
+ 
+ 
+ 
+@@ -6045,14 +6045,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |\\n  x\\n\\t\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |
+   x
+-	
++
+ 
+ 
+ 
+@@ -6438,14 +6438,14 @@ foo: |
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n  \\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n   \\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-  
++   
+ 
+ =====================================output=====================================
+ foo: |-
+@@ -6454,14 +6454,14 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n  \\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n   \\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-  
++   
+ 
+ 
+ =====================================output=====================================
+@@ -6471,14 +6471,14 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n  \\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n   \\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-  
++   
+ 
+ ...
+ =====================================output=====================================
+@@ -6489,14 +6489,14 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n  \\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n   \\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-  
++   
+ 
+ 
+ 
+@@ -6507,14 +6507,14 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n  \\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n   \\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-  
++   
+ 
+ 
+ ...
+@@ -6526,14 +6526,14 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n  \\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n   \\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-  
++   
+ 
+ 
+ 
+@@ -6545,14 +6545,14 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n  \\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n   \\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-  
++   
+ 
+ 
+ 
+@@ -6565,14 +6565,14 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n  \\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n   \\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-  
++   
+ 
+ 
+ 
+@@ -6586,13 +6586,14 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n  \\t\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
++  	
+ 
+ =====================================output=====================================
+ foo: |-
+@@ -6601,13 +6602,15 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n" format 2`] = `
++exports[`snippet: "foo: |-\\n  x\\n  \\t\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
++  	
++
+ 
+ =====================================output=====================================
+ foo: |-
+@@ -6616,28 +6619,33 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n" format 3`] = `
++exports[`snippet: "foo: |-\\n  x\\n  \\t\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
++  	
+ 
++...
+ =====================================output=====================================
+ foo: |-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n  \\t\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
++  	
++
+ 
+ 
+ =====================================output=====================================
+@@ -6647,29 +6655,35 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n" format 2`] = `
++exports[`snippet: "foo: |-\\n  x\\n  \\t\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
++  	
+ 
+ 
++...
+ =====================================output=====================================
+ foo: |-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n" format 3`] = `
++exports[`snippet: "foo: |-\\n  x\\n  \\t\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
++  	
++
++
+ 
+ 
+ =====================================output=====================================
+@@ -6679,29 +6693,37 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n" format 4`] = `
++exports[`snippet: "foo: |-\\n  x\\n  \\t\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
++  	
++
+ 
+ 
++...
+ =====================================output=====================================
+ foo: |-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n  \\t\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
++  	
++
++
++
+ 
+ ...
+ =====================================output=====================================
+@@ -6712,7 +6734,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |-\\n  x\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6720,16 +6742,14 @@ parsers: ["yaml"]
+ foo: |-
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: |-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |-\\n  x\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6737,16 +6757,14 @@ parsers: ["yaml"]
+ foo: |-
+   x
+ 
+-...
+ =====================================output=====================================
+ foo: |-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6754,8 +6772,6 @@ parsers: ["yaml"]
+ foo: |-
+   x
+ 
+-
+-
+ =====================================output=====================================
+ foo: |-
+   x
+@@ -6763,7 +6779,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6772,7 +6788,6 @@ foo: |-
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |-
+   x
+@@ -6780,7 +6795,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6789,7 +6804,6 @@ foo: |-
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |-
+   x
+@@ -6797,7 +6811,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6806,7 +6820,6 @@ foo: |-
+   x
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |-
+   x
+@@ -6814,7 +6827,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6823,16 +6836,14 @@ foo: |-
+   x
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6840,7 +6851,6 @@ parsers: ["yaml"]
+ foo: |-
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |-
+@@ -6850,7 +6860,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6858,7 +6868,6 @@ parsers: ["yaml"]
+ foo: |-
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |-
+@@ -6868,7 +6877,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6876,7 +6885,6 @@ parsers: ["yaml"]
+ foo: |-
+   x
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |-
+@@ -6886,7 +6894,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6896,7 +6904,6 @@ foo: |-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |-
+   x
+@@ -6904,7 +6911,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n" format 2`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6914,7 +6921,6 @@ foo: |-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |-
+   x
+@@ -6922,7 +6928,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n" format 3`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6932,7 +6938,6 @@ foo: |-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |-
+   x
+@@ -6940,7 +6945,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n" format 4`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6950,7 +6955,6 @@ foo: |-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |-
+   x
+@@ -6958,7 +6962,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6967,7 +6971,6 @@ foo: |-
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |-
+@@ -6977,7 +6980,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -6986,7 +6989,6 @@ foo: |-
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |-
+@@ -6996,7 +6998,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -7005,7 +7007,6 @@ foo: |-
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |-
+@@ -7015,7 +7016,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -7024,7 +7025,6 @@ foo: |-
+   x
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |-
+@@ -7034,7 +7034,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -7045,7 +7045,6 @@ foo: |-
+ 
+ 
+ 
+-
+ =====================================output=====================================
+ foo: |-
+   x
+@@ -7053,7 +7052,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n" format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -7064,16 +7063,14 @@ foo: |-
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n" format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -7084,16 +7081,14 @@ foo: |-
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n" format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -7104,16 +7099,14 @@ foo: |-
+ 
+ 
+ 
+-...
+ =====================================output=====================================
+ foo: |-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -7123,7 +7116,6 @@ foo: |-
+ 
+ 
+ 
+-
+ ...
+ =====================================output=====================================
+ foo: |-
+@@ -7133,7 +7125,7 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+@@ -7143,8 +7135,6 @@ foo: |-
+ 
+ 
+ 
+-
+-
+ ...
+ =====================================output=====================================
+ foo: |-
+@@ -7154,83 +7144,92 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\t\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-	
+ 
++
++
++...
+ =====================================output=====================================
+ foo: |-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\t\\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-	
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: |-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\t\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n" format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-	
+ 
+-...
++
++
++
++
+ =====================================output=====================================
+ foo: |-
+   x
+-...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\t\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-	
+ 
+ 
+ 
++
++...
+ =====================================output=====================================
+ foo: |-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\t\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n..." format 2`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-	
++
++
+ 
+ 
+ ...
+@@ -7242,33 +7241,34 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\t\\n\\n\\n\\n" format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n..." format 3`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-	
+ 
+ 
+ 
+ 
++...
+ =====================================output=====================================
+ foo: |-
+   x
++...
+ 
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\t\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n..." format 4`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-	
++
+ 
+ 
+ 
+@@ -7281,14 +7281,14 @@ foo: |-
+ ================================================================================
+ `;
+ 
+-exports[`snippet: "foo: |-\\n  x\\n\\t\\n\\n\\n\\n\\n..." format 1`] = `
++exports[`snippet: "foo: |-\\n  x\\n\\n\\n\\n\\n\\n..." format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+ foo: |-
+   x
+-	
++
+ 
+ 
+ 
+diff --git a/tests/format/yaml/block-value/format.test.js b/tests/format/yaml/block-value/format.test.js
+index 4289bd1d0..4253534ff 100644
+--- a/tests/format/yaml/block-value/format.test.js
++++ b/tests/format/yaml/block-value/format.test.js
+@@ -1,5 +1,5 @@
+ const blockStyles = ["|", ">", "|+", "|-", ">+", ">-"];
+-const trailingSpace = ["", "  ", "\t"];
++const trailingSpace = ["", "   ", "  \t"];
+ const newlines = ["", "\n", "\n\n", "\n\n\n"];
+ 
+ const snippets = blockStyles.flatMap((blockStyle) =>
+diff --git a/tests/format/yaml/flow-mapping/comments/__snapshots__/format.test.js.snap b/tests/format/yaml/flow-mapping/comments/__snapshots__/format.test.js.snap
+index ad9405b4f..6c7ec8627 100644
+--- a/tests/format/yaml/flow-mapping/comments/__snapshots__/format.test.js.snap
++++ b/tests/format/yaml/flow-mapping/comments/__snapshots__/format.test.js.snap
+@@ -16,13 +16,6 @@ parsers: ["yaml"]
+ "key"
+ :value}
+ ---
+-{
+-&[
+-"key",
+-# 4
+-""]
+-:value}
+----
+ {"key": # 1
+ value}
+ 
+@@ -38,13 +31,6 @@ value}
+   "key": value,
+ }
+ ---
+-{ ? & [
+-      "key",
+-      # 4
+-      "",
+-    ]
+-  : value }
+----
+ { ? "key" # 1
+   : value }
+ 
+diff --git a/tests/format/yaml/flow-mapping/comments/key.yml b/tests/format/yaml/flow-mapping/comments/key.yml
+index 21530621c..33087e231 100644
+--- a/tests/format/yaml/flow-mapping/comments/key.yml
++++ b/tests/format/yaml/flow-mapping/comments/key.yml
+@@ -9,12 +9,5 @@
+ "key"
+ :value}
+ ---
+-{
+-&[
+-"key",
+-# 4
+-""]
+-:value}
+----
+ {"key": # 1
+ value}
+diff --git a/tests/format/yaml/mapping/__snapshots__/format.test.js.snap b/tests/format/yaml/mapping/__snapshots__/format.test.js.snap
+index 0bc667c4e..646f1bc41 100644
+--- a/tests/format/yaml/mapping/__snapshots__/format.test.js.snap
++++ b/tests/format/yaml/mapping/__snapshots__/format.test.js.snap
+@@ -1,54 +1,25 @@
+ // Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+ 
+ exports[`3-style.yml - {"tabWidth":4} format 1`] = `
+-====================================options=====================================
+-parsers: ["yaml"]
+-tabWidth: 4
+-                                                      printWidth: 80 (default) |
+-=====================================input======================================
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-=====================================output=====================================
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]:
+-    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-? [
+-      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
+-  ]
+-: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-================================================================================
++"Map comment with trailing content (5:1)
++  3 | [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
++  4 |
++> 5 | [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
++    | ^
++  6 |
++Cause: Map comment with trailing content
++Cause: Map comment with trailing content"
+ `;
+ 
+ exports[`3-style.yml format 1`] = `
+-====================================options=====================================
+-parsers: ["yaml"]
+-                                                      printWidth: 80 (default) |
+-=====================================input======================================
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-=====================================output=====================================
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]:
+-  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-? [
+-    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
+-  ]
+-: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+-
+-================================================================================
++"Map comment with trailing content (5:1)
++  3 | [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
++  4 |
++> 5 | [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
++    | ^
++  6 |
++Cause: Map comment with trailing content
++Cause: Map comment with trailing content"
+ `;
+ 
+ exports[`anchor.yml - {"tabWidth":4} format 1`] = `
+diff --git a/tests/format/yaml/mapping/format.test.js b/tests/format/yaml/mapping/format.test.js
+index 3d682043e..d4e9ba107 100644
+--- a/tests/format/yaml/mapping/format.test.js
++++ b/tests/format/yaml/mapping/format.test.js
+@@ -1,2 +1,5 @@
+-runFormatTest(import.meta, ["yaml"]);
+-runFormatTest(import.meta, ["yaml"], { tabWidth: 4 });
++// Bug: https://github.com/eemeli/yaml/issues/646
++const errors = { yaml: ["3-style.yml"] };
++
++runFormatTest(import.meta, ["yaml"], { errors });
++runFormatTest(import.meta, ["yaml"], { tabWidth: 4, errors });
+diff --git a/tests/format/yaml/spec/__snapshots__/format.test.js.snap b/tests/format/yaml/spec/__snapshots__/format.test.js.snap
+index c5ba36933..2c9286ae5 100644
+--- a/tests/format/yaml/spec/__snapshots__/format.test.js.snap
++++ b/tests/format/yaml/spec/__snapshots__/format.test.js.snap
+@@ -3149,58 +3149,6 @@ rbi:
+ ================================================================================
+ `;
+ 
+-exports[`spec-example-2-11-mapping-between-sequences.yml - {"proseWrap":"always"} format 1`] = `
+-====================================options=====================================
+-parsers: ["yaml"]
+-proseWrap: "always"
+-                                                      printWidth: 80 (default) |
+-=====================================input======================================
+-? - Detroit Tigers
+-  - Chicago cubs
+-:
+-  - 2001-07-23
+-
+-? [ New York Yankees,
+-    Atlanta Braves ]
+-: [ 2001-07-02, 2001-08-12,
+-    2001-08-14 ]
+-
+-=====================================output=====================================
+-? - Detroit Tigers
+-  - Chicago cubs
+-: - 2001-07-23
+-
+-[New York Yankees, Atlanta Braves]: [2001-07-02, 2001-08-12, 2001-08-14]
+-
+-================================================================================
+-`;
+-
+-exports[`spec-example-2-11-mapping-between-sequences.yml - {"useTabs":true} format 1`] = `
+-====================================options=====================================
+-parsers: ["yaml"]
+-useTabs: true
+-                                                      printWidth: 80 (default) |
+-=====================================input======================================
+-? - Detroit Tigers
+-  - Chicago cubs
+-:
+-  - 2001-07-23
+-
+-? [ New York Yankees,
+-    Atlanta Braves ]
+-: [ 2001-07-02, 2001-08-12,
+-    2001-08-14 ]
+-
+-=====================================output=====================================
+-? - Detroit Tigers
+-  - Chicago cubs
+-: - 2001-07-23
+-
+-[New York Yankees, Atlanta Braves]: [2001-07-02, 2001-08-12, 2001-08-14]
+-
+-================================================================================
+-`;
+-
+ exports[`spec-example-2-12-compact-nested-mapping.yml - {"proseWrap":"always"} format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+diff --git a/tests/format/yaml/yaml-test-suite/__snapshots__/format.test.js.snap b/tests/format/yaml/yaml-test-suite/__snapshots__/format.test.js.snap
+index 7a78d5a8e..45fce9d4e 100644
+--- a/tests/format/yaml/yaml-test-suite/__snapshots__/format.test.js.snap
++++ b/tests/format/yaml/yaml-test-suite/__snapshots__/format.test.js.snap
+@@ -65,21 +65,6 @@ parsers: ["yaml"]
+ ================================================================================
+ `;
+ 
+-exports[`snippet: 2JQS.yaml - Block Mapping with Missing Keys format 1`] = `
+-====================================options=====================================
+-parsers: ["yaml"]
+-                                                      printWidth: 80 (default) |
+-=====================================input======================================
+-: a
+-: b
+-
+-=====================================output=====================================
+-: a
+-: b
+-
+-================================================================================
+-`;
+-
+ exports[`snippet: 2LFX.yaml - Spec Example 6.13. Reserved Directives [1.3] format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+@@ -2786,6 +2771,20 @@ line3
+ ================================================================================
+ `;
+ 
++exports[`snippet: DK95.yaml - Tabs that look like indentation format 1`] = `
++====================================options=====================================
++parsers: ["yaml"]
++                                                      printWidth: 80 (default) |
++=====================================input======================================
++foo:
++ 	bar
++
++=====================================output=====================================
++foo: bar
++
++================================================================================
++`;
++
+ exports[`snippet: DK95-3.yaml - Tabs that look like indentation format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+@@ -3559,6 +3558,35 @@ parsers: ["yaml"]
+ 
+ 
+ 
++================================================================================
++`;
++
++exports[`snippet: JEF9-2.yaml - Trailing whitespace in streams format 1`] = `
++====================================options=====================================
++parsers: ["yaml"]
++                                                      printWidth: 80 (default) |
++=====================================input======================================
++- |+
++   
++
++=====================================output=====================================
++- |+
++
++
++================================================================================
++`;
++
++exports[`snippet: JEF9-3.yaml - Trailing whitespace in streams format 1`] = `
++====================================options=====================================
++parsers: ["yaml"]
++                                                      printWidth: 80 (default) |
++=====================================input======================================
++- |+
++   
++=====================================output=====================================
++- |+
++
++
+ ================================================================================
+ `;
+ 
+@@ -3903,37 +3931,6 @@ implicit block key: [implicit flow key: value]
+ ================================================================================
+ `;
+ 
+-exports[`snippet: L24T.yaml - Trailing line of spaces format 1`] = `
+-====================================options=====================================
+-parsers: ["yaml"]
+-                                                      printWidth: 80 (default) |
+-=====================================input======================================
+-foo: |
+-  x
+-   
+-
+-=====================================output=====================================
+-foo: |
+-  x
+-
+-================================================================================
+-`;
+-
+-exports[`snippet: L24T-2.yaml - Trailing line of spaces format 1`] = `
+-====================================options=====================================
+-parsers: ["yaml"]
+-                                                      printWidth: 80 (default) |
+-=====================================input======================================
+-foo: |
+-  x
+-   
+-=====================================output=====================================
+-foo: |
+-  x
+-
+-================================================================================
+-`;
+-
+ exports[`snippet: L94M.yaml - Tags in Explicit Mapping format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+@@ -4084,31 +4081,6 @@ folded: !foo >1
+ ================================================================================
+ `;
+ 
+-exports[`snippet: M5DY.yaml - Spec Example 2.11. Mapping between Sequences format 1`] = `
+-====================================options=====================================
+-parsers: ["yaml"]
+-                                                      printWidth: 80 (default) |
+-=====================================input======================================
+-? - Detroit Tigers
+-  - Chicago cubs
+-:
+-  - 2001-07-23
+-
+-? [ New York Yankees,
+-    Atlanta Braves ]
+-: [ 2001-07-02, 2001-08-12,
+-    2001-08-14 ]
+-
+-=====================================output=====================================
+-? - Detroit Tigers
+-  - Chicago cubs
+-: - 2001-07-23
+-
+-[New York Yankees, Atlanta Braves]: [2001-07-02, 2001-08-12, 2001-08-14]
+-
+-================================================================================
+-`;
+-
+ exports[`snippet: M6YH.yaml - Block sequence indentation format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+@@ -5864,19 +5836,18 @@ key: &an:chor value
+ ================================================================================
+ `;
+ 
+-exports[`snippet: Y79Y-2.yaml - Tabs in various contexts format 1`] = `
++exports[`snippet: Y79Y-3.yaml - Tabs in various contexts format 1`] = `
+ ====================================options=====================================
+ parsers: ["yaml"]
+                                                       printWidth: 80 (default) |
+ =====================================input======================================
+-foo: |
+- 	
+-bar: 1
++- [
++	
++ foo
++ ]
+ 
+ =====================================output=====================================
+-foo: |
+-
+-bar: 1
++- [foo]
+ 
+ ================================================================================
+ `;
+diff --git a/tests/format/yaml/yaml-test-suite/format.test.js b/tests/format/yaml/yaml-test-suite/format.test.js
+index 62eb0d12d..eda146d06 100644
+--- a/tests/format/yaml/yaml-test-suite/format.test.js
++++ b/tests/format/yaml/yaml-test-suite/format.test.js
+@@ -1,20 +1,24 @@
+ import yamlTestSuite from "yaml-test-suite";
+ 
++// https://github.com/eemeli/yaml/blob/086fa6b5bae325da18734750cddee231ce578930/tests/yaml-test-suite.ts#L19
++// https://github.com/prettier/yaml-unist-parser/blob/7b29a97bc3c1b98688a0b87709855e430735bb31/src/yaml-test-suite.test.ts#L4
+ const SKIP = new Set([
+-  // Plain value cannot start with a tab character
+-  // https://prettier.io/playground/#N4Igxg9gdgLgprEAuEAzCEkB0oAIswBGAhgE4gA0IEADjAJbQDOyoZpEA7gApkIspiAG07EAniyqFSxMAGs4MAMrEAtnAAy9KHGSphTOFQiEAVnDAwA6jJrIQNUnEOkAbrqkz5ipTVnaAc2QYUgBXIxBDVXpgsIi4AA8aOFJ6dVhhAHlkmRgIUm4IJnoGaHsEABNKEESctIQYYQAVFKgyemc9AwjiqAChOABFUIh4LqFDKlMmBKVAgeHR3SR9CYiARxH4bg4aARBiJgBaHTgKs+qQ4nohQIBhCFVVYnthIWre-rgAQRgQ+kIoW2KS0OnGkxAAAsYKohFZISVnH4wHAlPwSvRXCUxPYwExJCBXOEAJJQc6wJRgVJ0b5kpQwMQDcERRxFOA2Yh2FCOZwpdzVbQuGA7YgBZ7Mqh+UguexiNTvSWpWBWegVGCQ5AADgADFQnJt6E4RWKXitulRGoQVWqNUgAExUUKGJrEQgCVYQuCqQhnc4VDTEPqhUVwABi+Wef0CryBEBAAF940A
+-  "DK95.yaml",
+-  // Insufficient indentation in flow collection
+-  // https://prettier.io/playground/#N4Igxg9gdgLgprEAuEBaABAbQDpWzXdAMwgkIF1cQAaECABxgEtoBnZUAQwCduIB3AAo8E7FJwA2-TgE92tAEbdOYANZwYAZU4BbOABkmUOMiKTWcWhAUArOGBgB1ZfWQh63OBe4A3E4uU1DU16FSMAc2QYbgBXSxALHSYo2Pi4AA96OG4mPVhJAHks5RgIbkEIViZmaDcEABMaEAzi3IQYSQAVbKgeJi9Tc3iqqHCJOABFGIh4QYkLWhtWdM0I8amZkyQzefiAR2n4QT56MRBOVlRjOHqbpujOJgkIgGEIHR1ON0kJJpGxuAAQRg0SYChiR2yhmMcwWIAAFjAdBJHPDql5QmA4JpRNUmD5qjI3GBWPIQD44gBJKC3WCaMA5RiAmmaGAycaw+IeSpwZycVwoDxebJ+JpGbwwY6ccKfTm0ULcbxuGS6X7ynKwRxMeoweHIAAcAAZaJ4DkxPFKZV9tkNaB0FFqdXqkAAmWgxCydTgKMQ7OFwHQKG63er6TijGLSuAAMTKnxBEW+EIgIAAvqmgA
+-  "Y79Y-3.yaml",
++  //
++  "2JQS.yaml",
++  "9MMA.yaml",
++  "SF5V.yaml",
++  // Bug: https://github.com/eemeli/yaml/issues/646
++  "M5DY.yaml",
+ ]);
+ 
+ // https://github.com/prettier/prettier/issues/18302
+ const BUGS = new Set([
++  //
++  "Y79Y-2.yaml",
+   "DE56-3.yaml",
+   "DE56-4.yaml",
+-  "JEF9-2.yaml",
+-  "JEF9-3.yaml",
++  "L24T.yaml",
++  "L24T-2.yaml",
+ ]);
+ 
+ runFormatTest(
+diff --git a/tests/integration/__tests__/config-invalid.js b/tests/integration/__tests__/config-invalid.js
+index 14238d463..440ef6633 100644
+--- a/tests/integration/__tests__/config-invalid.js
++++ b/tests/integration/__tests__/config-invalid.js
+@@ -168,7 +168,10 @@ describe("Invalid yaml file", () => {
+     stderr: expect.stringContaining(
+       // Keep the outdent, since error message changes between versions
+       outdent`
+-        Map keys must be unique; "a" is repeated
++        Map keys must be unique at line 1, column 3:
++
++        a:
++          ^
+       `
+         .split("\n")
+         .map((line) => `[error] ${line}`)
+diff --git a/yarn.lock b/yarn.lock
+index 985c15f1b..0e70e4df6 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -8219,9 +8219,9 @@ __metadata:
+     url-or-path: "npm:2.6.1"
+     vnopts: "npm:2.0.3"
+     wcwidth.js: "npm:2.0.0"
+-    yaml: "npm:1.10.3"
++    yaml: "npm:2.9.0"
+     yaml-test-suite: "npm:0.1.0"
+-    yaml-unist-parser: "npm:2.2.1"
++    yaml-unist-parser: "npm:3.1.0"
+   bin:
+     prettier: ./bin/prettier.cjs
+   languageName: unknown
+@@ -9858,23 +9858,16 @@ __metadata:
+   languageName: node
+   linkType: hard
+ 
+-"yaml-unist-parser@npm:2.2.1":
+-  version: 2.2.1
+-  resolution: "yaml-unist-parser@npm:2.2.1"
++"yaml-unist-parser@npm:3.1.0":
++  version: 3.1.0
++  resolution: "yaml-unist-parser@npm:3.1.0"
+   dependencies:
+-    yaml: "npm:^1.10.2"
+-  checksum: 10/261817825ca6b754d6295d3d6b8ee82f60f138fdd2c13c57a68153ddbace1844192e458912236ac99cf83f369cff5a21a3581bfe1dc8d0fcea5c6f6a0689d226
+-  languageName: node
+-  linkType: hard
+-
+-"yaml@npm:1.10.3, yaml@npm:^1.10.2":
+-  version: 1.10.3
+-  resolution: "yaml@npm:1.10.3"
+-  checksum: 10/e2ef2feb92c708138f016c69777a0f1e45f6d3c5e7cbcda30807a98a37eda2e008bd4fa57352b043c65245a4c799d0c99d1f9b3425de40e70929e26d2ea38215
++    yaml: "npm:^2.8.2"
++  checksum: 10/ce8f8bf89f8b76060757c7a10e232e394d4e4849af2702fcd5808308cfca9679954dc5b36e71be6cd752e5f7044e1d48c6e829d30ddb9624bccb63e4a1688892
+   languageName: node
+   linkType: hard
+ 
+-"yaml@npm:^2.8.3, yaml@npm:^2.9.0":
++"yaml@npm:2.9.0, yaml@npm:^2.8.2, yaml@npm:^2.8.3, yaml@npm:^2.9.0":
+   version: 2.9.0
+   resolution: "yaml@npm:2.9.0"
+   bin:

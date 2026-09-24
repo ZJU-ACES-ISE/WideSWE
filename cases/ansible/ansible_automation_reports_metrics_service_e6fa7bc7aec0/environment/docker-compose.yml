@@ -1,0 +1,19 @@
+services:
+  ansible-aap-python:
+    image: ecosyncbench/deps/ansible-aap-cost-py:e6fa7bc7aec0
+    build:
+      context: .
+      dockerfile: ansible-aap-cost-py.Dockerfile
+    working_dir: /workspace
+    volumes:
+      - ${ECOSYNC_WORKSPACE:?ECOSYNC_WORKSPACE required}:/workspace
+      - ${ECOSYNC_CACHE_ROOT:-/tmp/ecosyncbench-release120-runtime/cache/legacy/python-cache/ansible-aap-cost}:/python-cache
+    environment:
+      ECOSYNC_PROFILE: ${ECOSYNC_PROFILE:-}
+      UV_CACHE_DIR: /python-cache/uv
+      PIP_CACHE_DIR: /python-cache/pip
+      UV_LINK_MODE: copy
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    command: ["/workspace/.ecosyncbench/run-ansible-aap-cost-profile.sh"]

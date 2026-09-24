@@ -1,0 +1,153 @@
+diff --git a/test/ecosync_compiler_contract_test.rb b/test/ecosync_compiler_contract_test.rb
+new file mode 100644
+index 0000000..20556f2
+--- /dev/null
++++ b/test/ecosync_compiler_contract_test.rb
+@@ -0,0 +1,147 @@
++# frozen_string_literal: true
++
++require "open3"
++require "rbconfig"
++require "test_helper"
++
++class EcoSyncCompilerContractTest < Minitest::Test
++  include CompileCacheISeqHelper
++  include TmpdirHelper
++
++  def setup
++    super
++    if Bootsnap::CompileCache::ISeq.respond_to?(:compiler_selector)
++      @previous_compiler_selector = Bootsnap::CompileCache::ISeq.compiler_selector
++    end
++  end
++
++  def teardown
++    if Bootsnap::CompileCache::ISeq.respond_to?(:compiler_selector=)
++      Bootsnap::CompileCache::ISeq.compiler_selector = @previous_compiler_selector
++    end
++    super
++  end
++
++  def test_default_compilers_control_frozen_string_literals
++    results = {}
++    {
++      default: Bootsnap::CompileCache::ISeq::DEFAULT,
++      frozen: Bootsnap::CompileCache::ISeq::FROZEN_STRING_LITERAL,
++      mutable: Bootsnap::CompileCache::ISeq::MUTABLE_STRING_LITERAL,
++    }.each do |name, compiler|
++      path = Help.set_file("#{name}.rb", "$ecosync_frozen = 'value'.frozen?")
++      Bootsnap::CompileCache::ISeq.compiler_selector = ->(_) { compiler }
++      load(path)
++      results[name] = $ecosync_frozen
++    end
++
++    baseline_path = Help.set_file("baseline.rb", "'value'.frozen?")
++    baseline = RubyVM::InstructionSequence.compile_file(baseline_path).eval
++    assert_equal baseline, results[:default]
++    assert_equal true, results[:frozen]
++    assert_equal false, results[:mutable]
++  ensure
++    $ecosync_frozen = nil
++  end
++
++  def test_selector_runs_for_every_load_and_selects_the_compiler
++    selected_paths = []
++    Bootsnap::CompileCache::ISeq.compiler_selector = lambda do |path|
++      selected_paths << File.expand_path(path)
++      if path.end_with?("first.rb")
++        Bootsnap::CompileCache::ISeq::FROZEN_STRING_LITERAL
++      else
++        Bootsnap::CompileCache::ISeq::MUTABLE_STRING_LITERAL
++      end
++    end
++
++    $ecosync_compiler_results = []
++    first = Help.set_file("first.rb", "$ecosync_compiler_results << 'first'.frozen?")
++    second = Help.set_file("second.rb", "$ecosync_compiler_results << 'second'.frozen?")
++    load(first)
++    load(first)
++    load(second)
++
++    assert_equal [File.expand_path(first), File.expand_path(first), File.expand_path(second)], selected_paths
++    assert_equal [true, true, false], $ecosync_compiler_results
++  ensure
++    $ecosync_compiler_results = nil
++  end
++
++  def test_default_config_enables_app_only_frozen_strings
++    app_root = File.join(@tmp_dir, "app")
++    dependency_root = Dir.mktmpdir("bootsnap-dependency")
++    FileUtils.mkdir_p(File.join(app_root, "config"))
++    File.write(
++      File.join(app_root, "config", "bootsnap.rb"),
++      "Bootsnap.enable_frozen_string_literal(app_only: true)\n",
++    )
++    app_file = Help.set_file(
++      File.join(app_root, "app_code.rb"),
++      "$ecosync_app_frozen = 'app'.frozen?",
++    )
++    dependency_file = Help.set_file(
++      File.join(dependency_root, "dependency.rb"),
++      "$ecosync_dependency_frozen = 'dependency'.frozen?",
++    )
++
++    stdout, stderr, status = run_setup(
++      app_root,
++      <<~RUBY,
++        require "bootsnap/setup"
++        load #{app_file.inspect}
++        load #{dependency_file.inspect}
++        print([$ecosync_app_frozen, $ecosync_dependency_frozen].join(","))
++      RUBY
++    )
++
++    assert_predicate status, :success?, stderr
++    assert_equal "true,false", stdout
++  ensure
++    FileUtils.remove_entry(dependency_root) if dependency_root && File.exist?(dependency_root)
++  end
++
++  def test_bootsnap_config_selects_an_alternate_config
++    app_root = File.join(@tmp_dir, "alternate")
++    FileUtils.mkdir_p(File.join(app_root, "config"))
++    File.write(File.join(app_root, "config", "bootsnap.rb"), "raise 'default config loaded'\n")
++    custom_config = Help.set_file(
++      File.join(app_root, "custom_bootsnap.rb"),
++      "Bootsnap.enable_frozen_string_literal\n",
++    )
++    source = Help.set_file(
++      File.join(app_root, "outside.rb"),
++      "$ecosync_outside_frozen = 'outside'.frozen?",
++    )
++
++    stdout, stderr, status = run_setup(
++      app_root,
++      <<~RUBY,
++        require "bootsnap/setup"
++        load #{source.inspect}
++        print($ecosync_outside_frozen)
++      RUBY
++      "BOOTSNAP_CONFIG" => custom_config,
++    )
++
++    assert_predicate status, :success?, stderr
++    assert_equal "true", stdout
++  end
++
++  private
++
++  def run_setup(app_root, script, env = {})
++    Open3.capture3(
++      ENV.to_h.merge(
++        "BOOTSNAP_CACHE_DIR" => File.join(app_root, "tmp", "cache"),
++        "DISABLE_BOOTSNAP" => nil,
++      ).merge(env),
++      RbConfig.ruby,
++      "-I",
++      File.expand_path("../lib", __dir__),
++      "-e",
++      script,
++      chdir: app_root,
++    )
++  end
++end

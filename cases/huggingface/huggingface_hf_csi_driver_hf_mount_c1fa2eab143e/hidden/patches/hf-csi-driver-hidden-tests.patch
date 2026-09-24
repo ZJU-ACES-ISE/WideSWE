@@ -1,0 +1,170 @@
+diff --git a/pkg/webhook/sidecar_test.go b/pkg/webhook/sidecar_test.go
+new file mode 100644
+index 0000000..c4855c1
+--- /dev/null
++++ b/pkg/webhook/sidecar_test.go
+@@ -0,0 +1,164 @@
++package webhook
++
++import (
++	"context"
++	"encoding/json"
++	"testing"
++
++	jsonpatch "github.com/evanphx/json-patch/v5"
++	admissionv1 "k8s.io/api/admission/v1"
++	corev1 "k8s.io/api/core/v1"
++	"k8s.io/apimachinery/pkg/api/resource"
++	"k8s.io/apimachinery/pkg/runtime"
++	"k8s.io/apimachinery/pkg/types"
++	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
++)
++
++func injectedSidecar(t *testing.T, attrs ...map[string]string) corev1.Container {
++	t.Helper()
++
++	volumes := make([]corev1.Volume, 0, len(attrs))
++	for n, volumeAttrs := range attrs {
++		volumes = append(volumes, corev1.Volume{
++			Name: "hf-volume-" + string(rune('a'+n)),
++			VolumeSource: corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{
++				Driver:           CSIDriverName,
++				VolumeAttributes: volumeAttrs,
++			}},
++		})
++	}
++
++	pod := corev1.Pod{Spec: corev1.PodSpec{
++		Containers: []corev1.Container{{Name: "workload", Image: "example.invalid/workload"}},
++		Volumes:    volumes,
++	}}
++	rawPod, err := json.Marshal(&pod)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	scheme := runtime.NewScheme()
++	if err := corev1.AddToScheme(scheme); err != nil {
++		t.Fatal(err)
++	}
++	req := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
++		UID:       types.UID("resource-contract-test"),
++		Namespace: "default",
++		Operation: admissionv1.Create,
++		Object:    runtime.RawExtension{Raw: rawPod},
++	}}
++	response := NewInjector(
++		Config{SidecarImage: "example.invalid/hf-mount"},
++		nil,
++		admission.NewDecoder(scheme),
++	).Handle(context.Background(), req)
++	if !response.Allowed {
++		t.Fatalf("pod admission was rejected: %#v", response.Result)
++	}
++	if err := response.Complete(req); err != nil {
++		t.Fatal(err)
++	}
++
++	patch, err := jsonpatch.DecodePatch(response.Patch)
++	if err != nil {
++		t.Fatal(err)
++	}
++	mutatedJSON, err := patch.Apply(rawPod)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var mutated corev1.Pod
++	if err := json.Unmarshal(mutatedJSON, &mutated); err != nil {
++		t.Fatal(err)
++	}
++	for _, container := range mutated.Spec.InitContainers {
++		if container.Name == SidecarContainerName {
++			return container
++		}
++	}
++	t.Fatal("hf-mount sidecar was not injected")
++	return corev1.Container{}
++}
++
++func assertQuantity(t *testing.T, resources corev1.ResourceList, name corev1.ResourceName, want string) {
++	t.Helper()
++	got, ok := resources[name]
++	if !ok {
++		t.Fatalf("resource %s is missing", name)
++	}
++	expected := resource.MustParse(want)
++	if got.Cmp(expected) != 0 {
++		t.Fatalf("resource %s: got %s, want %s", name, got.String(), expected.String())
++	}
++}
++
++func TestInjectedSidecarResourceDefaults(t *testing.T) {
++	sidecar := injectedSidecar(t, nil)
++	assertQuantity(t, sidecar.Resources.Requests, corev1.ResourceCPU, "10m")
++	assertQuantity(t, sidecar.Resources.Requests, corev1.ResourceMemory, "32Mi")
++	if len(sidecar.Resources.Limits) != 0 {
++		t.Fatalf("expected no default limits, got %#v", sidecar.Resources.Limits)
++	}
++}
++
++func TestInjectedSidecarResourceOverrides(t *testing.T) {
++	sidecar := injectedSidecar(t, map[string]string{
++		"cpuRequest":    "250m",
++		"memoryRequest": "128Mi",
++		"cpuLimit":      "1",
++		"memoryLimit":   "2Gi",
++	})
++	assertQuantity(t, sidecar.Resources.Requests, corev1.ResourceCPU, "250m")
++	assertQuantity(t, sidecar.Resources.Requests, corev1.ResourceMemory, "128Mi")
++	assertQuantity(t, sidecar.Resources.Limits, corev1.ResourceCPU, "1")
++	assertQuantity(t, sidecar.Resources.Limits, corev1.ResourceMemory, "2Gi")
++}
++
++func TestInjectedSidecarUsesOrderIndependentMaxima(t *testing.T) {
++	first := map[string]string{
++		"cpuRequest":    "100m",
++		"memoryRequest": "64Mi",
++		"cpuLimit":      "1",
++		"memoryLimit":   "2Gi",
++	}
++	second := map[string]string{
++		"cpuRequest":    "250m",
++		"memoryRequest": "128Mi",
++		"cpuLimit":      "2",
++		"memoryLimit":   "4Gi",
++	}
++
++	for _, attrs := range [][]map[string]string{{first, second}, {second, first}} {
++		sidecar := injectedSidecar(t, attrs...)
++		assertQuantity(t, sidecar.Resources.Requests, corev1.ResourceCPU, "250m")
++		assertQuantity(t, sidecar.Resources.Requests, corev1.ResourceMemory, "128Mi")
++		assertQuantity(t, sidecar.Resources.Limits, corev1.ResourceCPU, "2")
++		assertQuantity(t, sidecar.Resources.Limits, corev1.ResourceMemory, "4Gi")
++	}
++}
++
++func TestInjectedSidecarIgnoresInvalidQuantityWithoutShadowingValidValue(t *testing.T) {
++	sidecar := injectedSidecar(t,
++		map[string]string{"memoryLimit": "not-a-quantity"},
++		map[string]string{"memoryLimit": "2Gi"},
++	)
++	assertQuantity(t, sidecar.Resources.Limits, corev1.ResourceMemory, "2Gi")
++	assertQuantity(t, sidecar.Resources.Requests, corev1.ResourceMemory, "32Mi")
++}
++
++func TestInjectedSidecarClampsRequestsToLimits(t *testing.T) {
++	sidecar := injectedSidecar(t, map[string]string{
++		"cpuRequest":    "2",
++		"cpuLimit":      "1",
++		"memoryRequest": "512Mi",
++		"memoryLimit":   "256Mi",
++	})
++	assertQuantity(t, sidecar.Resources.Requests, corev1.ResourceCPU, "1")
++	assertQuantity(t, sidecar.Resources.Limits, corev1.ResourceCPU, "1")
++	assertQuantity(t, sidecar.Resources.Requests, corev1.ResourceMemory, "256Mi")
++	assertQuantity(t, sidecar.Resources.Limits, corev1.ResourceMemory, "256Mi")
++
++	withDefaultRequest := injectedSidecar(t, map[string]string{"memoryLimit": "16Mi"})
++	assertQuantity(t, withDefaultRequest.Resources.Requests, corev1.ResourceMemory, "16Mi")
++	assertQuantity(t, withDefaultRequest.Resources.Limits, corev1.ResourceMemory, "16Mi")
++}

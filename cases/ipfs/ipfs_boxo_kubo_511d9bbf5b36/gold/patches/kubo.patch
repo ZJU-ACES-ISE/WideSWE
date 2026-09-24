@@ -1,0 +1,127 @@
+diff --git a/core/commands/add.go b/core/commands/add.go
+index b24eab083..c2d568724 100644
+--- a/core/commands/add.go
++++ b/core/commands/add.go
+@@ -16,6 +16,7 @@ import (
+ 	"github.com/ipfs/boxo/files"
+ 	mfs "github.com/ipfs/boxo/mfs"
+ 	"github.com/ipfs/boxo/path"
++	"github.com/ipfs/boxo/verifcid"
+ 	cmds "github.com/ipfs/go-ipfs-cmds"
+ 	ipld "github.com/ipfs/go-ipld-format"
+ 	coreiface "github.com/ipfs/kubo/core/coreiface"
+@@ -203,7 +204,7 @@ https://github.com/ipfs/kubo/blob/master/docs/config.md#import
+ 		cmds.IntOption(maxHAMTFanoutOptionName, "Limit the maximum number of links of a UnixFS HAMT directory node to this (power of 2, multiple of 8). WARNING: experimental, Import.UnixFSHAMTDirectorySizeThreshold is safer. Default: Import.UnixFSHAMTDirectoryMaxFanout"),
+ 		// Experimental Features
+ 		cmds.BoolOption(inlineOptionName, "Inline small blocks into CIDs. WARNING: experimental"),
+-		cmds.IntOption(inlineLimitOptionName, "Maximum block size to inline. WARNING: experimental").WithDefault(32),
++		cmds.IntOption(inlineLimitOptionName, fmt.Sprintf("Maximum block size to inline. Maximum: %d bytes. WARNING: experimental", verifcid.DefaultMaxIdentityDigestSize)).WithDefault(32),
+ 		cmds.BoolOption(noCopyOptionName, "Add the file using filestore. Implies raw-leaves. WARNING: experimental"),
+ 		cmds.BoolOption(fstoreCacheOptionName, "Check the filestore for pre-existing blocks. WARNING: experimental"),
+ 		cmds.BoolOption(preserveModeOptionName, "Apply existing POSIX permissions to created UnixFS entries. WARNING: experimental, forces dag-pb for root block, disables raw-leaves"),
+@@ -262,6 +263,12 @@ https://github.com/ipfs/kubo/blob/master/docs/config.md#import
+ 		hashFunStr, _ := req.Options[hashOptionName].(string)
+ 		inline, _ := req.Options[inlineOptionName].(bool)
+ 		inlineLimit, _ := req.Options[inlineLimitOptionName].(int)
++
++		// Validate inline-limit doesn't exceed the maximum identity digest size
++		if inline && inlineLimit > verifcid.DefaultMaxIdentityDigestSize {
++			return fmt.Errorf("inline-limit %d exceeds maximum allowed size of %d bytes", inlineLimit, verifcid.DefaultMaxIdentityDigestSize)
++		}
++
+ 		toFilesStr, toFilesSet := req.Options[toFilesOptionName].(string)
+ 		preserveMode, _ := req.Options[preserveModeOptionName].(bool)
+ 		preserveMtime, _ := req.Options[preserveMtimeOptionName].(bool)
+diff --git a/docs/changelogs/v0.38.md b/docs/changelogs/v0.38.md
+index 6148e9db0..3fe6ab477 100644
+--- a/docs/changelogs/v0.38.md
++++ b/docs/changelogs/v0.38.md
+@@ -28,6 +28,19 @@ Gateway error pages now provide more actionable information during content retri
+ > - **Enhanced error details**: Timeout errors now display the retrieval phase where failure occurred (e.g., "connecting to providers", "fetching data") and up to 3 peer IDs that were attempted but couldn't deliver the content, making it easier to diagnose network or provider issues.
+ > - **Retry button on all error pages**: Every gateway error page now includes a retry button for quick page refresh without manual URL re-entry.
+ 
++#### 🛠️ Identity CID size enforcement and `ipfs files write` fixes
++
++**Identity CID size limits are now enforced**
++
++Identity CIDs use [multihash `0x00`](https://github.com/multiformats/multicodec/blob/master/table.csv#L2) to embed data directly in the CID without hashing. This experimental optimization was designed for tiny data where a CID reference would be larger than the data itself, but without size limits it was easy to misuse and could turn into an anti-pattern that wastes resources and enables abuse. This release enforces a maximum of 128 bytes for identity CIDs - attempting to exceed this limit will return a clear error message.
++
++- `ipfs add --inline-limit` and `--hash=identity` now enforce the 128-byte maximum (error when exceeded)
++- `ipfs files write` prevents creation of oversized identity CIDs
++
++**Multiple `ipfs files write` bugs have been fixed**
++
++This release resolves several long-standing MFS issues: raw nodes now preserve their codec instead of being forced to dag-pb, append operations on raw nodes work correctly by converting to UnixFS when needed, and identity CIDs properly inherit the full CID prefix from parent directories.
++
+ ### 📦️ Important dependency updates
+ 
+ ### 📝 Changelog
+diff --git a/docs/examples/kubo-as-a-library/go.mod b/docs/examples/kubo-as-a-library/go.mod
+index 2e9b79f2a..5c675b68d 100644
+--- a/docs/examples/kubo-as-a-library/go.mod
++++ b/docs/examples/kubo-as-a-library/go.mod
+@@ -7,7 +7,7 @@ go 1.25
+ replace github.com/ipfs/kubo => ./../../..
+ 
+ require (
+-	github.com/ipfs/boxo v0.34.1-0.20250908170437-7d2493027364
++	github.com/ipfs/boxo v0.34.1-0.20250909170220-e69f67e94c11
+ 	github.com/ipfs/kubo v0.0.0-00010101000000-000000000000
+ 	github.com/libp2p/go-libp2p v0.43.0
+ 	github.com/multiformats/go-multiaddr v0.16.1
+diff --git a/docs/examples/kubo-as-a-library/go.sum b/docs/examples/kubo-as-a-library/go.sum
+index 0c0652d7a..2db25adf8 100644
+--- a/docs/examples/kubo-as-a-library/go.sum
++++ b/docs/examples/kubo-as-a-library/go.sum
+@@ -287,8 +287,8 @@ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0 h1:OqNqsGZPX8zh3eFMO8Lf8EHRRnSGBMqcd
+ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0/go.mod h1:BxhUdtBgOXg1B+gAPEplkg/GpyTZY+kCMSfsJvvydqU=
+ github.com/ipfs/bbloom v0.0.4 h1:Gi+8EGJ2y5qiD5FbsbpX/TMNcJw8gSqr7eyjHa4Fhvs=
+ github.com/ipfs/bbloom v0.0.4/go.mod h1:cS9YprKXpoZ9lT0n/Mw/a6/aFV6DTjTLYHeA+gyqMG0=
+-github.com/ipfs/boxo v0.34.1-0.20250908170437-7d2493027364 h1:VdRdPlosNYdlENC0UsCxapHala/Q1Me6yBY5ChKUw7s=
+-github.com/ipfs/boxo v0.34.1-0.20250908170437-7d2493027364/go.mod h1:rXql6ncaLZZfLqDG3Cuw9ZYQKd3rMU5bk1TGXF0+ZL0=
++github.com/ipfs/boxo v0.34.1-0.20250909170220-e69f67e94c11 h1:EsCbOKE+giLtrFTysnbTzIRQENOiLdcpOY3kV3y6wlU=
++github.com/ipfs/boxo v0.34.1-0.20250909170220-e69f67e94c11/go.mod h1:rXql6ncaLZZfLqDG3Cuw9ZYQKd3rMU5bk1TGXF0+ZL0=
+ github.com/ipfs/go-bitfield v1.1.0 h1:fh7FIo8bSwaJEh6DdTWbCeZ1eqOaOkKFI74SCnsWbGA=
+ github.com/ipfs/go-bitfield v1.1.0/go.mod h1:paqf1wjq/D2BBmzfTVFlJQ9IlFOZpg422HL0HqsGWHU=
+ github.com/ipfs/go-block-format v0.0.3/go.mod h1:4LmD4ZUw0mhO+JSKdpWwrzATiEfM7WWgQ8H5l6P8MVk=
+diff --git a/gc/gc.go b/gc/gc.go
+index 1d4805a66..ac3f3d08f 100644
+--- a/gc/gc.go
++++ b/gc/gc.go
+@@ -165,7 +165,7 @@ func Descendants(ctx context.Context, getLinks dag.GetLinks, set *cid.Set, roots
+ 	}
+ 
+ 	verboseCidError := func(err error) error {
+-		if strings.Contains(err.Error(), verifcid.ErrBelowMinimumHashLength.Error()) ||
++		if strings.Contains(err.Error(), verifcid.ErrDigestTooSmall.Error()) ||
+ 			strings.Contains(err.Error(), verifcid.ErrPossiblyInsecureHashFunction.Error()) {
+ 			err = fmt.Errorf("\"%s\"\nPlease run 'ipfs pin verify'"+ // nolint
+ 				" to list insecure hashes. If you want to read them,"+
+diff --git a/go.mod b/go.mod
+index 7290b50c1..71a270dda 100644
+--- a/go.mod
++++ b/go.mod
+@@ -22,7 +22,7 @@ require (
+ 	github.com/hashicorp/go-version v1.7.0
+ 	github.com/ipfs-shipyard/nopfs v0.0.14
+ 	github.com/ipfs-shipyard/nopfs/ipfs v0.25.0
+-	github.com/ipfs/boxo v0.34.1-0.20250908170437-7d2493027364
++	github.com/ipfs/boxo v0.34.1-0.20250909170220-e69f67e94c11
+ 	github.com/ipfs/go-block-format v0.2.2
+ 	github.com/ipfs/go-cid v0.5.0
+ 	github.com/ipfs/go-cidutil v0.1.0
+diff --git a/go.sum b/go.sum
+index 5c52bcb3c..636e701e2 100644
+--- a/go.sum
++++ b/go.sum
+@@ -354,8 +354,8 @@ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0 h1:OqNqsGZPX8zh3eFMO8Lf8EHRRnSGBMqcd
+ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0/go.mod h1:BxhUdtBgOXg1B+gAPEplkg/GpyTZY+kCMSfsJvvydqU=
+ github.com/ipfs/bbloom v0.0.4 h1:Gi+8EGJ2y5qiD5FbsbpX/TMNcJw8gSqr7eyjHa4Fhvs=
+ github.com/ipfs/bbloom v0.0.4/go.mod h1:cS9YprKXpoZ9lT0n/Mw/a6/aFV6DTjTLYHeA+gyqMG0=
+-github.com/ipfs/boxo v0.34.1-0.20250908170437-7d2493027364 h1:VdRdPlosNYdlENC0UsCxapHala/Q1Me6yBY5ChKUw7s=
+-github.com/ipfs/boxo v0.34.1-0.20250908170437-7d2493027364/go.mod h1:rXql6ncaLZZfLqDG3Cuw9ZYQKd3rMU5bk1TGXF0+ZL0=
++github.com/ipfs/boxo v0.34.1-0.20250909170220-e69f67e94c11 h1:EsCbOKE+giLtrFTysnbTzIRQENOiLdcpOY3kV3y6wlU=
++github.com/ipfs/boxo v0.34.1-0.20250909170220-e69f67e94c11/go.mod h1:rXql6ncaLZZfLqDG3Cuw9ZYQKd3rMU5bk1TGXF0+ZL0=
+ github.com/ipfs/go-bitfield v1.1.0 h1:fh7FIo8bSwaJEh6DdTWbCeZ1eqOaOkKFI74SCnsWbGA=
+ github.com/ipfs/go-bitfield v1.1.0/go.mod h1:paqf1wjq/D2BBmzfTVFlJQ9IlFOZpg422HL0HqsGWHU=
+ github.com/ipfs/go-block-format v0.0.3/go.mod h1:4LmD4ZUw0mhO+JSKdpWwrzATiEfM7WWgQ8H5l6P8MVk=

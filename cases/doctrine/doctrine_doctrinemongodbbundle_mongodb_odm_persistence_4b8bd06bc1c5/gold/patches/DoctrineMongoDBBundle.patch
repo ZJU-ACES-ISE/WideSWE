@@ -1,0 +1,247 @@
+diff --git a/config/schema/mongodb-1.0.xsd b/config/schema/mongodb-1.0.xsd
+index 90588f9..2034464 100644
+--- a/config/schema/mongodb-1.0.xsd
++++ b/config/schema/mongodb-1.0.xsd
+@@ -17,6 +17,8 @@
+     <xsd:attribute name="auto-generate-hydrator-classes" type="xsd:integer" />
+     <xsd:attribute name="auto-generate-proxy-classes" type="xsd:integer" />
+     <xsd:attribute name="auto-generate-persistent-collection-classes" type="xsd:integer" />
++    <xsd:attribute name="enable-native-lazy-object" type="xsd:boolean" />
++    <xsd:attribute name="enable-lazy-ghost-object" type="xsd:boolean" />
+     <xsd:attribute name="default-connection" type="xsd:string" />
+     <xsd:attribute name="default-database" type="xsd:string" />
+     <xsd:attribute name="default-document-manager" type="xsd:string" />
+diff --git a/docs/config.rst b/docs/config.rst
+index 35312f1..9353dc2 100644
+--- a/docs/config.rst
++++ b/docs/config.rst
+@@ -629,6 +629,46 @@ Using Queryable Encryption
+ 
+ For details on configuring Queryable Encryption (QE) and Client-Side Field-Level Encryption (CSFLE), see :doc:`encryption`.
+ 
++Lazy object implementation
++--------------------------
++
++Doctrine MongoDB ODM uses lazy objects for lazy instantiation of references.
++The original implementation is based on the `ProxyManager` library.
++In version 2.10, support for Symfony lazy ghost objects has been added.
++And in version 2.14, support for PHP 8.4 native lazy objects has been added.
++
++The bundle selects the best available lazy object implementation based on the
++installed packages and PHP version. You can override this behavior by setting
++the following configuration options disable specific lazy object implementations.
++This is not recommended unless you have a specific reason to do so.
++Please open an issue if the default Native Lazy Objects are not working as expected
++as it is the preferred implementation. The other implementations will be removed in a future version.
++
++- ``enable_native_lazy_objects`` is ``true`` by default when PHP 8.4+ and ``doctrine/mongodb-odm`` 2.14+ are installed.
++  When enabled, native lazy objects will be used for lazy loading references.
++- ``enable_lazy_ghost_objects`` is ``true`` by default when ``doctrine/mongodb-odm`` 2.10+ is installed.
++  When enabled, Symfony lazy ghost objects will be used for lazy loading references.
++  This option is ignored if ``enable_native_lazy_objects`` is ``true``.
++- When both options are ``false``, the original ``ProxyManager`` based lazy objects will be used.
++
++.. configuration-block::
++
++    .. code-block:: yaml
++
++        doctrine_mongodb:
++            enable_native_lazy_objects: false
++            enable_lazy_ghost_objects: false
++
++
++    .. code-block:: php
++
++        use Symfony\Config\DoctrineMongodbConfig;
++
++        return static function (DoctrineMongodbConfig $config): void {
++            $config->enableNativeLazyObjects(false);
++            $config->enableLazyGhostObjects(false);
++
++
+ Full Default Configuration
+ --------------------------
+ 
+@@ -739,6 +779,8 @@ Full Default Configuration
+             default_document_manager:  ~
+             default_connection:   ~
+             default_database:     default
++            enable_native_lazy_objects: true     # Enabled by default if PHP 8.4+ and doctrine/mongodb-odm 2.14+ are installed
++            enable_lazy_ghost_objects: true      # Enabled by default if doctrine/mongodb-odm 2.10+ is installed
+ 
+     .. code-block:: xml
+ 
+@@ -814,6 +856,8 @@ Full Default Configuration
+         return static function (DoctrineMongodbConfig $config): void {
+             $config->autoGenerateHydratorClasses(0);
+             $config->autoGenerateProxyClasses(0);
++            $config->enableNativeLazyObjects(true);    // Enabled by default if PHP 8.4+ and doctrine/mongodb-odm 2.14+ are installed
++            $config->enableLazyGhostObjects(true);     // Enabled by default if doctrine/mongodb-odm 2.10+ is installed
+             $config->defaultConnection('');
+             $config->defaultDatabase('default');
+             $config->defaultDocumentManager('');
+diff --git a/phpstan-baseline.neon b/phpstan-baseline.neon
+index 452acb5..ad54bdf 100644
+--- a/phpstan-baseline.neon
++++ b/phpstan-baseline.neon
+@@ -186,6 +186,12 @@ parameters:
+ 			count: 2
+ 			path: src/DependencyInjection/Configuration.php
+ 
++		-
++			message: '#^Call to function method_exists\(\) with ''Doctrine\\\\ODM\\\\MongoDB\\\\Configuration'' and ''setUseNativeLazyObj…'' will always evaluate to true\.$#'
++			identifier: function.alreadyNarrowedType
++			count: 2
++			path: src/DependencyInjection/Configuration.php
++
+ 		-
+ 			message: '#^Parameter \#1 \$rootNode of method Doctrine\\Bundle\\MongoDBBundle\\DependencyInjection\\Configuration\:\:addConnectionsSection\(\) expects Symfony\\Component\\Config\\Definition\\Builder\\ArrayNodeDefinition, Symfony\\Component\\Config\\Definition\\Builder\\NodeDefinition given\.$#'
+ 			identifier: argument.type
+@@ -525,7 +531,13 @@ parameters:
+ 		-
+ 			message: '#^Call to function method_exists\(\) with ''Doctrine\\\\ODM\\\\MongoDB\\\\Configuration'' and ''setUseLazyGhostObje…'' will always evaluate to true\.$#'
+ 			identifier: function.alreadyNarrowedType
+-			count: 2
++			count: 1
++			path: tests/DependencyInjection/ConfigurationTest.php
++
++		-
++			message: '#^Call to function method_exists\(\) with ''Doctrine\\\\ODM\\\\MongoDB\\\\Configuration'' and ''setUseNativeLazyObj…'' will always evaluate to true\.$#'
++			identifier: function.alreadyNarrowedType
++			count: 1
+ 			path: tests/DependencyInjection/ConfigurationTest.php
+ 
+ 		-
+@@ -803,3 +815,9 @@ parameters:
+ 			identifier: argument.type
+ 			count: 1
+ 			path: tests/ServiceRepositoryTest.php
++
++		-
++			message: '#^Call to function method_exists\(\) with Doctrine\\ODM\\MongoDB\\Configuration and ''setUseLazyGhostObje…'' will always evaluate to true\.$#'
++			identifier: function.alreadyNarrowedType
++			count: 1
++			path: tests/TestCase.php
+diff --git a/src/DependencyInjection/Configuration.php b/src/DependencyInjection/Configuration.php
+index c4fec90..bdcca2c 100644
+--- a/src/DependencyInjection/Configuration.php
++++ b/src/DependencyInjection/Configuration.php
+@@ -7,6 +7,7 @@ namespace Doctrine\Bundle\MongoDBBundle\DependencyInjection;
+ use Doctrine\ODM\MongoDB\Configuration as ODMConfiguration;
+ use Doctrine\ODM\MongoDB\Repository\DefaultGridFSRepository;
+ use Doctrine\ODM\MongoDB\Repository\DocumentRepository;
++use InvalidArgumentException;
+ use Symfony\Component\Config\Definition\Builder\ArrayNodeDefinition;
+ use Symfony\Component\Config\Definition\Builder\TreeBuilder;
+ use Symfony\Component\Config\Definition\ConfigurationInterface;
+@@ -20,6 +21,7 @@ use function method_exists;
+ use function preg_match;
+ 
+ use const JSON_THROW_ON_ERROR;
++use const PHP_VERSION_ID;
+ 
+ /**
+  * FrameworkExtension configuration structure.
+@@ -43,11 +45,34 @@ class Configuration implements ConfigurationInterface
+             ->children()
+                 ->scalarNode('proxy_namespace')->defaultValue('MongoDBODMProxies')->end()
+                 ->scalarNode('proxy_dir')->defaultValue('%kernel.cache_dir%/doctrine/odm/mongodb/Proxies')->end()
++                ->booleanNode('enable_native_lazy_objects')
++                    ->defaultValue(PHP_VERSION_ID >= 80400 && method_exists(ODMConfiguration::class, 'setUseNativeLazyObject'))
++                    ->info('Requires PHP 8.4+ and doctrine/mongodb-odm 2.14+')
++                    ->setDeprecated('doctrine/mongodb-odm-bundle', '5.4', 'The "%node%" option is deprecated and will be removed in 6.0. Native Lazy Objects are enable by default when using PHP 8.4+ and doctrine/mongodb-odm 2.14+.')
++                    ->validate()
++                        ->ifTrue()
++                        ->then(static function (): void {
++                            if (PHP_VERSION_ID < 80400) {
++                                throw new InvalidArgumentException('Native lazy objects require PHP 8.4 or higher.');
++                            }
++
++                            if (! method_exists(ODMConfiguration::class, 'setUseNativeLazyObject')) {
++                                throw new InvalidArgumentException('Native lazy objects require doctrine/mongodb-odm 2.14 or higher.');
++                            }
++                        })
++                    ->end()
++                ->end()
+                 ->booleanNode('enable_lazy_ghost_objects')
+                     ->defaultValue(method_exists(ODMConfiguration::class, 'setUseLazyGhostObject'))
++                    ->info('Requires doctrine/mongodb-odm 2.12+')
++                    ->setDeprecated('doctrine/mongodb-odm-bundle', '5.4', 'The "%node%" option is deprecated and will be removed in 6.0. Native Lazy Objects are enable by default when using PHP 8.4+ and doctrine/mongodb-odm 2.14+.')
+                     ->validate()
+-                        ->ifTrue(static fn ($v) => $v === true && ! method_exists(ODMConfiguration::class, 'setUseLazyGhostObject'))
+-                        ->thenInvalid('Lazy ghost objects require doctrine/mongodb-odm 2.10 or higher.')
++                        ->ifTrue()
++                        ->then(static function (): void {
++                            if (! method_exists(ODMConfiguration::class, 'setUseLazyGhostObject')) {
++                                throw new InvalidArgumentException('Lazy ghost objects require doctrine/mongodb-odm 2.10 or higher.');
++                            }
++                        })
+                     ->end()
+                 ->end()
+                 ->scalarNode('auto_generate_proxy_classes')
+diff --git a/src/DependencyInjection/DoctrineMongoDBExtension.php b/src/DependencyInjection/DoctrineMongoDBExtension.php
+index b4b2384..32967b5 100644
+--- a/src/DependencyInjection/DoctrineMongoDBExtension.php
++++ b/src/DependencyInjection/DoctrineMongoDBExtension.php
+@@ -486,9 +486,8 @@ class DoctrineMongoDBExtension extends Extension
+             $container->removeDefinition('doctrine_mongodb.odm.command.load_data_fixtures');
+         }
+ 
+-        // Requires doctrine/mongodb-odm 2.10
+         $container->getDefinition('doctrine_mongodb')
+-            ->setArgument(5, $config['enable_lazy_ghost_objects'] ? Proxy::class : LazyLoadingInterface::class);
++            ->setArgument(5, $config['enable_lazy_ghost_objects'] ? LazyLoadingInterface::class : Proxy::class);
+ 
+         // load the connections
+         $this->loadConnections($config['connections'], $container, $config);
+@@ -501,7 +500,11 @@ class DoctrineMongoDBExtension extends Extension
+             $config['default_document_manager'],
+             $config['default_database'],
+             $container,
+-            $config['enable_lazy_ghost_objects'],
++            match (true) {
++                $config['enable_native_lazy_objects'] => 'setUseNativeLazyObject',
++                $config['enable_lazy_ghost_objects'] => 'setUseLazyGhostObject',
++                default => null,
++            },
+             $config['connections'],
+         );
+ 
+@@ -599,7 +602,7 @@ class DoctrineMongoDBExtension extends Extension
+      * @param ContainerBuilder     $container   A ContainerBuilder instance
+      * @param array<string, mixed> $connections Configuration of connections
+      */
+-    protected function loadDocumentManagers(array $dmConfigs, string|null $defaultDM, string $defaultDB, ContainerBuilder $container, bool $useLazyGhostObject = false, array $connections = []): void
++    protected function loadDocumentManagers(array $dmConfigs, string|null $defaultDM, string $defaultDB, ContainerBuilder $container, ?string $lazyObjectSetter = null, array $connections = []): void
+     {
+         $dms = [];
+         foreach ($dmConfigs as $name => $documentManager) {
+@@ -609,7 +612,7 @@ class DoctrineMongoDBExtension extends Extension
+                 $defaultDM,
+                 $defaultDB,
+                 $container,
+-                $useLazyGhostObject,
++                $lazyObjectSetter,
+                 $connections,
+             );
+             $dms[$name] = sprintf('doctrine_mongodb.odm.%s_document_manager', $name);
+@@ -627,7 +630,7 @@ class DoctrineMongoDBExtension extends Extension
+      * @param ContainerBuilder     $container       A ContainerBuilder instance
+      * @param array<string, mixed> $connections     Configuration of connections
+      */
+-    protected function loadDocumentManager(array $documentManager, string|null $defaultDM, string $defaultDB, ContainerBuilder $container, bool $useLazyGhostObject = false, array $connections = []): void
++    protected function loadDocumentManager(array $documentManager, string|null $defaultDM, string $defaultDB, ContainerBuilder $container, ?string $lazyObjectSetter = null, array $connections = []): void
+     {
+         $connectionName  = $documentManager['connection'] ?? $documentManager['name'];
+         $configurationId = sprintf('doctrine_mongodb.odm.%s_configuration', $documentManager['name']);
+@@ -675,8 +678,8 @@ class DoctrineMongoDBExtension extends Extension
+             $methods['setDefaultMasterKey'] = $autoEncryption['masterKey'] ?? null;
+         }
+ 
+-        if ($useLazyGhostObject) {
+-            $methods['setUseLazyGhostObject'] = $useLazyGhostObject;
++        if ($lazyObjectSetter) {
++            $methods[$lazyObjectSetter] = true;
+         }
+ 
+         if (method_exists(ODMConfiguration::class, 'setUseTransactionalFlush')) {

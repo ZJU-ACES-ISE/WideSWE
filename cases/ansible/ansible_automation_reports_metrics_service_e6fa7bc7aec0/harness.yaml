@@ -1,0 +1,40 @@
+task_id: ansible_automation_reports_metrics_service_e6fa7bc7aec0
+hidden_test_patches:
+- repo: automation-reports
+  patch: hidden/patches/automation-reports-hidden-tests.patch
+  test_profile: automation_reports-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - src/backend/tests/conftest.py
+  - src/backend/tests/unit/test_cost_per_elapsed_second.py
+  - src/backend/tests/unit/test_daily_subscription_cost.py
+  - src/backend/tests/unit/test_views.py
+  hidden_file: *id001
+  semantic_changes: Removed a test coupled to an impossible mocked private-helper result;
+    froze the current date without replacing the datetime API used by valid implementations.
+  source: upstream test changes from ansible/automation-reports PR 230
+- repo: metrics-service
+  patch: hidden/patches/metrics-service-hidden-tests.patch
+  test_profile: metrics_service-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/coverage/dashboard_reports/test_dashboard_models_extended.py
+  - tests/coverage/general/test_final_push.py
+  - tests/unit/dashboard_reports/test_daily_subscription_cost.py
+  - tests/unit/dashboard_reports/test_export_urls.py
+  - tests/unit/dashboard_reports/test_report_view_data.py
+  - tests/unit/dashboard_reports/test_report_views.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from ansible/metrics-service PR 214
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - automation_reports-hidden
+    - metrics_service-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

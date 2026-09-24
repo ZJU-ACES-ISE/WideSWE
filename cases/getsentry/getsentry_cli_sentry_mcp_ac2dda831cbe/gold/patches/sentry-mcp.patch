@@ -1,0 +1,1398 @@
+diff --git a/packages/mcp-core/src/tools/get-trace-details.test.ts b/packages/mcp-core/src/tools/get-trace-details.test.ts
+index 0f189f91..e360a4a1 100644
+--- a/packages/mcp-core/src/tools/get-trace-details.test.ts
++++ b/packages/mcp-core/src/tools/get-trace-details.test.ts
+@@ -49,6 +49,59 @@ function buildTraceSpan({
+   };
+ }
+ 
++function buildTraceSpanNode({
++  children = [],
++  data = {},
++  duration,
++  eventId,
++  name,
++  op,
++  parentSpanId,
++  spanId,
++  tags = {},
++}: {
++  children?: Array<Record<string, unknown>>;
++  data?: Record<string, unknown>;
++  duration: number;
++  eventId: string;
++  name?: string | null;
++  op: string;
++  parentSpanId: string | null;
++  spanId: string;
++  tags?: Record<string, unknown>;
++}) {
++  return {
++    additional_attributes: data,
++    children,
++    data: {},
++    description: null,
++    duration,
++    end_timestamp: 1713805460 + duration / 1000,
++    errors: [],
++    event_id: eventId,
++    hash: `hash-${spanId}`,
++    is_segment: true,
++    name,
++    occurrences: [],
++    op,
++    organization: null,
++    parent_span_id: parentSpanId,
++    profile_id: "",
++    profiler_id: "",
++    project_id: 4509109107622913,
++    project_slug: "mcp-server",
++    same_process_as_parent: true,
++    sdk_name: "sentry.javascript.node",
++    span_id: spanId,
++    start_timestamp: 1713805460,
++    status: "ok",
++    tags,
++    timestamp: 1713805460 + duration / 1000,
++    trace: "e4d1aae7216b47ff8117cf4e09ce9d0e",
++    transaction_id: eventId,
++  };
++}
++
+ describe("get_trace_details", () => {
+   beforeEach(() => {
+     process.env.OPENAI_API_KEY = "test-key";
+@@ -518,6 +571,465 @@ describe("get_trace_details", () => {
+     `);
+   });
+ 
++  it("renders semantic labels for common OpenTelemetry span attributes", async () => {
++    const traceId = "e4d1aae7216b47ff8117cf4e09ce9d0e";
++    const processSpan = buildTraceSpanNode({
++      duration: 4050,
++      eventId: "55555555555555555555555555555555",
++      name: "process.exec",
++      op: "process.exec",
++      parentSpanId: "4444444444444444",
++      spanId: "5555555555555555",
++      data: {
++        "process.command": "git",
++        "process.exit.code": 0,
++      },
++    });
++    const toolSpan = buildTraceSpanNode({
++      children: [processSpan],
++      duration: 4107,
++      eventId: "44444444444444444444444444444444",
++      name: "execute_tool",
++      op: "gen_ai.execute_tool",
++      parentSpanId: "2222222222222222",
++      spanId: "4444444444444444",
++      data: {
++        "gen_ai.operation.name": "execute_tool",
++        "gen_ai.tool.name": "search_events",
++      },
++    });
++    const httpClientSpan = buildTraceSpanNode({
++      duration: 21455,
++      eventId: "33333333333333333333333333333333",
++      name: "POST",
++      op: "http.client",
++      parentSpanId: "2222222222222222",
++      spanId: "3333333333333333",
++      data: {
++        "http.request.method": "POST",
++        "http.response.status_code": 200,
++        "url.full": "https://api.anthropic.com/v1/messages?api_key=filtered",
++      },
++    });
++    const httpMethodOnlySpan = buildTraceSpanNode({
++      duration: 16,
++      eventId: "13131313131313131313131313131313",
++      name: "post",
++      op: "http.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1313131313131313",
++      data: {
++        "http.request.method": "post",
++        "http.response.status_code": 204,
++      },
++    });
++    const httpExtensionMethodSpan = buildTraceSpanNode({
++      duration: 15,
++      eventId: "19191919191919191919191919191919",
++      name: "propfind",
++      op: "http.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1919191919191919",
++      data: {
++        "http.request.method": "propfind",
++        "http.response.status_code": 207,
++      },
++    });
++    const httpServerTargetSpan = buildTraceSpanNode({
++      duration: 17,
++      eventId: "14141414141414141414141414141414",
++      name: "GET",
++      op: "http.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1414141414141414",
++      data: {
++        "http.request.method": "GET",
++        "server.address": "api.example.com",
++        "server.port": 443,
++      },
++    });
++    const httpVersionedPathSpan = buildTraceSpanNode({
++      duration: 18,
++      eventId: "16161616161616161616161616161616",
++      name: "GET",
++      op: "http.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1616161616161616",
++      data: {
++        "http.request.method": "GET",
++        "http.response.status_code": 200,
++        "url.path": "/api/v200/resources",
++      },
++    });
++    const genAiSpan = buildTraceSpanNode({
++      children: [httpClientSpan, toolSpan],
++      duration: 123419,
++      eventId: "22222222222222222222222222222222",
++      name: "ai.generate_assistant_reply",
++      op: "gen_ai.invoke_agent",
++      parentSpanId: "1111111111111111",
++      spanId: "2222222222222222",
++      data: {
++        "gen_ai.operation.name": "invoke_agent",
++        "gen_ai.provider.name": "anthropic",
++        "gen_ai.request.model": "claude-haiku-unused",
++      },
++      tags: {
++        "gen_ai.response.model": "claude-opus-4.6",
++      },
++    });
++    const dbSpan = buildTraceSpanNode({
++      duration: 44,
++      eventId: "66666666666666666666666666666666",
++      name: "db",
++      op: "db.query",
++      parentSpanId: "1111111111111111",
++      spanId: "6666666666666666",
++      data: {
++        "db.collection.name": "issues",
++        "db.operation.name": "SELECT",
++        "db.response.status_code": "OK",
++        "db.system.name": "postgresql",
++      },
++    });
++    const dbServerTargetSpan = buildTraceSpanNode({
++      duration: 41,
++      eventId: "15151515151515151515151515151515",
++      name: "db",
++      op: "db.query",
++      parentSpanId: "1111111111111111",
++      spanId: "1515151515151515",
++      data: {
++        "db.operation.name": "SELECT",
++        "db.system.name": "postgresql",
++        "server.address": "db.internal",
++      },
++    });
++    const rpcSpan = buildTraceSpanNode({
++      duration: 65,
++      eventId: "77777777777777777777777777777777",
++      name: "grpc",
++      op: "rpc.client",
++      parentSpanId: "1111111111111111",
++      spanId: "7777777777777777",
++      data: {
++        "rpc.method": "FetchTrace",
++        "rpc.response.status_code": "OK",
++        "rpc.service": "sentry.trace.v1.TraceService",
++        "rpc.system.name": "grpc",
++      },
++    });
++    const rpcSubstringStatusSpan = buildTraceSpanNode({
++      duration: 24,
++      eventId: "17171717171717171717171717171717",
++      name: "workflow",
++      op: "rpc.client",
++      parentSpanId: "1111111111111111",
++      spanId: "1717171717171717",
++      data: {
++        "rpc.method": "Run",
++        "rpc.response.status_code": "OK",
++        "rpc.service": "bookings_workflow",
++        "rpc.system.name": "temporal",
++      },
++    });
++    const messagingSpan = buildTraceSpanNode({
++      duration: 37,
++      eventId: "88888888888888888888888888888888",
++      name: "publish",
++      op: "messaging.publish",
++      parentSpanId: "1111111111111111",
++      spanId: "8888888888888888",
++      data: {
++        "messaging.destination.name": "trace-events",
++        "messaging.operation.type": "publish",
++        "messaging.system": "kafka",
++      },
++    });
++    const mcpSpan = buildTraceSpanNode({
++      duration: 28,
++      eventId: "99999999999999999999999999999999",
++      name: "mcp",
++      op: "mcp.request",
++      parentSpanId: "1111111111111111",
++      spanId: "9999999999999999",
++      data: {
++        "gen_ai.tool.name": "search_events",
++        "http.request.method": "POST",
++        "http.response.status_code": 200,
++        "url.path": "/mcp",
++        "mcp.method.name": "tools/call",
++        "rpc.response.status_code": "OK",
++      },
++    });
++    const graphqlSpan = buildTraceSpanNode({
++      duration: 31,
++      eventId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
++      name: "GraphQL Operation",
++      op: "graphql.execute",
++      parentSpanId: "1111111111111111",
++      spanId: "aaaaaaaaaaaaaaaa",
++      data: {
++        "graphql.operation.name": "TraceDetails",
++        "graphql.operation.type": "query",
++      },
++    });
++    const faasSpan = buildTraceSpanNode({
++      duration: 52,
++      eventId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
++      name: "lambda",
++      op: "faas.invoke",
++      parentSpanId: "1111111111111111",
++      spanId: "bbbbbbbbbbbbbbbb",
++      data: {
++        "faas.coldstart": true,
++        "faas.invoked_name": "trace-worker",
++        "faas.invoked_provider": "aws",
++        "faas.invoked_region": "us-west-2",
++        "faas.trigger": "timer",
++      },
++    });
++    const objectStoreSpan = buildTraceSpanNode({
++      duration: 73,
++      eventId: "cccccccccccccccccccccccccccccccc",
++      name: "S3.PutObject",
++      op: "aws.s3",
++      parentSpanId: "1111111111111111",
++      spanId: "cccccccccccccccc",
++      data: {
++        "aws.s3.bucket": "trace-artifacts",
++        "aws.s3.key": "runs/abc.json",
++        "cloud.region": "us-west-2",
++        "rpc.method": "PutObject",
++      },
++    });
++    const cloudEventsSpan = buildTraceSpanNode({
++      duration: 19,
++      eventId: "dddddddddddddddddddddddddddddddd",
++      name: "event",
++      op: "event.process",
++      parentSpanId: "1111111111111111",
++      spanId: "dddddddddddddddd",
++      data: {
++        "cloudevents.event_spec_version": "1.0",
++        "cloudevents.event_subject": "trace/e4d1",
++        "cloudevents.event_type": "com.sentry.trace.created",
++      },
++    });
++    const cicdSpan = buildTraceSpanNode({
++      duration: 88,
++      eventId: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
++      name: "ci",
++      op: "cicd.pipeline",
++      parentSpanId: "1111111111111111",
++      spanId: "eeeeeeeeeeeeeeee",
++      data: {
++        "cicd.pipeline.action.name": "BUILD",
++        "cicd.pipeline.name": "mcp-core",
++        "cicd.pipeline.result": "success",
++      },
++    });
++    const featureFlagSpan = buildTraceSpanNode({
++      duration: 12,
++      eventId: "ffffffffffffffffffffffffffffffff",
++      name: "flag",
++      op: "feature_flag.evaluate",
++      parentSpanId: "1111111111111111",
++      spanId: "ffffffffffffffff",
++      data: {
++        "feature_flag.key": "semantic-trace-rendering",
++        "feature_flag.provider.name": "flagsmith",
++        "feature_flag.result.reason": "targeting_match",
++        "feature_flag.result.variant": "on",
++      },
++    });
++    const cloudProviderSpan = buildTraceSpanNode({
++      duration: 21,
++      eventId: "abababababababababababababababab",
++      name: "AWS SDK",
++      op: "aws.sdk",
++      parentSpanId: "1111111111111111",
++      spanId: "abababababababab",
++      data: {
++        "cloud.region": "us-east-1",
++        "rpc.method": "DynamoDB.GetItem",
++        "rpc.system.name": "aws-api",
++      },
++    });
++    const exceptionSpan = buildTraceSpanNode({
++      duration: 13,
++      eventId: "acacacacacacacacacacacacacacacac",
++      name: "job failed",
++      op: "exception",
++      parentSpanId: "1111111111111111",
++      spanId: "acacacacacacacac",
++      data: {
++        "exception.type": "ValueError",
++        "faas.coldstart": false,
++      },
++    });
++    const unnamedExceptionSpan = buildTraceSpanNode({
++      duration: 14,
++      eventId: "18181818181818181818181818181818",
++      name: null,
++      op: "exception",
++      parentSpanId: "1111111111111111",
++      spanId: "1818181818181818",
++      data: {
++        "exception.type": "TypeError",
++      },
++    });
++    const errorSpan = buildTraceSpanNode({
++      duration: 11,
++      eventId: "12121212121212121212121212121212",
++      name: "background job",
++      op: "internal",
++      parentSpanId: "1111111111111111",
++      spanId: "1212121212121212",
++      data: {
++        "error.type": "timeout",
++      },
++    });
++    const rootSpan = buildTraceSpanNode({
++      children: [
++        genAiSpan,
++        httpMethodOnlySpan,
++        httpExtensionMethodSpan,
++        httpServerTargetSpan,
++        httpVersionedPathSpan,
++        dbSpan,
++        dbServerTargetSpan,
++        rpcSpan,
++        rpcSubstringStatusSpan,
++        messagingSpan,
++        mcpSpan,
++        graphqlSpan,
++        faasSpan,
++        objectStoreSpan,
++        cloudEventsSpan,
++        cicdSpan,
++        featureFlagSpan,
++        cloudProviderSpan,
++        exceptionSpan,
++        unnamedExceptionSpan,
++        errorSpan,
++      ],
++      duration: 3,
++      eventId: "11111111111111111111111111111111",
++      name: "POST",
++      op: "http.server",
++      parentSpanId: null,
++      spanId: "1111111111111111",
++      data: {
++        "http.request.method": "POST",
++        "http.response.status_code": 201,
++        "http.route": "/api/internal/turn-resume",
++      },
++    });
++
++    mswServer.use(
++      ...httpGetRegional(
++        `https://sentry.io/api/0/organizations/sentry-mcp-evals/trace-meta/${traceId}/`,
++        () =>
++          HttpResponse.json({
++            logs: 0,
++            errors: 0,
++            performance_issues: 0,
++            span_count: 25,
++            transaction_child_count_map: [],
++            span_count_map: {},
++          }),
++      ),
++      ...httpGetRegional(
++        `https://sentry.io/api/0/organizations/sentry-mcp-evals/trace/${traceId}/`,
++        () => HttpResponse.json([rootSpan]),
++      ),
++    );
++
++    const result = await getTraceDetails.handler(
++      {
++        organizationSlug: "sentry-mcp-evals",
++        traceId,
++        regionUrl: null,
++      },
++      {
++        constraints: {
++          organizationSlug: null,
++        },
++        accessToken: "access-token",
++        userId: "1",
++      },
++    );
++
++    expect(result).toContain(
++      "POST /api/internal/turn-resume [11111111 · http.server · 201 · 3ms]",
++    );
++    expect(result).toContain(
++      "invoke_agent anthropic/claude-opus-4.6 [22222222 · gen_ai.invoke_agent · 123419ms]",
++    );
++    expect(result).toContain(
++      "POST api.anthropic.com/v1/messages [33333333 · http.client · 200 · 21455ms]",
++    );
++    expect(result).toContain("POST [13131313 · http.client · 204 · 16ms]");
++    expect(result).toContain("PROPFIND [19191919 · http.client · 207 · 15ms]");
++    expect(result).toContain(
++      "GET api.example.com:443 [14141414 · http.client · 17ms]",
++    );
++    expect(result).toContain(
++      "GET /api/v200/resources [16161616 · http.client · 200 · 18ms]",
++    );
++    expect(result).toContain(
++      "execute_tool search_events [44444444 · gen_ai.execute_tool · 4107ms]",
++    );
++    expect(result).toContain("git [55555555 · process.exec · exit:0 · 4050ms]");
++    expect(result).toContain(
++      "SELECT issues [66666666 · db.query · postgresql · OK · 44ms]",
++    );
++    expect(result).toContain(
++      "SELECT db.internal [15151515 · db.query · postgresql · 41ms]",
++    );
++    expect(result).toContain(
++      "sentry.trace.v1.TraceService/FetchTrace [77777777 · rpc.client · grpc · OK · 65ms]",
++    );
++    expect(result).toContain(
++      "bookings_workflow/Run [17171717 · rpc.client · temporal · OK · 24ms]",
++    );
++    expect(result).toContain(
++      "publish trace-events [88888888 · messaging.publish · kafka · 37ms]",
++    );
++    expect(result).toContain(
++      "tools/call search_events [99999999 · mcp.request · OK · 28ms]",
++    );
++    expect(result).toContain(
++      "query TraceDetails [aaaaaaaa · graphql.execute · 31ms]",
++    );
++    expect(result).toContain(
++      "timer trace-worker [bbbbbbbb · faas.invoke · aws · us-west-2 · coldstart · 52ms]",
++    );
++    expect(result).toContain(
++      "PutObject trace-artifacts/runs/abc.json [cccccccc · aws.s3 · us-west-2 · 73ms]",
++    );
++    expect(result).toContain(
++      "com.sentry.trace.created trace/e4d1 [dddddddd · event.process · cloudevents:1.0 · 19ms]",
++    );
++    expect(result).toContain(
++      "BUILD mcp-core [eeeeeeee · cicd.pipeline · success · 88ms]",
++    );
++    expect(result).toContain(
++      "semantic-trace-rendering on [ffffffff · feature_flag.evaluate · flagsmith · targeting_match · 12ms]",
++    );
++    expect(result).toContain(
++      "DynamoDB.GetItem [abababab · aws.sdk · aws-api · us-east-1 · 21ms]",
++    );
++    expect(result).toContain(
++      "job failed [acacacac · exception · ValueError · 13ms]",
++    );
++    expect(result).toContain("TypeError [18181818 · exception · 14ms]");
++    expect(result).toContain(
++      "background job [12121212 · internal · timeout · 11ms]",
++    );
++  });
++
+   it("fetches enough spans to resolve focused spans in large traces", async () => {
+     const traceId = "c4d1aae7216b47ff8117cf4e09ce9d0c";
+     const spanId = "00000000000007d0";
+diff --git a/packages/mcp-core/src/tools/get-trace-details.ts b/packages/mcp-core/src/tools/get-trace-details.ts
+index d5d5a4f0..678a866d 100644
+--- a/packages/mcp-core/src/tools/get-trace-details.ts
++++ b/packages/mcp-core/src/tools/get-trace-details.ts
+@@ -4,6 +4,7 @@ import { apiServiceFromContext } from "../internal/tool-helpers/api";
+ import { hasAgentProvider } from "../internal/agents/provider-factory";
+ import { resolveRegionUrlForOrganization } from "../internal/tool-helpers/resolve-region-url";
+ import type { SentryApiService, Trace, TraceSpan } from "../api-client";
++import { formatSemanticSpanDisplay } from "./trace-semantic-display.js";
+ import { UserInputError } from "../errors";
+ import type { ServerContext } from "../types";
+ import {
+@@ -216,8 +217,8 @@ function getTraceFetchLimit(
+ interface SelectedSpan {
+   id: string;
+   op: string;
+-  name: string | null;
+-  description: string;
++  displayName: string;
++  metadata: string[];
+   duration: number;
+   is_transaction: boolean;
+   children: SelectedSpan[];
+@@ -420,11 +421,13 @@ function createBranchStatsGetter(): (span: TraceSpan) => SpanBranchStats {
+ }
+ 
+ function createSelectedSpan(span: TraceSpan, level: number): SelectedSpan {
++  const display = formatSemanticSpanDisplay(span);
++
+   return {
+     id: getTraceSpanId(span),
+     op: span.op || "unknown",
+-    name: typeof span.name === "string" ? span.name : null,
+-    description: span.description || span.transaction || "unnamed",
++    displayName: display.label,
++    metadata: display.metadata,
+     duration: span.duration || 0,
+     is_transaction: Boolean(span.is_transaction),
+     children: [],
+@@ -465,8 +468,8 @@ function enqueueSelectedChildren(
+ const fakeRootTemplate = (traceId: string): SelectedSpan => ({
+   id: traceId,
+   op: "trace",
+-  name: null,
+-  description: `Trace ${traceId.substring(0, 8)}`,
++  displayName: "trace",
++  metadata: [],
+   duration: 0, // Traces don't have duration
+   is_transaction: false,
+   children: [],
+@@ -482,13 +485,7 @@ const fakeRootTemplate = (traceId: string): SelectedSpan => ({
+  * @returns A formatted display name for the span
+  */
+ function formatSpanDisplayName(span: SelectedSpan): string {
+-  // For the fake trace root, just return "trace"
+-  if (span.op === "trace") {
+-    return "trace";
+-  }
+-
+-  // Use span.name if available (OTEL-native), otherwise use description
+-  return span.name?.trim() || span.description || "unnamed";
++  return span.displayName;
+ }
+ 
+ /**
+@@ -524,9 +521,14 @@ function renderSpanTree(spans: SelectedSpan[]): string[] {
+         : "unknown";
+ 
+       // Don't show 'default' operations as they're not meaningful
+-      const opDisplay = span.op === "default" ? "" : ` · ${span.op}`;
++      const metadataParts = [
++        shortId,
++        ...(span.op === "default" ? [] : [span.op]),
++        ...span.metadata,
++        duration,
++      ];
+       lines.push(
+-        `${prefix}${connector}${displayName} [${shortId}${opDisplay} · ${duration}]`,
++        `${prefix}${connector}${displayName} [${metadataParts.join(" · ")}]`,
+       );
+     }
+ 
+@@ -937,7 +939,7 @@ function formatDuration(durationMs: number | undefined): string {
+ }
+ 
+ function formatTraceSpanDescription(span: TraceSpan): string {
+-  return span.name?.trim() || span.description || span.transaction || "unnamed";
++  return formatSemanticSpanDisplay(span).label;
+ }
+ 
+ function buildSpanUrl(traceUrl: string, spanId: string): string {
+diff --git a/packages/mcp-core/src/tools/trace-semantic-display.ts b/packages/mcp-core/src/tools/trace-semantic-display.ts
+new file mode 100644
+index 00000000..afa70515
+--- /dev/null
++++ b/packages/mcp-core/src/tools/trace-semantic-display.ts
+@@ -0,0 +1,771 @@
++import type { TraceSpan } from "../api-client";
++
++interface SemanticSpanDisplay {
++  label: string;
++  metadata: string[];
++}
++
++type SpanDisplayFormatter = (
++  span: TraceSpan,
++  fallbackLabel: string,
++) => SemanticSpanDisplay | null;
++
++const SPAN_LABEL_MAX_LENGTH = 160;
++const SPAN_METADATA_MAX_LENGTH = 64;
++const SPAN_ATTRIBUTE_MAX_LENGTH = 2048;
++
++const SEMANTIC_SPAN_FORMATTERS: SpanDisplayFormatter[] = [
++  formatMcpSpanDisplay,
++  formatHttpSpanDisplay,
++  formatGenAiSpanDisplay,
++  formatDatabaseSpanDisplay,
++  formatGraphqlSpanDisplay,
++  formatObjectStoreSpanDisplay,
++  formatRpcSpanDisplay,
++  formatMessagingSpanDisplay,
++  formatCloudEventsSpanDisplay,
++  formatFaasSpanDisplay,
++  formatCicdSpanDisplay,
++  formatFeatureFlagSpanDisplay,
++  formatProcessSpanDisplay,
++  formatExceptionSpanDisplay,
++  formatErrorSpanDisplay,
++];
++
++export function formatSemanticSpanDisplay(
++  span: TraceSpan,
++): SemanticSpanDisplay {
++  const fallbackLabel = formatFallbackSpanLabel(span);
++  let display: SemanticSpanDisplay = {
++    label: fallbackLabel,
++    metadata: [],
++  };
++
++  for (const formatter of SEMANTIC_SPAN_FORMATTERS) {
++    const semanticDisplay = formatter(span, fallbackLabel);
++    if (semanticDisplay) {
++      display = semanticDisplay;
++      break;
++    }
++  }
++
++  const label = formatDisplayPart(display.label, SPAN_LABEL_MAX_LENGTH);
++  return {
++    label: label || "unnamed",
++    metadata: formatSemanticMetadata(display.metadata),
++  };
++}
++
++function formatHttpSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const method = getSpanAttributeString(span, [
++    "http.request.method",
++  ])?.toUpperCase();
++  const statusCode = getSpanAttributeString(span, [
++    "http.response.status_code",
++  ]);
++  const target = getHttpTarget(span, {
++    includeServerTarget: Boolean(method || statusCode),
++  });
++  const errorType = getErrorType(span);
++
++  if (!method && !target && !statusCode) {
++    return null;
++  }
++
++  const label = formatHttpLabel({ method, target, fallbackLabel });
++
++  return {
++    label: label || fallbackLabel,
++    metadata: compactStrings([statusCode, errorType]),
++  };
++}
++
++function formatGenAiSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const operation = getSpanAttributeString(span, ["gen_ai.operation.name"]);
++  const toolName = getSpanAttributeString(span, ["gen_ai.tool.name"]);
++  const agentName = getSpanAttributeString(span, ["gen_ai.agent.name"]);
++  const model = getGenAiModelIdentifier(span);
++  const dataSourceId = getSpanAttributeString(span, ["gen_ai.data_source.id"]);
++  const errorType = getErrorType(span);
++
++  if (!operation && !toolName && !agentName && !model && !dataSourceId) {
++    return null;
++  }
++
++  const subject = toolName ?? agentName ?? model ?? dataSourceId;
++  const label = operation
++    ? formatOperationLabel(operation, subject)
++    : subject || fallbackLabel;
++
++  return {
++    label,
++    metadata: compactStrings([
++      subject === model ? undefined : model,
++      errorType,
++    ]),
++  };
++}
++
++function formatMcpSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const method = getSpanAttributeString(span, ["mcp.method.name"]);
++  const resourceUri = getSpanAttributeString(
++    span,
++    ["mcp.resource.uri"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++  const target =
++    getSpanAttributeString(span, ["gen_ai.tool.name", "gen_ai.prompt.name"]) ??
++    formatResourceTarget(resourceUri);
++  const statusCode = getSpanAttributeString(span, ["rpc.response.status_code"]);
++  const errorType = getErrorType(span);
++
++  if (!method && !resourceUri) {
++    return null;
++  }
++
++  return {
++    label: joinDisplayParts([method, target]) || fallbackLabel,
++    metadata: compactStrings([statusCode, errorType]),
++  };
++}
++
++function formatDatabaseSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const dbSystem = getSpanAttributeString(span, ["db.system.name"]);
++  const querySummary = getSpanAttributeString(span, ["db.query.summary"]);
++  const operationName = getSpanAttributeString(span, ["db.operation.name"]);
++  const target =
++    getSpanAttributeString(span, ["db.collection.name", "db.namespace"]) ??
++    getServerTarget(span);
++  const storedProcedure = getSpanAttributeString(span, [
++    "db.stored_procedure.name",
++  ]);
++  const queryText = getSpanAttributeString(
++    span,
++    ["db.query.text"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++
++  if (
++    !dbSystem &&
++    !querySummary &&
++    !operationName &&
++    !target &&
++    !storedProcedure &&
++    !queryText
++  ) {
++    return null;
++  }
++
++  const label =
++    querySummary ??
++    (storedProcedure ? `CALL ${storedProcedure}` : undefined) ??
++    (joinDisplayParts([operationName, target]) || undefined) ??
++    formatDbQueryText(queryText) ??
++    fallbackLabel;
++  const statusCode = getSpanAttributeString(span, ["db.response.status_code"]);
++  const errorType = getErrorType(span);
++
++  return {
++    label,
++    metadata: compactStrings([dbSystem, statusCode, errorType]),
++  };
++}
++
++function formatGraphqlSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const operationType = getSpanAttributeString(span, [
++    "graphql.operation.type",
++  ]);
++  const operationName = getSpanAttributeString(span, [
++    "graphql.operation.name",
++  ]);
++  const document = getSpanAttributeString(
++    span,
++    ["graphql.document"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++
++  if (!operationType && !operationName && !document) {
++    return null;
++  }
++
++  return {
++    label:
++      joinDisplayParts([operationType, operationName]) ||
++      formatDisplayPart(document, SPAN_LABEL_MAX_LENGTH) ||
++      fallbackLabel,
++    metadata: [],
++  };
++}
++
++function formatRpcSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const rpcSystem = getSpanAttributeString(span, ["rpc.system.name"]);
++  const service = getSpanAttributeString(span, ["rpc.service"]);
++  const method = getSpanAttributeString(span, ["rpc.method"]);
++  const statusCode = getSpanAttributeString(span, ["rpc.response.status_code"]);
++  const region = getSpanAttributeString(span, ["cloud.region"]);
++  const errorType = getErrorType(span);
++
++  if (!rpcSystem && !service && !method && !statusCode) {
++    return null;
++  }
++
++  const methodLabel =
++    service && method ? `${service}/${method}` : method || service;
++
++  return {
++    label: methodLabel || fallbackLabel,
++    metadata: compactStrings([rpcSystem, statusCode, region, errorType]),
++  };
++}
++
++function formatMessagingSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const messagingSystem = getSpanAttributeString(span, ["messaging.system"]);
++  const operation = getSpanAttributeString(span, [
++    "messaging.operation.name",
++    "messaging.operation.type",
++  ]);
++  const destination = getSpanAttributeString(span, [
++    "messaging.destination.template",
++    "messaging.destination.name",
++    "messaging.destination.subscription.name",
++  ]);
++  const consumerGroup = getSpanAttributeString(span, [
++    "messaging.consumer.group.name",
++  ]);
++  const messageCount = getSpanAttributeString(span, [
++    "messaging.batch.message_count",
++  ]);
++  const errorType = getErrorType(span);
++
++  if (!messagingSystem && !operation && !destination) {
++    return null;
++  }
++
++  return {
++    label: joinDisplayParts([operation, destination]) || fallbackLabel,
++    metadata: compactStrings([
++      messagingSystem,
++      consumerGroup,
++      messageCount ? `messages:${messageCount}` : undefined,
++      errorType,
++    ]),
++  };
++}
++
++function formatFaasSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const trigger = getSpanAttributeString(span, ["faas.trigger"]);
++  const name = getSpanAttributeString(span, ["faas.invoked_name", "faas.name"]);
++  const provider = getSpanAttributeString(span, ["faas.invoked_provider"]);
++  const region = getSpanAttributeString(span, ["faas.invoked_region"]);
++  const coldStart = getSpanAttributeString(span, ["faas.coldstart"]);
++  const documentOperation = getSpanAttributeString(span, [
++    "faas.document.operation",
++  ]);
++  const documentTarget = getSpanAttributeString(span, [
++    "faas.document.collection",
++    "faas.document.name",
++  ]);
++  const cron = getSpanAttributeString(span, ["faas.cron"]);
++  const errorType = getErrorType(span);
++  const isColdStart = coldStart === "true";
++
++  if (
++    !trigger &&
++    !name &&
++    !provider &&
++    !region &&
++    !isColdStart &&
++    !documentOperation &&
++    !documentTarget &&
++    !cron
++  ) {
++    return null;
++  }
++
++  return {
++    label:
++      joinDisplayParts([
++        trigger,
++        name,
++        joinDisplayParts([documentOperation, documentTarget]) || cron,
++      ]) || fallbackLabel,
++    metadata: compactStrings([
++      provider,
++      region,
++      isColdStart ? "coldstart" : undefined,
++      errorType,
++    ]),
++  };
++}
++
++function formatProcessSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const command = getSpanAttributeString(span, [
++    "process.executable.name",
++    "process.command",
++  ]);
++  const exitCode = getSpanAttributeString(span, ["process.exit.code"]);
++  const errorType = getErrorType(span);
++
++  if (!command && !exitCode) {
++    return null;
++  }
++
++  return {
++    label: command || fallbackLabel,
++    metadata: compactStrings([
++      exitCode ? `exit:${exitCode}` : undefined,
++      errorType,
++    ]),
++  };
++}
++
++function formatObjectStoreSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const bucket = getSpanAttributeString(span, ["aws.s3.bucket"]);
++  const key = getSpanAttributeString(
++    span,
++    ["aws.s3.key"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++  const copySource = getSpanAttributeString(
++    span,
++    ["aws.s3.copy_source"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++  const operation = getSpanAttributeString(span, ["rpc.method"]);
++  const region = getSpanAttributeString(span, ["cloud.region"]);
++  const errorType = getErrorType(span);
++  const target =
++    formatObjectStoreTarget(bucket, key) ??
++    formatDisplayPart(copySource, SPAN_LABEL_MAX_LENGTH);
++
++  if (!bucket && !key && !copySource) {
++    return null;
++  }
++
++  return {
++    label: joinDisplayParts([operation, target]) || fallbackLabel,
++    metadata: compactStrings([region, errorType]),
++  };
++}
++
++function formatCloudEventsSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const eventType = getSpanAttributeString(span, ["cloudevents.event_type"]);
++  const eventSubject = getSpanAttributeString(span, [
++    "cloudevents.event_subject",
++  ]);
++  const eventSource = getSpanAttributeString(
++    span,
++    ["cloudevents.event_source"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++  const specVersion = getSpanAttributeString(span, [
++    "cloudevents.event_spec_version",
++  ]);
++
++  if (!eventType && !eventSubject && !eventSource && !specVersion) {
++    return null;
++  }
++
++  return {
++    label:
++      joinDisplayParts([
++        eventType,
++        eventSubject ?? formatResourceTarget(eventSource),
++      ]) || fallbackLabel,
++    metadata: specVersion ? [`cloudevents:${specVersion}`] : [],
++  };
++}
++
++function formatCicdSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const action = getSpanAttributeString(span, ["cicd.pipeline.action.name"]);
++  const pipeline = getSpanAttributeString(span, ["cicd.pipeline.name"]);
++  const pipelineResult = getSpanAttributeString(span, ["cicd.pipeline.result"]);
++  const taskName = getSpanAttributeString(span, ["cicd.pipeline.task.name"]);
++  const taskResult = getSpanAttributeString(span, [
++    "cicd.pipeline.task.run.result",
++  ]);
++  const errorType = getErrorType(span);
++
++  if (!action && !pipeline && !pipelineResult && !taskName && !taskResult) {
++    return null;
++  }
++
++  return {
++    label: joinDisplayParts([action, pipeline]) || taskName || fallbackLabel,
++    metadata: compactStrings([pipelineResult, taskResult, errorType]),
++  };
++}
++
++function formatFeatureFlagSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const flagKey = getSpanAttributeString(span, ["feature_flag.key"]);
++  const variant = getSpanAttributeString(span, ["feature_flag.result.variant"]);
++  const value = getSpanAttributeString(span, ["feature_flag.result.value"]);
++  const provider = getSpanAttributeString(span, ["feature_flag.provider.name"]);
++  const reason = getSpanAttributeString(span, ["feature_flag.result.reason"]);
++  const errorType = getErrorType(span);
++
++  if (!flagKey && !variant && !value && !provider && !reason) {
++    return null;
++  }
++
++  return {
++    label: joinDisplayParts([flagKey, variant ?? value]) || fallbackLabel,
++    metadata: compactStrings([provider, reason, errorType]),
++  };
++}
++
++function formatExceptionSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const exceptionType = getSpanAttributeString(span, ["exception.type"]);
++  const exceptionMessage = getSpanAttributeString(
++    span,
++    ["exception.message"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++
++  if (!exceptionType && !exceptionMessage) {
++    return null;
++  }
++
++  const label =
++    fallbackLabel === "unnamed"
++      ? exceptionType || exceptionMessage || fallbackLabel
++      : fallbackLabel;
++  const metadata =
++    fallbackLabel === "unnamed"
++      ? []
++      : compactStrings([
++          exceptionType,
++          exceptionType ? undefined : exceptionMessage,
++        ]);
++
++  return {
++    label,
++    metadata,
++  };
++}
++
++function formatErrorSpanDisplay(
++  span: TraceSpan,
++  fallbackLabel: string,
++): SemanticSpanDisplay | null {
++  const errorType = getErrorType(span);
++  if (!errorType) {
++    return null;
++  }
++
++  return {
++    label: fallbackLabel,
++    metadata: [errorType],
++  };
++}
++
++function getGenAiModelIdentifier(span: TraceSpan): string | undefined {
++  const provider = getSpanAttributeString(span, ["gen_ai.provider.name"]);
++  const model = getSpanAttributeString(span, [
++    "gen_ai.response.model",
++    "gen_ai.request.model",
++  ]);
++
++  if (!model) {
++    return provider;
++  }
++
++  if (!provider || model.includes("/")) {
++    return model;
++  }
++
++  return `${provider}/${model}`;
++}
++
++function getHttpTarget(
++  span: TraceSpan,
++  { includeServerTarget = false }: { includeServerTarget?: boolean } = {},
++): string | undefined {
++  const route = getSpanAttributeString(
++    span,
++    ["http.route", "url.template"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++  const fullUrl = getSpanAttributeString(
++    span,
++    ["url.full"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++  const path = getSpanAttributeString(
++    span,
++    ["url.path"],
++    SPAN_ATTRIBUTE_MAX_LENGTH,
++  );
++  const serverTarget = getServerTarget(span);
++
++  if (route) {
++    return formatHttpTarget(route);
++  }
++
++  if (fullUrl) {
++    return formatHttpTarget(fullUrl);
++  }
++
++  if (path) {
++    return formatHttpTarget(path);
++  }
++
++  if (includeServerTarget && serverTarget) {
++    return formatHttpTarget(serverTarget);
++  }
++
++  return undefined;
++}
++
++function getServerTarget(span: TraceSpan): string | undefined {
++  const serverAddress = getSpanAttributeString(span, ["server.address"]);
++  const serverPort = getSpanAttributeString(span, ["server.port"]);
++
++  if (!serverAddress) {
++    return undefined;
++  }
++
++  return formatServerAddress(serverAddress, serverPort);
++}
++
++function formatHttpLabel({
++  method,
++  target,
++  fallbackLabel,
++}: {
++  method?: string;
++  target?: string;
++  fallbackLabel: string;
++}): string {
++  if (method && target) {
++    return joinDisplayParts([method, target]);
++  }
++
++  if (target) {
++    return target;
++  }
++
++  const normalizedFallbackLabel = fallbackLabel.toUpperCase();
++  if (
++    method &&
++    normalizedFallbackLabel !== method &&
++    fallbackLabel !== "unnamed"
++  ) {
++    return normalizedFallbackLabel.startsWith(`${method} `)
++      ? fallbackLabel
++      : joinDisplayParts([method, fallbackLabel]);
++  }
++
++  return method || fallbackLabel;
++}
++
++function formatServerAddress(address: string, port?: string): string {
++  if (!port || address.includes(":")) {
++    return address;
++  }
++
++  return `${address}:${port}`;
++}
++
++function formatObjectStoreTarget(
++  bucket: string | undefined,
++  key: string | undefined,
++): string | undefined {
++  if (bucket && key) {
++    return formatDisplayPart(`${bucket}/${key}`, SPAN_LABEL_MAX_LENGTH);
++  }
++
++  return bucket ?? formatDisplayPart(key, SPAN_LABEL_MAX_LENGTH);
++}
++
++function formatHttpTarget(value: string): string {
++  const trimmed = value.trim();
++
++  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
++    const withoutFragment = trimmed.split("#", 1)[0];
++    return withoutFragment.split("?", 1)[0];
++  }
++
++  try {
++    const url = new URL(trimmed);
++    const path = url.pathname === "/" ? "" : url.pathname;
++    return `${url.host}${path}`;
++  } catch {
++    const withoutFragment = trimmed.split("#", 1)[0];
++    return withoutFragment.split("?", 1)[0];
++  }
++}
++
++function formatOperationLabel(
++  operation: string,
++  subject: string | undefined,
++): string {
++  if (subject) {
++    return `${operation} ${subject}`;
++  }
++
++  return operation;
++}
++
++function joinDisplayParts(values: Array<string | undefined>): string {
++  return compactStrings(values).join(" ");
++}
++
++function compactStrings(values: Array<string | undefined>): string[] {
++  return values.filter((value): value is string => Boolean(value));
++}
++
++function formatDbQueryText(value: string | undefined): string | undefined {
++  if (!value) {
++    return undefined;
++  }
++
++  return formatDisplayPart(
++    value.replace(/'([^']|'')*'/g, "?").replace(/\b\d+(\.\d+)?\b/g, "?"),
++    SPAN_LABEL_MAX_LENGTH,
++  );
++}
++
++function formatResourceTarget(value: string | undefined): string | undefined {
++  if (!value) {
++    return undefined;
++  }
++
++  return formatDisplayPart(value.split("?", 1)[0], SPAN_LABEL_MAX_LENGTH);
++}
++
++function formatFallbackSpanLabel(span: TraceSpan): string {
++  return (
++    formatDisplayPart(span.name, SPAN_LABEL_MAX_LENGTH) ||
++    formatDisplayPart(span.description, SPAN_LABEL_MAX_LENGTH) ||
++    formatDisplayPart(span.transaction, SPAN_LABEL_MAX_LENGTH) ||
++    "unnamed"
++  );
++}
++
++function getSpanAttributeString(
++  span: TraceSpan,
++  keys: string[],
++  maxLength = SPAN_METADATA_MAX_LENGTH,
++): string | undefined {
++  for (const key of keys) {
++    for (const source of getSpanAttributeSources(span)) {
++      if (Object.prototype.hasOwnProperty.call(source, key)) {
++        const value = formatDisplayPart(source[key], maxLength);
++        if (value) {
++          return value;
++        }
++      }
++    }
++  }
++
++  return undefined;
++}
++
++function getSpanAttributeSources(span: TraceSpan): Record<string, unknown>[] {
++  return [
++    toRecord(span.additional_attributes),
++    toRecord(span.data),
++    toRecord(span.tags),
++  ].filter((source): source is Record<string, unknown> => source !== undefined);
++}
++
++function toRecord(value: unknown): Record<string, unknown> | undefined {
++  if (value === null || typeof value !== "object" || Array.isArray(value)) {
++    return undefined;
++  }
++
++  return value as Record<string, unknown>;
++}
++
++function getErrorType(span: TraceSpan): string | undefined {
++  return getSpanAttributeString(span, ["error.type"]);
++}
++
++function formatSemanticMetadata(values: unknown[]): string[] {
++  const metadata: string[] = [];
++  const seen = new Set<string>();
++
++  for (const value of values) {
++    const displayValue = formatDisplayPart(value, SPAN_METADATA_MAX_LENGTH);
++    if (!displayValue) {
++      continue;
++    }
++
++    const key = displayValue.toLowerCase();
++    if (seen.has(key)) {
++      continue;
++    }
++
++    seen.add(key);
++    metadata.push(displayValue);
++  }
++
++  return metadata;
++}
++
++function formatDisplayPart(
++  value: unknown,
++  maxLength: number,
++): string | undefined {
++  let text: string | undefined;
++
++  if (typeof value === "string") {
++    text = value;
++  } else if (typeof value === "number" || typeof value === "boolean") {
++    text = String(value);
++  }
++
++  const normalized = text?.replace(/\s+/g, " ").trim();
++  if (!normalized) {
++    return undefined;
++  }
++
++  if (normalized.length <= maxLength) {
++    return normalized;
++  }
++
++  return `${normalized.slice(0, maxLength - 3)}...`;
++}

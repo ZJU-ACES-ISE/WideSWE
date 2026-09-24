@@ -1,0 +1,729 @@
+diff --git a/tests/deepclone_hydrate.phpt b/tests/deepclone_hydrate.phpt
+index cbe529e..16ebe9c 100644
+--- a/tests/deepclone_hydrate.phpt
++++ b/tests/deepclone_hydrate.phpt
+@@ -85,24 +85,24 @@ var_dump(count($ai) === 3);
+ // === Mangled vars (3rd parameter) ===
+ 
+ // stdClass with flat properties
+-$o = deepclone_hydrate('stdClass', [], ['p' => 123]);
++$o = deepclone_hydrate('stdClass', ['p' => 123], DEEPCLONE_HYDRATE_MANGLED_VARS);
+ var_dump($o->p === 123);
+ 
+ // Case-insensitive class name
+-$o = deepclone_hydrate('STDcLASS', [], ['p' => 123]);
++$o = deepclone_hydrate('STDcLASS', ['p' => 123], DEEPCLONE_HYDRATE_MANGLED_VARS);
+ var_dump($o->p === 123);
+ 
+-// ArrayObject via "\0" key in $mangled_vars
+-$ao = deepclone_hydrate('ArrayObject', [], ["\0" => [[123]]]);
++// ArrayObject via "\0" key in mangled-vars mode
++$ao = deepclone_hydrate('ArrayObject', ["\0" => [[123]]], DEEPCLONE_HYDRATE_MANGLED_VARS);
+ var_dump($ao[0] === 123);
+ 
+-// ArrayObject via "\0" key in $scoped_vars (own class as scope)
++// ArrayObject via "\0" key in scoped mode (own class as scope)
+ $ao = deepclone_hydrate('ArrayObject', ['ArrayObject' => ["\0" => [[456]]]]);
+ var_dump($ao[0] === 456);
+ 
+-// SplObjectStorage via "\0" key in $mangled_vars
++// SplObjectStorage via "\0" key in mangled-vars mode
+ $o1 = new stdClass();
+-$s = deepclone_hydrate('SplObjectStorage', [], ["\0" => [$o1, 'data']]);
++$s = deepclone_hydrate('SplObjectStorage', ["\0" => [$o1, 'data']], DEEPCLONE_HYDRATE_MANGLED_VARS);
+ var_dump($s->count() === 1);
+ 
+ // SplObjectStorage via "\0" key in $scoped_vars
+@@ -110,11 +110,6 @@ $o1 = new stdClass();
+ $s = deepclone_hydrate('SplObjectStorage', ['SplObjectStorage' => ["\0" => [$o1, 'info']]]);
+ var_dump($s->count() === 1);
+ 
+-// Inheritance with mixed $properties + $scopedProperties
+-$actual = (array) deepclone_hydrate('Bar', [Foo::class => ['priv' => 234]], [
+-    'dyn' => 456, 'ro' => 567, 'prot' => 345, 'priv' => 123,
+-]);
+-ksort($actual);
+ $expected = [
+     "\0*\0prot" => 345,
+     "\0Bar\0priv" => 123,
+@@ -122,24 +117,25 @@ $expected = [
+     'dyn' => 456,
+     'ro' => 567,
+ ];
+-var_dump($actual === $expected);
+ 
+-// Mangled key format in $properties
+-$actual = (array) deepclone_hydrate('Bar', [], [
++// Mangled key format
++$actual = (array) deepclone_hydrate('Bar', [
+     "\0*\0prot" => 345,
+     "\0Bar\0priv" => 123,
+     "\0Foo\0priv" => 234,
+     'dyn' => 456,
+     'ro' => 567,
+-]);
++], DEEPCLONE_HYDRATE_MANGLED_VARS);
+ ksort($actual);
+ var_dump($actual === $expected);
+ 
+ // Exception trace (internal class hydration)
+-$e = deepclone_hydrate('Exception', [], ['trace' => [234]]);
++$e = deepclone_hydrate('Exception', ['trace' => [234]], DEEPCLONE_HYDRATE_MANGLED_VARS);
+ var_dump($e->getTrace() === [234]);
+ 
+-// Readonly: direct slot write overwrites even initialized readonly
++// Readonly: hydrating an already-initialized readonly property throws,
++// matching ReflectionProperty::setRawValue semantics (engine checks
++// ZEND_ACC_READONLY during the write).
+ class ReadonlyClass {
+     public string $status = 'new';
+     private readonly int $value;
+@@ -147,18 +143,22 @@ class ReadonlyClass {
+     public function getValue(): int { return $this->value; }
+ }
+ $obj = new ReadonlyClass(123);
+-$obj = deepclone_hydrate($obj, [], ['value' => 456, 'status' => 'hydrated']);
+-var_dump($obj->getValue() === 456);
+-var_dump($obj->status === 'hydrated');
++try {
++    deepclone_hydrate($obj, ['value' => 456], DEEPCLONE_HYDRATE_MANGLED_VARS);
++    var_dump(false);
++} catch (\Error $e) {
++    var_dump(str_contains($e->getMessage(), 'readonly'));
++}
++var_dump($obj->getValue() === 123);
+ 
+ // Readonly: uninitialized → sets value
+ $obj = deepclone_hydrate('ReadonlyClass', ['ReadonlyClass' => ['value' => 456]]);
+ var_dump($obj->getValue() === 456);
+ 
+-// PHP references preservation
++// PHP references preservation (mangled mode keeps refs across the hydrate)
+ $a = 1;
+ $props = ['p1' => &$a, 'p2' => &$a];
+-$obj = deepclone_hydrate('stdClass', [], $props);
++$obj = deepclone_hydrate('stdClass', $props, DEEPCLONE_HYDRATE_MANGLED_VARS);
+ var_dump($obj->p1 === 1 && $obj->p2 === 1);
+ $a = 2;
+ var_dump($obj->p1 === 2 && $obj->p2 === 2);
+@@ -174,16 +174,11 @@ class GP { private string $secret = ''; public function getSecret(): string { re
+ class P extends GP { private int $mid = 0; public function getMid(): int { return $this->mid; } }
+ class C extends P { public string $pub = ''; }
+ 
+-$o = deepclone_hydrate('C', [], ["\0GP\0secret" => 'gp_val', "\0P\0mid" => 42, 'pub' => 'hi']);
++$o = deepclone_hydrate('C', ["\0GP\0secret" => 'gp_val', "\0P\0mid" => 42, 'pub' => 'hi'], DEEPCLONE_HYDRATE_MANGLED_VARS);
+ var_dump($o->getSecret() === 'gp_val');
+ var_dump($o->getMid() === 42);
+ var_dump($o->pub === 'hi');
+ 
+-// === Both $scopedProperties and $properties writing same property ===
+-// $properties are resolved and merged into scopedProperties, overwriting same scope+name
+-$o = deepclone_hydrate('stdClass', ['stdClass' => ['x' => 'from_scoped']], ['x' => 'from_flat']);
+-var_dump($o->x === 'from_flat');
+-
+ // === Error cases ===
+ 
+ // Unknown class
+@@ -246,14 +241,14 @@ try {
+ 
+ // Bad type
+ try {
+-    deepclone_hydrate(123, []);
++    deepclone_hydrate([], []);
+ } catch (\TypeError $e) {
+     var_dump(str_contains($e->getMessage(), 'must be of type object|string'));
+ }
+ 
+ // Integer key in $mangled_vars → ValueError
+ try {
+-    deepclone_hydrate('stdClass', [], [0 => 'val']);
++    deepclone_hydrate('stdClass', [0 => 'val'], DEEPCLONE_HYDRATE_MANGLED_VARS);
+ } catch (\ValueError $e) {
+     var_dump(str_contains($e->getMessage(), 'string keys'));
+ }
+@@ -274,7 +269,7 @@ try {
+ 
+ // NUL byte in mangled key property portion → ValueError
+ try {
+-    deepclone_hydrate('stdClass', [], ["\0*\0foo\0bar" => 'val']);
++    deepclone_hydrate('stdClass', ["\0*\0foo\0bar" => 'val'], DEEPCLONE_HYDRATE_MANGLED_VARS);
+ } catch (\ValueError $e) {
+     var_dump(str_contains($e->getMessage(), 'invalid mangled key'));
+ }
+@@ -378,6 +373,4 @@ bool(true)
+ bool(true)
+ bool(true)
+ bool(true)
+-bool(true)
+-bool(true)
+ Done
+diff --git a/tests/deepclone_hydrate_dtor_reentrance.phpt b/tests/deepclone_hydrate_dtor_reentrance.phpt
+new file mode 100644
+index 0000000..12fb56f
+--- /dev/null
++++ b/tests/deepclone_hydrate_dtor_reentrance.phpt
+@@ -0,0 +1,55 @@
++--TEST--
++deepclone_hydrate() survives a __destruct that reads the same property slot
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++// When the old value in a property slot has a __destruct that reads the
++// same property, it must observe the NEW value (slot is already replaced
++// before the dtor runs), not a half-freed zval.
++class Host
++{
++    public ?ReadsSlotOnDtor $slot = null;
++}
++
++class ReadsSlotOnDtor
++{
++    public static ?string $observed = null;
++    public string $tag = '';
++    public ?Host $back = null;
++
++    public function __destruct()
++    {
++        if ($this->back !== null) {
++            self::$observed = $this->back->slot?->tag ?? 'null';
++        }
++    }
++}
++
++$host = new Host();
++
++$old = new ReadsSlotOnDtor();
++$old->tag = 'old';
++$old->back = $host;
++$host->slot = $old;
++unset($old); // slot holds the only ref; next overwrite triggers dtor.
++
++$new = new ReadsSlotOnDtor();
++$new->tag = 'new';
++$new->back = $host;
++
++// Hydrate $host with slot = $new. The assignment frees the old object,
++// whose __destruct reads $host->slot. That read must observe $new, not
++// a freed zval.
++deepclone_hydrate($host, [Host::class => ['slot' => $new]]);
++
++var_dump($host->slot->tag === 'new');
++var_dump(ReadsSlotOnDtor::$observed === 'new');
++
++echo "Done\n";
++?>
++--EXPECT--
++bool(true)
++bool(true)
++Done
+diff --git a/tests/deepclone_hydrate_enum_cast.phpt b/tests/deepclone_hydrate_enum_cast.phpt
+new file mode 100644
+index 0000000..81555bb
+--- /dev/null
++++ b/tests/deepclone_hydrate_enum_cast.phpt
+@@ -0,0 +1,135 @@
++--TEST--
++deepclone_hydrate() casts string/int scalars to the corresponding backed-enum case
++--EXTENSIONS--
++deepclone
++--SKIPIF--
++<?php
++if (PHP_VERSION_ID < 80100) die('skip backed enums require PHP 8.1+');
++?>
++--FILE--
++<?php
++
++enum Suit: string { case Hearts = 'H'; case Spades = 'S'; }
++enum Size: int    { case Small = 1;   case Large = 2;   }
++enum Plain { case Alpha; } /* non-backed */
++
++class WithEnum
++{
++    public Suit $s = Suit::Hearts;
++    public ?Suit $ns = Suit::Hearts;
++    public Size $n = Size::Small;
++    public Plain $p = Plain::Alpha;
++}
++
++// String → string-backed enum
++$o = new WithEnum();
++$o = deepclone_hydrate($o, [WithEnum::class => ['s' => 'S']]);
++var_dump($o->s === Suit::Spades);
++
++// Int → int-backed enum
++$o = new WithEnum();
++$o = deepclone_hydrate($o, [WithEnum::class => ['n' => 2]]);
++var_dump($o->n === Size::Large);
++
++// Nullable enum + null → stored as null (no cast, unset rule doesn't fire either)
++$o = new WithEnum();
++$o = deepclone_hydrate($o, [WithEnum::class => ['ns' => null]]);
++var_dump($o->ns === null);
++
++// Nullable enum + matching scalar → cast
++$o = new WithEnum();
++$o = deepclone_hydrate($o, [WithEnum::class => ['ns' => 'S']]);
++var_dump($o->ns === Suit::Spades);
++
++// Cross-type scalar (int → string-backed enum): Enum::from() coerces the
++// int to its string form, then the lookup fails for an unknown value →
++// ValueError. Same path the polyfill takes via Enum::from($value).
++$o = new WithEnum();
++try {
++    deepclone_hydrate($o, [WithEnum::class => ['s' => 5]]);
++    var_dump(false);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'not a valid backing value for enum'));
++}
++
++// Unknown backing value: matches Enum::from() — ValueError ("X is not a
++// valid backing value for enum Suit").
++$o = new WithEnum();
++try {
++    deepclone_hydrate($o, [WithEnum::class => ['s' => 'X']]);
++    var_dump(false);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'not a valid backing value for enum'));
++}
++
++// Non-backed enum: no cast applied, engine TypeError on scalar
++$o = new WithEnum();
++try {
++    deepclone_hydrate($o, [WithEnum::class => ['p' => 'Alpha']]);
++    var_dump(false);
++} catch (\TypeError $e) {
++    var_dump(str_contains($e->getMessage(), 'Plain'));
++}
++
++// Passing the enum case directly still works (no cast needed)
++$o = new WithEnum();
++$o = deepclone_hydrate($o, [WithEnum::class => ['s' => Suit::Spades]]);
++var_dump($o->s === Suit::Spades);
++
++// CALL_HOOKS gate is per-prop: non-hooked enum-typed props still get cast.
++$o = new WithEnum();
++$o = deepclone_hydrate($o, [WithEnum::class => ['s' => 'S']], DEEPCLONE_HYDRATE_CALL_HOOKS);
++var_dump($o->s === Suit::Spades);
++
++// Hooked enum prop under CALL_HOOKS: the cast decision is property-type
++// only — hook signature shape doesn't change it. Both strict and wider
++// hooks see the enum case (the wider hook's string branch never fires).
++if (PHP_VERSION_ID >= 80400) {
++    eval('class WithHookedEnumWider {
++        public static ?string $lastRaw = null;
++        public Suit $s = Suit::Hearts {
++            set(Suit|string $v) {
++                if (is_string($v)) {
++                    self::$lastRaw = "raw:".$v;
++                    $this->s = Suit::from($v);
++                } else {
++                    $this->s = $v;
++                }
++            }
++        }
++    }');
++    $o = new WithHookedEnumWider();
++    $o = deepclone_hydrate($o, [WithHookedEnumWider::class => ['s' => 'S']], DEEPCLONE_HYDRATE_CALL_HOOKS);
++    var_dump($o->s === Suit::Spades);
++    var_dump(WithHookedEnumWider::$lastRaw === null);
++
++    eval('class WithHookedEnumStrict {
++        public Suit $s = Suit::Hearts {
++            set(Suit $v) { $this->s = $v; }
++        }
++    }');
++    $o = new WithHookedEnumStrict();
++    $o = deepclone_hydrate($o, [WithHookedEnumStrict::class => ['s' => 'S']], DEEPCLONE_HYDRATE_CALL_HOOKS);
++    var_dump($o->s === Suit::Spades);
++} else {
++    var_dump(true);
++    var_dump(true);
++    var_dump(true);
++}
++
++echo "Done\n";
++?>
++--EXPECT--
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++Done
+diff --git a/tests/deepclone_hydrate_flags.phpt b/tests/deepclone_hydrate_flags.phpt
+new file mode 100644
+index 0000000..fa0701c
+--- /dev/null
++++ b/tests/deepclone_hydrate_flags.phpt
+@@ -0,0 +1,89 @@
++--TEST--
++deepclone_hydrate() $flags parameter: CALL_HOOKS / validation / lazy semantics
++--EXTENSIONS--
++deepclone
++--SKIPIF--
++<?php
++if (PHP_VERSION_ID < 80400) {
++    die('skip property hooks / lazy objects require PHP 8.4+');
++}
++?>
++--FILE--
++<?php
++
++class HookedBacking {
++    public int $x = 0 {
++        set(int $v) { $this->x = $v * 10; }
++    }
++}
++
++// Default (flags=0) → setRawValue: bypass hook
++$o = deepclone_hydrate(HookedBacking::class, [HookedBacking::class => ['x' => 7]]);
++var_dump($o->x === 7);
++
++// DEEPCLONE_HYDRATE_CALL_HOOKS → setValue: invoke hook
++$o = deepclone_hydrate(HookedBacking::class, [HookedBacking::class => ['x' => 7]], DEEPCLONE_HYDRATE_CALL_HOOKS);
++var_dump($o->x === 70);
++
++// Unknown bit → ValueError
++try {
++    deepclone_hydrate(HookedBacking::class, [], 1 << 30);
++    var_dump(false);
++} catch (\ValueError $e) {
++    var_dump(true);
++}
++
++// Mutually exclusive flags → ValueError
++try {
++    deepclone_hydrate(HookedBacking::class, [], DEEPCLONE_HYDRATE_CALL_HOOKS | DEEPCLONE_HYDRATE_NO_LAZY_INIT);
++    var_dump(false);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'mutually exclusive'));
++}
++
++// Lazy ghost, default flag: hydrate triggers the lazy initializer on first
++// access (matching ReflectionProperty::setValue / setRawValue). The hydrate
++// value wins for the written prop; initializer values survive for the rest.
++class Lazy { public int $a = 0; public string $b = ''; }
++$rc = new ReflectionClass(Lazy::class);
++
++$initRan = 0;
++$ghost = $rc->newLazyGhost(function (Lazy $o) use (&$initRan) {
++    ++$initRan;
++    $o->a = 1;
++    $o->b = 'init';
++});
++deepclone_hydrate($ghost, [Lazy::class => ['a' => 99]]);
++var_dump($initRan === 1);        // initializer ran once
++var_dump($ghost->a === 99);      // hydrate value wins
++var_dump($ghost->b === 'init');  // initializer value preserved
++
++// Lazy ghost, NO_LAZY_INIT: hydrate skips the initializer. After writing
++// the single lazy prop, the object is realized (no more lazy props).
++$initRan = 0;
++$ghost = $rc->newLazyGhost(function (Lazy $o) use (&$initRan) {
++    ++$initRan;
++    $o->a = 1;
++    $o->b = 'init';
++});
++deepclone_hydrate($ghost, [Lazy::class => ['a' => 99, 'b' => 'hyd']], DEEPCLONE_HYDRATE_NO_LAZY_INIT);
++var_dump($initRan === 0);        // initializer did NOT run
++var_dump($ghost->a === 99);
++var_dump($ghost->b === 'hyd');
++var_dump($initRan === 0);        // subsequent read still doesn't init (realized)
++
++echo "Done\n";
++?>
++--EXPECT--
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++Done
+diff --git a/tests/deepclone_hydrate_mangled_validation.phpt b/tests/deepclone_hydrate_mangled_validation.phpt
+index 15388b8..96ab225 100644
+--- a/tests/deepclone_hydrate_mangled_validation.phpt
++++ b/tests/deepclone_hydrate_mangled_validation.phpt
+@@ -10,7 +10,7 @@ class BadKeys {}
+ function check_bad_key(string $key): bool
+ {
+     try {
+-        deepclone_hydrate('BadKeys', [], [$key => 123]);
++        deepclone_hydrate('BadKeys', [$key => 123], DEEPCLONE_HYDRATE_MANGLED_VARS);
+         return false;
+     } catch (ValueError $e) {
+         return str_contains($e->getMessage(), 'invalid mangled key');
+diff --git a/tests/deepclone_hydrate_null_unset.phpt b/tests/deepclone_hydrate_null_unset.phpt
+new file mode 100644
+index 0000000..d5bb21c
+--- /dev/null
++++ b/tests/deepclone_hydrate_null_unset.phpt
+@@ -0,0 +1,52 @@
++--TEST--
++deepclone_hydrate() unsets non-nullable typed properties when given null
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++class Typed
++{
++    public int $x = 42;
++    public ?int $y = 7;
++    public mixed $m = 'foo';
++}
++
++// null into non-nullable typed → slot becomes uninitialized
++$o = new Typed();
++$o = deepclone_hydrate($o, [Typed::class => ['x' => null]]);
++var_dump((new ReflectionProperty(Typed::class, 'x'))->isInitialized($o));
++
++// Reading an uninitialized typed prop throws the standard engine error
++try {
++    $v = $o->x;
++    var_dump(false);
++} catch (\Error $e) {
++    var_dump(str_contains($e->getMessage(), 'must not be accessed before initialization'));
++}
++
++// null into nullable → stored as null
++$o = new Typed();
++$o = deepclone_hydrate($o, [Typed::class => ['y' => null]]);
++var_dump($o->y === null);
++
++// null into mixed → stored as null
++$o = new Typed();
++$o = deepclone_hydrate($o, [Typed::class => ['m' => null]]);
++var_dump($o->m === null);
++
++// CALL_HOOKS is per-prop: a non-hooked typed prop still gets unset, even
++// when the flag is set (no set hook on this property to defer to).
++$o = new Typed();
++$o = deepclone_hydrate($o, [Typed::class => ['x' => null]], DEEPCLONE_HYDRATE_CALL_HOOKS);
++var_dump((new ReflectionProperty(Typed::class, 'x'))->isInitialized($o));
++
++echo "Done\n";
++?>
++--EXPECT--
++bool(false)
++bool(true)
++bool(true)
++bool(true)
++bool(false)
++Done
+diff --git a/tests/deepclone_hydrate_readonly_idempotent.phpt b/tests/deepclone_hydrate_readonly_idempotent.phpt
+new file mode 100644
+index 0000000..f0cab47
+--- /dev/null
++++ b/tests/deepclone_hydrate_readonly_idempotent.phpt
+@@ -0,0 +1,63 @@
++--TEST--
++deepclone_hydrate() skips readonly writes when the new value is identical (===)
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++class ReadonlyInt
++{
++    public readonly int $v;
++    public function __construct(int $v) { $this->v = $v; }
++}
++
++class ReadonlyObj
++{
++    public readonly \stdClass $o;
++    public function __construct(\stdClass $o) { $this->o = $o; }
++}
++
++// Same value (===) → silently skipped
++$o = new ReadonlyInt(42);
++$o = deepclone_hydrate($o, [ReadonlyInt::class => ['v' => 42]]);
++var_dump($o->v === 42);
++
++// Different value → engine throws
++$o = new ReadonlyInt(42);
++try {
++    deepclone_hydrate($o, [ReadonlyInt::class => ['v' => 43]]);
++    var_dump(false);
++} catch (\Error $e) {
++    var_dump(str_contains($e->getMessage(), 'readonly'));
++}
++var_dump($o->v === 42);
++
++// Object identity (same zval) → skipped
++$inner = new \stdClass();
++$o = new ReadonlyObj($inner);
++$o = deepclone_hydrate($o, [ReadonlyObj::class => ['o' => $inner]]);
++var_dump($o->o === $inner);
++
++// Different object (even if equal) → engine throws
++$o = new ReadonlyObj(new \stdClass());
++try {
++    deepclone_hydrate($o, [ReadonlyObj::class => ['o' => new \stdClass()]]);
++    var_dump(false);
++} catch (\Error $e) {
++    var_dump(str_contains($e->getMessage(), 'readonly'));
++}
++
++// Uninitialized readonly → writes normally
++$o = deepclone_hydrate(ReadonlyInt::class, [ReadonlyInt::class => ['v' => 99]]);
++var_dump($o->v === 99);
++
++echo "Done\n";
++?>
++--EXPECT--
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++Done
+diff --git a/tests/deepclone_hydrate_typed_props.phpt b/tests/deepclone_hydrate_typed_props.phpt
+new file mode 100644
+index 0000000..e84fab2
+--- /dev/null
++++ b/tests/deepclone_hydrate_typed_props.phpt
+@@ -0,0 +1,58 @@
++--TEST--
++deepclone_hydrate() verifies declared property types (matching polyfill/setRawValue semantics)
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++class TypedInt
++{
++    public int $x = 0;
++}
++
++class TypedReadonly
++{
++    public readonly int $v;
++}
++
++// A. Strict type mismatch → TypeError
++try {
++    deepclone_hydrate(TypedInt::class, [TypedInt::class => ['x' => 'hello']]);
++    echo "A: NO THROW\n";
++} catch (\TypeError $e) {
++    var_dump(str_contains($e->getMessage(), 'type int'));
++}
++
++// B. Coercible scalar → coerced to int (non-strict default)
++$o = deepclone_hydrate(TypedInt::class, [TypedInt::class => ['x' => '42']]);
++var_dump($o->x === 42);
++
++// C. Readonly + wrong type → TypeError
++try {
++    deepclone_hydrate(TypedReadonly::class, [TypedReadonly::class => ['v' => 'nope']]);
++    echo "C: NO THROW\n";
++} catch (\TypeError $e) {
++    var_dump(str_contains($e->getMessage(), 'type int'));
++}
++
++// D. Same via from_array payload
++try {
++    deepclone_from_array([
++        'classes' => TypedInt::class,
++        'objectMeta' => 1,
++        'prepared' => 0,
++        'properties' => [TypedInt::class => ['x' => [0 => 'hello']]],
++    ]);
++    echo "D: NO THROW\n";
++} catch (\TypeError $e) {
++    var_dump(str_contains($e->getMessage(), 'type int'));
++}
++
++echo "Done\n";
++?>
++--EXPECT--
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++Done
+diff --git a/tests/deepclone_private_shadowing.phpt b/tests/deepclone_private_shadowing.phpt
+new file mode 100644
+index 0000000..2abc104
+--- /dev/null
++++ b/tests/deepclone_private_shadowing.phpt
+@@ -0,0 +1,63 @@
++--TEST--
++deepclone_hydrate / from_array handle same-named private in parent and child as distinct slots
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++class PrivShadowA
++{
++    private string $x = 'a_init';
++    public function get(): string { return $this->x; }
++}
++
++class PrivShadowB extends PrivShadowA
++{
++    private string $x = 'b_init';
++    public function getChild(): string { return $this->x; }
++}
++
++// 1) Per-scope hydrate writes to distinct slots.
++$b = new PrivShadowB();
++deepclone_hydrate($b, [
++    PrivShadowA::class => ['x' => 'A_written'],
++    PrivShadowB::class => ['x' => 'B_written'],
++]);
++var_dump($b->get() === 'A_written');
++var_dump($b->getChild() === 'B_written');
++
++// 2) Roundtrip through to_array/from_array preserves both slots independently.
++$orig = new PrivShadowB();
++$ref = new \ReflectionProperty(PrivShadowA::class, 'x');
++$ref->setValue($orig, 'parent_val');
++$ref2 = new \ReflectionProperty(PrivShadowB::class, 'x');
++$ref2->setValue($orig, 'child_val');
++
++$clone = deepclone_from_array(deepclone_to_array($orig));
++var_dump($clone->get() === 'parent_val');
++var_dump($clone->getChild() === 'child_val');
++
++// 3) Bare name in $mangled_vars targets the most-derived private slot.
++$b2 = new PrivShadowB();
++deepclone_hydrate($b2, ['x' => 'bare_val'], DEEPCLONE_HYDRATE_MANGLED_VARS);
++var_dump($b2->get() === 'a_init');         // parent untouched
++var_dump($b2->getChild() === 'bare_val');  // child written
++
++// 4) Explicit mangled key targets the parent's private slot.
++$b3 = new PrivShadowB();
++deepclone_hydrate($b3, ["\0PrivShadowA\0x" => 'parent_targeted'], DEEPCLONE_HYDRATE_MANGLED_VARS);
++var_dump($b3->get() === 'parent_targeted');
++var_dump($b3->getChild() === 'b_init');
++
++echo "Done\n";
++?>
++--EXPECT--
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++Done

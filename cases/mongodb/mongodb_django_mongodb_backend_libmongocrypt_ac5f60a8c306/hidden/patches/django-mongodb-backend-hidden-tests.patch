@@ -1,0 +1,1112 @@
+diff --git a/.github/workflows/encrypted_settings.py b/.github/workflows/encrypted_settings.py
+new file mode 100644
+index 0000000..1852e80
+--- /dev/null
++++ b/.github/workflows/encrypted_settings.py
+@@ -0,0 +1,41 @@
++# Settings for django_mongodb_backend/tests when encryption is supported.
++import os
++
++from mongodb_settings import *  # noqa: F403
++from pymongo.encryption import AutoEncryptionOpts
++
++DATABASES["encrypted"] = {  # noqa: F405
++    "ENGINE": "django_mongodb_backend",
++    "NAME": "djangotests_encrypted",
++    "OPTIONS": {
++        "auto_encryption_opts": AutoEncryptionOpts(
++            key_vault_namespace="djangotests_encrypted.__keyVault",
++            kms_providers={"local": {"key": os.urandom(96)}},
++            crypt_shared_lib_path=os.environ["CRYPT_SHARED_LIB_PATH"],
++            crypt_shared_lib_required=True,
++        ),
++        "directConnection": True,
++    },
++}
++
++
++class EncryptedRouter:
++    def db_for_read(self, model, **hints):
++        # All models in the encryption_ app use the encrypted database.
++        if model._meta.app_label == "encryption_":
++            return "encrypted"
++        return None
++
++    db_for_write = db_for_read
++
++    def allow_migrate(self, db, app_label, model_name=None, **hints):
++        # Create the encryption_ app's models only in the encrypted database.
++        if app_label == "encryption_":
++            return db == "encrypted"
++        # Don't create other apps' models in the encrypted database.
++        if db == "encrypted":
++            return False
++        return None
++
++
++DATABASE_ROUTERS.append(EncryptedRouter())  # noqa: F405
+diff --git a/.github/workflows/mongodb_settings.py b/.github/workflows/mongodb_settings.py
+index 4dce3c0..619bdcd 100644
+--- a/.github/workflows/mongodb_settings.py
++++ b/.github/workflows/mongodb_settings.py
+@@ -1,4 +1,5 @@
+-# Settings for django_mongodb_backend/tests.
++# Settings for django_mongodb_backend/tests when encryption isn't supported.
+ from django_settings import *  # noqa: F403
+ 
++DATABASES["encrypted"] = {}  # noqa: F405
+ DATABASE_ROUTERS = ["django_mongodb_backend.routers.MongoRouter"]
+diff --git a/tests/backend_/test_features.py b/tests/backend_/test_features.py
+index 05959fa..b87630a 100644
+--- a/tests/backend_/test_features.py
++++ b/tests/backend_/test_features.py
+@@ -44,3 +44,112 @@ class SupportsTransactionsTests(TestCase):
+ 
+         with patch("pymongo.synchronous.database.Database.command", wraps=mocked_command):
+             self.assertIs(connection.features._supports_transactions, False)
++
++
++class SupportsQueryableEncryptionTests(TestCase):
++    def setUp(self):
++        for name in (
++            "supports_queryable_encryption",
++            "mongodb_version",
++            "is_mongodb_8_0",
++        ):
++            connection.features.__dict__.pop(name, None)
++
++    def tearDown(self):
++        for name in (
++            "supports_queryable_encryption",
++            "mongodb_version",
++            "is_mongodb_8_0",
++        ):
++            connection.features.__dict__.pop(name, None)
++
++    @staticmethod
++    def enterprise_response(command):
++        if command in {"buildInfo", "buildinfo"}:
++            return {"modules": ["enterprise"]}
++        if command == "getCmdLineOpts":
++            return {"parsed": {"enterpriseModule": True}}
++        return {}
++
++    @staticmethod
++    def non_enterprise_response(command):
++        if command in {"buildInfo", "buildinfo"}:
++            return {"modules": []}
++        if command == "getCmdLineOpts":
++            return {"parsed": {}}
++        return {}
++
++    @staticmethod
++    def atlas_response(command):
++        if command in {"buildInfo", "buildinfo"}:
++            return {"modules": [], "atlasVersion": "test"}
++        if command == "getCmdLineOpts":
++            return {"parsed": {}}
++        return {}
++
++    def test_supported_on_atlas(self):
++        """Supported on MongoDB 8.0+ Atlas replica set or sharded cluster."""
++        with (
++            patch(
++                "pymongo.synchronous.database.Database.command", wraps=self.atlas_response
++            ),
++            patch.dict(
++                connection.features.__dict__,
++                {"supports_atlas_search": True, "_supports_transactions": True},
++            ),
++            patch.object(connection, "get_database_version", return_value=(8, 0)),
++        ):
++            self.assertIs(connection.features.supports_queryable_encryption, True)
++
++    def test_supported_on_enterprise(self):
++        """Supported on MongoDB 8.0+ Enterprise replica set or sharded cluster."""
++        with (
++            patch("pymongo.synchronous.database.Database.command", wraps=self.enterprise_response),
++            patch.dict(
++                connection.features.__dict__,
++                {"supports_atlas_search": False, "_supports_transactions": True},
++            ),
++            patch.object(connection, "get_database_version", return_value=(8, 0)),
++        ):
++            self.assertIs(connection.features.supports_queryable_encryption, True)
++
++    def test_atlas_or_enterprise_required(self):
++        """Not supported on MongoDB Community Edition."""
++        with (
++            patch(
++                "pymongo.synchronous.database.Database.command", wraps=self.non_enterprise_response
++            ),
++            patch.dict(
++                connection.features.__dict__,
++                {"supports_atlas_search": False, "_supports_transactions": True},
++            ),
++            patch.object(connection, "get_database_version", return_value=(8, 0)),
++        ):
++            self.assertIs(connection.features.supports_queryable_encryption, False)
++
++    def test_transactions_required(self):
++        """
++        Not supported if database isn't a replica set or sharded cluster
++        (i.e. DatabaseFeatures._supports_transactions = False).
++        """
++        with (
++            patch("pymongo.synchronous.database.Database.command", wraps=self.enterprise_response),
++            patch.dict(
++                connection.features.__dict__,
++                {"supports_atlas_search": False, "_supports_transactions": False},
++            ),
++            patch.object(connection, "get_database_version", return_value=(8, 0)),
++        ):
++            self.assertIs(connection.features.supports_queryable_encryption, False)
++
++    def test_mongodb_8_0_required(self):
++        """Not supported on MongoDB < 8.0"""
++        with (
++            patch("pymongo.synchronous.database.Database.command", wraps=self.enterprise_response),
++            patch.dict(
++                connection.features.__dict__,
++                {"supports_atlas_search": False, "_supports_transactions": True},
++            ),
++            patch.object(connection, "get_database_version", return_value=(7, 0)),
++        ):
++            self.assertIs(connection.features.supports_queryable_encryption, False)
+diff --git a/tests/encryption_/__init__.py b/tests/encryption_/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/encryption_/models.py b/tests/encryption_/models.py
+new file mode 100644
+index 0000000..1780e82
+--- /dev/null
++++ b/tests/encryption_/models.py
+@@ -0,0 +1,188 @@
++from django.db import models
++
++from django_mongodb_backend.fields import (
++    EmbeddedModelField,
++    EncryptedArrayField,
++    EncryptedBigIntegerField,
++    EncryptedBinaryField,
++    EncryptedBooleanField,
++    EncryptedCharField,
++    EncryptedDateField,
++    EncryptedDateTimeField,
++    EncryptedDecimalField,
++    EncryptedDurationField,
++    EncryptedEmailField,
++    EncryptedEmbeddedModelArrayField,
++    EncryptedEmbeddedModelField,
++    EncryptedFloatField,
++    EncryptedGenericIPAddressField,
++    EncryptedIntegerField,
++    EncryptedObjectIdField,
++    EncryptedPositiveBigIntegerField,
++    EncryptedPositiveIntegerField,
++    EncryptedPositiveSmallIntegerField,
++    EncryptedSmallIntegerField,
++    EncryptedTextField,
++    EncryptedTimeField,
++    EncryptedURLField,
++    EncryptedUUIDField,
++)
++from django_mongodb_backend.models import EmbeddedModel
++
++
++class Author(models.Model):
++    name = models.CharField(max_length=255)
++
++
++class Book(models.Model):
++    title = models.CharField(max_length=255)
++    author = models.ForeignKey(Author, models.CASCADE)
++
++
++class EncryptedModel(models.Model):
++    class Meta:
++        abstract = True
++        required_db_features = {"supports_queryable_encryption"}
++
++
++# Array models
++class ArrayModel(EncryptedModel):
++    values = EncryptedArrayField(models.IntegerField(), size=5)
++
++
++# Embedded models
++class Patient(EncryptedModel):
++    patient_name = models.CharField(max_length=255)
++    patient_id = models.BigIntegerField()
++    patient_record = EmbeddedModelField("PatientRecord")
++
++    def __str__(self):
++        return f"{self.patient_name} ({self.patient_id})"
++
++
++class PatientRecord(EmbeddedModel):
++    ssn = EncryptedCharField(max_length=11, queries={"queryType": "equality"})
++    billing = EncryptedEmbeddedModelField("Billing")
++    bill_amount = models.DecimalField(max_digits=10, decimal_places=2)
++
++
++class Billing(EmbeddedModel):
++    cc_type = models.CharField(max_length=50)
++    cc_number = models.CharField(max_length=20)
++
++
++# Embedded array models
++class Actor(EmbeddedModel):
++    name = models.CharField(max_length=100)
++
++
++class Movie(EncryptedModel):
++    title = models.CharField(max_length=200)
++    cast = EncryptedEmbeddedModelArrayField(Actor)
++
++    def __str__(self):
++        return self.title
++
++
++# Equality-queryable models
++class BinaryModel(EncryptedModel):
++    value = EncryptedBinaryField(queries={"queryType": "equality"})
++
++
++class BooleanModel(EncryptedModel):
++    value = EncryptedBooleanField(queries={"queryType": "equality"})
++
++
++class CharModel(EncryptedModel):
++    value = EncryptedCharField(max_length=255, queries={"queryType": "equality"})
++
++
++class EmailModel(EncryptedModel):
++    value = EncryptedEmailField(max_length=255, queries={"queryType": "equality"})
++
++
++class GenericIPAddressModel(EncryptedModel):
++    value = EncryptedGenericIPAddressField(queries={"queryType": "equality"})
++
++
++class ObjectIdModel(EncryptedModel):
++    value = EncryptedObjectIdField(queries={"queryType": "equality"})
++
++
++class TextModel(EncryptedModel):
++    value = EncryptedTextField(queries={"queryType": "equality"})
++
++
++class URLModel(EncryptedModel):
++    value = EncryptedURLField(max_length=500, queries={"queryType": "equality"})
++
++
++class UUIDModel(EncryptedModel):
++    value = EncryptedUUIDField(queries={"queryType": "equality"})
++
++
++# Range-queryable models
++class BigIntegerModel(EncryptedModel):
++    value = EncryptedBigIntegerField(queries={"queryType": "range"})
++
++
++class DateModel(EncryptedModel):
++    value = EncryptedDateField(queries={"queryType": "range"})
++
++
++class DateTimeModel(EncryptedModel):
++    value = EncryptedDateTimeField(queries={"queryType": "range"})
++
++
++class DecimalModel(EncryptedModel):
++    value = EncryptedDecimalField(max_digits=10, decimal_places=2, queries={"queryType": "range"})
++
++
++class DurationModel(EncryptedModel):
++    value = EncryptedDurationField(queries={"queryType": "range"})
++
++
++class FloatModel(EncryptedModel):
++    value = EncryptedFloatField(queries={"queryType": "range"})
++
++
++class IntegerModel(EncryptedModel):
++    value = EncryptedIntegerField(queries={"queryType": "range"})
++
++
++class PositiveBigIntegerModel(EncryptedModel):
++    value = EncryptedPositiveBigIntegerField(queries={"queryType": "range"})
++
++
++class PositiveIntegerModel(EncryptedModel):
++    value = EncryptedPositiveIntegerField(queries={"queryType": "range"})
++
++
++class PositiveSmallIntegerModel(EncryptedModel):
++    value = EncryptedPositiveSmallIntegerField(queries={"queryType": "range"})
++
++
++class SmallIntegerModel(EncryptedModel):
++    value = EncryptedSmallIntegerField(queries={"queryType": "range"})
++
++
++class TimeModel(EncryptedModel):
++    value = EncryptedTimeField(queries={"queryType": "range"})
++
++
++# An unmanaged model for testing a model that doesn't have its encryption keys
++# in the key vault.
++class KeyTestModel(models.Model):
++    value = EncryptedCharField(max_length=255)
++
++    class Meta:
++        managed = False
++
++
++# Allow querying the key vault using the ORM
++class EncryptionKey(models.Model):
++    key_alt_name = models.CharField(max_length=500, db_column="keyAltNames")
++
++    class Meta:
++        db_table = "__keyVault"
++        managed = False
+diff --git a/tests/encryption_/test_base.py b/tests/encryption_/test_base.py
+new file mode 100644
+index 0000000..907d6dd
+--- /dev/null
++++ b/tests/encryption_/test_base.py
+@@ -0,0 +1,30 @@
++from functools import reduce
++
++import pymongo
++from bson.binary import Binary
++from django.conf import settings
++from django.db import connections
++from django.test import TestCase, skipUnlessDBFeature
++
++
++@skipUnlessDBFeature("supports_queryable_encryption")
++class EncryptionTestCase(TestCase):
++    databases = {"default", "encrypted"}
++    maxDiff = None
++
++    def assertEncrypted(self, model, field_name):
++        """
++        Assert that the data in a give model's field contains binary data (and
++        thus is probably encrypted).
++        """
++        # Create an unencrypted connection to the encrypted database.
++        conn_params = connections["default"].get_connection_params()
++        db_name = settings.DATABASES["encrypted"]["NAME"]
++        with pymongo.MongoClient(**conn_params) as new_connection:
++            db = new_connection[db_name]
++            collection = db[model._meta.db_table]
++            data = collection.find_one({}, {field_name: 1, "_id": 0})
++            # Get the value for embedded fields (separated by dots), if
++            # applicable.
++            field_value = reduce(dict.__getitem__, field_name.split("."), data)
++            self.assertIsInstance(field_value, Binary)
+diff --git a/tests/encryption_/test_fields.py b/tests/encryption_/test_fields.py
+new file mode 100644
+index 0000000..93363a0
+--- /dev/null
++++ b/tests/encryption_/test_fields.py
+@@ -0,0 +1,271 @@
++import uuid
++from datetime import date, datetime, time, timedelta
++from decimal import Decimal
++
++from bson import ObjectId
++from django.db import DatabaseError
++from django.db.models import F, Q
++from django.test import SimpleTestCase
++
++from django_mongodb_backend.fields import (
++    EncryptedArrayField,
++    EncryptedCharField,
++    EncryptedEmbeddedModelArrayField,
++    EncryptedEmbeddedModelField,
++    EncryptedIntegerField,
++)
++
++from .models import (
++    Actor,
++    ArrayModel,
++    BigIntegerModel,
++    Billing,
++    BinaryModel,
++    BooleanModel,
++    CharModel,
++    DateModel,
++    DateTimeModel,
++    DecimalModel,
++    DurationModel,
++    EmailModel,
++    FloatModel,
++    GenericIPAddressModel,
++    IntegerModel,
++    Movie,
++    ObjectIdModel,
++    Patient,
++    PatientRecord,
++    PositiveBigIntegerModel,
++    PositiveIntegerModel,
++    PositiveSmallIntegerModel,
++    SmallIntegerModel,
++    TextModel,
++    TimeModel,
++    URLModel,
++    UUIDModel,
++)
++from .test_base import EncryptionTestCase
++
++
++class FieldTests(EncryptionTestCase):
++    def assertEquality(self, model_cls, val):
++        obj = model_cls.objects.create(value=val)
++        self.assertEqual(model_cls.objects.get(value=val), obj)
++        self.assertEqual(model_cls.objects.get(value__in=[val]), obj)
++        self.assertQuerySetEqual(model_cls.objects.exclude(value=val), [])
++
++    def assertRange(self, model_cls, *, low, high, threshold):
++        obj1 = model_cls.objects.create(value=low)
++        obj2 = model_cls.objects.create(value=high)
++        self.assertEqual(model_cls.objects.get(value=low).value, low)
++        self.assertEqual(model_cls.objects.get(value=high).value, high)
++        self.assertEqual(model_cls.objects.exclude(value=high).get().value, low)
++        self.assertCountEqual(model_cls.objects.filter(Q(value=high) | Q(value=low)), [obj1, obj2])
++        self.assertCountEqual(model_cls.objects.filter(value__gt=threshold), [obj2])
++        self.assertCountEqual(model_cls.objects.filter(value__gte=threshold), [obj2])
++        self.assertCountEqual(model_cls.objects.filter(value__lt=threshold), [obj1])
++        self.assertCountEqual(model_cls.objects.filter(value__lte=threshold), [obj1])
++        self.assertCountEqual(model_cls.objects.filter(value__in=[low]), [obj1])
++        self.assertCountEqual(model_cls.objects.filter(value__range=[low, high]), [obj1, obj2])
++        msg = (
++            "Comparison disallowed between Queryable Encryption encrypted "
++            "fields and non-constant expressions; field 'value' is encrypted."
++        )
++        with self.assertRaises(DatabaseError):
++            model_cls.objects.filter(value__lte=F("value")).get()
++
++    def test_array(self):
++        obj = ArrayModel.objects.create(values=[1, 2, 3, 4, 5])
++        obj.refresh_from_db()
++        self.assertEqual(obj.values, [1, 2, 3, 4, 5])
++        self.assertEncrypted(obj, "values")
++
++    def test_embedded_model(self):
++        patient = Patient.objects.create(
++            patient_name="John Doe",
++            patient_id=123456789,
++            patient_record=PatientRecord(
++                ssn="123-45-6789",
++                billing=Billing(cc_type="Visa", cc_number="4111111111111111"),
++            ),
++        )
++        patient.refresh_from_db()
++        self.assertEqual(patient.patient_record.ssn, "123-45-6789")
++        self.assertEqual(patient.patient_record.billing.cc_type, "Visa")
++        self.assertEqual(patient.patient_record.billing.cc_number, "4111111111111111")
++        self.assertEncrypted(patient, "patient_record.billing")
++        self.assertEncrypted(patient, "patient_record.ssn")
++        # Encrypted embedded fields are queryable.
++        self.assertEqual(Patient.objects.get(patient_record__ssn="123-45-6789"), patient)
++
++    def test_encrypted_embedded_model_field_subfields_not_queryable(self):
++        """Subfields of EncryptedEmbeddedModelField aren't queryable."""
++        msg = (
++            "Invalid operation on path 'patient_record.billing.cc_type' which "
++            "contains an encrypted path prefix."
++        )
++        with self.assertRaises(DatabaseError):
++            Patient.objects.get(patient_record__billing__cc_type="Visa")
++
++    def test_embedded_model_array(self):
++        movie = Movie.objects.create(
++            title="Sample Movie",
++            cast=[Actor(name="Harrison"), Actor(name="James")],
++        )
++        movie.refresh_from_db()
++        self.assertEqual(len(movie.cast), 2)
++        self.assertEqual(movie.cast[0].name, "Harrison")
++        self.assertEqual(movie.cast[1].name, "James")
++        self.assertEncrypted(movie, "cast")
++
++    # Equality queries
++    def test_binary(self):
++        self.assertEquality(BinaryModel, b"\x00\x01\x02")
++        self.assertEncrypted(BinaryModel, "value")
++
++    def test_boolean(self):
++        self.assertEquality(BooleanModel, True)
++        self.assertEncrypted(BooleanModel, "value")
++
++    def test_char(self):
++        self.assertEquality(CharModel, "hello")
++        self.assertEncrypted(CharModel, "value")
++
++    def test_email(self):
++        self.assertEquality(EmailModel, "test@example.com")
++        self.assertEncrypted(EmailModel, "value")
++
++    def test_generic_ip_address(self):
++        self.assertEquality(GenericIPAddressModel, "192.168.0.1")
++        self.assertEncrypted(GenericIPAddressModel, "value")
++
++    def test_object_id(self):
++        self.assertEquality(ObjectIdModel, ObjectId())
++        self.assertEncrypted(ObjectIdModel, "value")
++
++    def test_text(self):
++        self.assertEquality(TextModel, "some text")
++        self.assertEncrypted(TextModel, "value")
++
++    def test_url(self):
++        self.assertEquality(URLModel, "https://example.com")
++        self.assertEncrypted(URLModel, "value")
++
++    def test_uuid(self):
++        self.assertEquality(UUIDModel, uuid.uuid4())
++        self.assertEncrypted(UUIDModel, "value")
++
++    # Range queries
++    def test_big_integer(self):
++        self.assertRange(BigIntegerModel, low=100, high=200, threshold=150)
++        self.assertEncrypted(BigIntegerModel, "value")
++
++    def test_date(self):
++        self.assertRange(
++            DateModel,
++            low=date(2024, 6, 1),
++            high=date(2024, 6, 10),
++            threshold=date(2024, 6, 5),
++        )
++        self.assertEncrypted(DateModel, "value")
++
++    def test_date_time(self):
++        self.assertRange(
++            DateTimeModel,
++            low=datetime(2024, 6, 1, 12, 0),
++            high=datetime(2024, 6, 2, 12, 0),
++            threshold=datetime(2024, 6, 2, 0, 0),
++        )
++        self.assertEncrypted(DateTimeModel, "value")
++
++    def test_decimal(self):
++        self.assertRange(
++            DecimalModel,
++            low=Decimal("123.45"),
++            high=Decimal("200.50"),
++            threshold=Decimal("150"),
++        )
++        self.assertEncrypted(DecimalModel, "value")
++
++    def test_duration(self):
++        self.assertRange(
++            DurationModel,
++            low=timedelta(days=3),
++            high=timedelta(days=10),
++            threshold=timedelta(days=5),
++        )
++        self.assertEncrypted(DurationModel, "value")
++
++    def test_float(self):
++        self.assertRange(FloatModel, low=1.23, high=4.56, threshold=3.0)
++        self.assertEncrypted(FloatModel, "value")
++
++    def test_integer(self):
++        self.assertRange(IntegerModel, low=5, high=10, threshold=7)
++        self.assertEncrypted(IntegerModel, "value")
++
++    def test_positive_big_integer(self):
++        self.assertRange(PositiveBigIntegerModel, low=100, high=500, threshold=200)
++        self.assertEncrypted(PositiveBigIntegerModel, "value")
++
++    def test_positive_integer(self):
++        self.assertRange(PositiveIntegerModel, low=10, high=20, threshold=15)
++        self.assertEncrypted(PositiveIntegerModel, "value")
++
++    def test_positive_small_integer(self):
++        self.assertRange(PositiveSmallIntegerModel, low=5, high=8, threshold=6)
++        self.assertEncrypted(PositiveSmallIntegerModel, "value")
++
++    def test_small_integer(self):
++        self.assertRange(SmallIntegerModel, low=-5, high=2, threshold=0)
++        self.assertEncrypted(SmallIntegerModel, "value")
++
++    def test_time(self):
++        self.assertRange(
++            TimeModel,
++            low=time(10, 0),
++            high=time(15, 0),
++            threshold=time(12, 0),
++        )
++        self.assertEncrypted(TimeModel, "value")
++
++
++class FieldMixinTests(SimpleTestCase):
++    def assertOptionRejected(self, **kwargs):
++        try:
++            field = EncryptedIntegerField(**kwargs)
++        except (TypeError, ValueError):
++            return
++        self.assertTrue(
++            any(error.obj is field for error in field.check()),
++            "Encrypted field option was not rejected by construction or system checks.",
++        )
++
++    def test_db_index(self):
++        self.assertOptionRejected(db_index=True)
++
++    def test_null(self):
++        self.assertOptionRejected(null=True)
++
++    def test_unique(self):
++        self.assertOptionRejected(unique=True)
++
++    def test_deconstruct(self):
++        field = EncryptedCharField(max_length=50, queries={"queryType": "equality"})
++        field.name = "ssn"
++        name, path, args, kwargs = field.deconstruct()
++        self.assertEqual(name, "ssn")
++        self.assertEqual(path, "django_mongodb_backend.fields.EncryptedCharField")
++        self.assertEqual(args, [])
++        self.assertEqual(kwargs["queries"], {"queryType": "equality"})
++
++    def test_fields_without_queries(self):
++        """Some field types (array, object) can't be queried."""
++        for field in (
++            EncryptedArrayField,
++            EncryptedEmbeddedModelField,
++            EncryptedEmbeddedModelArrayField,
++        ):
++            with self.subTest(field=field):
++                with self.assertRaises((TypeError, ValueError)):
++                    field(Actor, queries={})
+diff --git a/tests/encryption_/test_management.py b/tests/encryption_/test_management.py
+new file mode 100644
+index 0000000..0d9b9ec
+--- /dev/null
++++ b/tests/encryption_/test_management.py
+@@ -0,0 +1,144 @@
++from io import StringIO
++
++from bson import json_util
++from django.core.exceptions import ImproperlyConfigured
++from django.core.management import call_command
++from django.test import modify_settings
++
++from .models import KeyTestModel
++from .test_base import EncryptionTestCase
++
++
++@modify_settings(INSTALLED_APPS={"prepend": "django_mongodb_backend"})
++class ShowEncryptedFieldsTests(EncryptionTestCase):
++    # Expected encrypted field maps for all models with encrypted fields.
++    expected_maps = {
++        "encryption__arraymodel": {"fields": [{"bsonType": "array", "path": "values"}]},
++        "encryption__patient": {
++            "fields": [
++                {
++                    "bsonType": "string",
++                    "path": "patient_record.ssn",
++                    "queries": {"queryType": "equality"},
++                },
++                {"bsonType": "object", "path": "patient_record.billing"},
++            ]
++        },
++        "encryption__movie": {"fields": [{"bsonType": "array", "path": "cast"}]},
++        # Equality-queryable fields
++        "encryption__binarymodel": {
++            "fields": [
++                {"bsonType": "binData", "path": "value", "queries": {"queryType": "equality"}}
++            ]
++        },
++        "encryption__booleanmodel": {
++            "fields": [{"bsonType": "bool", "path": "value", "queries": {"queryType": "equality"}}]
++        },
++        "encryption__charmodel": {
++            "fields": [
++                {"bsonType": "string", "path": "value", "queries": {"queryType": "equality"}}
++            ]
++        },
++        "encryption__emailmodel": {
++            "fields": [
++                {"bsonType": "string", "path": "value", "queries": {"queryType": "equality"}}
++            ]
++        },
++        "encryption__genericipaddressmodel": {
++            "fields": [
++                {"bsonType": "string", "path": "value", "queries": {"queryType": "equality"}}
++            ]
++        },
++        "encryption__objectidmodel": {
++            "fields": [
++                {"bsonType": "objectId", "path": "value", "queries": {"queryType": "equality"}}
++            ]
++        },
++        "encryption__textmodel": {
++            "fields": [
++                {"bsonType": "string", "path": "value", "queries": {"queryType": "equality"}}
++            ]
++        },
++        "encryption__urlmodel": {
++            "fields": [
++                {"bsonType": "string", "path": "value", "queries": {"queryType": "equality"}}
++            ]
++        },
++        "encryption__uuidmodel": {
++            "fields": [
++                {"bsonType": "string", "path": "value", "queries": {"queryType": "equality"}}
++            ]
++        },
++        # Range-queryable fields
++        "encryption__bigintegermodel": {
++            "fields": [{"bsonType": "long", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__datemodel": {
++            "fields": [{"bsonType": "date", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__datetimemodel": {
++            "fields": [{"bsonType": "date", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__decimalmodel": {
++            "fields": [{"bsonType": "decimal", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__durationmodel": {
++            "fields": [{"bsonType": "long", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__floatmodel": {
++            "fields": [{"bsonType": "double", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__integermodel": {
++            "fields": [{"bsonType": "long", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__positivebigintegermodel": {
++            "fields": [{"bsonType": "long", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__positiveintegermodel": {
++            "fields": [{"bsonType": "long", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__positivesmallintegermodel": {
++            "fields": [{"bsonType": "int", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__smallintegermodel": {
++            "fields": [{"bsonType": "int", "path": "value", "queries": {"queryType": "range"}}]
++        },
++        "encryption__timemodel": {
++            "fields": [{"bsonType": "date", "path": "value", "queries": {"queryType": "range"}}]
++        },
++    }
++
++    def test_ouput(self):
++        """The expected output appears for each model."""
++        out = StringIO()
++        call_command("showencryptedfieldsmap", "--database", "encrypted", verbosity=0, stdout=out)
++        parsed_output = json_util.loads(out.getvalue())
++        # All models accounted for and no extra models.
++        self.assertEqual(len(parsed_output), len(self.expected_maps))
++        for model_key, expected in self.expected_maps.items():
++            with self.subTest(model=model_key):
++                self.assertIn(model_key, parsed_output)
++                model_data = parsed_output[model_key]
++                for field in model_data["fields"]:
++                    del field["keyId"]  # Can't compare dynamic value
++                self.assertEqual(expected, model_data)
++
++    def test_missing_key(self):
++        """
++        ImproperlyConfigured is raised when an encryption key isn't found for a
++        model.
++        """
++        msg = (
++            "Encryption key 'encryption__keytestmodel.value' not found. Have "
++            "you migrated the encryption_.KeyTestModel model?"
++        )
++        # showencryptedfieldsmap ignores unmanaged models, so fake that this
++        # model is managed.
++        KeyTestModel._meta.managed = True
++        try:
++            with self.assertRaises(ImproperlyConfigured) as ctx:
++                call_command("showencryptedfieldsmap", "--database", "encrypted", verbosity=0)
++            self.assertIn("encryption__keytestmodel.value", str(ctx.exception))
++        finally:
++            # Restore original state.
++            KeyTestModel._meta.managed = False
+diff --git a/tests/encryption_/test_queries.py b/tests/encryption_/test_queries.py
+new file mode 100644
+index 0000000..76fae09
+--- /dev/null
++++ b/tests/encryption_/test_queries.py
+@@ -0,0 +1,148 @@
++from operator import attrgetter
++
++from django.db import DatabaseError
++from django.db.models import Avg, Count, F
++
++from .models import Author, Book, CharModel, DateModel, DateTimeModel, IntegerModel
++from .test_base import EncryptionTestCase
++
++
++class QueryTests(EncryptionTestCase):
++    def test_aggregate_avg(self):
++        msg = "Accumulator '$avg' cannot aggregate encrypted fields."
++        with self.assertRaises(DatabaseError):
++            list(IntegerModel.objects.aggregate(Avg("value")))
++
++    def test_aggregate_count(self):
++        msg = "Invalid reference to an encrypted field within aggregate expression: value"
++        with self.assertRaises(DatabaseError):
++            list(IntegerModel.objects.aggregate(Count("value")))
++
++    def test_alias(self):
++        msg = (
++            "Cannot group on field '_id.value' which is encrypted with the "
++            "random algorithm or whose encryption properties are not known "
++            "until runtime"
++        )
++        with self.assertRaises(DatabaseError):
++            list(IntegerModel.objects.alias(avg=Avg("value")))
++
++    def test_annotate(self):
++        msg = (
++            "Cannot group on field '_id.value' which is encrypted with the "
++            "random algorithm or whose encryption properties are not known "
++            "until runtime"
++        )
++        with self.assertRaises(DatabaseError):
++            list(IntegerModel.objects.annotate(avg=Avg("value")))
++
++    def test_bulk_create(self):
++        CharModel.objects.bulk_create([CharModel(value="abc"), CharModel(value="xyz")])
++        self.assertQuerySetEqual(
++            CharModel.objects.order_by("pk"), ["abc", "xyz"], attrgetter("value")
++        )
++
++    def test_bulk_update(self):
++        objs = [
++            CharModel.objects.create(value="abc"),
++            CharModel.objects.create(value="xyz"),
++        ]
++        objs[0].value = "def"
++        objs[1].value = "mno"
++        msg = "Multi-document updates are not allowed with Queryable Encryption"
++        with self.assertRaises(DatabaseError):
++            CharModel.objects.bulk_update(objs, ["value"])
++
++    def test_contains(self):
++        obj = CharModel.objects.create(value="abc")
++        self.assertIs(CharModel.objects.contains(obj), True)
++
++    def test_count(self):
++        CharModel.objects.create(value="a")
++        CharModel.objects.create(value="b")
++        self.assertEqual(CharModel.objects.count(), 2)
++
++    def test_dates(self):
++        msg = (
++            "If the value type is a date, the type of the index must also be date (and vice versa)."
++        )
++        with self.assertRaises(DatabaseError):
++            list(DateModel.objects.dates("value", "year"))
++
++    def test_datetimes(self):
++        msg = (
++            "If the value type is a date, the type of the index must also be date (and vice versa)."
++        )
++        with self.assertRaises(DatabaseError):
++            list(DateTimeModel.objects.datetimes("value", "year"))
++
++    def test_distinct(self):
++        msg = (
++            "Cannot group on field '_id.value' which is encrypted with the "
++            "random algorithm or whose encryption properties are not known "
++            "until runtime"
++        )
++        with self.assertRaises(DatabaseError):
++            list(CharModel.objects.distinct("value"))
++
++    def test_exclude(self):
++        obj1 = CharModel.objects.create(value="abc")
++        obj2 = CharModel.objects.create(value="xyz")
++        self.assertSequenceEqual(CharModel.objects.exclude(value=obj1.value), [obj2])
++
++    def test_exists(self):
++        self.assertIs(CharModel.objects.exists(), False)
++
++    def test_get_or_create(self):
++        obj1, created1 = CharModel.objects.get_or_create(value="abc")
++        self.assertIs(created1, True)
++        obj2, created2 = CharModel.objects.get_or_create(value="abc")
++        self.assertIs(created2, False)
++        self.assertEqual(obj1, obj2)
++
++    def test_join(self):
++        book = Book.objects.create(title="Book", author=Author.objects.create(name="Bob"))
++        self.assertSequenceEqual(Book.objects.filter(author__name="Bob"), [book])
++
++    def test_join_with_let(self):
++        msg = (
++            "Non-empty 'let' field is not allowed in the $lookup aggregation "
++            "stage over an encrypted collection."
++        )
++        with self.assertRaises(DatabaseError):
++            list(Book.objects.filter(author__name=F("title")))
++
++    def test_order_by(self):
++        msg = "Cannot add an encrypted field as a prefix of another encrypted field"
++        with self.assertRaises(DatabaseError):
++            list(CharModel.objects.order_by("value"))
++
++    def test_select_related(self):
++        Book.objects.create(title="Book", author=Author.objects.create(name="Bob"))
++        with self.assertNumQueries(1, using="encrypted"):
++            books = Book.objects.select_related("author")
++            self.assertEqual(books[0].author.name, "Bob")
++
++    def test_update(self):
++        msg = "Multi-document updates are not allowed with Queryable Encryption"
++        with self.assertRaises(DatabaseError):
++            self.assertEqual(CharModel.objects.update(value="xyz"), 1)
++
++    def test_update_or_create(self):
++        CharModel.objects.create(value="xyz")
++        msg = "Multi-document updates are not allowed with Queryable Encryption"
++        with self.assertRaises(DatabaseError):
++            CharModel.objects.update_or_create(value="xyz", defaults={"plain": "abc"})
++
++    def test_union(self):
++        msg = "Aggregation stage $unionWith is not allowed or supported with automatic encryption."
++        qs1 = IntegerModel.objects.filter(value__gt=1)
++        qs2 = IntegerModel.objects.filter(value__gte=8)
++        with self.assertRaises(DatabaseError):
++            list(qs1.union(qs2))
++
++    def test_values(self):
++        list(CharModel.objects.values("value"))
++
++    def test_values_list(self):
++        list(CharModel.objects.values_list("value"))
+diff --git a/tests/encryption_/test_schema.py b/tests/encryption_/test_schema.py
+new file mode 100644
+index 0000000..9c597c8
+--- /dev/null
++++ b/tests/encryption_/test_schema.py
+@@ -0,0 +1,117 @@
++from bson.binary import Binary
++from django.core.exceptions import ImproperlyConfigured
++from django.db import connections
++
++from .models import EncryptionKey, KeyTestModel, Patient
++from .test_base import EncryptionTestCase
++
++
++class SchemaTests(EncryptionTestCase):
++    def setUp(self):
++        self.reset_database_wrapper_encryption_cached_properties()
++
++    def tearDown(self):
++        self.reset_database_wrapper_encryption_cached_properties()
++
++    def reset_database_wrapper_encryption_cached_properties(self):
++        # Reset these cached properties before and after each test since some
++        # tests mock values that form them.
++        connection = connections["encrypted"]
++        connection.__dict__.pop("kms_provider", None)
++        connection.__dict__.pop("kms_credentials", None)
++
++    def test_key_creation(self):
++        """
++        Creating an encrypted model generates its collection metadata and data
++        encryption keys.
++        """
++        test_key_alt_name = f"{KeyTestModel._meta.db_table}.value"
++        # Precondition: the key doesn't exist.
++        with self.assertRaises(EncryptionKey.DoesNotExist):
++            EncryptionKey.objects.get(key_alt_name=test_key_alt_name)
++        connection = connections["encrypted"]
++        # Exercise the public schema editor operation rather than an internal
++        # helper name or signature.
++        with connection.schema_editor() as editor:
++            editor.create_model(KeyTestModel)
++        try:
++            collection_info = connection.get_database().command(
++                {"listCollections": 1, "filter": {"name": KeyTestModel._meta.db_table}}
++            )["cursor"]["firstBatch"][0]
++            encrypted_fields = collection_info["options"]["encryptedFields"]
++            # The schema contains the new keyId.
++            field_info = encrypted_fields["fields"][0]
++            self.assertEqual(field_info["path"], "value")
++            self.assertIsInstance(field_info["keyId"], Binary)
++            # The key vault contains the new keyId.
++            key = EncryptionKey.objects.get(key_alt_name=test_key_alt_name)
++            self.assertEqual(key.id, field_info["keyId"])
++            self.assertEqual(key.key_alt_name, [test_key_alt_name])
++        finally:
++            connection.get_database().drop_collection(KeyTestModel._meta.db_table)
++            count, _ = EncryptionKey.objects.filter(key_alt_name=test_key_alt_name).delete()
++            self.assertEqual(count, 1)
++
++    def test_missing_auto_encryption_opts(self):
++        connection = connections["default"]
++        msg = (
++            "Tried to create model encryption_.Patient in 'default' database. "
++            "The model has encrypted fields but DATABASES['default']['OPTIONS'] "
++            'is missing the "auto_encryption_opts" parameter. If the model '
++            "should not be created in this database, adjust your database "
++            "routers."
++        )
++        with (
++            self.assertRaises(ImproperlyConfigured),
++            connection.schema_editor() as editor,
++        ):
++            editor.create_model(Patient)
++
++    def test_missing_kms_credentials(self):
++        connection = connections["encrypted"]
++        auto_encryption_opts = connection.connection._options.auto_encryption_opts
++        kms_providers = auto_encryption_opts._kms_providers
++        # Mock a GCP KMS.
++        auto_encryption_opts._kms_providers = {"gcp": {}}
++        # Mock the lack of KMS_CREDENTIALS.
++        kms_credentials = None
++        if "KMS_CREDENTIALS" in connection.settings_dict:
++            kms_credentials = connection.settings_dict.pop("KMS_CREDENTIALS")
++        msg = "DATABASES['encrypted'] is missing 'KMS_CREDENTIALS' required for KMS 'gcp'."
++        try:
++            with (
++                self.assertRaises(ImproperlyConfigured),
++                connection.schema_editor() as editor,
++            ):
++                editor.create_model(Patient)
++        finally:
++            # Restore the original values.
++            auto_encryption_opts._kms_providers = kms_providers
++            if kms_credentials is not None:
++                connection.settings_dict["KMS_CREDENTIALS"] = kms_credentials
++
++    def test_missing_kms_credentials_entry(self):
++        connection = connections["encrypted"]
++        auto_encryption_opts = connection.connection._options.auto_encryption_opts
++        kms_providers = auto_encryption_opts._kms_providers
++        # Mock a GCP KMS.
++        auto_encryption_opts._kms_providers = {"gcp": {}}
++        # Mock an empty KMS_CREDENTIALS.
++        kms_credentials = None
++        if "KMS_CREDENTIALS" in connection.settings_dict:
++            kms_credentials = connection.settings_dict.pop("KMS_CREDENTIALS")
++        connection.settings_dict["KMS_CREDENTIALS"] = {}
++        msg = "DATABASES['encrypted']['KMS_CREDENTIALS'] is missing 'gcp' key."
++        try:
++            with (
++                self.assertRaises(ImproperlyConfigured),
++                connection.schema_editor() as editor,
++            ):
++                editor.create_model(Patient)
++        finally:
++            # Restore the original values.
++            auto_encryption_opts._kms_providers = kms_providers
++            if kms_credentials is not None:
++                connection.settings_dict["KMS_CREDENTIALS"] = kms_credentials
++            else:
++                connection.settings_dict.pop("KMS_CREDENTIALS")

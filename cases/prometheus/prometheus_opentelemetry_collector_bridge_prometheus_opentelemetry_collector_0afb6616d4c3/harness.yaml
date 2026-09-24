@@ -1,0 +1,48 @@
+task_id: prometheus_opentelemetry_collector_bridge_prometheus_opentelemetry_collector_0afb6616d4c3
+hidden_test_patches:
+- repo: opentelemetry-collector-bridge
+  patch: hidden/patches/opentelemetry-collector-bridge-hidden-tests.patch
+  test_profile: opentelemetry_collector_bridge-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id001
+  - ecosync_contract_test.go
+  hidden_file: *id001
+  semantic_changes: Replaces migration-sensitive upstream test edits with independent
+    tests of optional exporter validation and the prompt-specified public API removal.
+  source: Contract derived from prometheus/opentelemetry-collector-bridge PR 32
+    and the task prompt.
+- repo: prometheus-opentelemetry-collector
+  patch: hidden/patches/prometheus-opentelemetry-collector-hidden-tests.patch
+  test_profile: prometheus_opentelemetry_collector-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id002
+  - receivers/stackdriver/ecosync_contract_test.go
+  hidden_file: *id002
+  semantic_changes: Replaces tests of undisclosed private helpers with public factory
+    behavior and prompt-specified decoder/runtime assembly contracts.
+  source: Contract derived from prometheus/prometheus-opentelemetry-collector PR
+    12 and the task prompt.
+- repo: stackdriver_exporter
+  patch: hidden/patches/stackdriver_exporter-hidden-tests.patch
+  test_profile: stackdriver_exporter-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id003
+  - ecosync_contract/contract_test.go
+  hidden_file: *id003
+  semantic_changes: Replaces tests of Gold-private cache and runtime helpers with
+    external tests of the public Config, Runtime, collector-cache, and HTTP error
+    contracts while retaining a stable metric-filter behavior check.
+  source: Contract derived from prometheus-community/stackdriver_exporter PR 500
+    and the task prompt.
+profile_sets:
+  linux-docker:
+    description: Contract-aligned hidden tests for the three-repository Stackdriver
+      receiver integration.
+    hidden_tests:
+    - opentelemetry_collector_bridge-hidden
+    - prometheus_opentelemetry_collector-hidden
+    - stackdriver_exporter-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

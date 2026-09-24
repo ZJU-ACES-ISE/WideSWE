@@ -1,0 +1,40 @@
+task_id: mongodb_django_mongodb_backend_libmongocrypt_ac5f60a8c306
+hidden_test_patches:
+- repo: django-mongodb-backend
+  patch: hidden/patches/django-mongodb-backend-hidden-tests.patch
+  test_profile: django_mongodb_backend-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - .github/workflows/encrypted_settings.py
+  - .github/workflows/mongodb_settings.py
+  - tests/backend_/test_features.py
+  - tests/encryption_/__init__.py
+  - tests/encryption_/models.py
+  - tests/encryption_/test_base.py
+  - tests/encryption_/test_fields.py
+  - tests/encryption_/test_management.py
+  - tests/encryption_/test_queries.py
+  - tests/encryption_/test_schema.py
+  hidden_file: *id001
+  semantic_changes: contract-aligned public behavior and collection reporting
+  source: upstream test changes from mongodb/django-mongodb-backend PR(s) 329
+- repo: libmongocrypt
+  patch: hidden/patches/libmongocrypt-hidden-tests.patch
+  test_profile: libmongocrypt-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test/test-mongocrypt-ctx-encrypt.c
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from mongodb/libmongocrypt PR(s) 1034
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - django_mongodb_backend-hidden
+    - libmongocrypt-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

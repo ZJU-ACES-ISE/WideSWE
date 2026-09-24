@@ -1,0 +1,65 @@
+diff --git a/src/Symfony/Component/VarExporter/Tests/InstantiatorTest.php b/src/Symfony/Component/VarExporter/Tests/InstantiatorTest.php
+index be01ca4688..cf2ddf46f8 100644
+--- a/src/Symfony/Component/VarExporter/Tests/InstantiatorTest.php
++++ b/src/Symfony/Component/VarExporter/Tests/InstantiatorTest.php
+@@ -14,6 +14,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
+ use PHPUnit\Framework\TestCase;
+ use Symfony\Component\VarExporter\Exception\ClassNotFoundException;
+ use Symfony\Component\VarExporter\Exception\NotInstantiableTypeException;
++use Symfony\Component\VarExporter\Hydrator;
+ use Symfony\Component\VarExporter\Instantiator;
+ 
+ class InstantiatorTest extends TestCase
+@@ -30,10 +31,51 @@ class InstantiatorTest extends TestCase
+     public function testFailingInstantiation(string $class)
+     {
+         $this->expectException(NotInstantiableTypeException::class);
+-        $this->expectExceptionMessageMatches('/Type ".*" is not instantiable\./');
++        $this->expectExceptionMessageMatches('/".*" is not instantiable\./');
+         Instantiator::instantiate($class);
+     }
+ 
++    #[DataProvider('provideDirectHydrationDelegates')]
++    public function testDirectHydrationDelegates(string $class, string $methodName): void
++    {
++        $method = new \ReflectionMethod($class, $methodName);
++        $lines = file($method->getFileName());
++        $source = implode('', array_slice(
++            $lines,
++            $method->getStartLine() - 1,
++            $method->getEndLine() - $method->getStartLine() + 1,
++        ));
++        $tokens = token_get_all("<?php\n".$source);
++
++        foreach ($tokens as $i => $token) {
++            if (!\is_array($token)
++                || !\in_array($token[0], [T_STRING, T_NAME_FULLY_QUALIFIED, T_NAME_QUALIFIED], true)
++                || 'deepclone_hydrate' !== ltrim($token[1], '\\')) {
++                continue;
++            }
++
++            for (++$i; isset($tokens[$i]); ++$i) {
++                if (\is_array($tokens[$i]) && T_WHITESPACE === $tokens[$i][0]) {
++                    continue;
++                }
++
++                if ('(' === $tokens[$i]) {
++                    return;
++                }
++
++                break;
++            }
++        }
++
++        $this->fail(sprintf('%s::%s() must delegate directly to deepclone_hydrate().', $class, $methodName));
++    }
++
++    public static function provideDirectHydrationDelegates(): iterable
++    {
++        yield [Hydrator::class, 'hydrate'];
++        yield [Instantiator::class, 'instantiate'];
++    }
++
+     public static function provideFailingInstantiation()
+     {
+         yield ['ReflectionClass'];

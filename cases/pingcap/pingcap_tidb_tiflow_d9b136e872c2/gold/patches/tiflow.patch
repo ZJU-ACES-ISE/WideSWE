@@ -1,0 +1,268 @@
+diff --git a/dm/loader/lightning.go b/dm/loader/lightning.go
+index 500b9ebf4..667afb143 100644
+--- a/dm/loader/lightning.go
++++ b/dm/loader/lightning.go
+@@ -130,9 +130,6 @@ func MakeGlobalConfig(cfg *config.SubTaskConfig) *lcfg.GlobalConfig {
+ 	}
+ 	lightningCfg.PostRestore.Checksum = lcfg.OpLevelOff
+ 	lightningCfg.Mydumper.SourceDir = cfg.Dir
+-	if cfg.LoaderConfig.ImportMode == config.LoadModeImportInto {
+-		lightningCfg.Mydumper.SourceDir = storage.StripS3ExternalID(cfg.Dir)
+-	}
+ 	lightningCfg.App.Config.File = "" // make lightning not init logger, see more in https://github.com/pingcap/tidb/pull/29291
+ 	return lightningCfg
+ }
+@@ -243,11 +240,23 @@ func (l *LightningLoader) ignoreCheckpointError(ctx context.Context, cfg *lcfg.C
+ 	return errors.Trace(cpdb.IgnoreErrorCheckpoint(ctx, "all"))
+ }
+ 
++func enableImportIntoCompatibilityConfig(cfg *lcfg.Config) {
++	if cfg.TikvImporter.Backend == lcfg.BackendImportInto {
++		// DM import-into mode shares the same S3 URI with Dumpling and Lightning.
++		// Keep the URI unchanged for storage access, and only ask TiDB Lightning
++		// to strip external-id from IMPORT INTO SQL for compatibility with old
++		// IMPORT INTO planners. This compatibility flag should be deprecated once
++		// those old planners no longer need to be supported.
++		cfg.TikvImporter.StripS3ExternalIDForImportSQL = true
++	}
++}
++
+ func (l *LightningLoader) runLightning(ctx context.Context, cfg *lcfg.Config) (err error) {
+ 	taskCtx, cancel := context.WithCancelCause(ctx)
+ 	l.Lock()
+ 	l.cancel = cancel
+ 	l.Unlock()
++	enableImportIntoCompatibilityConfig(cfg)
+ 
+ 	// always try to skill all checkpoint errors so we can resume this phase.
+ 	err = l.ignoreCheckpointError(ctx, cfg)
+@@ -257,6 +266,9 @@ func (l *LightningLoader) runLightning(ctx context.Context, cfg *lcfg.Config) (e
+ 	if err = l.checkPointList.UpdateStatus(ctx, lightningStatusRunning); err != nil {
+ 		return err
+ 	}
++	defer func() {
++		l.lastErr = err
++	}()
+ 
+ 	var opts []lserver.Option
+ 	if l.cfg.MetricsFactory != nil {
+@@ -315,9 +327,6 @@ func (l *LightningLoader) runLightning(ctx context.Context, cfg *lcfg.Config) (e
+ 			}
+ 		}
+ 	})
+-	defer func() {
+-		l.lastErr = err
+-	}()
+ 	if err != nil {
+ 		return convertLightningError(err)
+ 	}
+diff --git a/dm/loader/lightning_test.go b/dm/loader/lightning_test.go
+index 8478994aa..1ececfbd6 100644
+--- a/dm/loader/lightning_test.go
++++ b/dm/loader/lightning_test.go
+@@ -44,11 +44,10 @@ func TestSetLightningConfig(t *testing.T) {
+ 	require.Equal(t, stCfg.LoaderConfig.PoolSize, cfg.App.RegionConcurrency)
+ }
+ 
+-func TestMakeGlobalConfigStripsS3ExternalIDOnlyForImportInto(t *testing.T) {
++func TestMakeGlobalConfigKeepsSourceDirForAllImportModes(t *testing.T) {
+ 	t.Parallel()
+ 
+ 	dataDir := "s3://bucket/prefix/path?region=us-west-2&external-id=dump&role-arn=arn:aws:iam::123:role/dm&external_id=import&endpoint=https%3A%2F%2F127.0.0.1%3A9000&provider=aws"
+-	importIntoDir := "s3://bucket/prefix/path?endpoint=https%3A%2F%2F127.0.0.1%3A9000&provider=aws&region=us-west-2&role-arn=arn%3Aaws%3Aiam%3A%3A123%3Arole%2Fdm"
+ 
+ 	stCfg := &config.SubTaskConfig{
+ 		LoaderConfig: config.LoaderConfig{
+@@ -58,7 +57,7 @@ func TestMakeGlobalConfigStripsS3ExternalIDOnlyForImportInto(t *testing.T) {
+ 	}
+ 	cfg := MakeGlobalConfig(stCfg)
+ 	require.Equal(t, lcfg.BackendImportInto, cfg.TikvImporter.Backend)
+-	require.Equal(t, importIntoDir, cfg.Mydumper.SourceDir)
++	require.Equal(t, dataDir, cfg.Mydumper.SourceDir)
+ 	require.Equal(t, dataDir, stCfg.LoaderConfig.Dir)
+ 
+ 	stCfg.LoaderConfig.ImportMode = config.LoadModeLogical
+@@ -72,6 +71,25 @@ func TestMakeGlobalConfigStripsS3ExternalIDOnlyForImportInto(t *testing.T) {
+ 	require.Equal(t, dataDir, cfg.Mydumper.SourceDir)
+ }
+ 
++func TestEnableImportIntoCompatibilityConfig(t *testing.T) {
++	t.Parallel()
++
++	cfg := lcfg.NewConfig()
++	cfg.TikvImporter.Backend = lcfg.BackendImportInto
++	enableImportIntoCompatibilityConfig(cfg)
++	require.True(t, cfg.TikvImporter.StripS3ExternalIDForImportSQL)
++
++	cfg = lcfg.NewConfig()
++	cfg.TikvImporter.Backend = lcfg.BackendTiDB
++	enableImportIntoCompatibilityConfig(cfg)
++	require.False(t, cfg.TikvImporter.StripS3ExternalIDForImportSQL)
++
++	cfg = lcfg.NewConfig()
++	cfg.TikvImporter.Backend = lcfg.BackendLocal
++	enableImportIntoCompatibilityConfig(cfg)
++	require.False(t, cfg.TikvImporter.StripS3ExternalIDForImportSQL)
++}
++
+ func TestConvertLightningError(t *testing.T) {
+ 	t.Parallel()
+ 
+diff --git a/dm/pkg/storage/utils.go b/dm/pkg/storage/utils.go
+index 01d344a80..7b0ec9549 100644
+--- a/dm/pkg/storage/utils.go
++++ b/dm/pkg/storage/utils.go
+@@ -31,7 +31,6 @@ import (
+ 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
+ 	"github.com/pingcap/tidb/pkg/objstore"
+ 	"github.com/pingcap/tidb/pkg/objstore/objectio"
+-	"github.com/pingcap/tidb/pkg/objstore/s3like"
+ 	"github.com/pingcap/tidb/pkg/objstore/storeapi"
+ )
+ 
+@@ -97,34 +96,6 @@ func IsS3Path(rawURL string) bool {
+ 	return u.Scheme == "s3"
+ }
+ 
+-// StripS3ExternalID removes the S3 external-id query option from rawURL.
+-// It keeps non-S3 paths, invalid URLs, and all other query parameters unchanged
+-// semantically. Both external-id and external_id are supported, consistent with
+-// storage query parameter normalization.
+-func StripS3ExternalID(rawURL string) string {
+-	if rawURL == "" {
+-		return rawURL
+-	}
+-	u, err := objstore.ParseRawURL(rawURL)
+-	if err != nil || u.Scheme != "s3" {
+-		return rawURL
+-	}
+-
+-	query := u.Query()
+-	changed := false
+-	for key := range query {
+-		if strings.EqualFold(strings.ReplaceAll(key, "_", "-"), s3like.S3ExternalID) {
+-			delete(query, key)
+-			changed = true
+-		}
+-	}
+-	if !changed {
+-		return rawURL
+-	}
+-	u.RawQuery = query.Encode()
+-	return u.String()
+-}
+-
+ // IsLocalDiskPath judges if path is local disk path.
+ func IsLocalDiskPath(rawURL string) bool {
+ 	if rawURL == "" {
+diff --git a/dm/pkg/storage/utils_test.go b/dm/pkg/storage/utils_test.go
+index e78f707de..8994b2b91 100644
+--- a/dm/pkg/storage/utils_test.go
++++ b/dm/pkg/storage/utils_test.go
+@@ -99,55 +99,6 @@ func TestIsS3OrLocalDisk(t *testing.T) {
+ 	}
+ }
+ 
+-func TestStripS3ExternalID(t *testing.T) {
+-	t.Parallel()
+-
+-	cases := []struct {
+-		name string
+-		raw  string
+-		want string
+-	}{
+-		{
+-			name: "non-s3 path unchanged",
+-			raw:  "gcs://bucket/prefix?external-id=keep&region=us-west-2",
+-			want: "gcs://bucket/prefix?external-id=keep&region=us-west-2",
+-		},
+-		{
+-			name: "invalid url unchanged",
+-			raw:  "1invalid:",
+-			want: "1invalid:",
+-		},
+-		{
+-			name: "s3 without external id unchanged",
+-			raw:  "s3://bucket/prefix/path?region=us-west-2&role-arn=arn:aws:iam::123:role/dm",
+-			want: "s3://bucket/prefix/path?region=us-west-2&role-arn=arn:aws:iam::123:role/dm",
+-		},
+-		{
+-			name: "strip hyphen underscore and case variants",
+-			raw:  "s3://bucket/prefix/path?region=us-west-2&external-id=dump&role-arn=arn:aws:iam::123:role/dm&External_ID=import&endpoint=https%3A%2F%2F127.0.0.1%3A9000&provider=aws#part",
+-			want: "s3://bucket/prefix/path?endpoint=https%3A%2F%2F127.0.0.1%3A9000&provider=aws&region=us-west-2&role-arn=arn%3Aaws%3Aiam%3A%3A123%3Arole%2Fdm#part",
+-		},
+-		{
+-			name: "strip encoded key",
+-			raw:  "s3://bucket/prefix/path?%65xternal_id=dump&region=us-west-2",
+-			want: "s3://bucket/prefix/path?region=us-west-2",
+-		},
+-		{
+-			name: "strip only query parameter",
+-			raw:  "s3://bucket/prefix/path?external-id=dump",
+-			want: "s3://bucket/prefix/path",
+-		},
+-	}
+-
+-	for _, tc := range cases {
+-		tc := tc
+-		t.Run(tc.name, func(t *testing.T) {
+-			t.Parallel()
+-			require.Equal(t, tc.want, StripS3ExternalID(tc.raw))
+-		})
+-	}
+-}
+-
+ func TestIsS3AndAdjustAndTrimPath(t *testing.T) {
+ 	testPaths := []struct {
+ 		isURLFormat bool
+diff --git a/go.mod b/go.mod
+index db366fb4b..ca1cc4918 100644
+--- a/go.mod
++++ b/go.mod
+@@ -72,11 +72,11 @@ require (
+ 	github.com/pingcap/check v0.0.0-20211026125417-57bd13f7b5f0
+ 	github.com/pingcap/errors v0.11.5-0.20260508054701-306e305bcf41
+ 	github.com/pingcap/failpoint v0.0.0-20240528011301-b51a646c7c86
+-	github.com/pingcap/kvproto v0.0.0-20260601035955-b2b3bb492278
++	github.com/pingcap/kvproto v0.0.0-20260602101655-f8184e7702eb
+ 	github.com/pingcap/log v1.1.1-0.20250917021125-19901e015dc9
+-	github.com/pingcap/tidb v1.1.0-beta.0.20260604031706-f9faeaf4828f
++	github.com/pingcap/tidb v1.1.0-beta.0.20260616034257-3adc8ec71ef3
+ 	github.com/pingcap/tidb-dashboard v0.0.0-20240326110213-9768844ff5d7
+-	github.com/pingcap/tidb/pkg/parser v0.0.0-20260604031706-f9faeaf4828f
++	github.com/pingcap/tidb/pkg/parser v0.0.0-20260616034257-3adc8ec71ef3
+ 	github.com/prometheus/client_golang v1.23.0
+ 	github.com/prometheus/client_model v0.6.2
+ 	github.com/r3labs/diff v1.1.0
+diff --git a/go.sum b/go.sum
+index 430e8295f..578d299fa 100644
+--- a/go.sum
++++ b/go.sum
+@@ -888,8 +888,8 @@ github.com/pingcap/fn v1.0.0/go.mod h1:u9WZ1ZiOD1RpNhcI42RucFh/lBuzTu6rw88a+oF2Z
+ github.com/pingcap/goleveldb v0.0.0-20191226122134-f82aafb29989 h1:surzm05a8C9dN8dIUmo4Be2+pMRb6f55i+UIYrluu2E=
+ github.com/pingcap/goleveldb v0.0.0-20191226122134-f82aafb29989/go.mod h1:O17XtbryoCJhkKGbT62+L2OlrniwqiGLSqrmdHCMzZw=
+ github.com/pingcap/kvproto v0.0.0-20191211054548-3c6b38ea5107/go.mod h1:WWLmULLO7l8IOcQG+t+ItJ3fEcrL5FxF0Wu+HrMy26w=
+-github.com/pingcap/kvproto v0.0.0-20260601035955-b2b3bb492278 h1:VV03wSSG2XhOwhF79lvT88Z83lwzMT+aZHXrcCIN9B0=
+-github.com/pingcap/kvproto v0.0.0-20260601035955-b2b3bb492278/go.mod h1:z6+aAHB7dBkA+LyinEX+48/ImRJ3jag0Hg0c7wkhEvE=
++github.com/pingcap/kvproto v0.0.0-20260602101655-f8184e7702eb h1:Ms0a58PRX1y6iqGwGeK7DB+tG8o+7AaA1gacnzV/aBg=
++github.com/pingcap/kvproto v0.0.0-20260602101655-f8184e7702eb/go.mod h1:z6+aAHB7dBkA+LyinEX+48/ImRJ3jag0Hg0c7wkhEvE=
+ github.com/pingcap/log v0.0.0-20191012051959-b742a5d432e9/go.mod h1:4rbK1p9ILyIfb6hU7OG2CiWSqMXnp3JMbiaVJ6mvoY8=
+ github.com/pingcap/log v0.0.0-20210625125904-98ed8e2eb1c7/go.mod h1:8AanEdAHATuRurdGxZXBz0At+9avep+ub7U1AGYLIMM=
+ github.com/pingcap/log v1.1.0/go.mod h1:DWQW5jICDR7UJh4HtxXSM20Churx4CQL0fwL/SoOSA4=
+@@ -901,12 +901,12 @@ github.com/pingcap/sarama v1.41.2-pingcap-20260508 h1:3ZFtYLUGMMZeA6U0iz3EyFnNGP
+ github.com/pingcap/sarama v1.41.2-pingcap-20260508/go.mod h1:PIL6ZKKKhm19IbQpmpJcFnybAi1yXtgLAitDAeBdNCw=
+ github.com/pingcap/sysutil v1.0.1-0.20240311050922-ae81ee01f3a5 h1:T4pXRhBflzDeAhmOQHNPRRogMYxP13V7BkYw3ZsoSfE=
+ github.com/pingcap/sysutil v1.0.1-0.20240311050922-ae81ee01f3a5/go.mod h1:rlimy0GcTvjiJqvD5mXTRr8O2eNZPBrcUgiWVYp9530=
+-github.com/pingcap/tidb v1.1.0-beta.0.20260604031706-f9faeaf4828f h1:Z+Ez33+LxWbKwM88th19M/v81zwFTjbsKFv1qXQk134=
+-github.com/pingcap/tidb v1.1.0-beta.0.20260604031706-f9faeaf4828f/go.mod h1:ePCr2QIHYDM14Lp3bWbAvODpx2xiwrt6bjdqAdtmVTg=
++github.com/pingcap/tidb v1.1.0-beta.0.20260616034257-3adc8ec71ef3 h1:VApMr00VxV0JSpKSZB1GvIWKY9DbgweUEKQ1F609j4U=
++github.com/pingcap/tidb v1.1.0-beta.0.20260616034257-3adc8ec71ef3/go.mod h1:gLVQqHaAy7sQ8m/PqeuJ/CamD6Za5gXZOG3zDNqlxKk=
+ github.com/pingcap/tidb-dashboard v0.0.0-20240326110213-9768844ff5d7 h1:eFu98FbfJB7PKWOtkaV6YNXXJWqDhczQX56j/iucgU4=
+ github.com/pingcap/tidb-dashboard v0.0.0-20240326110213-9768844ff5d7/go.mod h1:ucZBRz52icb23T/5Z4CsuUHmarYiin7p2MeiVBe+o8c=
+-github.com/pingcap/tidb/pkg/parser v0.0.0-20260604031706-f9faeaf4828f h1:lWA9InHdLy9I//jEcsrobQa4WNSnF72Zsl/WqYKVNbs=
+-github.com/pingcap/tidb/pkg/parser v0.0.0-20260604031706-f9faeaf4828f/go.mod h1:zDLDsfNBU5+L6T4J9/OgWAHc/WZvMUjbpgHqQ/t3yKo=
++github.com/pingcap/tidb/pkg/parser v0.0.0-20260616034257-3adc8ec71ef3 h1:Bk3QuNvNLAt9EtTWGw6JfsUSvn1mC9rALpnRU/vDtz0=
++github.com/pingcap/tidb/pkg/parser v0.0.0-20260616034257-3adc8ec71ef3/go.mod h1:zDLDsfNBU5+L6T4J9/OgWAHc/WZvMUjbpgHqQ/t3yKo=
+ github.com/pingcap/tipb v0.0.0-20260515142222-a4d204a193b4 h1:7kN995aOhNamG8IOnN7Rj6nNqq+F3Z2AyfPGjCNdqoI=
+ github.com/pingcap/tipb v0.0.0-20260515142222-a4d204a193b4/go.mod h1:RM8iRcMalzOthG2XJxnNBniM4xFGb/lDwHUwqkaVzt4=
+ github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c h1:+mdjkGKdHQG3305AYmdv1U2eRNDiU2ErMBj1gwrq8eQ=

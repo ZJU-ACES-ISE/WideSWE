@@ -1,0 +1,60 @@
+task_id: doctrine_doctrinemongodbbundle_mongodb_odm_persistence_4b8bd06bc1c5
+hidden_test_patches:
+- repo: DoctrineMongoDBBundle
+  patch: hidden/patches/DoctrineMongoDBBundle-hidden-tests.patch
+  test_profile: doctrinemongodbbundle-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/DependencyInjection/ConfigurationTest.php
+  - tests/DependencyInjection/Fixtures/config/xml/full.xml
+  - tests/DependencyInjection/Fixtures/config/yml/full.yml
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from doctrine/DoctrineMongoDBBundle PR(s) 940
+- repo: mongodb-odm
+  patch: hidden/patches/mongodb-odm-hidden-tests.patch
+  test_profile: mongodb_odm-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/Doctrine/ODM/MongoDB/Tests/BaseTestCase.php
+  - tests/Doctrine/ODM/MongoDB/Tests/ConfigurationTest.php
+  - tests/Doctrine/ODM/MongoDB/Tests/Functional/PropertyHooksTest.php
+  - tests/Doctrine/ODM/MongoDB/Tests/Functional/ReferencesTest.php
+  - tests/Doctrine/ODM/MongoDB/Tests/Functional/Ticket/GH852Test.php
+  - tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractAnnotationDriverTestCase.php
+  - tests/Doctrine/ODM/MongoDB/Tests/Mapping/AbstractMappingDriverTestCase.php
+  - tests/Doctrine/ODM/MongoDB/Tests/Mapping/BasicInheritanceMappingTest.php
+  - tests/Doctrine/ODM/MongoDB/Tests/Mapping/ClassMetadataTest.php
+  - tests/Doctrine/ODM/MongoDB/Tests/Proxy/Factory/ProxyFactoryTest.php
+  - tests/Doctrine/ODM/MongoDB/Tests/UnitOfWorkTest.php
+  - tests/Documents/BaseDocument.php
+  - tests/Documents/ForumAvatar.php
+  - tests/Documents/ForumStar.php
+  - tests/Documents/ForumUser.php
+  - tests/Documents/Tag.php
+  - tests/Documents84/PropertyHooks/MappingVirtualProperty.php
+  - tests/Documents84/PropertyHooks/User.php
+  hidden_file: *id002
+  semantic_changes: relaxed implementation-specific assertions to match prompt-observable behavior
+  source: upstream test changes from doctrine/mongodb-odm PR(s) 2840
+- repo: persistence
+  patch: hidden/patches/persistence-hidden-tests.patch
+  test_profile: persistence-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - tests/ManagerRegistryTest.php
+  hidden_file: *id003
+  semantic_changes: none
+  source: upstream test changes from doctrine/persistence PR(s) 458
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - doctrinemongodbbundle-hidden
+    - mongodb_odm-hidden
+    - persistence-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

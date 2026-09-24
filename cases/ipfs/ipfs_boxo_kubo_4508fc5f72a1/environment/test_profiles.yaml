@@ -1,0 +1,47 @@
+profiles:
+  boxo-hidden:
+    repo: boxo
+    workdir: repos/ipfs/boxo
+    command: go test -count=1 -json ./routing/http/client ./routing/http/client/providerinfofunc_test
+    status: implemented
+    docker_service: boxo-hidden
+    dependency_image: ecosyncbench/deps/ipfs-boxo-go:4508fc5f72a1
+    test_files:
+    - routing/http/client/providerinfofunc_test/provider_info_func_test.go
+    test_packages:
+    - ./routing/http/client
+    - ./routing/http/client/providerinfofunc_test
+    patched_files:
+    - routing/http/client/providerinfofunc_test/provider_info_func_test.go
+  kubo-hidden:
+    repo: kubo
+    workdir: repos/ipfs/kubo
+    command: export GOWORK=off && go mod edit -replace github.com/ipfs/boxo=/workspace/repos/ipfs/boxo
+      && go mod edit -exclude google.golang.org/genproto@v0.0.0-20230410155749-daa745c078e1
+      && go build -o cmd/ipfs/ipfs ./cmd/ipfs && go test -count=1 -json ./core/node/libp2p
+      -run '^(TestDetermineCapabilities|TestEndpointCapabilitiesReadWriteLogic|TestHttpRouterAddrFunc)$'
+      && go test -count=1 -json ./test/cli -run '^(TestHTTPDelegatedRouting|TestHTTPDelegatedRoutingProviderAddrs)$'
+    status: implemented
+    docker_service: kubo-hidden
+    dependency_image: ecosyncbench/deps/ipfs-kubo-go:4508fc5f72a1
+    test_files:
+    - core/node/libp2p/routingopt_test.go
+    - test/cli/delegated_routing_v1_http_client_test.go
+    - test/dependencies/go.mod
+    - test/dependencies/go.sum
+    test_packages:
+    - ./core/node/libp2p
+    - ./test/cli
+    run_tests:
+    - TestDetermineCapabilities
+    - TestEndpointCapabilitiesReadWriteLogic
+    - TestHttpRouterAddrFunc
+    - TestHTTPDelegatedRouting
+    - TestHTTPDelegatedRoutingProviderAddrs
+    local_replaces:
+      github.com/ipfs/boxo: /workspace/repos/ipfs/boxo
+    patched_files:
+    - core/node/libp2p/routingopt_test.go
+    - test/cli/delegated_routing_v1_http_client_test.go
+    - test/dependencies/go.mod
+    - test/dependencies/go.sum

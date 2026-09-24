@@ -1,0 +1,34 @@
+profiles:
+  elasticsearch-hidden:
+    repo: elasticsearch
+    workdir: repos/elastic/elasticsearch
+    command: ./gradlew --build-cache --no-daemon
+      :x-pack:plugin:esql:test
+      --tests "org.elasticsearch.xpack.esql.planner.LocalExecutionPlannerTests.testEcoSyncChangePoint*"
+    status: implemented
+    docker_service: elastic-java
+    test_files:
+    - x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/planner/LocalExecutionPlannerTests.java
+    patched_files:
+    - x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/planner/LocalExecutionPlannerTests.java
+    public_smoke_command: ./gradlew --build-cache --no-daemon
+      :x-pack:plugin:esql:test
+      --tests "org.elasticsearch.xpack.esql.planner.LocalExecutionPlannerTests.testDriverClusterAndNodeName"
+  kibana-hidden:
+    repo: kibana
+    workdir: repos/elastic/kibana
+    command: node scripts/jest.js
+      src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_change_point_profile.ecosync.test.ts
+      src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_profile_providers.test.ts
+      --runInBand --json
+    status: implemented
+    evaluator_node_modules_mode: persistent
+    docker_service: elastic-node
+    test_files:
+    - src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_change_point_profile.ecosync.test.ts
+    - src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_profile_providers.test.ts
+    patched_files:
+    - src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_change_point_profile.ecosync.test.ts
+    public_smoke_command: node scripts/jest.js
+      src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_profile_providers.test.ts
+      --runInBand

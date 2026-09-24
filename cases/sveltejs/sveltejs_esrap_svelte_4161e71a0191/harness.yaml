@@ -1,0 +1,35 @@
+task_id: sveltejs_esrap_svelte_4161e71a0191
+hidden_test_patches:
+- repo: esrap
+  patch: hidden/patches/esrap-contract-tests.patch
+  test_profile: esrap-hidden
+  origin: contract_alignment
+  source_file: &id001
+  - test/ecosync-contract.test.js
+  hidden_file: *id001
+  semantic_changes:
+  - Replaces the upstream test-suite migration and exact output snapshots with public API contract tests.
+  - Covers custom visitors, the fallback visitor, TypeScript/TSX languages, comments, quote options, and source maps.
+  source: prompt-visible contracts from sveltejs/esrap PR 68 and its public README
+- repo: svelte
+  patch: hidden/patches/svelte-contract-tests.patch
+  test_profile: svelte-hidden
+  origin: contract_alignment
+  source_file: &id002
+  - packages/svelte/tests/print/ecosync-contract.test.ts
+  hidden_file: *id002
+  semantic_changes:
+  - Replaces exact Gold formatting snapshots with parse-print-reparse checks over representative modern Svelte AST node families.
+  - Checks root comments, source maps, and printing an AST sub-node without requiring a specific printer implementation.
+  source: prompt-visible contracts from sveltejs/svelte PR 16188
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - esrap-hidden
+    - svelte-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

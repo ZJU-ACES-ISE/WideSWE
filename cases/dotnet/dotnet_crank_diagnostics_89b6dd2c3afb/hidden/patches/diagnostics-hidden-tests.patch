@@ -1,0 +1,168 @@
+diff --git a/src/tests/dotnet-trace/EcoSyncCollectLinuxRedirectedIoTests.cs b/src/tests/dotnet-trace/EcoSyncCollectLinuxRedirectedIoTests.cs
+new file mode 100644
+index 0000000..bb836f4
+--- /dev/null
++++ b/src/tests/dotnet-trace/EcoSyncCollectLinuxRedirectedIoTests.cs
+@@ -0,0 +1,162 @@
++using System;
++using System.IO;
++using System.Text;
++using System.Threading;
++using Microsoft.Diagnostics.Tools.Common;
++using Microsoft.DotNet.XUnitExtensions;
++using Microsoft.Internal.Common.Utils;
++using Xunit;
++
++namespace Microsoft.Diagnostics.Tools.Trace
++{
++    public class EcoSyncCollectLinuxRedirectedIoTests
++    {
++        public static bool IsCollectLinuxSupported =>
++            CollectLinuxCommandHandler.IsSupported();
++
++        [ConditionalFact(nameof(IsCollectLinuxSupported))]
++        public void RedirectedOutputDoesNotReceiveInteractiveStatus()
++        {
++            var console = new RedirectedTestConsole
++            {
++                IsOutputRedirected = true
++            };
++            var handler = CreateHandler(console);
++
++            int exitCode = handler.CollectLinux(TestArgs());
++
++            Assert.Equal((int)ReturnCode.Ok, exitCode);
++            Assert.DoesNotContain(
++                "Recording trace",
++                console.Output,
++                StringComparison.OrdinalIgnoreCase);
++            Assert.DoesNotContain(
++                "Press <Enter>",
++                console.Output,
++                StringComparison.OrdinalIgnoreCase);
++        }
++
++        [ConditionalFact(nameof(IsCollectLinuxSupported))]
++        public void RedirectedInputDoesNotTreatAvailableKeysAsCancellation()
++        {
++            var console = new RedirectedTestConsole
++            {
++                IsInputRedirected = true,
++                KeyAvailable = true,
++                NextKey = new ConsoleKeyInfo(
++                    '\r',
++                    ConsoleKey.Enter,
++                    shift: false,
++                    alt: false,
++                    control: false)
++            };
++            var handler = CreateHandler(console);
++            bool callbackInvoked = false;
++            handler.RecordTraceInvoker = (command, length, callback) => {
++                Assert.Equal(0, callback(3, IntPtr.Zero, UIntPtr.Zero));
++                callbackInvoked = true;
++                return 0;
++            };
++
++            int exitCode = handler.CollectLinux(TestArgs());
++
++            Assert.Equal((int)ReturnCode.Ok, exitCode);
++            Assert.True(callbackInvoked);
++        }
++
++        private static CollectLinuxCommandHandler CreateHandler(
++            RedirectedTestConsole console)
++        {
++            var handler = new CollectLinuxCommandHandler(console);
++            handler.RecordTraceInvoker = (command, length, callback) => {
++                callback(3, IntPtr.Zero, UIntPtr.Zero);
++                return 0;
++            };
++            return handler;
++        }
++
++        private static CollectLinuxCommandHandler.CollectLinuxArgs TestArgs() =>
++            new(
++                CancellationToken.None,
++                Array.Empty<string>(),
++                "",
++                "",
++                Array.Empty<string>(),
++                Array.Empty<string>(),
++                new FileInfo("ecosync-redirected-io.nettrace"),
++                default,
++                "",
++                0,
++                false);
++
++        private sealed class RedirectedTestConsole : TextWriter, IConsole
++        {
++            private readonly StringBuilder _output = new();
++
++            public override Encoding Encoding => Encoding.UTF8;
++            public int WindowHeight { get; init; } = 100;
++            public int WindowWidth { get; init; } = 200;
++            public bool CursorVisible { get; set; } = true;
++            public int CursorLeft { get; private set; }
++            public int CursorTop { get; private set; }
++            public int BufferWidth { get; private set; } = 200;
++            public int BufferHeight { get; private set; } = 100;
++            public bool IsOutputRedirected { get; set; }
++            public bool IsInputRedirected { get; set; }
++            public bool KeyAvailable { get; set; }
++            public ConsoleKeyInfo NextKey { get; set; }
++            public TextWriter Out => this;
++            public TextWriter Error => this;
++            public string Output => _output.ToString();
++
++            public void Clear()
++            {
++                _output.Clear();
++                CursorLeft = 0;
++                CursorTop = 0;
++            }
++
++            public void SetCursorPosition(int col, int row)
++            {
++                CursorLeft = col;
++                CursorTop = row;
++            }
++
++            public ConsoleKeyInfo ReadKey() => NextKey;
++            public ConsoleKeyInfo ReadKey(bool intercept) => NextKey;
++
++            public override void Write(char value)
++            {
++                _output.Append(value);
++                UpdateCursor(value);
++            }
++
++            public override void Write(string value)
++            {
++                if (value == null)
++                {
++                    return;
++                }
++
++                _output.Append(value);
++                foreach (char character in value)
++                {
++                    UpdateCursor(character);
++                }
++            }
++
++            private void UpdateCursor(char value)
++            {
++                if (value == '\n')
++                {
++                    CursorTop++;
++                    CursorLeft = 0;
++                }
++                else if (value != '\r')
++                {
++                    CursorLeft++;
++                }
++            }
++        }
++    }
++}

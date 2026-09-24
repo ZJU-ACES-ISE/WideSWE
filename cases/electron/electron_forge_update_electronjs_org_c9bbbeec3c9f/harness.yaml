@@ -1,0 +1,45 @@
+task_id: electron_forge_update_electronjs_org_c9bbbeec3c9f
+hidden_test_patches:
+- repo: forge
+  patch: hidden/patches/forge-hidden-tests.patch
+  test_profile: forge-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - packages/maker/msix/spec/MakerMSIX.spec.ts
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from electron/forge PR(s) 4225
+- repo: update-electron-app
+  patch: hidden/patches/update-electron-app-hidden-tests.patch
+  test_profile: update_electron_app-hidden
+  origin: upstream_test_diff
+  source_file:
+  - test/index.test.ts
+  hidden_file:
+  - test/index.test.ts
+  - test/__mocks__/electron.ts
+  semantic_changes: Replaces console debug-log assertions with observation of the public autoUpdater.setFeedURL call and makes the Electron mock observable; URL behavior is unchanged.
+  source: upstream test changes from electron/update-electron-app PR(s) 220
+- repo: update.electronjs.org
+  patch: hidden/patches/update.electronjs.org-hidden-tests.patch
+  test_profile: update_electronjs_org-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - test/asset-platform.test.ts
+  - test/msix.test.ts
+  hidden_file:
+  - test/msix.test.ts
+  semantic_changes: Removes direct assertions on Gold-specific MSIX platform constants, permits any client-error status for unsupported routes, drops exact error-message text, and makes HTTP mocks independent of request count; public route, architecture, feed, and backward-compatibility behavior remains covered.
+  source: upstream test changes from electron/update.electronjs.org PR(s) 222
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - forge-hidden
+    - update_electron_app-hidden
+    - update_electronjs_org-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

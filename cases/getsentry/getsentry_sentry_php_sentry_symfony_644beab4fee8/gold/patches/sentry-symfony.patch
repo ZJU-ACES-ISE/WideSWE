@@ -1,0 +1,246 @@
+diff --git a/composer.json b/composer.json
+index 19350f4..7c21e48 100644
+--- a/composer.json
++++ b/composer.json
+@@ -15,7 +15,7 @@
+         "php": "^7.2||^8.0",
+         "guzzlehttp/psr7": "^2.1.1",
+         "jean85/pretty-package-versions": "^1.5||^2.0",
+-        "sentry/sentry": "^4.22.0",
++        "sentry/sentry": "^4.23.0",
+         "symfony/cache-contracts": "^1.1||^2.4||^3.0",
+         "symfony/config": "^4.4.20||^5.0.11||^6.0||^7.0||^8.0",
+         "symfony/console": "^4.4.20||^5.0.11||^6.0||^7.0||^8.0",
+diff --git a/src/DependencyInjection/Configuration.php b/src/DependencyInjection/Configuration.php
+index 0bd5357..86dd6a6 100644
+--- a/src/DependencyInjection/Configuration.php
++++ b/src/DependencyInjection/Configuration.php
+@@ -89,6 +89,7 @@ final class Configuration implements ConfigurationInterface
+                             ->info('The sampling factor to apply to profiles. A value of 0 will deny sending any profiles, and a value of 1 will send all profiles. Profiles are sampled in relation to traces_sample_rate')
+                         ->end()
+                         ->booleanNode('enable_logs')->end()
++                        ->variableNode('log_flush_threshold')->defaultNull()->end()
+                         ->booleanNode('enable_metrics')->defaultTrue()->end()
+                         ->booleanNode('attach_stacktrace')->end()
+                         ->booleanNode('attach_metric_code_locations')->end()
+diff --git a/src/Resources/config/schema/sentry-1.0.xsd b/src/Resources/config/schema/sentry-1.0.xsd
+index a7462d7..a045a7d 100644
+--- a/src/Resources/config/schema/sentry-1.0.xsd
++++ b/src/Resources/config/schema/sentry-1.0.xsd
+@@ -38,6 +38,7 @@
+         <xsd:attribute name="sample-rate" type="xsd:float" />
+         <xsd:attribute name="enable-tracing" type="xsd:boolean" />
+         <xsd:attribute name="enable-logs" type="xsd:boolean" />
++        <xsd:attribute name="log-flush-threshold" type="xsd:integer" />
+         <xsd:attribute name="traces-sample-rate" type="xsd:float" />
+         <xsd:attribute name="profiles-sample-rate" type="xsd:float" />
+         <xsd:attribute name="traces-sampler" type="xsd:string" />
+diff --git a/tests/DependencyInjection/ConfigurationTest.php b/tests/DependencyInjection/ConfigurationTest.php
+index ed70957..49bb573 100644
+--- a/tests/DependencyInjection/ConfigurationTest.php
++++ b/tests/DependencyInjection/ConfigurationTest.php
+@@ -27,6 +27,7 @@ final class ConfigurationTest extends TestCase
+             'options' => [
+                 'integrations' => [],
+                 'prefixes' => array_merge(['%kernel.project_dir%'], array_filter(explode(\PATH_SEPARATOR, get_include_path() ?: ''))),
++                'log_flush_threshold' => null,
+                 'enable_metrics' => true,
+                 'environment' => '%kernel.environment%',
+                 'release' => '%env(default::SENTRY_RELEASE)%',
+@@ -275,6 +276,22 @@ final class ConfigurationTest extends TestCase
+         $this->assertSame(1, $config['options']['org_id']);
+     }
+ 
++    public function testLogFlushThresholdOption(): void
++    {
++        /** @var array{options: array{log_flush_threshold: int}} $config */
++        $config = $this->processConfiguration(['options' => ['log_flush_threshold' => 2]]);
++
++        $this->assertSame(2, $config['options']['log_flush_threshold']);
++    }
++
++    public function testLogFlushThresholdOptionCanBeNull(): void
++    {
++        /** @var array{options: array{log_flush_threshold: null}} $config */
++        $config = $this->processConfiguration(['options' => ['log_flush_threshold' => null]]);
++
++        $this->assertNull($config['options']['log_flush_threshold']);
++    }
++
+     /**
+      * @dataProvider strictTraceContinuationOptionDataProvider
+      */
+diff --git a/tests/DependencyInjection/Fixtures/php/full.php b/tests/DependencyInjection/Fixtures/php/full.php
+index b7b99cf..7d42517 100644
+--- a/tests/DependencyInjection/Fixtures/php/full.php
++++ b/tests/DependencyInjection/Fixtures/php/full.php
+@@ -18,6 +18,7 @@ $container->loadFromExtension('sentry', [
+         'traces_sampler' => 'App\\Sentry\\Tracing\\TracesSampler',
+         'profiles_sample_rate' => 1,
+         'enable_logs' => true,
++        'log_flush_threshold' => 2,
+         'attach_stacktrace' => true,
+         'attach_metric_code_locations' => true,
+         'context_lines' => 0,
+diff --git a/tests/DependencyInjection/Fixtures/xml/full.xml b/tests/DependencyInjection/Fixtures/xml/full.xml
+index e02fc33..5c9286e 100644
+--- a/tests/DependencyInjection/Fixtures/xml/full.xml
++++ b/tests/DependencyInjection/Fixtures/xml/full.xml
+@@ -14,6 +14,7 @@
+                         sample-rate="1"
+                         enable-tracing="true"
+                         enable-logs="true"
++                        log-flush-threshold="2"
+                         traces-sample-rate="1"
+                         traces-sampler="App\Sentry\Tracing\TracesSampler"
+                         profiles-sample-rate="1"
+diff --git a/tests/DependencyInjection/Fixtures/yml/full.yml b/tests/DependencyInjection/Fixtures/yml/full.yml
+index ea1eebf..74e06b1 100644
+--- a/tests/DependencyInjection/Fixtures/yml/full.yml
++++ b/tests/DependencyInjection/Fixtures/yml/full.yml
+@@ -13,6 +13,7 @@ sentry:
+         traces_sampler: App\Sentry\Tracing\TracesSampler
+         profiles_sample_rate: 1
+         enable_logs: true
++        log_flush_threshold: 2
+         attach_stacktrace: true
+         attach_metric_code_locations: true
+         context_lines: 0
+diff --git a/tests/DependencyInjection/SentryExtensionTest.php b/tests/DependencyInjection/SentryExtensionTest.php
+index bd12b60..8d1709e 100644
+--- a/tests/DependencyInjection/SentryExtensionTest.php
++++ b/tests/DependencyInjection/SentryExtensionTest.php
+@@ -217,6 +217,7 @@ abstract class SentryExtensionTest extends TestCase
+             'traces_sampler' => new Reference('App\\Sentry\\Tracing\\TracesSampler'),
+             'profiles_sample_rate' => 1,
+             'enable_logs' => true,
++            'log_flush_threshold' => 2,
+             'enable_metrics' => true,
+             'attach_stacktrace' => true,
+             'attach_metric_code_locations' => true,
+diff --git a/tests/End2End/App/config/log_flush_threshold.yml b/tests/End2End/App/config/log_flush_threshold.yml
+new file mode 100644
+index 0000000..bd621ec
+--- /dev/null
++++ b/tests/End2End/App/config/log_flush_threshold.yml
+@@ -0,0 +1,3 @@
++sentry:
++  options:
++    log_flush_threshold: 2
+diff --git a/tests/End2End/App/config/log_flush_threshold_null.yml b/tests/End2End/App/config/log_flush_threshold_null.yml
+new file mode 100644
+index 0000000..e33535d
+--- /dev/null
++++ b/tests/End2End/App/config/log_flush_threshold_null.yml
+@@ -0,0 +1,3 @@
++sentry:
++  options:
++    log_flush_threshold: ~
+diff --git a/tests/End2End/LoggingFlushThresholdEnd2EndTest.php b/tests/End2End/LoggingFlushThresholdEnd2EndTest.php
+new file mode 100644
+index 0000000..9fabd64
+--- /dev/null
++++ b/tests/End2End/LoggingFlushThresholdEnd2EndTest.php
+@@ -0,0 +1,102 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Sentry\SentryBundle\Tests\End2End;
++
++use Sentry\Event;
++use Sentry\Logs\Log;
++use Sentry\SentryBundle\Tests\End2End\App\KernelWithExtraConfig;
++use Symfony\Bundle\FrameworkBundle\Client;
++use Symfony\Bundle\FrameworkBundle\KernelBrowser;
++use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
++use Symfony\Component\HttpKernel\KernelInterface;
++
++if (!class_exists(KernelBrowser::class) && class_exists(Client::class)) {
++    class_alias(Client::class, KernelBrowser::class);
++}
++
++/**
++ * @runTestsInSeparateProcesses
++ */
++final class LoggingFlushThresholdEnd2EndTest extends WebTestCase
++{
++    /**
++     * @param array{extra_config_files?: list<string>} $options
++     */
++    protected static function createKernel(array $options = []): KernelInterface
++    {
++        return new KernelWithExtraConfig(array_merge([
++            __DIR__ . '/App/logging.yml',
++        ], $options['extra_config_files'] ?? []));
++    }
++
++    protected function setUp(): void
++    {
++        parent::setUp();
++
++        StubTransport::$events = [];
++    }
++
++    public function testLoggerFlushesLogsWhenThresholdIsReached(): void
++    {
++        $client = static::createClient([
++            'extra_config_files' => [__DIR__ . '/App/config/log_flush_threshold.yml'],
++        ]);
++
++        $client->request('GET', '/just-logging');
++
++        $this->assertSame(200, $client->getResponse()->getStatusCode());
++
++        $logs = $this->getFilteredLogBodies();
++
++        $this->assertCount(2, $logs);
++        $this->assertSame(['Emergency Log', 'Critical Log'], $logs[0]);
++        $this->assertSame(['Error Log', 'Warn Log'], $logs[1]);
++    }
++
++    public function testLoggerDoesNotFlushLogsWhenThresholdIsNull(): void
++    {
++        $client = static::createClient([
++            'extra_config_files' => [__DIR__ . '/App/config/log_flush_threshold_null.yml'],
++        ]);
++
++        $client->request('GET', '/just-logging');
++
++        $this->assertSame(200, $client->getResponse()->getStatusCode());
++
++        $logs = $this->getFilteredLogBodies();
++
++        $this->assertCount(1, $logs);
++        $this->assertSame(['Emergency Log', 'Critical Log', 'Error Log', 'Warn Log'], $logs[0]);
++    }
++
++    /**
++     * Removes framework logs so that the tests can focus on our expected logs.
++     *
++     * @param Log[] $logs
++     *
++     * @return Log[]
++     */
++    private function filterFrameworkLogs(array $logs): array
++    {
++        return array_values(array_filter($logs, static function (Log $log): bool {
++            return 'Matched route "{route}".' !== $log->getBody()
++                && 'Notified event "{event}" to listener "{listener}".' !== $log->getBody();
++        }));
++    }
++
++    /**
++     * @return array<int, string[]>
++     */
++    private function getFilteredLogBodies(): array
++    {
++        return array_values(array_filter(array_map(function (Event $event): array {
++            return array_map(static function (Log $log): string {
++                return $log->getBody();
++            }, $this->filterFrameworkLogs($event->getLogs()));
++        }, StubTransport::$events), static function (array $logs): bool {
++            return \count($logs) > 0;
++        }));
++    }
++}

@@ -1,0 +1,35 @@
+task_id: pingcap_ticdc_tiflow_5fcc6bc637ae
+hidden_test_patches:
+- repo: ticdc
+  patch: hidden/patches/ticdc-hidden-tests.patch
+  test_profile: ticdc-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - pkg/sink/kafka/max_retry_hidden_test.go
+  hidden_file: *id001
+  semantic_changes: Replace the upstream test-file overlay, which coupled Base
+    compilation to Gold heartbeat-removal signatures, with a behavior-level sink-URI
+    to final producer retry configuration test. Preserve stable regression tests.
+  source: upstream test changes from pingcap/ticdc PR 5359
+- repo: tiflow
+  patch: hidden/patches/tiflow-hidden-tests.patch
+  test_profile: tiflow-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - pkg/sink/kafka/max_retry_hidden_test.go
+  hidden_file: *id002
+  semantic_changes: Replace the upstream test-file overlay, which coupled Base
+    compilation to Gold heartbeat-removal signatures, with a behavior-level sink-URI
+    to final producer retry configuration test. Preserve stable regression tests.
+  source: upstream test changes from pingcap/tiflow PR 12618
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - ticdc-hidden
+    - tiflow-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

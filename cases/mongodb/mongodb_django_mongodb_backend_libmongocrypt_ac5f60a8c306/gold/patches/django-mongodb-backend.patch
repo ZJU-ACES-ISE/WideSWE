@@ -1,0 +1,1672 @@
+diff --git a/.evergreen/config.yml b/.evergreen/config.yml
+index 40046f4..2d0eef6 100644
+--- a/.evergreen/config.yml
++++ b/.evergreen/config.yml
+@@ -55,6 +55,46 @@ functions:
+         args:
+           - ${DRIVERS_TOOLS}/.evergreen/teardown.sh
+ 
++  # Encryption-specific functions
++  "start csfle servers":
++    - command: ec2.assume_role
++      params:
++        role_arn: ${aws_test_secrets_role}
++    - command: subprocess.exec
++      params:
++        binary: bash
++        include_expansions_in_env: [
++            "AWS_SECRET_ACCESS_KEY",
++            "AWS_ACCESS_KEY_ID",
++            "AWS_SESSION_TOKEN",
++        ]
++        args:
++          - ${DRIVERS_TOOLS}/.evergreen/csfle/setup.sh
++
++  "teardown csfle":
++    - command: subprocess.exec
++      params:
++        binary: bash
++        args:
++          - ${DRIVERS_TOOLS}/.evergreen/csfle/teardown.sh
++
++  "run encryption tests":
++    - command: subprocess.exec
++      type: test
++      params:
++        binary: bash
++        working_dir: "src"
++        include_expansions_in_env: [
++            "AWS_KMS_ARN",
++            "DRIVERS_TOOLS",
++            "MONGODB_URI",
++            "DJANGO_SETTINGS_MODULE",
++            "CRYPT_SHARED_LIB_PATH",
++        ]
++        args:
++          - ./.evergreen/run-tests.sh
++          - encryption
++
+ pre:
+   - func: setup
+   - func: bootstrap mongo-orchestration
+@@ -67,6 +107,12 @@ tasks:
+     commands:
+       - func: "run unit tests"
+ 
++  - name: run-encryption-tests
++    commands:
++      - func: "start csfle servers"
++      - func: "run encryption tests"
++      - func: "teardown csfle"
++
+ buildvariants:
+   - name: tests-7-noauth-nossl
+     display_name: Run Tests 7.0 NoAuth NoSSL
+@@ -111,3 +157,23 @@ buildvariants:
+       SSL: "ssl"
+     tasks:
+       - name: run-tests
++
++  - name: tests-8-qe-local
++    display_name: Run Tests 8.2 QE local KMS
++    run_on: rhel87-small
++    expansions:
++      MONGODB_VERSION: "8.2"
++      TOPOLOGY: replica_set
++      DJANGO_SETTINGS_MODULE: "encrypted_settings"
++    tasks:
++      - name: run-encryption-tests
++
++  - name: tests-8-qe-aws
++    display_name: Run Tests 8.2 QE AWS KMS
++    run_on: rhel87-small
++    expansions:
++      MONGODB_VERSION: "8.2"
++      TOPOLOGY: replica_set
++      DJANGO_SETTINGS_MODULE: "encrypted_aws_settings"
++    tasks:
++      - name: run-encryption-tests
+diff --git a/.evergreen/run-tests.sh b/.evergreen/run-tests.sh
+index 46f02be..a6cd313 100644
+--- a/.evergreen/run-tests.sh
++++ b/.evergreen/run-tests.sh
+@@ -2,11 +2,24 @@
+ 
+ set -eux
+ 
+-# Install django-mongodb-backend
++# Export secrets as environment variables
++# https://github.com/mongodb-labs/drivers-evergreen-tools/blob/master/.evergreen/csfle/README.md#usage
++if [[ "${1:-}" == "encryption" ]]; then
++    . ../secrets-export.sh
++fi
++
++# Set up virtual environment
+ /opt/python/3.12/bin/python3 -m venv venv
+ . venv/bin/activate
+ python -m pip install -U pip
+-pip install -e .
++
++# Install django-mongodb-backend
++if [[ "${1:-}" == "encryption" ]]; then
++    # Install encryption dependencies for the Queryable Encryption build
++    pip install -e '.[encryption]'
++else
++    pip install -e .
++fi
+ 
+ # Install django and test dependencies
+ git clone --branch mongodb-6.0.x https://github.com/mongodb-forks/django django_repo
+diff --git a/.github/workflows/encrypted_aws_settings.py b/.github/workflows/encrypted_aws_settings.py
+new file mode 100644
+index 0000000..782a2eb
+--- /dev/null
++++ b/.github/workflows/encrypted_aws_settings.py
+@@ -0,0 +1,29 @@
++# Settings for django_mongodb_backend/tests with AWS Key Management System.
++import os
++
++from encrypted_settings import *  # noqa: F403
++from pymongo.encryption import AutoEncryptionOpts
++
++DATABASES["encrypted"] = {  # noqa: F405
++    "ENGINE": "django_mongodb_backend",
++    "NAME": "djangotests_encrypted",
++    "OPTIONS": {
++        "auto_encryption_opts": AutoEncryptionOpts(
++            key_vault_namespace="djangotests_encrypted.__keyVault",
++            kms_providers={
++                "aws": {
++                    "accessKeyId": os.environ["AWS_ACCESS_KEY_ID"],
++                    "secretAccessKey": os.environ["AWS_SECRET_ACCESS_KEY"],
++                }
++            },
++            crypt_shared_lib_path=os.environ["CRYPT_SHARED_LIB_PATH"],
++            crypt_shared_lib_required=True,
++        ),
++    },
++    "KMS_CREDENTIALS": {
++        "aws": {
++            "key": os.environ["AWS_KMS_ARN"],
++            "region": os.environ["AWS_DEFAULT_REGION"],
++        }
++    },
++}
+diff --git a/.github/workflows/sbom.yml b/.github/workflows/sbom.yml
+index 1de63f4..7cf55a2 100644
+--- a/.github/workflows/sbom.yml
++++ b/.github/workflows/sbom.yml
+@@ -37,7 +37,7 @@ jobs:
+         run: |
+           python -m venv .venv
+           source .venv/bin/activate
+-          pip install .
++          pip install .[encryption]
+           pip uninstall -y pip setuptools
+           deactivate
+           python -m venv .venv-sbom
+diff --git a/.github/workflows/test-python-encryption.yml b/.github/workflows/test-python-encryption.yml
+new file mode 100644
+index 0000000..1fc638a
+--- /dev/null
++++ b/.github/workflows/test-python-encryption.yml
+@@ -0,0 +1,65 @@
++name: Python Tests on Atlas with Encryption
++
++on:
++  pull_request:
++      paths:
++      - '**.py'
++      - '!setup.py'
++      - '.github/workflows/test-python-encryption.yml'
++  workflow_dispatch:
++
++concurrency:
++  group: ${{ github.workflow }}-${{ github.ref }}
++  cancel-in-progress: true
++
++defaults:
++  run:
++    shell: bash -eux {0}
++
++jobs:
++  build:
++    name: Django Test Suite
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout django-mongodb-backend
++        uses: actions/checkout@v6
++        with:
++          persist-credentials: false
++      - name: install django-mongodb-backend
++        run: |
++          pip3 install --upgrade pip
++          pip3 install -e .[encryption]
++      - name: Checkout Django
++        uses: actions/checkout@v6
++        with:
++          repository: 'mongodb-forks/django'
++          ref: 'mongodb-6.0.x'
++          path: 'django_repo'
++          persist-credentials: false
++      - name: Install system packages for Django's Python test dependencies
++        run: |
++          sudo apt-get update
++          sudo apt-get install libmemcached-dev
++      - name: Install Django and its Python test dependencies
++        run: |
++          cd django_repo/tests/
++          pip3 install -e ..
++          pip3 install -r requirements/py3.txt
++      - name: Copy the test settings files
++        run: cp .github/workflows/*_settings.py django_repo/tests/
++      - name: Copy the test runner file
++        run: cp .github/workflows/runtests.py django_repo/tests/runtests_.py
++      - name: Start local Atlas
++        working-directory: .
++        run: bash .github/workflows/start_local_atlas.sh mongodb/mongodb-atlas-local:8.0
++      - name: Download mongo_crypt_shared
++        run: |
++          wget https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2404-8.2.3.tgz
++          tar -xvzf mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2404-8.2.3.tgz lib/mongo_crypt_v1.so
++      - name: Run tests
++        run: python3 django_repo/tests/runtests_.py
++    permissions:
++        contents: read
++    env:
++      CRYPT_SHARED_LIB_PATH: "${{ github.workspace }}/lib/mongo_crypt_v1.so"
++      DJANGO_SETTINGS_MODULE: "encrypted_settings"
+diff --git a/django_mongodb_backend/base.py b/django_mongodb_backend/base.py
+index 88c2a11..e5fc5b3 100644
+--- a/django_mongodb_backend/base.py
++++ b/django_mongodb_backend/base.py
+@@ -11,6 +11,7 @@ from django.utils.asyncio import async_unsafe
+ from django.utils.functional import cached_property
+ from pymongo.collection import Collection
+ from pymongo.driver_info import DriverInfo
++from pymongo.encryption import ClientEncryption
+ from pymongo.mongo_client import MongoClient
+ from pymongo.uri_parser import parse_uri
+ 
+@@ -381,3 +382,55 @@ class DatabaseWrapper(BaseDatabaseWrapper):
+                     )
+             else:
+                 func()
++
++    ## Queryable Encryption properties
++    @cached_property
++    def auto_encryption_opts(self):
++        return self.connection._options.auto_encryption_opts
++
++    @cached_property
++    def client_encryption(self):
++        if auto_encryption_opts := self.auto_encryption_opts:
++            return ClientEncryption(
++                auto_encryption_opts._kms_providers,
++                auto_encryption_opts._key_vault_namespace,
++                self.connection,
++                self.connection.codec_options,
++            )
++        return None
++
++    @cached_property
++    def key_vault(self):
++        # The key vault collection.
++        _, key_vault_collection = self.auto_encryption_opts._key_vault_namespace.split(".", 1)
++        return self.get_collection(key_vault_collection)
++
++    @cached_property
++    def kms_provider(self):
++        # The KMS provider.
++        kms_providers = self.auto_encryption_opts._kms_providers
++        if len(kms_providers) == 1:
++            return next(iter(kms_providers.keys()))
++        # Multiple providers are configured since AutoEncryptionOpts requires
++        # at least one.
++        raise ImproperlyConfigured(
++            "Multiple KMS providers per database aren't supported. Please "
++            "create a feature request with details about your use case."
++        )
++
++    @cached_property
++    def kms_credentials(self):
++        # The KMS credentials (also called "master key"). N/A for local KMS.
++        kms_provider = self.kms_provider
++        if kms_provider == "local":
++            return None
++        if "KMS_CREDENTIALS" not in self.settings_dict:
++            raise ImproperlyConfigured(
++                f"DATABASES['{self.alias}'] is missing 'KMS_CREDENTIALS' "
++                f"required for KMS '{kms_provider}'."
++            )
++        if kms_provider not in self.settings_dict["KMS_CREDENTIALS"]:
++            raise ImproperlyConfigured(
++                f"DATABASES['{self.alias}']['KMS_CREDENTIALS'] is missing '{kms_provider}' key."
++            )
++        return self.settings_dict["KMS_CREDENTIALS"][kms_provider]
+diff --git a/django_mongodb_backend/creation.py b/django_mongodb_backend/creation.py
+index c8002b2..1ad8c72 100644
+--- a/django_mongodb_backend/creation.py
++++ b/django_mongodb_backend/creation.py
+@@ -1,5 +1,5 @@
+ from django.conf import settings
+-from django.db.backends.base.creation import BaseDatabaseCreation
++from django.db.backends.base.creation import TEST_DATABASE_PREFIX, BaseDatabaseCreation
+ 
+ 
+ class DatabaseCreation(BaseDatabaseCreation):
+@@ -7,6 +7,13 @@ class DatabaseCreation(BaseDatabaseCreation):
+         # Close the connection (which may point to the non-test database) so
+         # that a new connection to the test database can be established later.
+         self.connection.close_pool()
++        # Use a test _key_vault_namespace. This assumes the key vault database
++        # is the same as the encrypted database so that _destroy_test_db() can
++        # reset the collection by dropping it.
++        if opts := self.connection.settings_dict["OPTIONS"].get("auto_encryption_opts"):
++            self.connection.settings_dict["OPTIONS"][
++                "auto_encryption_opts"
++            ]._key_vault_namespace = TEST_DATABASE_PREFIX + opts._key_vault_namespace
+         if not keepdb:
+             self._destroy_test_db(parameters["dbname"], verbosity=0)
+ 
+@@ -24,3 +31,8 @@ class DatabaseCreation(BaseDatabaseCreation):
+         super().destroy_test_db(old_database_name, verbosity, keepdb, suffix)
+         # Close the connection to the test database.
+         self.connection.close_pool()
++        # Restore the original _key_vault_namespace.
++        if opts := self.connection.settings_dict["OPTIONS"].get("auto_encryption_opts"):
++            self.connection.settings_dict["OPTIONS"][
++                "auto_encryption_opts"
++            ]._key_vault_namespace = opts._key_vault_namespace[len(TEST_DATABASE_PREFIX) :]
+diff --git a/django_mongodb_backend/features.py b/django_mongodb_backend/features.py
+index aee74f4..2af827c 100644
+--- a/django_mongodb_backend/features.py
++++ b/django_mongodb_backend/features.py
+@@ -588,6 +588,14 @@ class DatabaseFeatures(GISFeatures, BaseDatabaseFeatures):
+         skips.update(self._django_test_skips)
+         return skips
+ 
++    @cached_property
++    def mongodb_version(self):
++        return self.connection.get_database_version()  # e.g., (6, 3, 0)
++
++    @cached_property
++    def is_mongodb_8_0(self):
++        return self.mongodb_version >= (8, 0)
++
+     @cached_property
+     def supports_atlas_search(self):
+         """Does the server support Atlas search queries and search indexes?"""
+@@ -614,3 +622,22 @@ class DatabaseFeatures(GISFeatures, BaseDatabaseFeatures):
+         hello = client.command("hello")
+         # a replica set or a sharded cluster
+         return "setName" in hello or hello.get("msg") == "isdbgrid"
++
++    @cached_property
++    def supports_queryable_encryption(self):
++        """
++        For testing purposes, Queryable Encryption requires a MongoDB 8.0 or
++        later replica set or sharded cluster, as well as MongoDB Atlas or
++        Enterprise. This flag must not guard any non-test functionality since
++        it would prevent MongoDB 7.0 from being used, which also supports
++        Queryable Encryption. The models in tests/encryption_ aren't compatible
++        with MongoDB 7.0 because {"queryType": "range"} is "rangePreview".
++        """
++        self.connection.ensure_connection()
++        build_info = self.connection.connection.admin.command("buildInfo")
++        is_enterprise = "enterprise" in build_info.get("modules")
++        return (
++            (is_enterprise or self.supports_atlas_search)
++            and self._supports_transactions
++            and self.is_mongodb_8_0
++        )
+diff --git a/django_mongodb_backend/fields/__init__.py b/django_mongodb_backend/fields/__init__.py
+index 0c95afd..6cc4bcc 100644
+--- a/django_mongodb_backend/fields/__init__.py
++++ b/django_mongodb_backend/fields/__init__.py
+@@ -3,6 +3,33 @@ from .auto import ObjectIdAutoField
+ from .duration import register_duration_field
+ from .embedded_model import EmbeddedModelField
+ from .embedded_model_array import EmbeddedModelArrayField
++from .encryption import (
++    EncryptedArrayField,
++    EncryptedBigIntegerField,
++    EncryptedBinaryField,
++    EncryptedBooleanField,
++    EncryptedCharField,
++    EncryptedDateField,
++    EncryptedDateTimeField,
++    EncryptedDecimalField,
++    EncryptedDurationField,
++    EncryptedEmailField,
++    EncryptedEmbeddedModelArrayField,
++    EncryptedEmbeddedModelField,
++    EncryptedFieldMixin,
++    EncryptedFloatField,
++    EncryptedGenericIPAddressField,
++    EncryptedIntegerField,
++    EncryptedObjectIdField,
++    EncryptedPositiveBigIntegerField,
++    EncryptedPositiveIntegerField,
++    EncryptedPositiveSmallIntegerField,
++    EncryptedSmallIntegerField,
++    EncryptedTextField,
++    EncryptedTimeField,
++    EncryptedURLField,
++    EncryptedUUIDField,
++)
+ from .json import register_json_field
+ from .objectid import ObjectIdField
+ from .polymorphic_embedded_model import PolymorphicEmbeddedModelField
+@@ -12,6 +39,31 @@ __all__ = [
+     "ArrayField",
+     "EmbeddedModelArrayField",
+     "EmbeddedModelField",
++    "EncryptedArrayField",
++    "EncryptedBigIntegerField",
++    "EncryptedBinaryField",
++    "EncryptedBooleanField",
++    "EncryptedCharField",
++    "EncryptedDateField",
++    "EncryptedDateTimeField",
++    "EncryptedDecimalField",
++    "EncryptedDurationField",
++    "EncryptedEmailField",
++    "EncryptedEmbeddedModelArrayField",
++    "EncryptedEmbeddedModelField",
++    "EncryptedFieldMixin",
++    "EncryptedFloatField",
++    "EncryptedGenericIPAddressField",
++    "EncryptedIntegerField",
++    "EncryptedObjectIdField",
++    "EncryptedPositiveBigIntegerField",
++    "EncryptedPositiveIntegerField",
++    "EncryptedPositiveSmallIntegerField",
++    "EncryptedSmallIntegerField",
++    "EncryptedTextField",
++    "EncryptedTimeField",
++    "EncryptedURLField",
++    "EncryptedUUIDField",
+     "ObjectIdAutoField",
+     "ObjectIdField",
+     "PolymorphicEmbeddedModelArrayField",
+diff --git a/django_mongodb_backend/fields/embedded_model_array.py b/django_mongodb_backend/fields/embedded_model_array.py
+index ef46d97..5d4e627 100644
+--- a/django_mongodb_backend/fields/embedded_model_array.py
++++ b/django_mongodb_backend/fields/embedded_model_array.py
+@@ -12,8 +12,10 @@ from django_mongodb_backend.fields import EmbeddedModelField
+ from django_mongodb_backend.fields.array import ArrayField, ArrayLenTransform
+ from django_mongodb_backend.query_utils import process_lhs, process_rhs
+ 
++from .mixins import NoEncryptedEmbeddedFieldsMixin
+ 
+-class EmbeddedModelArrayField(ArrayField):
++
++class EmbeddedModelArrayField(NoEncryptedEmbeddedFieldsMixin, ArrayField):
+     def __init__(self, embedded_model, **kwargs):
+         if "size" in kwargs:
+             raise ValueError("EmbeddedModelArrayField does not support size.")
+diff --git a/django_mongodb_backend/fields/encryption.py b/django_mongodb_backend/fields/encryption.py
+new file mode 100644
+index 0000000..db0909e
+--- /dev/null
++++ b/django_mongodb_backend/fields/encryption.py
+@@ -0,0 +1,140 @@
++from django.db import models
++
++from django_mongodb_backend.fields import ArrayField, EmbeddedModelArrayField, EmbeddedModelField
++from django_mongodb_backend.fields.objectid import ObjectIdField
++
++from .mixins import NoEncryptedEmbeddedFieldsMixin
++
++
++class EncryptedFieldMixin:
++    encrypted = True
++
++    def __init__(self, *args, queries=None, db_index=False, null=False, unique=False, **kwargs):
++        if db_index:
++            raise ValueError("Encrypted fields do not support db_index=True.")
++        if null:
++            raise ValueError("Encrypted fields do not support null=True.")
++        if unique:
++            raise ValueError("Encrypted fields do not support unique=True.")
++        self.queries = queries
++        super().__init__(*args, **kwargs)
++
++    def deconstruct(self):
++        name, path, args, kwargs = super().deconstruct()
++        if self.queries is not None:
++            kwargs["queries"] = self.queries
++        if path.startswith("django_mongodb_backend.fields.encryption"):
++            path = path.replace(
++                "django_mongodb_backend.fields.encryption",
++                "django_mongodb_backend.fields",
++            )
++        return name, path, args, kwargs
++
++
++class NoQueriesMixin:
++    def __init__(self, *args, **kwargs):
++        if "queries" in kwargs:
++            raise ValueError(f"{self.__class__.__name__} does not support the queries argument.")
++        super().__init__(*args, **kwargs)
++
++
++# Django fields
++class EncryptedBinaryField(EncryptedFieldMixin, models.BinaryField):
++    pass
++
++
++class EncryptedBigIntegerField(EncryptedFieldMixin, models.BigIntegerField):
++    pass
++
++
++class EncryptedBooleanField(EncryptedFieldMixin, models.BooleanField):
++    pass
++
++
++class EncryptedCharField(EncryptedFieldMixin, models.CharField):
++    pass
++
++
++class EncryptedDateField(EncryptedFieldMixin, models.DateField):
++    pass
++
++
++class EncryptedDateTimeField(EncryptedFieldMixin, models.DateTimeField):
++    pass
++
++
++class EncryptedDecimalField(EncryptedFieldMixin, models.DecimalField):
++    pass
++
++
++class EncryptedDurationField(EncryptedFieldMixin, models.DurationField):
++    pass
++
++
++class EncryptedEmailField(EncryptedFieldMixin, models.EmailField):
++    pass
++
++
++class EncryptedFloatField(EncryptedFieldMixin, models.FloatField):
++    pass
++
++
++class EncryptedGenericIPAddressField(EncryptedFieldMixin, models.GenericIPAddressField):
++    pass
++
++
++class EncryptedIntegerField(EncryptedFieldMixin, models.IntegerField):
++    pass
++
++
++class EncryptedPositiveBigIntegerField(EncryptedFieldMixin, models.PositiveBigIntegerField):
++    pass
++
++
++class EncryptedPositiveIntegerField(EncryptedFieldMixin, models.PositiveIntegerField):
++    pass
++
++
++class EncryptedPositiveSmallIntegerField(EncryptedFieldMixin, models.PositiveSmallIntegerField):
++    pass
++
++
++class EncryptedSmallIntegerField(EncryptedFieldMixin, models.SmallIntegerField):
++    pass
++
++
++class EncryptedTextField(EncryptedFieldMixin, models.TextField):
++    pass
++
++
++class EncryptedTimeField(EncryptedFieldMixin, models.TimeField):
++    pass
++
++
++class EncryptedURLField(EncryptedFieldMixin, models.URLField):
++    pass
++
++
++class EncryptedUUIDField(EncryptedFieldMixin, models.UUIDField):
++    pass
++
++
++# MongoDB fields
++class EncryptedArrayField(NoQueriesMixin, EncryptedFieldMixin, ArrayField):
++    pass
++
++
++class EncryptedEmbeddedModelArrayField(
++    NoQueriesMixin, EncryptedFieldMixin, EmbeddedModelArrayField
++):
++    pass
++
++
++class EncryptedEmbeddedModelField(
++    NoEncryptedEmbeddedFieldsMixin, NoQueriesMixin, EncryptedFieldMixin, EmbeddedModelField
++):
++    pass
++
++
++class EncryptedObjectIdField(EncryptedFieldMixin, ObjectIdField):
++    pass
+diff --git a/django_mongodb_backend/fields/mixins.py b/django_mongodb_backend/fields/mixins.py
+new file mode 100644
+index 0000000..e606a4e
+--- /dev/null
++++ b/django_mongodb_backend/fields/mixins.py
+@@ -0,0 +1,24 @@
++"""Mixins used across multiple modules (to avoid circular imports)."""
++
++from django.core.checks import Error
++
++
++class NoEncryptedEmbeddedFieldsMixin:
++    def check(self, **kwargs):
++        return [
++            *super().check(**kwargs),
++            *self._check_no_encrypted_fields(),
++        ]
++
++    def _check_no_encrypted_fields(self):
++        for field in self.embedded_model._meta.fields:
++            if getattr(field, "encrypted", False):
++                return [
++                    Error(
++                        f"{self.__class__.__name__} cannot contain encrypted "
++                        f"fields (found {field.__class__.__name__}).",
++                        obj=self,
++                        id="django_mongodb_backend.embedded_model_array.E001",
++                    )
++                ]
++        return []
+diff --git a/django_mongodb_backend/lookups.py b/django_mongodb_backend/lookups.py
+index 0174ff0..73b46d7 100644
+--- a/django_mongodb_backend/lookups.py
++++ b/django_mongodb_backend/lookups.py
+@@ -4,6 +4,8 @@ from django.db.models.lookups import (
+     BuiltinLookup,
+     FieldGetDbPrepValueIterableMixin,
+     IsNull,
++    LessThan,
++    LessThanOrEqual,
+     Lookup,
+     PatternLookup,
+     UUIDTextMixin,
+@@ -88,6 +90,26 @@ def is_null_path(self, compiler, connection):
+     return connection.mongo_operators["isnull"](lhs_mql, self.rhs)
+ 
+ 
++def less_than_path(self, compiler, connection):
++    lhs_mql = process_lhs(self, compiler, connection)
++    value = process_rhs(self, compiler, connection)
++    # Encrypted fields don't support null and Automatic Encryption cannot
++    # handle it ("csfle "analyze_query" failed: typenull type isn't supported
++    # for the range encrypted index.), so omit the null check.
++    if getattr(self.lhs.output_field, "encrypted", False):
++        return {lhs_mql: {"$lt": value}}
++    return connection.mongo_operators[self.lookup_name](lhs_mql, value)
++
++
++def less_than_or_equal_path(self, compiler, connection):
++    lhs_mql = process_lhs(self, compiler, connection)
++    value = process_rhs(self, compiler, connection)
++    # Same comment as less_than_path().
++    if getattr(self.lhs.output_field, "encrypted", False):
++        return {lhs_mql: {"$lte": value}}
++    return connection.mongo_operators[self.lookup_name](lhs_mql, value)
++
++
+ # from https://www.pcre.org/current/doc/html/pcre2pattern.html#SEC4
+ REGEX_MATCH_ESCAPE_CHARS = (
+     ("\\", r"\\"),  # general escape character
+@@ -144,6 +166,8 @@ def register_lookups():
+     In.get_subquery_wrapping_pipeline = get_subquery_wrapping_pipeline
+     IsNull.as_mql_expr = is_null_expr
+     IsNull.as_mql_path = is_null_path
++    LessThan.as_mql_path = less_than_path
++    LessThanOrEqual.as_mql_path = less_than_or_equal_path
+     Lookup.can_use_path = lookup_can_use_path
+     PatternLookup.prep_lookup_value_mongo = pattern_lookup_prep_lookup_value
+     UUIDTextMixin.as_mql = uuid_text_mixin
+diff --git a/django_mongodb_backend/management/commands/showencryptedfieldsmap.py b/django_mongodb_backend/management/commands/showencryptedfieldsmap.py
+new file mode 100644
+index 0000000..826c650
+--- /dev/null
++++ b/django_mongodb_backend/management/commands/showencryptedfieldsmap.py
+@@ -0,0 +1,30 @@
++from bson import json_util
++from django.apps import apps
++from django.core.management.base import BaseCommand
++from django.db import DEFAULT_DB_ALIAS, connections, router
++
++from django_mongodb_backend.utils import model_has_encrypted_fields
++
++
++class Command(BaseCommand):
++    help = "Shows the encrypted_fields_map for use in AutoEncryptionOpts."
++
++    def add_arguments(self, parser):
++        parser.add_argument(
++            "--database",
++            default=DEFAULT_DB_ALIAS,
++            help='Specifies the database to use. Defaults to the "default" database.',
++        )
++
++    def handle(self, *args, **options):
++        db = options["database"]
++        connection = connections[db]
++        connection.ensure_connection()
++        encrypted_fields_map = {}
++        with connection.schema_editor() as editor:
++            for app_config in apps.get_app_configs():
++                for model in router.get_migratable_models(app_config, db):
++                    if model_has_encrypted_fields(model) and model._meta.can_migrate(connection):
++                        fields = editor._get_encrypted_fields(model, create_data_keys=False)
++                        encrypted_fields_map[model._meta.db_table] = fields
++        self.stdout.write(json_util.dumps(encrypted_fields_map, indent=4))
+diff --git a/django_mongodb_backend/query.py b/django_mongodb_backend/query.py
+index 98537c7..3679d18 100644
+--- a/django_mongodb_backend/query.py
++++ b/django_mongodb_backend/query.py
+@@ -93,24 +93,43 @@ class MongoQuery:
+         if self.aggregation_pipeline:
+             pipeline.extend(self.aggregation_pipeline)
+         if self.needs_wrap_aggregation:
+-            # Add the aggregation stage for queries without a GROUP BY.
+-            # e.g. SQL equivalent of SELECT avg(col) FROM table
+-            pipeline.extend(
+-                [
+-                    # Workaround for https://jira.mongodb.org/browse/SERVER-114196:
+-                    # $$NOW becomes unavailable after $unionWith, so it must be
+-                    # stored beforehand to ensure it remains accessible later
+-                    # in the pipeline.
+-                    {"$addFields": {"__now": "$$NOW"}},
+-                    # Add an empty extra document to handle default values on
+-                    # empty results.
+-                    {"$unionWith": {"pipeline": [{"$documents": [{}]}]}},
+-                    # Limiting to one document ensures the original result
+-                    # takes precedence when present, otherwise the injected
+-                    # empty document is used.
+-                    {"$limit": 1},
++            if self.compiler.connection.client_encryption:
++                # Automatic encryption doesn't support $unionWith, so use
++                # $collStats instead (which may perform a bit worse).
++                pipeline = [
++                    {"$collStats": {}},
++                    {
++                        "$lookup": {
++                            "from": self.compiler.collection_name,
++                            "as": "wrapped",
++                            "pipeline": pipeline,
++                        }
++                    },
++                    {
++                        "$replaceWith": {
++                            "$cond": [{"$eq": ["$wrapped", []]}, {}, {"$first": "$wrapped"}]
++                        }
++                    },
+                 ]
+-            )
++            else:
++                # Add the aggregation stage for queries without a GROUP BY.
++                # e.g. SQL equivalent of SELECT avg(col) FROM table
++                pipeline.extend(
++                    [
++                        # Workaround for https://jira.mongodb.org/browse/SERVER-114196:
++                        # $$NOW becomes unavailable after $unionWith, so it
++                        # must be stored beforehand to ensure it remains
++                        # accessible later in the pipeline.
++                        {"$addFields": {"__now": "$$NOW"}},
++                        # Add an empty extra document to handle default values
++                        # on empty results.
++                        {"$unionWith": {"pipeline": [{"$documents": [{}]}]}},
++                        # Limiting to one document ensures the original result
++                        # takes precedence when present, otherwise the injected
++                        # empty document is used.
++                        {"$limit": 1},
++                    ]
++                )
+         if self.project_fields:
+             pipeline.append({"$project": self.project_fields})
+         if self.combinator_pipeline:
+diff --git a/django_mongodb_backend/schema.py b/django_mongodb_backend/schema.py
+index 9bcaecc..26a3606 100644
+--- a/django_mongodb_backend/schema.py
++++ b/django_mongodb_backend/schema.py
+@@ -1,5 +1,6 @@
+ from time import monotonic, sleep
+ 
++from django.core.exceptions import ImproperlyConfigured
+ from django.db.backends.base.schema import BaseDatabaseSchemaEditor
+ from django.db.models import Index, UniqueConstraint
+ from pymongo.operations import SearchIndexModel
+@@ -9,7 +10,7 @@ from django_mongodb_backend.indexes import SearchIndex
+ from .fields import EmbeddedModelField
+ from .gis.schema import GISSchemaEditor
+ from .query import wrap_database_errors
+-from .utils import OperationCollector
++from .utils import OperationCollector, model_has_encrypted_fields
+ 
+ 
+ def ignore_embedded_models(func):
+@@ -44,7 +45,7 @@ class BaseSchemaEditor(BaseDatabaseSchemaEditor):
+     @wrap_database_errors
+     @ignore_embedded_models
+     def create_model(self, model):
+-        self.get_database().create_collection(model._meta.db_table)
++        self._create_collection(model)
+         self._create_model_indexes(model)
+         # Make implicit M2M tables.
+         for field in model._meta.local_many_to_many:
+@@ -452,6 +453,93 @@ class BaseSchemaEditor(BaseDatabaseSchemaEditor):
+             sleep(interval)
+         raise TimeoutError(f"Index {index_name} not dropped after {timeout} seconds.")
+ 
++    def _create_collection(self, model):
++        """Create a collection for the model."""
++        db = self.get_database()
++        db_table = model._meta.db_table
++        if model_has_encrypted_fields(model):
++            # Create an encrypted collection.
++            if not self.connection.auto_encryption_opts:
++                raise ImproperlyConfigured(
++                    f"Tried to create model {model._meta.label} in "
++                    f"'{self.connection.alias}' database. The model has "
++                    "encrypted fields but "
++                    f"DATABASES['{self.connection.alias}']['OPTIONS'] is "
++                    'missing the "auto_encryption_opts" parameter. If the '
++                    "model should not be created in this database, adjust "
++                    "your database routers."
++                )
++            # Create an index (if not present) to enforce unique keyAltNames.
++            self.connection.key_vault.create_index(
++                "keyAltNames",
++                unique=True,
++                partialFilterExpression={"keyAltNames": {"$exists": True}},
++            )
++            encrypted_fields = self._get_encrypted_fields(model)
++            db.create_collection(db_table, encryptedFields=encrypted_fields)
++        else:
++            db.create_collection(db_table)
++
++    def _get_encrypted_fields(
++        self, model, *, key_alt_name_prefix=None, path_prefix=None, create_data_keys=True
++    ):
++        """
++        Return the encrypted fields map for the given model. The "prefix"
++        arguments are used when this method is called recursively on embedded
++        models.
++        """
++        if create_data_keys:
++            # Initializing these cached properties does some validation of
++            # user-provided settings and may raise ImproperlyConfigured.
++            kms_provider = self.connection.kms_provider
++            kms_credentials = self.connection.kms_credentials
++        key_alt_name_prefix = key_alt_name_prefix or model._meta.db_table
++        path_prefix = path_prefix or ""
++        # Generate the encrypted fields map.
++        field_list = []
++        for field in model._meta.fields:
++            key_alt_name = f"{key_alt_name_prefix}.{field.column}"
++            path = f"{path_prefix}.{field.column}" if path_prefix else field.column
++            # Check non-encrypted EmbeddedModelFields for encrypted fields.
++            if isinstance(field, EmbeddedModelField) and not getattr(field, "encrypted", False):
++                embedded_fields = self._get_encrypted_fields(
++                    field.embedded_model,
++                    key_alt_name_prefix=key_alt_name,
++                    path_prefix=path,
++                    create_data_keys=create_data_keys,
++                )
++                # An EmbeddedModelField may not have any encrypted fields.
++                if embedded_fields:
++                    field_list.extend(embedded_fields["fields"])
++            # Populate data for encrypted field.
++            elif getattr(field, "encrypted", False):
++                if create_data_keys:
++                    # Create the field's encryption key.
++                    data_key = self.connection.client_encryption.create_data_key(
++                        kms_provider=kms_provider,
++                        key_alt_names=[key_alt_name],
++                        master_key=kms_credentials,
++                    )
++                else:
++                    # Retrieve the field's keyId from the vault.
++                    data_key = self.connection.key_vault.find_one({"keyAltNames": key_alt_name})
++                    if data_key:
++                        data_key = data_key["_id"]
++                    else:
++                        raise ImproperlyConfigured(
++                            f"Encryption key '{key_alt_name}' not found. Have "
++                            f"you migrated the {model._meta.label} model?"
++                        )
++                field_dict = {
++                    "bsonType": field.db_type(self.connection),
++                    "path": path,
++                    "keyId": data_key,
++                }
++                if queries := getattr(field, "queries", None):
++                    field_dict["queries"] = queries
++                field_list.append(field_dict)
++        return {"fields": field_list}
++
+ 
+ # GISSchemaEditor extends some SchemaEditor methods.
+ class DatabaseSchemaEditor(GISSchemaEditor, BaseSchemaEditor):
+diff --git a/django_mongodb_backend/utils.py b/django_mongodb_backend/utils.py
+index 8c68bf4..ee4ce5d 100644
+--- a/django_mongodb_backend/utils.py
++++ b/django_mongodb_backend/utils.py
+@@ -71,6 +71,7 @@ class OperationDebugWrapper:
+         "create_indexes",
+         "create_search_index",
+         "drop",
++        "find_one",
+         "index_information",
+         "insert_many",
+         "delete_many",
+@@ -146,3 +147,20 @@ class OperationCollector(OperationDebugWrapper):
+             self.log(method, args, kwargs)
+ 
+         return wrapper
++
++
++def model_has_encrypted_fields(model):
++    """
++    Return whether or not this model and its embedded models have any encrypted
++    fields.
++    """
++    from django_mongodb_backend.fields import EmbeddedModelField  # noqa: PLC0415
++
++    return any(
++        getattr(field, "encrypted", False)
++        or (
++            isinstance(field, EmbeddedModelField)
++            and model_has_encrypted_fields(field.embedded_model)
++        )
++        for field in model._meta.fields
++    )
+diff --git a/docs/howto/index.rst b/docs/howto/index.rst
+index 95d7ef6..8451960 100644
+--- a/docs/howto/index.rst
++++ b/docs/howto/index.rst
+@@ -11,3 +11,4 @@ Project configuration
+    :maxdepth: 1
+ 
+    contrib-apps
++   queryable-encryption
+diff --git a/docs/howto/queryable-encryption.rst b/docs/howto/queryable-encryption.rst
+new file mode 100644
+index 0000000..b309591
+--- /dev/null
++++ b/docs/howto/queryable-encryption.rst
+@@ -0,0 +1,377 @@
++====================
++Queryable Encryption
++====================
++
++.. versionadded:: 6.0.1
++
++:doc:`manual:core/queryable-encryption` is a powerful MongoDB feature that
++allows you to encrypt sensitive fields in your database while still being able
++to query those fields.
++
++This document will guide you through the process of configuring Queryable
++Encryption in your Django project.
++
++.. admonition:: MongoDB requirements
++
++    Queryable Encryption can be used with MongoDB replica sets or sharded
++    clusters running version 7.0 or later. Standalone instances are not
++    supported. The :ref:`manual:qe-compatibility-reference` table summarizes
++    which MongoDB server products support Queryable Encryption.
++
++Installation
++============
++
++In addition to Django MongoDB Backend's regular :doc:`installation
++</intro/install>` and :doc:`configuration </intro/configure>` steps, Queryable
++Encryption requires PyMongo 4.16.0 or later, as well as some additional Python
++dependencies that can be installed like so:
++
++.. code-block:: console
++
++    $ pip install 'django-mongodb-backend[encryption]'
++
++You'll also have to download the :ref:`Automatic Encryption Shared Library
++<manual:qe-csfle-shared-library-download>`. You can choose the latest version,
++even if it doesn't match your MongoDB server version. Extract the shared
++library from the archive. You'll use the path to it in the next step (see
++``crypt_shared_lib_path``).
++
++.. _qe-configuring-databases-setting:
++
++Configuring the ``DATABASES`` setting
++=====================================
++
++In addition to the :ref:`database settings <configuring-databases-setting>`
++required to use Django MongoDB Backend, Queryable Encryption typically requires
++configuring a separate database connection that uses use PyMongo's
++:class:`~pymongo.encryption_options.AutoEncryptionOpts`.
++
++Here's a sample configuration using a local KMS provider::
++
++    from pymongo.encryption_options import AutoEncryptionOpts
++
++    DATABASES = {
++        "default": {
++            "ENGINE": "django_mongodb_backend",
++            "HOST": "mongodb+srv://cluster0.example.mongodb.net",
++            "NAME": "my_db",
++            # ...
++        },
++        "encrypted": {
++            "ENGINE": "django_mongodb_backend",
++            "HOST": "mongodb+srv://cluster0.example.mongodb.net",
++            "NAME": "encrypted_db",
++            # ...
++            "OPTIONS": {
++                "auto_encryption_opts": AutoEncryptionOpts(
++                    key_vault_namespace="encrypted_db.__keyVault",
++                    kms_providers={
++                        "local": {
++                            # Generated by os.urandom(96)
++                            "key": (
++                                b'-\xc3\x0c\xe3\x93\xc3\x8b\xc0\xf8\x12\xc5#b'
++                                b'\x19\xf3\xbc\xccR\xc8\xedI\xda\\ \xfb\x9cB'
++                                b'\x7f\xab5\xe7\xb5\xc9x\xb8\xd4d\xba\xdc\x9c'
++                                b'\x9a\xdb9J]\xe6\xce\x104p\x079q.=\xeb\x9dK*'
++                                b'\x97\xea\xf8\x1e\xc3\xd49K\x18\x81\xc3\x1a"'
++                                b'\xdc\x00U\xc4u"X\xe7xy\xa5\xb2\x0e\xbc\xd6+-'
++                                b'\x80\x03\xef\xc2\xc4\x9bU'
++                            )
++                        },
++                    },
++                    # Exact file name depends on your operating system.
++                    crypt_shared_lib_path="/path/to/mongo_crypt_v1.so",
++                    crypt_shared_lib_required=True,
++                )
++            },
++        },
++    }
++
++``key_vault_namespace`` specifies where to store the data encryption keys.
++The database name of the key vault must be the same as in ``"NAME"``. The
++vault's collection name can be whatever you wish, but by convention, it's often
++``__keyVault``.
++
++.. admonition:: Why is a second connection recommended?
++
++    Connections that use ``AutoEncryptionOpts`` have some :ref:`query
++    limitations <automatic-encryption-limitations>`, regardless of whether or
++    not a model is encrypted. Creating two separate entries in
++    :setting:`DATABASES` avoids imposing these query limitations on your
++    non-encrypted models.
++
++.. _qe-configuring-database-routers-setting:
++
++Configuring the ``DATABASE_ROUTERS`` setting
++============================================
++
++Similar to configuring the :ref:`DATABASE_ROUTERS
++<configuring-database-routers-setting>` setting for
++:doc:`embedded models </topics/embedded-models>`, Queryable Encryption requires
++a :setting:`DATABASE_ROUTERS` setting to route database operations to the
++encrypted database.
++
++The following example shows how to configure a router for the ``"myapp"``
++application that routes database operations to the encrypted database for all
++models in that application::
++
++    # myapp/routers.py
++    class EncryptedRouter:
++        def allow_migrate(self, db, app_label, model_name=None, **hints):
++            # Create myapp's models only in the encrypted database.
++            if app_label == "myapp":
++                return db == "encrypted"
++            # Don't create collections for other apps in the encrypted db.
++            if db == "encrypted":
++                return False
++            return None
++
++        def db_for_read(self, model, **hints):
++            # All reads and writes for myapp's models go to the encrypted db.
++            if model._meta.app_label == "myapp":
++                return "encrypted"
++            return None
++
++        db_for_write = db_for_read
++
++Then in your Django settings, add the custom database router to the
++:setting:`django:DATABASE_ROUTERS` setting::
++
++    # settings.py
++    DATABASE_ROUTERS = [
++        "django_mongodb_backend.routers.MongoRouter",
++        "myapp.routers.EncryptedRouter",
++    ]
++
++Encrypted fields
++================
++
++Now you can start using encrypted fields in your Django models.
++
++:doc:`Encrypted fields </ref/models/encrypted-fields>` may be used to protect
++sensitive data like social security numbers, credit card information, or
++personal health information.
++
++Import the encrypted fields from ``django_mongodb_backend.fields``, and use
++them to define your models as usual.
++
++Here are models based on the `Python Queryable Encryption Tutorial
++<https://github.com/mongodb/docs/tree/main/content/manual/manual/source/includes/qe-tutorials/python>`_::
++
++    # myapp/models.py
++    from django.db import models
++    from django_mongodb_backend.models import EmbeddedModel
++    from django_mongodb_backend.fields import (
++        EmbeddedModelField,
++        EncryptedCharField,
++        EncryptedEmbeddedModelField,
++    )
++
++
++    class Patient(models.Model):
++        name = models.CharField(max_length=255)
++        patient_id = models.BigIntegerField()
++        patient_record = EmbeddedModelField("PatientRecord")
++
++        def __str__(self):
++            return f"{self.name} ({self.patient_id})"
++
++
++    class PatientRecord(EmbeddedModel):
++        ssn = EncryptedCharField(max_length=11, queries={"queryType": "equality"})
++        billing = EncryptedEmbeddedModelField("Billing")
++        bill_amount = models.DecimalField(max_digits=10, decimal_places=2)
++
++
++    class Billing(EmbeddedModel):
++        cc_type = models.CharField(max_length=50)
++        cc_number = models.CharField(max_length=20)
++
++.. _qe-migrations:
++
++Migrations
++==========
++
++Once you have defined your models, create a migration as usual:
++
++.. code-block:: console
++
++    $ python manage.py makemigrations
++
++Then run the migrations on the encrypted database:
++
++.. code-block:: console
++
++    $ python manage.py migrate --database encrypted
++
++.. warning::
++
++    Be aware that MongoDB does not allow adding encrypted fields to existing
++    collections, nor can you change the definition of an encrypted field, for
++    example, to make it queryable. If you wish to add or change an encrypted
++    field, you must create a new collection.
++
++Creating encrypted data
++=======================
++
++Now create and manipulate instances of the data just like any other Django
++model data. The data is automatically encrypted and decrypted, ensuring that
++:ref:`sensitive data is stored securely in the database
++<manual:qe-features-encryption-at-rest>`.
++
++Here's an example of creating a new ``Patient`` instance:
++
++.. code-block:: pycon
++
++    >>> from myapp.models import Patient, PatientRecord, Billing
++    >>> billing = Billing(cc_type="Visa", cc_number="4111111111111111")
++    >>> record = PatientRecord(ssn="123-45-6789", billing=billing, bill_amount=250.75)
++    >>> patient = Patient(name="John Doe", patient_id=1001, patient_record=record)
++    >>> patient.save()
++
++.. _querying-encrypted-fields:
++
++Querying encrypted fields
++=========================
++
++In order to query encrypted fields, you must include the :ref:`queries
++<encrypted-fields-queries>` argument. For example, notice ``PatientRecord``\'s
++``ssn`` field::
++
++    class PatientRecord(EmbeddedModel):
++        ssn = EncryptedCharField(max_length=11, queries={"queryType": "equality"})
++
++You can perform a equality query just like you would on a non-encrypted field:
++
++.. code-block:: pycon
++
++    >>> patient = Patient.objects.get(patient_record__ssn="123-45-6789")
++    >>> patient.name
++    'John Doe'
++
++See :ref:`encrypted-fields-queries` for more details.
++
++.. _configuring-kms:
++
++Configuring a Key Management Service (KMS)
++==========================================
++
++To use Queryable Encryption, you must configure a Key Management Service (KMS)
++to store and manage the encryption keys used to encrypt and decrypt data.
++
++A local KMS provider with a hardcoded key is suitable for development and
++testing, but in a production environment, you should securely store and manage
++encryption keys using a :ref:`KMS Provider
++<manual:qe-fundamentals-kms-providers>`.
++
++There are two primary configuration points:
++
++#. The ``kms_providers`` parameter of
++   :class:`~pymongo.encryption_options.AutoEncryptionOpts`. See the
++   ``kms_providers`` parameter in
++   :class:`~pymongo.encryption_options.AutoEncryptionOpts` for the available
++   providers (``aws``, ``azure``, ``gcp``, etc.) as well as the provider
++   options).
++
++#. The :setting:`KMS_CREDENTIALS <DATABASE-KMS-CREDENTIALS>` inner option of
++   :setting:`DATABASES`. The keys for each provider are documented under the
++   ``master_key`` parameter of
++   :meth:`~pymongo.encryption.ClientEncryption.create_data_key`.
++
++Here's an example of KMS configuration with ``aws``::
++
++    from pymongo.encryption_options import AutoEncryptionOpts
++
++    DATABASES = {
++        "encrypted": {
++            # ...
++            "OPTIONS": {
++                "auto_encryption_opts": AutoEncryptionOpts(
++                    # ...
++                    kms_providers={
++                        "aws": {
++                            "accessKeyId": "your-access-key-id",
++                            "secretAccessKey": "your-secret-access-key",
++                        },
++                    },
++                ),
++            },
++            "KMS_CREDENTIALS": {
++                "aws": {
++                    "key": "...",  # Amazon Resource Name
++                    "region": "...",  # AWS region
++                },
++            },
++        },
++    }
++
++.. _qe-configuring-encrypted-fields-map:
++
++Configuring the ``encrypted_fields_map`` option
++===============================================
++
++Encryption keys are created when you :ref:`run migrations for models that have
++encrypted fields <qe-migrations>`.
++
++To see the encrypted fields map for your models (which includes the encryption
++key IDs), run the :djadmin:`showencryptedfieldsmap` command::
++
++    $ python manage.py showencryptedfieldsmap --database encrypted
++
++.. admonition:: Didn't work?
++
++    If you get the error ``Unknown command: 'showencryptedfieldsmap'``, ensure
++    ``"django_mongodb_backend"`` is in your :setting:`INSTALLED_APPS` setting.
++
++It's recommended to include this map in your production settings to protect
++against a malicious server advertising a false encrypted fields map::
++
++    from bson import json_util
++    from pymongo.encryption_options import AutoEncryptionOpts
++
++    DATABASES = {
++        "encrypted": {
++            # ...
++            "OPTIONS": {
++                "auto_encryption_opts": AutoEncryptionOpts(
++                    # ...
++                    encrypted_fields_map=json_util.loads(
++                        """{
++                        "encrypt_patient": {
++                            "fields": [
++                                 {
++                                     "bsonType": "string",
++                                     "path": "patient_record.ssn",
++                                     "keyId": {
++                                          "$binary": {
++                                              "base64": "2MA29LaARIOqymYHGmi2mQ==",
++                                              "subType": "04"
++                                          }
++                                     },
++                                     "queries": {
++                                         "queryType": "equality"
++                                     }
++                                 },
++                            ]
++                        }}"""
++                    ),
++                ),
++            },
++        },
++    }
++
++Do not include this in your development and testing settings since the data
++encryption keys will be different from those in your production database.
++
++Typical deployment workflow
++===========================
++
++A typical development and deployment workflow for a project that uses Queryable
++Encryption could be something like this:
++
++#. Develop and test your project locally.
++#. Deploy your project and run :djadmin:`migrate` to create the encrypted
++   collections and data encryption keys.
++#. Run :djadmin:`showencryptedfieldsmap` in production and :ref:`use the output
++   <qe-configuring-encrypted-fields-map>` to set ``encrypted_fields_map`` in
++   your production settings.
+diff --git a/docs/index.rst b/docs/index.rst
+index dc2124f..194771f 100644
+--- a/docs/index.rst
++++ b/docs/index.rst
+@@ -57,6 +57,15 @@ Forms
+ 
+ - :doc:`ref/forms`
+ 
++MongoDB Features
++================
++
++- **Queryable Encryption:**
++  :doc:`How-to guide </howto/queryable-encryption>` |
++  :doc:`/ref/models/encrypted-fields/`
++- **Settings:**
++  :doc:`Django MongoDB Backend-specific settings </ref/settings>`
++
+ Miscellaneous
+ =============
+ 
+diff --git a/docs/ref/django-admin.rst b/docs/ref/django-admin.rst
+index a491714..1e6c546 100644
+--- a/docs/ref/django-admin.rst
++++ b/docs/ref/django-admin.rst
+@@ -13,3 +13,20 @@ in the :setting:`INSTALLED_APPS` setting.
+ 
+ Available commands
+ ==================
++
++``showencryptedfieldsmap``
++--------------------------
++
++.. versionadded:: 6.0.1
++
++.. django-admin:: showencryptedfieldsmap
++
++    This command generates output for inclusion in
++    :class:`~pymongo.encryption_options.AutoEncryptionOpts`\'s
++    ``encrypted_fields_map`` argument.
++
++    See :ref:`qe-configuring-encrypted-fields-map`.
++
++    .. django-admin-option:: --database DATABASE
++
++        Specifies the database to use. Defaults to ``default``.
+diff --git a/docs/ref/index.rst b/docs/ref/index.rst
+index 94a11a2..4f56191 100644
+--- a/docs/ref/index.rst
++++ b/docs/ref/index.rst
+@@ -10,4 +10,5 @@ API reference
+    contrib/index
+    database
+    django-admin
++   settings
+    utils
+diff --git a/docs/ref/models/encrypted-fields.rst b/docs/ref/models/encrypted-fields.rst
+new file mode 100644
+index 0000000..1adc32c
+--- /dev/null
++++ b/docs/ref/models/encrypted-fields.rst
+@@ -0,0 +1,181 @@
++================
++Encrypted fields
++================
++
++.. currentmodule:: django_mongodb_backend.fields
++
++.. versionadded:: 6.0.1
++
++To use encrypted fields, you must :doc:`configure Queryable Encryption
++</howto/queryable-encryption>`.
++
++The following tables detail which fields have encrypted counterparts. In all
++cases, the encrypted field names are simply prefixed with ``Encrypted``, e.g.
++``EncryptedCharField``. They are importable from
++``django_mongodb_backend.fields``.
++
++.. csv-table:: Fields in ``django.db.models``
++   :header: "Model Field", "Encrypted version available?"
++
++    :class:`~django.db.models.BigIntegerField`, Yes
++    :class:`~django.db.models.BinaryField`, Yes
++    :class:`~django.db.models.BooleanField`, Yes
++    :class:`~django.db.models.CharField`, Yes
++    :class:`~django.db.models.DateField`, Yes
++    :class:`~django.db.models.DateTimeField`, Yes
++    :class:`~django.db.models.DecimalField`, Yes
++    :class:`~django.db.models.DurationField`, Yes
++    :class:`~django.db.models.EmailField`, Yes
++    :class:`~django.db.models.FileField`, No - the use case for encrypting this field is unclear.
++    :class:`~django.db.models.FilePathField`, No - the use case for encrypting this field is unclear.
++    :class:`~django.db.models.FloatField`, Yes
++    :class:`~django.db.models.GenericIPAddressField`, Yes
++    :class:`~django.db.models.ImageField`, No - the use case for encrypting this field is unclear.
++    :class:`~django.db.models.IntegerField`, Yes
++    :class:`~django.db.models.JSONField`, No - ``JSONField`` isn't recommended.
++    :class:`~django.db.models.PositiveIntegerField`, Yes
++    :class:`~django.db.models.PositiveBigIntegerField`, Yes
++    :class:`~django.db.models.PositiveSmallIntegerField`, Yes
++    :class:`~django.db.models.SlugField`, No - it requires a unique index which Queryable Encryption doesn't support.
++    :class:`~django.db.models.SmallIntegerField`, Yes
++    :class:`~django.db.models.TextField`, Yes
++    :class:`~django.db.models.TimeField`, Yes
++    :class:`~django.db.models.URLField`, Yes
++    :class:`~django.db.models.UUIDField`, Yes
++
++.. csv-table:: Fields in ``django_mongodb_backend.fields``
++   :header: "Model Field", "Encrypted version available?"
++
++    :class:`ArrayField`, Yes
++    :class:`EmbeddedModelArrayField`, Yes
++    :class:`EmbeddedModelField`, Yes
++    :class:`ObjectIdField`, Yes
++    :class:`PolymorphicEmbeddedModelField`, No - it may be implemented in the future.
++    :class:`PolymorphicEmbeddedModelArrayField`, No - it may be implemented in the future.
++
++.. _encrypted-fields-queries:
++
++``EncryptedField.queries``
++==========================
++
++Most encrypted fields take an optional ``queries`` argument. It's a dictionary
++that specifies the type of queries that can be performed on the field, as well
++as any parameters to configure the query type.
++
++The :ref:`available query types <manual:qe-fundamentals-encrypt-query>` depend
++on your version of MongoDB. For example, in MongoDB 8.0, the supported types
++are ``equality`` and ``range``.
++
++See :ref:`querying-encrypted-fields` for an example.
++
++The supported Django lookups for ``equality`` queries are: :lookup:`exact` and
++:lookup:`in`. The supported operators are AND (``&``) and OR (``|``).
++
++The supported lookups for ``range`` queries include those of ``equality``
++queries as well as :lookup:`lt`, :lookup:`lte`, :lookup:`gt`, :lookup:`gte`,
++and :lookup:`range`.
++
++Due to MongoDB limitations, these fields don't support the ``queries``
++argument:
++
++- ``EncryptedArrayField``
++- ``EncryptedEmbeddedModelArrayField``
++- ``EncryptedEmbeddedModelField``
++
++Embedded model encryption
++=========================
++
++There are two ways to encrypt embedded models. You can either encrypt the
++entire subdocument, in which case you can't query any of the subdocument's
++fields, or you can encrypt only selected fields of the subdocument.
++
++Encrypting the entire subdocument
++---------------------------------
++
++To encrypt a subdocument, use ``EncryptedEmbeddedModelField`` or
++``EncryptedEmbeddedModelArrayField``. In this case, the field's embedded model
++cannot have any encrypted fields.
++
++Encrypting selected fields of a subdocument
++-------------------------------------------
++
++To encrypt only select fields of a subdocument, use :class:`EmbeddedModelField`
++and any of the other encrypted fields on the embedded model.
++
++MongoDB doesn't support encrypting selected fields of
++``EmbeddedModelArrayField``.
++
++``EncryptedFieldMixin``
++=======================
++
++.. class:: EncryptedFieldMixin
++
++    Use this mixin to create encrypted versions of your own custom fields. For
++    example, to create an encrypted version of ``MyField``::
++
++        from django.db import models
++        from django_mongodb_backend.fields import EncryptedFieldMixin
++        from myapp.fields import MyField
++
++
++        class MyEncryptedField(EncryptedFieldMixin, MyField):
++            pass
++
++    This adds the :ref:`queries <encrypted-fields-queries>` argument to the
++    field.
++
++Limitations
++===========
++
++Encrypted field limitations
++---------------------------
++
++MongoDB imposes some restrictions on encrypted fields:
++
++* They cannot be indexed.
++* They cannot be part of a unique constraint.
++* They cannot be null.
++
++.. _encrypted-queryset-limitations:
++
++``QuerySet`` limitations
++------------------------
++
++In addition to :ref:`Django MongoDB Backend's QuerySet limitations
++<known-issues-querying>`, some ``QuerySet`` methods aren't supported on
++encrypted fields. Each unsupported method listed here is followed by a sample
++error message from the database. Depending on the exact query, error messages
++may vary.
++
++- :meth:`~django.db.models.query.QuerySet.order_by`: "Cannot add an encrypted
++  field as a prefix of another encrypted field."
++- :meth:`~django.db.models.query.QuerySet.alias`,
++  :meth:`~django.db.models.query.QuerySet.annotate`,
++  :meth:`~django.db.models.query.QuerySet.distinct`: "Cannot group on field
++  '<encrypted_field>' which is encrypted with the random algorithm or whose
++  encryption properties are not known until runtime."
++- :meth:`~django.db.models.query.QuerySet.dates`,
++  :meth:`~django.db.models.query.QuerySet.datetimes`: "If the value type is a
++  date, the type of the index must also be date (and vice versa)."
++- :meth:`~django.db.models.query.QuerySet.in_bulk`: "Encrypted fields can't
++  have unique constraints."
++- Queries that join multiple collections and require the ``let`` operator. Such
++  queries usually involve expressions or subqueries: "Non-empty 'let' field is
++  not allowed in the $lookup aggregation stage over an encrypted collection."
++
++.. _automatic-encryption-limitations:
++
++Automatic Encryption limitations
++--------------------------------
++
++There are also several ``QuerySet`` methods that aren't permitted on any models
++that use a database connection with Automatic Encryption, regardless of whether
++or not the models have encrypted fields. Each unsupported method is followed by
++a sample error message from the database.
++
++- :meth:`~django.db.models.query.QuerySet.update`: "Multi-document updates are
++  not allowed with Queryable Encryption."
++- :meth:`~django.db.models.query.QuerySet.aggregate`: "Invalid reference to an
++  encrypted field within aggregate expression."
++- :meth:`~django.db.models.query.QuerySet.union`: "Aggregation stage $unionWith
++  is not allowed or supported with automatic encryption."
+diff --git a/docs/ref/models/index.rst b/docs/ref/models/index.rst
+index 4639417..c92f31f 100644
+--- a/docs/ref/models/index.rst
++++ b/docs/ref/models/index.rst
+@@ -8,6 +8,7 @@ Model API reference.
+    :maxdepth: 1
+ 
+    fields
++   encrypted-fields
+    querysets
+    models
+    indexes
+diff --git a/docs/ref/settings.rst b/docs/ref/settings.rst
+new file mode 100644
+index 0000000..59aadb7
+--- /dev/null
++++ b/docs/ref/settings.rst
+@@ -0,0 +1,30 @@
++========
++Settings
++========
++
++The document describes Django settings for MongoDB Backend beyond
++:doc:`Django's built-in settings <django:ref/settings>`.
++
++Queryable Encryption
++====================
++
++An inner option of :setting:`django:DATABASES` configures Key Management
++Service (KMS) credentials for Queryable Encryption:
++
++.. setting:: DATABASE-KMS-CREDENTIALS
++
++``KMS_CREDENTIALS``
++-------------------
++
++.. versionadded:: 6.0.1
++
++Default: not defined
++
++A dictionary of Key Management Service (KMS) credential key-value pairs. These
++credentials are required to access your KMS provider (such as AWS KMS, Azure
++Key Vault, or GCP KMS) for encrypting and decrypting data using Queryable
++Encryption.
++
++The keys for each provider are documented under the ``master_key`` parameter of
++:meth:`~pymongo.encryption.ClientEncryption.create_data_key`. For an example,
++see :ref:`configuring-kms`.
+diff --git a/docs/releases/6.0.x.rst b/docs/releases/6.0.x.rst
+index 0dff5c7..46c51e6 100644
+--- a/docs/releases/6.0.x.rst
++++ b/docs/releases/6.0.x.rst
+@@ -10,6 +10,7 @@ Django MongoDB Backend 6.0.x
+ New features
+ ------------
+ 
++- Added support for :doc:`Queryable Encryption </howto/queryable-encryption>`.
+ - Added support for :ref:`spatial lookups <spatial-lookups>`.
+ 
+ Bug fixes
+diff --git a/docs/topics/known-issues.rst b/docs/topics/known-issues.rst
+index 01259b4..d73bc31 100644
+--- a/docs/topics/known-issues.rst
++++ b/docs/topics/known-issues.rst
+@@ -26,6 +26,8 @@ Model fields
+   - :class:`~django.db.models.CompositePrimaryKey`
+   - :class:`~django.db.models.GeneratedField`
+ 
++.. _known-issues-querying:
++
+ Querying
+ ========
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index acecf20..2ca1615 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -38,6 +38,10 @@ docs = [
+     "furo>=2025.7.19",
+     "sphinx-copybutton",
+ ]
++encryption = [
++    "pymongo>=4.16.0",
++    "pymongo[encryption]",
++]
+ 
+ [project.urls]
+ Homepage = "https://www.mongodb.org"

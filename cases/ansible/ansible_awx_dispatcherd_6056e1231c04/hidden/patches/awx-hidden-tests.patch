@@ -1,0 +1,150 @@
+diff --git a/awx/main/tests/functional/tasks/test_tasks_system.py b/awx/main/tests/functional/tasks/test_tasks_system.py
+index 6fb3acbfba..fffc571b10 100644
+--- a/awx/main/tests/functional/tasks/test_tasks_system.py
++++ b/awx/main/tests/functional/tasks/test_tasks_system.py
+@@ -1,10 +1,21 @@
++import copy
++import json
++import logging
++import logging.config
+ import os
+ import tempfile
+ import shutil
++from types import SimpleNamespace
++from unittest import mock
+ 
+ import pytest
+ 
+-from awx.main.tasks.system import CleanupImagesAndFiles, execution_node_health_check, inspect_established_receptor_connections
++from awx.conf.views import SettingSingletonDetail
++from awx.main.management.commands.run_dispatcher import Command
++from awx.main.tasks.system import CleanupImagesAndFiles, execution_node_health_check, inspect_established_receptor_connections, clear_setting_cache
++from awx.main.utils.filters import DynamicLevelFilter
+ from awx.main.models import Instance, Job, ReceptorAddress, InstanceLink
++from dispatcherd import factories as dispatcher_factories
++from dispatcherd.config import settings as dispatcher_settings
+ 
+ 
+@@ -98,3 +109,101 @@ def test_folder_cleanup_multiple_running_jobs(job_folder_factory, me_inst):
+     CleanupImagesAndFiles.run(grace_period=0)
+ 
+     assert [os.path.exists(d) for d in dirs] == [True for i in range(num_jobs)]
++
++
++@pytest.mark.django_db
++def test_log_level_setting_change_reaches_dispatcherd(settings):
++    settings.LOG_AGGREGATOR_LEVEL = 'DEBUG'
++    settings.CLUSTER_HOST_ID = 'control-node'
++    published_messages = []
++
++    class DummyBroker:
++        def publish_message(self, channel, message):
++            published_messages.append((channel, message))
++
++        def close(self):
++            pass
++
++    dummy_broker = DummyBroker()
++    view = SettingSingletonDetail()
++    view.category_slug = 'logging'
++    view.request = mock.Mock(user=None)
++    settings_qs = mock.Mock()
++    settings_qs.filter.return_value.order_by.return_value.first.return_value = None
++    view.get_queryset = mock.Mock(return_value=settings_qs)
++    serializer = mock.Mock(validated_data={'LOG_AGGREGATOR_LEVEL': 'DEBUG'}, instance=SimpleNamespace())
++
++    def run_cache_invalidation(setting_keys):
++        clear_setting_cache(setting_keys)
++
++    with (
++        mock.patch('awx.conf.views.connection.on_commit', side_effect=lambda callback: callback()),
++        mock.patch('awx.conf.views.clear_setting_cache.delay', side_effect=run_cache_invalidation),
++        mock.patch('awx.conf.views.Setting.objects.create'),
++        mock.patch('awx.conf.views.settings_registry.is_setting_read_only', return_value=False),
++        mock.patch('awx.conf.views.settings_registry.is_setting_encrypted', return_value=False),
++        mock.patch('awx.conf.views.reconfigure_rsyslog.delay'),
++        mock.patch('awx.conf.views.flag_enabled', create=True, return_value=True),
++        mock.patch('dispatcherd.control.get_broker', return_value=dummy_broker),
++    ):
++        view.perform_update(serializer)
++
++    assert published_messages, 'control command was not sent through the broker'
++    payloads = [json.loads(payload) for _queue, payload in published_messages]
++    assert any(body.get('control') == 'set_log_level' and body.get('control_data') == {'level': 'DEBUG'} for body in payloads)
++
++
++@pytest.mark.django_db
++def test_dispatcher_startup_uses_in_memory_log_level(settings):
++    original_logging_settings = copy.deepcopy(settings.LOGGING)
++    dispatcherd_logger = logging.getLogger('dispatcherd')
++    original_handlers = dispatcherd_logger.handlers[:]
++    original_level = dispatcherd_logger.level
++    original_propagate = dispatcherd_logger.propagate
++    settings.LOGGING = {
++        'version': 1,
++        'disable_existing_loggers': False,
++        'filters': {
++            'dynamic_level_filter': {
++                '()': 'awx.main.utils.filters.DynamicLevelFilter',
++            }
++        },
++        'handlers': {
++            'console': {
++                'class': 'logging.StreamHandler',
++                'filters': ['dynamic_level_filter'],
++                'stream': 'ext://sys.stdout',
++            }
++        },
++        'loggers': {
++            'dispatcherd': {
++                'handlers': ['console'],
++                'level': 'INFO',
++                'propagate': False,
++            }
++        },
++    }
++    settings.LOG_AGGREGATOR_LEVEL = 'WARNING'
++    logging.config.dictConfig(settings.LOGGING)
++    prior_dispatcher_settings = dispatcher_settings._wrapped
++
++    def start_dispatcherd():
++        dispatcher_factories.from_settings()
++
++    try:
++        with (
++            mock.patch('awx.main.management.commands.run_dispatcher.flag_enabled', return_value=True),
++            mock.patch('awx.main.management.commands.run_dispatcher.run_service', side_effect=start_dispatcherd),
++            mock.patch.object(dispatcher_factories, 'producers_from_settings', return_value=[]),
++            mock.patch.object(dispatcher_factories, 'pool_from_settings', return_value=mock.Mock()),
++            mock.patch.object(dispatcher_factories, 'DispatcherMain', return_value=mock.Mock()),
++        ):
++            Command().handle()
++
++        assert dispatcherd_logger.level == logging.WARNING
++        assert all(not isinstance(log_filter, DynamicLevelFilter) for handler in dispatcherd_logger.handlers for log_filter in handler.filters)
++    finally:
++        settings.LOGGING = original_logging_settings
++        dispatcherd_logger.handlers = original_handlers
++        dispatcherd_logger.setLevel(original_level)
++        dispatcherd_logger.propagate = original_propagate
++        dispatcher_settings._wrapped = prior_dispatcher_settings
+diff --git a/awx/main/tests/live/tests/conftest.py b/awx/main/tests/live/tests/conftest.py
+index 6aaa57abbf..a617507472 100644
+--- a/awx/main/tests/live/tests/conftest.py
++++ b/awx/main/tests/live/tests/conftest.py
+@@ -8,6 +8,7 @@ import logging
+ import pytest
+ 
+ from django.conf import settings
++from django.core.cache import cache
+ 
+ from awx.api.versioning import reverse
+ 
+@@ -60,6 +61,7 @@ def live_tmp_folder():
+         subprocess.run(GIT_COMMANDS, cwd=source_dir, shell=True)
+     if path not in settings.AWX_ISOLATION_SHOW_PATHS:
+         settings.AWX_ISOLATION_SHOW_PATHS = settings.AWX_ISOLATION_SHOW_PATHS + [path]
++        cache.delete_many(['AWX_ISOLATION_SHOW_PATHS'])
+     return path
+ 
+ 

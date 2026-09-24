@@ -1,0 +1,384 @@
+diff --git a/test/cli/identity_cid_test.go b/test/cli/identity_cid_test.go
+new file mode 100644
+index 000000000..61a464ac5
+--- /dev/null
++++ b/test/cli/identity_cid_test.go
+@@ -0,0 +1,310 @@
++package cli
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/ipfs/boxo/verifcid"
++	"github.com/ipfs/kubo/config"
++	"github.com/ipfs/kubo/test/cli/harness"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestIdentityCIDOverflowProtection(t *testing.T) {
++	t.Parallel()
++
++	t.Run("ipfs add --hash=identity with small data succeeds", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		// small data that fits in identity CID
++		smallData := "small data"
++		tempFile := filepath.Join(node.Dir, "small.txt")
++		err := os.WriteFile(tempFile, []byte(smallData), 0644)
++		require.NoError(t, err)
++
++		res := node.IPFS("add", "--hash=identity", tempFile)
++		assert.NoError(t, res.Err)
++		cid := strings.Fields(res.Stdout.String())[1]
++
++		// verify it's actually using identity hash
++		res = node.IPFS("cid", "format", "-f", "%h", cid)
++		assert.NoError(t, res.Err)
++		assert.Equal(t, "identity", res.Stdout.Trimmed())
++	})
++
++	t.Run("ipfs add --hash=identity with large data fails", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		// data larger than verifcid.DefaultMaxIdentityDigestSize
++		largeData := strings.Repeat("x", verifcid.DefaultMaxIdentityDigestSize+50)
++		tempFile := filepath.Join(node.Dir, "large.txt")
++		err := os.WriteFile(tempFile, []byte(largeData), 0644)
++		require.NoError(t, err)
++
++		res := node.RunIPFS("add", "--hash=identity", tempFile)
++		assert.NotEqual(t, 0, res.ExitErr.ExitCode())
++		// should error with digest too large message
++		assert.Contains(t, res.Stderr.String(), "digest too large")
++	})
++
++	t.Run("ipfs add --inline with valid --inline-limit succeeds", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		smallData := "small inline data"
++		tempFile := filepath.Join(node.Dir, "inline.txt")
++		err := os.WriteFile(tempFile, []byte(smallData), 0644)
++		require.NoError(t, err)
++
++		// use limit just under the maximum
++		limit := verifcid.DefaultMaxIdentityDigestSize - 10
++		res := node.IPFS("add", "--inline", fmt.Sprintf("--inline-limit=%d", limit), tempFile)
++		assert.NoError(t, res.Err)
++		cid := strings.Fields(res.Stdout.String())[1]
++
++		// verify the CID is using identity hash (inline)
++		res = node.IPFS("cid", "format", "-f", "%h", cid)
++		assert.NoError(t, res.Err)
++		assert.Equal(t, "identity", res.Stdout.Trimmed())
++
++		// verify the codec (may be dag-pb or raw depending on kubo version)
++		res = node.IPFS("cid", "format", "-f", "%c", cid)
++		assert.NoError(t, res.Err)
++		// Accept either raw or dag-pb as both are valid for inline data
++		codec := res.Stdout.Trimmed()
++		assert.True(t, codec == "raw" || codec == "dag-pb", "expected raw or dag-pb codec, got %s", codec)
++	})
++
++	t.Run("ipfs add --inline with excessive --inline-limit fails", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		smallData := "data"
++		tempFile := filepath.Join(node.Dir, "inline2.txt")
++		err := os.WriteFile(tempFile, []byte(smallData), 0644)
++		require.NoError(t, err)
++
++		excessiveLimit := verifcid.DefaultMaxIdentityDigestSize + 50
++		res := node.RunIPFS("add", "--inline", fmt.Sprintf("--inline-limit=%d", excessiveLimit), tempFile)
++		assert.NotEqual(t, 0, res.ExitErr.ExitCode())
++		assert.Contains(t, res.Stderr.String(), fmt.Sprintf("inline-limit %d exceeds maximum allowed size of %d bytes", excessiveLimit, verifcid.DefaultMaxIdentityDigestSize))
++	})
++
++	t.Run("ipfs files write --hash=identity appending to identity CID switches to configured hash", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		// create initial small file with identity CID
++		initialData := "initial"
++		tempFile := filepath.Join(node.Dir, "initial.txt")
++		err := os.WriteFile(tempFile, []byte(initialData), 0644)
++		require.NoError(t, err)
++
++		res := node.IPFS("add", "--hash=identity", tempFile)
++		assert.NoError(t, res.Err)
++		cid1 := strings.Fields(res.Stdout.String())[1]
++
++		// verify initial CID uses identity
++		res = node.IPFS("cid", "format", "-f", "%h", cid1)
++		assert.NoError(t, res.Err)
++		assert.Equal(t, "identity", res.Stdout.Trimmed())
++
++		// copy to MFS
++		res = node.IPFS("files", "cp", fmt.Sprintf("/ipfs/%s", cid1), "/identity-file")
++		assert.NoError(t, res.Err)
++
++		// append data that would exceed identity CID limit
++		appendData := strings.Repeat("a", verifcid.DefaultMaxIdentityDigestSize)
++		appendFile := filepath.Join(node.Dir, "append.txt")
++		err = os.WriteFile(appendFile, []byte(appendData), 0644)
++		require.NoError(t, err)
++
++		// append to the end of the file
++		// get the current data size
++		res = node.IPFS("files", "stat", "--format", "<size>", "/identity-file")
++		assert.NoError(t, res.Err)
++		size := res.Stdout.Trimmed()
++		// this should succeed because DagModifier in boxo handles the overflow
++		res = node.IPFS("files", "write", "--hash=identity", "--offset="+size, "/identity-file", appendFile)
++		assert.NoError(t, res.Err)
++
++		// check that the file now uses non-identity hash
++		res = node.IPFS("files", "stat", "--hash", "/identity-file")
++		assert.NoError(t, res.Err)
++		newCid := res.Stdout.Trimmed()
++
++		// verify new CID does NOT use identity
++		res = node.IPFS("cid", "format", "-f", "%h", newCid)
++		assert.NoError(t, res.Err)
++		assert.NotEqual(t, "identity", res.Stdout.Trimmed())
++
++		// verify it switched to a cryptographic hash
++		assert.Equal(t, config.DefaultHashFunction, res.Stdout.Trimmed())
++	})
++
++	t.Run("ipfs files write --hash=identity with small write creates identity CID", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		// create a small file with identity hash directly in MFS
++		smallData := "small"
++		tempFile := filepath.Join(node.Dir, "small.txt")
++		err := os.WriteFile(tempFile, []byte(smallData), 0644)
++		require.NoError(t, err)
++
++		// write to MFS with identity hash
++		res := node.IPFS("files", "write", "--create", "--hash=identity", "/mfs-identity", tempFile)
++		assert.NoError(t, res.Err)
++
++		// verify using identity CID
++		res = node.IPFS("files", "stat", "--hash", "/mfs-identity")
++		assert.NoError(t, res.Err)
++		cid := res.Stdout.Trimmed()
++
++		// verify CID uses identity hash
++		res = node.IPFS("cid", "format", "-f", "%h", cid)
++		assert.NoError(t, res.Err)
++		assert.Equal(t, "identity", res.Stdout.Trimmed())
++
++		// verify content
++		res = node.IPFS("files", "read", "/mfs-identity")
++		assert.NoError(t, res.Err)
++		assert.Equal(t, smallData, res.Stdout.Trimmed())
++	})
++
++	t.Run("raw node with identity CID converts to UnixFS when appending", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		// create raw block with identity CID
++		rawData := "raw"
++		tempFile := filepath.Join(node.Dir, "raw.txt")
++		err := os.WriteFile(tempFile, []byte(rawData), 0644)
++		require.NoError(t, err)
++
++		res := node.IPFS("block", "put", "--format=raw", "--mhtype=identity", tempFile)
++		assert.NoError(t, res.Err)
++		rawCid := res.Stdout.Trimmed()
++
++		// verify initial CID uses identity hash and raw codec
++		res = node.IPFS("cid", "format", "-f", "%h", rawCid)
++		assert.NoError(t, res.Err)
++		assert.Equal(t, "identity", res.Stdout.Trimmed())
++
++		res = node.IPFS("cid", "format", "-f", "%c", rawCid)
++		assert.NoError(t, res.Err)
++		assert.Equal(t, "raw", res.Stdout.Trimmed())
++
++		// copy to MFS
++		res = node.IPFS("files", "cp", fmt.Sprintf("/ipfs/%s", rawCid), "/raw-identity")
++		assert.NoError(t, res.Err)
++
++		// append data
++		appendData := "appended"
++		appendFile := filepath.Join(node.Dir, "append-raw.txt")
++		err = os.WriteFile(appendFile, []byte(appendData), 0644)
++		require.NoError(t, err)
++
++		// get current data size for appending
++		res = node.IPFS("files", "stat", "--format", "<size>", "/raw-identity")
++		assert.NoError(t, res.Err)
++		size := res.Stdout.Trimmed()
++		res = node.IPFS("files", "write", "--hash=identity", "--offset="+size, "/raw-identity", appendFile)
++		assert.NoError(t, res.Err)
++
++		// verify content
++		res = node.IPFS("files", "read", "/raw-identity")
++		assert.NoError(t, res.Err)
++		assert.Equal(t, rawData+appendData, res.Stdout.Trimmed())
++
++		// check that it's now a UnixFS structure (dag-pb)
++		res = node.IPFS("files", "stat", "--hash", "/raw-identity")
++		assert.NoError(t, res.Err)
++		newCid := res.Stdout.Trimmed()
++
++		res = node.IPFS("cid", "format", "-f", "%c", newCid)
++		assert.NoError(t, res.Err)
++		assert.Equal(t, "dag-pb", res.Stdout.Trimmed())
++
++		res = node.IPFS("files", "stat", "/raw-identity")
++		assert.NoError(t, res.Err)
++		assert.Contains(t, res.Stdout.String(), "Type: file")
++	})
++
++	t.Run("ipfs add --inline-limit at exactly max size succeeds", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		// create small data that will be inlined
++		smallData := "test data for inline"
++		tempFile := filepath.Join(node.Dir, "exact.txt")
++		err := os.WriteFile(tempFile, []byte(smallData), 0644)
++		require.NoError(t, err)
++
++		// exactly at the limit should succeed
++		res := node.IPFS("add", "--inline", fmt.Sprintf("--inline-limit=%d", verifcid.DefaultMaxIdentityDigestSize), tempFile)
++		assert.NoError(t, res.Err)
++		cid := strings.Fields(res.Stdout.String())[1]
++
++		// verify it uses identity hash (inline) since data is small enough
++		res = node.IPFS("cid", "format", "-f", "%h", cid)
++		assert.NoError(t, res.Err)
++		assert.Equal(t, "identity", res.Stdout.Trimmed())
++	})
++
++	t.Run("ipfs add --inline-limit one byte over max fails", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		smallData := "test"
++		tempFile := filepath.Join(node.Dir, "oneover.txt")
++		err := os.WriteFile(tempFile, []byte(smallData), 0644)
++		require.NoError(t, err)
++
++		// one byte over should fail
++		overLimit := verifcid.DefaultMaxIdentityDigestSize + 1
++		res := node.RunIPFS("add", "--inline", fmt.Sprintf("--inline-limit=%d", overLimit), tempFile)
++		assert.NotEqual(t, 0, res.ExitErr.ExitCode())
++		assert.Contains(t, res.Stderr.String(), fmt.Sprintf("inline-limit %d exceeds maximum allowed size of %d bytes", overLimit, verifcid.DefaultMaxIdentityDigestSize))
++	})
++
++	t.Run("ipfs add --inline with data larger than limit uses configured hash", func(t *testing.T) {
++		t.Parallel()
++		node := harness.NewT(t).NewNode().Init().StartDaemon()
++		defer node.StopDaemon()
++
++		// data larger than inline limit
++		largeData := strings.Repeat("y", 100)
++		tempFile := filepath.Join(node.Dir, "toolarge.txt")
++		err := os.WriteFile(tempFile, []byte(largeData), 0644)
++		require.NoError(t, err)
++
++		// set inline limit smaller than data
++		res := node.IPFS("add", "--inline", "--inline-limit=50", tempFile)
++		assert.NoError(t, res.Err)
++		cid := strings.Fields(res.Stdout.String())[1]
++
++		// verify it's NOT using identity hash (data too large for inline)
++		res = node.IPFS("cid", "format", "-f", "%h", cid)
++		assert.NoError(t, res.Err)
++		assert.NotEqual(t, "identity", res.Stdout.Trimmed())
++
++		// should use configured hash
++		assert.Equal(t, config.DefaultHashFunction, res.Stdout.Trimmed())
++	})
++}
+diff --git a/test/dependencies/go.mod b/test/dependencies/go.mod
+index 0bdd7895a..008cb676a 100644
+--- a/test/dependencies/go.mod
++++ b/test/dependencies/go.mod
+@@ -134,7 +134,7 @@ require (
+ 	github.com/huin/goupnp v1.3.0 // indirect
+ 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+ 	github.com/ipfs/bbloom v0.0.4 // indirect
+-	github.com/ipfs/boxo v0.34.1-0.20250908170437-7d2493027364 // indirect
++	github.com/ipfs/boxo v0.34.1-0.20250909170220-e69f67e94c11 // indirect
+ 	github.com/ipfs/go-bitfield v1.1.0 // indirect
+ 	github.com/ipfs/go-block-format v0.2.2 // indirect
+ 	github.com/ipfs/go-cid v0.5.0 // indirect
+diff --git a/test/dependencies/go.sum b/test/dependencies/go.sum
+index 05f22488d..27501efe9 100644
+--- a/test/dependencies/go.sum
++++ b/test/dependencies/go.sum
+@@ -332,8 +332,8 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
+ github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
+ github.com/ipfs/bbloom v0.0.4 h1:Gi+8EGJ2y5qiD5FbsbpX/TMNcJw8gSqr7eyjHa4Fhvs=
+ github.com/ipfs/bbloom v0.0.4/go.mod h1:cS9YprKXpoZ9lT0n/Mw/a6/aFV6DTjTLYHeA+gyqMG0=
+-github.com/ipfs/boxo v0.34.1-0.20250908170437-7d2493027364 h1:VdRdPlosNYdlENC0UsCxapHala/Q1Me6yBY5ChKUw7s=
+-github.com/ipfs/boxo v0.34.1-0.20250908170437-7d2493027364/go.mod h1:rXql6ncaLZZfLqDG3Cuw9ZYQKd3rMU5bk1TGXF0+ZL0=
++github.com/ipfs/boxo v0.34.1-0.20250909170220-e69f67e94c11 h1:EsCbOKE+giLtrFTysnbTzIRQENOiLdcpOY3kV3y6wlU=
++github.com/ipfs/boxo v0.34.1-0.20250909170220-e69f67e94c11/go.mod h1:rXql6ncaLZZfLqDG3Cuw9ZYQKd3rMU5bk1TGXF0+ZL0=
+ github.com/ipfs/go-bitfield v1.1.0 h1:fh7FIo8bSwaJEh6DdTWbCeZ1eqOaOkKFI74SCnsWbGA=
+ github.com/ipfs/go-bitfield v1.1.0/go.mod h1:paqf1wjq/D2BBmzfTVFlJQ9IlFOZpg422HL0HqsGWHU=
+ github.com/ipfs/go-block-format v0.2.2 h1:uecCTgRwDIXyZPgYspaLXoMiMmxQpSx2aq34eNc4YvQ=
+diff --git a/test/sharness/t0275-cid-security.sh b/test/sharness/t0275-cid-security.sh
+index e8d265550..7f8764d3f 100755
+--- a/test/sharness/t0275-cid-security.sh
++++ b/test/sharness/t0275-cid-security.sh
+@@ -15,7 +15,7 @@ test_expect_success "adding using unsafe function fails with error" '
+ '
+ 
+ test_expect_success "error reason is pointed out" '
+-  grep "insecure hash functions not allowed" add_out || test_fsh cat add_out
++  grep "potentially insecure hash functions not allowed" add_out || test_fsh cat add_out
+ '
+ 
+ test_expect_success "adding using too short of a hash function gives out an error" '
+@@ -23,7 +23,7 @@ test_expect_success "adding using too short of a hash function gives out an erro
+ '
+ 
+ test_expect_success "error reason is pointed out" '
+-  grep "hashes must be at least 20 bytes long" block_out
++  grep "digest too small" block_out
+ '
+ 
+ 
+@@ -35,7 +35,7 @@ test_cat_get() {
+ 
+ 
+   test_expect_success "error reason is pointed out" '
+-    grep "insecure hash functions not allowed" ipfs_cat
++    grep "potentially insecure hash functions not allowed" ipfs_cat
+   '
+ 
+ 
+@@ -45,7 +45,7 @@ test_cat_get() {
+     '
+ 
+   test_expect_success "error reason is pointed out" '
+-     grep "hashes must be at least 20 bytes long" ipfs_get
++     grep "digest too small" ipfs_get
+   '
+ }
+ 

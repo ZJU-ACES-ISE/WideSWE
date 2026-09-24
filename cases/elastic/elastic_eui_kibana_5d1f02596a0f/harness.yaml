@@ -1,0 +1,31 @@
+task_id: elastic_eui_kibana_5d1f02596a0f
+hidden_test_patches:
+- repo: eui
+  patch: hidden/patches/eui-hidden-tests.patch
+  test_profile: eui-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - packages/eui/src/components/flyout/flyout.test.tsx
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from elastic/eui PR(s) 9318
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - src/platform/plugins/shared/discover/public/components/discover_grid_flyout/discover_grid_flyout.test.tsx
+  hidden_file: *id002
+  semantic_changes: Replaced Gold-specific EuiFlyout/flyoutMenuProps assertions with observable session activation and rendered-title checks.
+  source: upstream test changes from elastic/kibana PR(s) 246719
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - eui-hidden
+    - kibana-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

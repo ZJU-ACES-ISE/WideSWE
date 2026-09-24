@@ -1,0 +1,305 @@
+diff --git a/tests/inode_lru_contract.rs b/tests/inode_lru_contract.rs
+new file mode 100644
+index 0000000..e65f8a6
+--- /dev/null
++++ b/tests/inode_lru_contract.rs
+@@ -0,0 +1,299 @@
++use std::collections::{HashMap, HashSet};
++use std::path::Path;
++use std::sync::{Arc, Mutex};
++use std::time::{Duration, SystemTime, UNIX_EPOCH};
++
++use async_trait::async_trait;
++use clap::Parser;
++use hf_mount::error::{Error, Result};
++use hf_mount::hub_api::{BatchOp, HeadFileInfo, HubOps, SourceKind, TreeEntry};
++use hf_mount::setup::Args;
++use hf_mount::virtual_fs::inode::ROOT_INODE;
++use hf_mount::virtual_fs::{VfsConfig, VirtualFs};
++use hf_mount::xet::{DownloadStreamOps, StagingDir, StreamingWriterOps, XetOps};
++use xet_data::processing::XetFileInfo;
++
++struct ContractHub {
++    tree: Vec<TreeEntry>,
++    source: SourceKind,
++}
++
++impl ContractHub {
++    fn crawler_tree(dirs: usize, files_per_dir: usize) -> Arc<Self> {
++        let mut tree = Vec::new();
++        for d in 0..dirs {
++            for f in 0..files_per_dir {
++                tree.push(TreeEntry {
++                    path: format!("d{d:02}/f{f:02}.txt"),
++                    entry_type: "file".to_string(),
++                    size: Some(1),
++                    xet_hash: None,
++                    oid: None,
++                    mtime: None,
++                });
++            }
++        }
++        tree.push(TreeEntry {
++            path: "mutable.txt".to_string(),
++            entry_type: "file".to_string(),
++            size: Some(1),
++            xet_hash: Some("remote-hash".to_string()),
++            oid: None,
++            mtime: None,
++        });
++        Arc::new(Self {
++            tree,
++            source: SourceKind::Bucket {
++                bucket_id: "contract-test".to_string(),
++            },
++        })
++    }
++}
++
++#[async_trait]
++impl HubOps for ContractHub {
++    async fn list_tree(&self, prefix: &str) -> Result<Vec<TreeEntry>> {
++        let prefix = if prefix.is_empty() {
++            String::new()
++        } else {
++            format!("{prefix}/")
++        };
++        let mut result = Vec::new();
++        let mut seen_dirs = HashSet::new();
++        for entry in &self.tree {
++            let relative = if prefix.is_empty() {
++                entry.path.as_str()
++            } else if let Some(relative) = entry.path.strip_prefix(&prefix) {
++                relative
++            } else {
++                continue;
++            };
++            if let Some(slash) = relative.find('/') {
++                let name = &relative[..slash];
++                let path = if prefix.is_empty() {
++                    name.to_string()
++                } else {
++                    format!("{}{name}", prefix)
++                };
++                if seen_dirs.insert(path.clone()) {
++                    result.push(TreeEntry {
++                        path,
++                        entry_type: "directory".to_string(),
++                        size: None,
++                        xet_hash: None,
++                        oid: None,
++                        mtime: None,
++                    });
++                }
++            } else {
++                result.push(entry.clone());
++            }
++        }
++        Ok(result)
++    }
++
++    async fn head_file(&self, _path: &str) -> Result<Option<HeadFileInfo>> {
++        Ok(None)
++    }
++
++    async fn batch_operations(&self, _ops: &[BatchOp]) -> Result<()> {
++        Ok(())
++    }
++
++    async fn download_file_http(&self, _path: &str, dest: &Path) -> Result<()> {
++        std::fs::write(dest, b"").map_err(Error::Io)
++    }
++
++    fn default_mtime(&self) -> SystemTime {
++        UNIX_EPOCH
++    }
++
++    fn source(&self) -> &SourceKind {
++        &self.source
++    }
++
++    fn is_repo(&self) -> bool {
++        false
++    }
++}
++
++struct ContractWriter {
++    data: Vec<u8>,
++}
++
++#[async_trait]
++impl StreamingWriterOps for ContractWriter {
++    async fn write(&mut self, data: &[u8]) -> Result<()> {
++        self.data.extend_from_slice(data);
++        Ok(())
++    }
++
++    async fn finish_boxed(self: Box<Self>) -> Result<XetFileInfo> {
++        Ok(XetFileInfo::new("contract-hash".to_string(), self.data.len() as u64))
++    }
++
++    fn len(&self) -> u64 {
++        self.data.len() as u64
++    }
++
++    fn is_empty(&self) -> bool {
++        self.data.is_empty()
++    }
++}
++
++struct ContractXet {
++    files: Mutex<HashMap<String, Vec<u8>>>,
++}
++
++#[async_trait]
++impl XetOps for ContractXet {
++    async fn create_streaming_writer(&self) -> Result<Box<dyn StreamingWriterOps>> {
++        Ok(Box::new(ContractWriter { data: Vec::new() }))
++    }
++
++    async fn download_to_file(&self, hash: &str, _size: u64, dest: &Path) -> Result<()> {
++        let data = self.files.lock().unwrap().get(hash).cloned().unwrap_or_default();
++        std::fs::write(dest, data).map_err(Error::Io)
++    }
++
++    async fn upload_files(&self, paths: &[&Path]) -> Result<Vec<XetFileInfo>> {
++        Ok(paths
++            .iter()
++            .map(|path| XetFileInfo::new("contract-hash".to_string(), path.metadata().unwrap().len()))
++            .collect())
++    }
++
++    fn download_stream_boxed(
++        &self,
++        _file_info: &XetFileInfo,
++        _offset: u64,
++        _end: Option<u64>,
++    ) -> Result<Box<dyn DownloadStreamOps>> {
++        Err(Error::Xet("unused in contract test".to_string()))
++    }
++
++    async fn warm_reconstruction_cache(&self, _xet_hash: &str) {}
++}
++
++fn contract_vfs(hub: Arc<ContractHub>, soft_limit: usize) -> (tokio::runtime::Runtime, Arc<VirtualFs>) {
++    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
++    let staging_path = std::env::temp_dir().join(format!("hf-mount-hidden-{}", std::process::id()));
++    std::fs::create_dir_all(&staging_path).unwrap();
++    let vfs = VirtualFs::new(
++        runtime.handle().clone(),
++        hub,
++        Arc::new(ContractXet {
++            files: Mutex::new(HashMap::new()),
++        }),
++        Some(StagingDir::new(&staging_path)),
++        VfsConfig {
++            read_only: false,
++            advanced_writes: true,
++            uid: 1000,
++            gid: 1000,
++            poll_interval_secs: 0,
++            metadata_ttl: Duration::from_secs(60),
++            serve_lookup_from_cache: true,
++            filter_os_files: true,
++            direct_io: false,
++            flush_debounce: Duration::from_millis(10),
++            flush_max_batch_window: Duration::from_secs(1),
++            inode_soft_limit: soft_limit,
++            lru_sweep_interval: Duration::from_millis(10),
++        },
++    );
++    (runtime, vfs)
++}
++
++#[test]
++fn inode_limit_cli_defaults_and_overrides() {
++    let defaults = Args::try_parse_from(["hf-mount-fuse", "bucket", "test", "/tmp/mount"]).unwrap();
++    assert_eq!(defaults.options.inode_soft_limit, 0);
++    assert_eq!(defaults.options.lru_sweep_interval_ms, 5_000);
++
++    let configured = Args::try_parse_from([
++        "hf-mount-fuse",
++        "--inode-soft-limit",
++        "42000",
++        "--lru-sweep-interval-ms",
++        "250",
++        "bucket",
++        "test",
++        "/tmp/mount",
++    ])
++    .unwrap();
++    assert_eq!(configured.options.inode_soft_limit, 42_000);
++    assert_eq!(configured.options.lru_sweep_interval_ms, 250);
++}
++
++#[test]
++fn crawler_workload_is_bounded_and_preserves_non_evictable_state() {
++    const DIRS: usize = 20;
++    const FILES_PER_DIR: usize = 40;
++    const SOFT_LIMIT: usize = 100;
++
++    let hub = ContractHub::crawler_tree(DIRS, FILES_PER_DIR);
++    let (runtime, vfs) = contract_vfs(hub, SOFT_LIMIT);
++
++    runtime.block_on(async {
++        let local_dir = vfs.mkdir(ROOT_INODE, "local-dir", 0o755, 1000, 1000).await.unwrap();
++        let (dirty, dirty_handle) = vfs
++            .create(local_dir.ino, "dirty.txt", 0o644, 1000, 1000, Some(42))
++            .await
++            .unwrap();
++        vfs.write(dirty.ino, dirty_handle, 0, b"not committed").unwrap();
++        vfs.rename(local_dir.ino, "dirty.txt", local_dir.ino, "renamed.txt", false)
++            .await
++            .unwrap();
++        let local_link = vfs
++            .symlink(local_dir.ino, "local-link", "target", 0o777, 1000, 1000)
++            .await
++            .unwrap();
++
++        let pending = vfs.lookup(ROOT_INODE, "mutable.txt").await.unwrap();
++        let pending_handle = vfs.open(pending.ino, true, true, Some(43)).await.unwrap();
++        vfs.write(pending.ino, pending_handle, 0, b"replacement").unwrap();
++        vfs.rename(ROOT_INODE, "mutable.txt", ROOT_INODE, "moved.txt", false)
++            .await
++            .unwrap();
++
++        let mut crawled_inodes = Vec::new();
++        let mut last_dir_ino = ROOT_INODE;
++        for d in 0..DIRS {
++            let dir_name = format!("d{d:02}");
++            let dir = vfs.lookup(ROOT_INODE, &dir_name).await.unwrap();
++            last_dir_ino = dir.ino;
++            for f in 0..FILES_PER_DIR {
++                let file = vfs.lookup(dir.ino, &format!("f{f:02}.txt")).await.unwrap();
++                crawled_inodes.push(file.ino);
++            }
++        }
++
++        tokio::time::sleep(Duration::from_millis(100)).await;
++        let retained = crawled_inodes.iter().filter(|ino| vfs.getattr(**ino).is_ok()).count();
++        assert!(
++            retained < crawled_inodes.len() / 2,
++            "crawler entries were not bounded: retained {retained} of {} with soft limit {SOFT_LIMIT}",
++            crawled_inodes.len(),
++        );
++
++        assert!(vfs.getattr(ROOT_INODE).is_ok(), "root inode was evicted");
++        assert!(vfs.getattr(local_dir.ino).is_ok(), "local directory was evicted");
++        assert_eq!(vfs.readlink(local_link.ino).unwrap(), "target");
++        assert!(vfs.getattr(dirty.ino).is_ok(), "dirty/open inode was evicted");
++        assert_eq!(vfs.lookup(local_dir.ino, "renamed.txt").await.unwrap().ino, dirty.ino);
++        assert!(vfs.getattr(pending.ino).is_ok(), "pending-delete inode was evicted");
++        assert_eq!(vfs.lookup(ROOT_INODE, "moved.txt").await.unwrap().ino, pending.ino);
++        assert!(
++            vfs.readdir(last_dir_ino).await.unwrap().len() > 2,
++            "directory with cached children was evicted",
++        );
++
++        let first_dir = vfs.lookup(ROOT_INODE, "d00").await.unwrap();
++        let first_file = vfs.lookup(first_dir.ino, "f00.txt").await.unwrap();
++        assert_eq!(first_file.size, 1, "evicted remote path could not be reconstructed");
++
++        vfs.release(dirty_handle).await.unwrap();
++        vfs.release(pending_handle).await.unwrap();
++    });
++}

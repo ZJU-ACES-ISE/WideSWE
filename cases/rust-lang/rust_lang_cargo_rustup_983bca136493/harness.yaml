@@ -1,0 +1,34 @@
+task_id: rust_lang_cargo_rustup_983bca136493
+hidden_test_patches:
+- repo: cargo
+  patch: hidden/patches/cargo-hidden-tests.patch
+  test_profile: cargo-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/testsuite/rustup.rs
+  hidden_file: *id001
+  semantic_changes: The three positive Cargo warning tests retain every prompt-required
+    semantic element but no longer require Gold's complete diagnostic wording, ordering,
+    punctuation, or rendering. Negative warning cases and install behavior are unchanged.
+  source: upstream test changes from rust-lang/cargo PR(s) 16131
+- repo: rustup
+  patch: hidden/patches/rustup-hidden-tests.patch
+  test_profile: rustup-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - src/test/mock_bin_src.rs
+  - tests/suite/cli_rustup.rs
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from rust-lang/rustup PR(s) 4518
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - cargo-hidden
+    - rustup-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

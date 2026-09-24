@@ -1,0 +1,34 @@
+task_id: laravel_framework_mcp_f64214638c02
+hidden_test_patches:
+- repo: framework
+  patch: hidden/patches/framework-hidden-tests.patch
+  test_profile: framework-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/Database/DatabaseEloquentModelAttributesTest.php
+  hidden_file: *id001
+  semantic_changes:
+  - Table primary-key cases use positional arguments instead of requiring an undisclosed constructor parameter name.
+  - Command-generator output is outside the prompt-visible contract and is not scored.
+  source: upstream test changes from laravel/framework PR(s) 58578
+- repo: mcp
+  patch: hidden/patches/mcp-hidden-tests.patch
+  test_profile: mcp-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/Unit/AttributesTest.php
+  hidden_file: *id002
+  semantic_changes:
+  - Public attribute classes are resolved by short name and PHP Attribute metadata because the prompt does not prescribe their namespace.
+  source: upstream test changes from laravel/mcp PR(s) 154
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - framework-hidden
+    - mcp-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

@@ -1,0 +1,20 @@
+profiles:
+  huggingface_hub-hidden:
+    repo: huggingface_hub
+    workdir: repos/huggingface/huggingface_hub
+    command: python -m pytest -q -o addopts="" selected task contract and stable mocked regression tests
+    docker_service: huggingface-xet
+    dependency_image: ecosyncbench/deps/huggingface-xet:ca639219c2b5
+    status: implemented
+    test_files:
+    - tests/test_xet_download.py
+    - tests/test_xet_upload.py
+  xet_core-hidden:
+    repo: xet-core
+    workdir: repos/huggingface/xet-core
+    command: cargo build --manifest-path hf_xet/Cargo.toml --features pyo3/extension-module; python3 hf_xet/tests/request_headers_contract.py
+    docker_service: huggingface-xet
+    dependency_image: ecosyncbench/deps/huggingface-xet:ca639219c2b5
+    status: implemented
+    test_files:
+    - hf_xet/tests/request_headers_contract.py

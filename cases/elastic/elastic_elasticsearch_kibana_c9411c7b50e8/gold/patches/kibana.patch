@@ -1,0 +1,303 @@
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/types.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/types.ts
+index b60c4cf0eb8..f95b750a1d2 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/types.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/types.ts
+@@ -383,6 +383,14 @@ export interface ValidationErrors {
+     message: string;
+     type: {};
+   };
++  promqlMutuallyExclusiveParams: {
++    message: string;
++    type: { param1: string; param2: string };
++  };
++  promqlInvalidBucketsParam: {
++    message: string;
++    type: {};
++  };
+   promqlMissingQuery: {
+     message: string;
+     type: {};
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/errors.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/errors.ts
+index 32e1c8a39cb..29b0ab32170 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/errors.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/errors.ts
+@@ -297,6 +297,21 @@ Expected one of:
+         }),
+         type: 'error',
+       };
++    case 'promqlMutuallyExclusiveParams':
++      return {
++        message: i18n.translate('kbn-esql-language.esql.validation.promqlMutuallyExclusiveParams', {
++          defaultMessage: '[PROMQL] Parameters "{param1}" and "{param2}" are mutually exclusive',
++          values: { param1: out.param1, param2: out.param2 },
++        }),
++        type: 'error',
++      };
++    case 'promqlInvalidBucketsParam':
++      return {
++        message: i18n.translate('kbn-esql-language.esql.validation.promqlInvalidBucketsParam', {
++          defaultMessage: '[PROMQL] Invalid buckets value. Must be a positive integer',
++        }),
++        type: 'error',
++      };
+     case 'promqlMissingQuery':
+       return {
+         message: i18n.translate('kbn-esql-language.esql.validation.promqlMissingQuery', {
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/autocomplete.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/autocomplete.ts
+index e2c729e4280..a6bd8971caf 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/autocomplete.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/autocomplete.ts
+@@ -42,6 +42,7 @@ import {
+   getIndexAssignmentContext,
+   isParamValueComplete,
+   isAtValidColumnSuggestionPosition,
++  PromqlParamName,
+ } from './utils';
+ import { findPipeOutsideQuotes } from '../../definitions/utils/shared';
+ import { SuggestionCategory } from '../../../language/autocomplete/utils';
+@@ -77,7 +78,10 @@ export async function autocomplete(
+     case 'after_command': {
+       const usedParams = getUsedPromqlParamNames(commandText);
+       const availableParamSuggestions = getPromqlParamKeySuggestions().filter(
+-        (suggestion) => !usedParams.has(suggestion.label)
++        ({ label }) =>
++          !usedParams.has(label) &&
++          !(label === PromqlParamName.Step && usedParams.has(PromqlParamName.Buckets)) &&
++          !(label === PromqlParamName.Buckets && usedParams.has(PromqlParamName.Step))
+       );
+ 
+       const canSuggestColumn =
+@@ -345,7 +349,7 @@ function suggestParamValues(
+     return getDateLiterals();
+   }
+ 
+-  if (param === 'step') {
++  if (param === PromqlParamName.Step) {
+     return [
+       {
+         ...valuePlaceholderConstant,
+@@ -356,6 +360,17 @@ function suggestParamValues(
+     ];
+   }
+ 
++  if (param === PromqlParamName.Buckets) {
++    return [
++      {
++        ...valuePlaceholderConstant,
++        label: 'Insert number of buckets',
++        text: '${0:100}',
++        detail: 'Positive integer (default: 100)',
++      },
++    ];
++  }
++
+   return [valuePlaceholderConstant];
+ }
+ 
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/columns_after.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/columns_after.ts
+index 8705ca2680b..ffd61643cb6 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/columns_after.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/columns_after.ts
+@@ -67,11 +67,14 @@ function getUserDefinedColumn(command: ESQLAstPromqlCommand): ESQLUserDefinedCol
+ }
+ 
+ function getStepColumn(command: ESQLAstPromqlCommand): ESQLColumnData | undefined {
+-  const hasStep = command.params?.entries?.some(
+-    ({ key }) => isIdentifier(key) && key.name.toLowerCase() === PromqlParamName.Step
++  const hasStepOrBuckets = command.params?.entries?.some(
++    ({ key }) =>
++      isIdentifier(key) &&
++      (key.name.toLowerCase() === PromqlParamName.Step ||
++        key.name.toLowerCase() === PromqlParamName.Buckets)
+   );
+ 
+-  if (!hasStep) {
++  if (!hasStepOrBuckets) {
+     return undefined;
+   }
+ 
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/index.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/index.ts
+index fc0e9d429f6..6c57ee4efb2 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/index.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/index.ts
+@@ -30,12 +30,13 @@ export const promqlCommand = {
+     preview: true,
+     description: i18n.translate('kbn-esql-language.esql.definitions.promqlDoc', {
+       defaultMessage:
+-        'Execute PromQL queries against time series data. Requires step=, start=, end= for range queries. The index= parameter defaults to * if not specified.',
++        'Execute PromQL queries against time series data. Use step= or buckets= for time resolution. The index= parameter defaults to * if not specified.',
+     }),
+     declaration:
+-      'PROMQL step=<duration> start=<time> end=<time> [index=<pattern>] [column=](<query>)',
++      'PROMQL [step=<duration>|buckets=<integer>] [start=<time>] [end=<time>] [index=<pattern>] [column=](<query>)',
+     examples: [
+       'PROMQL index=metrics step=1m start=?_tstart end=?_tend (sum by (instance) (bytes))',
++      'PROMQL index=metrics buckets=6 start=?_tstart end=?_tend (avg(cpu_usage))',
+     ],
+   },
+ };
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/summary.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/summary.ts
+index 4d1aa4d69d0..e2ca9fce26a 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/summary.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/summary.ts
+@@ -26,8 +26,11 @@ export const summary = (command: ESQLCommand, query: string): ESQLCommandSummary
+   const promqlCommand = command as ESQLAstPromqlCommand;
+   const newColumns: string[] = [];
+ 
+-  // "step" param acts as a bucket and creates a step column
+-  if (hasParam(promqlCommand, PromqlParamName.Step)) {
++  // "step" or "buckets" param creates a step column in the output
++  if (
++    hasParam(promqlCommand, PromqlParamName.Step) ||
++    hasParam(promqlCommand, PromqlParamName.Buckets)
++  ) {
+     newColumns.push(PromqlParamName.Step);
+   }
+ 
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/utils.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/utils.ts
+index ed90ffe97fc..33554a14a71 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/utils.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/utils.ts
+@@ -1397,6 +1397,7 @@ export enum PromqlParamName {
+   Step = 'step',
+   Start = 'start',
+   End = 'end',
++  Buckets = 'buckets',
+ }
+ 
+ export interface PromqlParamDefinition {
+@@ -1417,7 +1418,6 @@ export const PROMQL_PARAMS: PromqlParamDefinition[] = [
+     name: PromqlParamName.Step,
+     description: 'Query resolution step (e.g. 1m, 5m, 1h)',
+     valueType: PromqlParamValueType.Static,
+-    required: true,
+   },
+   {
+     name: PromqlParamName.Start,
+@@ -1429,6 +1429,11 @@ export const PROMQL_PARAMS: PromqlParamDefinition[] = [
+     description: 'Range query end time (requires start)',
+     valueType: PromqlParamValueType.DateLiterals,
+   },
++  {
++    name: PromqlParamName.Buckets,
++    description: 'Number of time buckets (alternative to step)',
++    valueType: PromqlParamValueType.Static,
++  },
+ ];
+ 
+ export const PROMQL_PARAM_NAMES: string[] = PROMQL_PARAMS.map(({ name }) => name);
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/validate.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/validate.ts
+index da01b71f585..049de1d7b76 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/validate.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/validate.ts
+@@ -45,7 +45,7 @@ import {
+   IDENTIFIER_PATTERN,
+   isPromqlParamName,
+   looksLikePromqlParamAssignment,
+-  PROMQL_REQUIRED_PARAMS,
++  PromqlParamName,
+ } from './utils';
+ 
+ // ISO 8601 with Z, optional milliseconds (e.g. 2024-01-15T10:00:00Z or ...00.000Z).
+@@ -72,7 +72,7 @@ export const validate = (
+     usedParams.add(param);
+   }
+ 
+-  if (STEP_WITH_SPACES_REGEX.test(command.text) && !paramValues.has('step')) {
++  if (STEP_WITH_SPACES_REGEX.test(command.text) && !paramValues.has(PromqlParamName.Step)) {
+     messages.push(
+       getMessageFromId({
+         messageId: 'promqlInvalidStepParam',
+@@ -82,28 +82,27 @@ export const validate = (
+     );
+   }
+ 
+-  for (const param of PROMQL_REQUIRED_PARAMS) {
+-    if (usedParams.has(param)) {
+-      continue;
+-    }
++  const hasStep = usedParams.has(PromqlParamName.Step);
++  const hasBuckets = usedParams.has(PromqlParamName.Buckets);
+ 
++  if (hasStep && hasBuckets) {
+     messages.push({
+       ...getMessageFromId({
+-        messageId: 'promqlMissingParam',
+-        values: { param },
++        messageId: 'promqlMutuallyExclusiveParams',
++        values: { param1: PromqlParamName.Step, param2: PromqlParamName.Buckets },
+         locations: command.location,
+       }),
+     });
+   }
+ 
+-  const hasStart = usedParams.has('start');
+-  const hasEnd = usedParams.has('end');
++  const hasStart = usedParams.has(PromqlParamName.Start);
++  const hasEnd = usedParams.has(PromqlParamName.End);
+ 
+   if (hasStart !== hasEnd) {
+     messages.push({
+       ...getMessageFromId({
+         messageId: 'promqlMissingParam',
+-        values: { param: hasStart ? 'end' : 'start' },
++        values: { param: hasStart ? PromqlParamName.End : PromqlParamName.Start },
+         locations: command.location,
+       }),
+     });
+@@ -127,7 +126,7 @@ export const validate = (
+       continue;
+     }
+ 
+-    if (param === 'start' || param === 'end') {
++    if (param === PromqlParamName.Start || param === PromqlParamName.End) {
+       const normalized = stripQuotes(value);
+       const isPlaceholder = normalized === '?_tstart' || normalized === '?_tend';
+ 
+@@ -142,7 +141,7 @@ export const validate = (
+       }
+     }
+ 
+-    if (param === 'step') {
++    if (param === PromqlParamName.Step) {
+       const normalized = stripQuotes(value);
+ 
+       if (!FORMAT_STEP_DURATION_REGEX.test(normalized)) {
+@@ -155,6 +154,19 @@ export const validate = (
+         });
+       }
+     }
++
++    if (param === PromqlParamName.Buckets) {
++      const num = Number(value);
++      if (!Number.isInteger(num) || num <= 0) {
++        messages.push({
++          ...getMessageFromId({
++            messageId: 'promqlInvalidBucketsParam',
++            values: {},
++            locations: keyLocation ?? location,
++          }),
++        });
++      }
++    }
+   }
+ 
+   const hasQuery = hasValidQuery(command);
+@@ -240,7 +252,7 @@ function validateIndexSources(
+ ): void {
+   const params = command.params;
+   const indexEntry = params?.entries.find(
+-    (entry) => isIdentifier(entry.key) && entry.key.name.toLowerCase() === 'index'
++    (entry) => isIdentifier(entry.key) && entry.key.name.toLowerCase() === PromqlParamName.Index
+   );
+ 
+   if (indexEntry) {
+@@ -267,7 +279,7 @@ function validateIndexSources(
+   }
+ 
+   // Fallback: handles case when index is mis-parsed into query field
+-  const indexParam = paramValues.get('index');
++  const indexParam = paramValues.get(PromqlParamName.Index);
+   if (indexParam && indexParam.value) {
+     const indexName = stripQuotes(indexParam.value);
+ 

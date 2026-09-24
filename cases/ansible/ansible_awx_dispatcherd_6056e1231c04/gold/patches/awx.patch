@@ -1,0 +1,92 @@
+diff --git a/awx/main/management/commands/run_dispatcher.py b/awx/main/management/commands/run_dispatcher.py
+index 5211c8ae0..5571b56a0 100644
+--- a/awx/main/management/commands/run_dispatcher.py
++++ b/awx/main/management/commands/run_dispatcher.py
+@@ -1,12 +1,16 @@
+ # Copyright (c) 2015 Ansible, Inc.
+ # All Rights Reserved.
+ import logging
++import logging.config
+ import yaml
++import copy
+ 
+ import redis
+ 
+ from django.conf import settings
++from django.db import connection
+ from django.core.management.base import BaseCommand, CommandError
++from django.core.cache import cache as django_cache
+ 
+ from flags.state import flag_enabled
+ 
+@@ -104,6 +108,12 @@ class Command(BaseCommand):
+                 return
+ 
+         if flag_enabled('FEATURE_DISPATCHERD_ENABLED'):
++            self.configure_dispatcher_logging()
++
++            # Close the connection, because the pg_notify broker will create new async connection
++            connection.close()
++            django_cache.close()
++
+             dispatcher_setup(get_dispatcherd_config(for_service=True))
+             run_service()
+         else:
+@@ -122,3 +132,18 @@ class Command(BaseCommand):
+                 logger.debug('Terminating Task Dispatcher')
+                 if consumer:
+                     consumer.stop()
++
++    def configure_dispatcher_logging(self):
++        # Apply special log rule for the parent process
++        special_logging = copy.deepcopy(settings.LOGGING)
++        for handler_name, handler_config in special_logging.get('handlers', {}).items():
++            filters = handler_config.get('filters', [])
++            if 'dynamic_level_filter' in filters:
++                handler_config['filters'] = [flt for flt in filters if flt != 'dynamic_level_filter']
++                logger.info(f'Dispatcherd main process replaced log level filter for {handler_name} handler')
++
++        # Apply the custom logging level here, before the asyncio code starts
++        special_logging.setdefault('loggers', {}).setdefault('dispatcherd', {})
++        special_logging['loggers']['dispatcherd']['level'] = settings.LOG_AGGREGATOR_LEVEL
++
++        logging.config.dictConfig(special_logging)
+diff --git a/awx/main/tasks/system.py b/awx/main/tasks/system.py
+index 679e1786d..be3b82616 100644
+--- a/awx/main/tasks/system.py
++++ b/awx/main/tasks/system.py
+@@ -13,6 +13,9 @@ from datetime import datetime
+ from distutils.version import LooseVersion as Version
+ from io import StringIO
+ 
++# dispatcherd
++from dispatcherd.factories import get_control_from_settings
++
+ # Runner
+ import ansible_runner.cleanup
+ import psycopg
+@@ -354,6 +357,11 @@ def clear_setting_cache(setting_keys):
+     logger.debug('cache delete_many(%r)', cache_keys)
+     cache.delete_many(cache_keys)
+ 
++    if 'LOG_AGGREGATOR_LEVEL' in setting_keys:
++        ctl = get_control_from_settings()
++        ctl.queuename = get_task_queuename()
++        ctl.control('set_log_level', data={'level': settings.LOG_AGGREGATOR_LEVEL})
++
+ 
+ @task_awx(queue='tower_broadcast_all', timeout=600)
+ def delete_project_files(project_path):
+diff --git a/requirements/requirements.txt b/requirements/requirements.txt
+index c57ac827c..4750b7934 100644
+--- a/requirements/requirements.txt
++++ b/requirements/requirements.txt
+@@ -120,7 +120,7 @@ cython==3.1.3
+     # via -r /awx_devel/requirements/requirements.in
+ daphne==4.2.1
+     # via -r /awx_devel/requirements/requirements.in
+-dispatcherd[pg_notify]==2025.12.10
++dispatcherd[pg_notify]==2025.12.12
+     # via -r /awx_devel/requirements/requirements.in
+ distro==1.9.0
+     # via -r /awx_devel/requirements/requirements.in

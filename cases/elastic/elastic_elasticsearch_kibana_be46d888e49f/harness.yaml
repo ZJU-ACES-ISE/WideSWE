@@ -1,0 +1,31 @@
+task_id: elastic_elasticsearch_kibana_be46d888e49f
+hidden_test_patches:
+- repo: elasticsearch
+  patch: hidden/patches/elasticsearch-hidden-tests.patch
+  test_profile: elasticsearch-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elastic/ElasticInferenceServiceTests.java
+  hidden_file: *id001
+  semantic_changes: none
+  source: prompt-relevant upstream test changes from elastic/elasticsearch PR(s) 130336
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - x-pack/platform/plugins/shared/ai_infra/product_doc_base/server/services/search/utils/get_indices_for_product_names.test.ts
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from elastic/kibana PR(s) 227737
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - elasticsearch-hidden
+    - kibana-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

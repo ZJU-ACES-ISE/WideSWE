@@ -1,0 +1,54 @@
+diff --git a/sentry-ruby/lib/sentry/exceptions.rb b/sentry-ruby/lib/sentry/exceptions.rb
+index 515e7d66..0c8e4370 100644
+--- a/sentry-ruby/lib/sentry/exceptions.rb
++++ b/sentry-ruby/lib/sentry/exceptions.rb
+@@ -6,4 +6,7 @@ module Sentry
+ 
+   class ExternalError < Error
+   end
++
++  class SizeExceededError < ExternalError
++  end
+ end
+diff --git a/sentry-ruby/lib/sentry/transport.rb b/sentry-ruby/lib/sentry/transport.rb
+index 503e6a2a..d799dc7e 100644
+--- a/sentry-ruby/lib/sentry/transport.rb
++++ b/sentry-ruby/lib/sentry/transport.rb
+@@ -19,7 +19,8 @@ module Sentry
+       :before_send,
+       :event_processor,
+       :insufficient_data,
+-      :backpressure
++      :backpressure,
++      :send_error
+     ]
+ 
+     include LoggingHelper
+@@ -61,6 +62,10 @@ module Sentry
+         log_debug("[Transport] Sending envelope with items [#{serialized_items.map(&:type).join(', ')}] #{envelope.event_id} to Sentry")
+         send_data(data)
+       end
++    rescue Sentry::SizeExceededError
++      serialized_items&.each do |item|
++        record_lost_event(:send_error, item.data_category)
++      end
+     end
+ 
+     def serialize_envelope(envelope)
+diff --git a/sentry-ruby/lib/sentry/transport/http_transport.rb b/sentry-ruby/lib/sentry/transport/http_transport.rb
+index 47cf6c4e..88902557 100644
+--- a/sentry-ruby/lib/sentry/transport/http_transport.rb
++++ b/sentry-ruby/lib/sentry/transport/http_transport.rb
+@@ -49,6 +49,12 @@ module Sentry
+ 
+       if response.code.match?(/\A2\d{2}/)
+         handle_rate_limited_response(response) if has_rate_limited_header?(response)
++      elsif response.code == "413"
++        error_message = "HTTP 413: Envelope dropped due to exceeded size limit"
++        error_message += " (body: #{response.body})" if response.body && !response.body.empty?
++        log_warn(error_message)
++
++        raise Sentry::SizeExceededError, error_message
+       elsif response.code == "429"
+         log_debug("the server responded with status 429")
+         handle_rate_limited_response(response)

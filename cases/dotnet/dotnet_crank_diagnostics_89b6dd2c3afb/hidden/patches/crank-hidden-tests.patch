@@ -1,0 +1,616 @@
+diff --git a/test/Microsoft.Crank.UnitTests/EcoSyncDotNetTraceContractTests.cs b/test/Microsoft.Crank.UnitTests/EcoSyncDotNetTraceContractTests.cs
+new file mode 100644
+index 0000000..89ee82c
+--- /dev/null
++++ b/test/Microsoft.Crank.UnitTests/EcoSyncDotNetTraceContractTests.cs
+@@ -0,0 +1,610 @@
++using System;
++using System.Collections.Generic;
++using System.Diagnostics;
++using System.IO;
++using System.Linq;
++using System.Net;
++using System.Net.Http;
++using System.Net.Sockets;
++using System.Reflection;
++using System.Text;
++using System.Threading;
++using System.Threading.Tasks;
++using Microsoft.Crank.Agent;
++using Microsoft.Crank.Models;
++using Newtonsoft.Json.Linq;
++using Xunit;
++
++namespace Microsoft.Crank.UnitTests
++{
++    [Collection(nameof(DotNetTraceProcessCollection))]
++    public class EcoSyncDotNetTraceContractTests
++    {
++        [Fact]
++        public void NewJobUsesLegacyCompatibleCliModeDefaults()
++        {
++            var job = JObject.FromObject(new Job());
++
++            Assert.Equal("default", (string)job["DotNetTraceCollectMode"]);
++            Assert.Equal(0, (int?)job["DotNetTraceStopTimeoutSec"]);
++        }
++
++        [Fact]
++        public void CliModeConfigurationRoundTripsThroughJobJson()
++        {
++            const string json = """
++{
++  "DotNetTrace": true,
++  "DotNetTraceCollectMode": "collect-linux",
++  "DotNetTraceStopTimeoutSec": 240
++}
++""";
++
++            var job = Newtonsoft.Json.JsonConvert.DeserializeObject<Job>(json);
++            var roundTripped = JObject.FromObject(job);
++
++            Assert.Equal("collect-linux", (string)roundTripped["DotNetTraceCollectMode"]);
++            Assert.Equal(240, (int?)roundTripped["DotNetTraceStopTimeoutSec"]);
++        }
++
++        [Fact]
++        public async Task CollectUsesCompatibleDefaultProviders()
++        {
++            using var run = await DotNetTraceProcessRun.StartAsync(
++                mode: "collect",
++                providers: "",
++                bufferSizeMb: 256);
++
++            Assert.Equal("collect", run.Arguments[0]);
++            AssertFlagContains(run.Arguments, "--profile", "dotnet-sampled-thread-time");
++            AssertFlagContains(run.Arguments, "--profile", "dotnet-common");
++
++            await run.StopAsync();
++        }
++
++        [Fact]
++        public async Task CollectLinuxUsesCpuSamplingAndOmitsBufferSize()
++        {
++            using var run = await DotNetTraceProcessRun.StartAsync(
++                mode: "collect-linux",
++                providers: "",
++                bufferSizeMb: 1024);
++
++            Assert.Equal("collect-linux", run.Arguments[0]);
++            AssertFlagContains(run.Arguments, "--profile", "cpu-sampling");
++            Assert.DoesNotContain("--buffersize", run.Arguments);
++
++            await run.StopAsync();
++        }
++
++        [Fact]
++        public async Task CollectRewritesCpuSamplingForTheCollectVerb()
++        {
++            using var run = await DotNetTraceProcessRun.StartAsync(
++                mode: "collect",
++                providers: "cpu-sampling");
++
++            Assert.Equal("collect", run.Arguments[0]);
++            AssertFlagContains(run.Arguments, "--profile", "dotnet-sampled-thread-time");
++            AssertFlagDoesNotContain(run.Arguments, "--profile", "cpu-sampling");
++
++            await run.StopAsync();
++        }
++
++        [Theory]
++        [InlineData("fusion", "assemblyloader")]
++        [InlineData("gcheapcollect", "managedheapcollect")]
++        [InlineData("gcsampledobjectallcationhigh", "gcsampledobjectallocationhigh")]
++        [InlineData("gcsampledobjectallcationlow", "gcsampledobjectallocationlow")]
++        public async Task CollectLinuxNormalizesLegacyClrEventNames(string input, string expected)
++        {
++            using var run = await DotNetTraceProcessRun.StartAsync(
++                mode: "collect-linux",
++                providers: input);
++
++            AssertFlagContains(run.Arguments, "--clrevents", expected);
++            Assert.DoesNotContain(
++                run.Arguments,
++                argument => argument.Contains(input, StringComparison.OrdinalIgnoreCase));
++
++            await run.StopAsync();
++        }
++
++        [Fact]
++        public async Task CliModesReceiveSigIntAndKeepACompletedTrace()
++        {
++            using var run = await DotNetTraceProcessRun.StartAsync(
++                mode: "collect",
++                providers: "dotnet-common");
++
++            await run.StopAsync();
++
++            Assert.True(run.ReceivedSigInt, "The CLI process did not receive SIGINT.");
++            Assert.True(new FileInfo(run.TracePath).Length > 0);
++        }
++
++        [Fact]
++        public async Task FinalizationTimeoutKeepsAnExistingPartialTrace()
++        {
++            using var run = await DotNetTraceProcessRun.StartAsync(
++                mode: "collect-linux",
++                providers: "cpu-sampling",
++                stopTimeoutSec: 1,
++                writePartialTrace: true,
++                ignoreSigInt: true);
++
++            var stopwatch = Stopwatch.StartNew();
++            await run.StopAsync();
++            stopwatch.Stop();
++
++            Assert.True(run.ReceivedSigInt, "The CLI process did not receive SIGINT.");
++            Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(8));
++            Assert.True(new FileInfo(run.TracePath).Length > 0);
++        }
++
++        [Fact]
++        public async Task CollectLinuxNonRootAgentFailsWithoutFallingBack()
++        {
++            if (!System.OperatingSystem.IsLinux())
++            {
++                return;
++            }
++
++            var setpriv = FindOnPath("setpriv");
++            Assert.True(
++                setpriv != null,
++                "The Linux test image must provide setpriv for the non-root preflight check.");
++
++            var port = GetUnusedTcpPort();
++            var workingDirectory = Path.Combine(
++                Path.GetTempPath(),
++                "crank-collect-linux-preflight-" + Guid.NewGuid().ToString("N"));
++            Directory.CreateDirectory(workingDirectory);
++            MakeWorldWritable(workingDirectory);
++
++            var agentProject = Path.GetFullPath(
++                Path.Combine(
++                    AppContext.BaseDirectory,
++                    "../../../../../src/Microsoft.Crank.Agent/Microsoft.Crank.Agent.csproj"));
++            Assert.True(File.Exists(agentProject), $"Agent project not found at {agentProject}");
++
++            var startInfo = new ProcessStartInfo
++            {
++                FileName = setpriv,
++                WorkingDirectory = workingDirectory,
++                RedirectStandardOutput = true,
++                RedirectStandardError = true,
++                UseShellExecute = false,
++            };
++            startInfo.ArgumentList.Add("--reuid=65534");
++            startInfo.ArgumentList.Add("--regid=65534");
++            startInfo.ArgumentList.Add("--clear-groups");
++            startInfo.ArgumentList.Add("dotnet");
++            startInfo.ArgumentList.Add("run");
++            startInfo.ArgumentList.Add("--no-build");
++            startInfo.ArgumentList.Add("--framework");
++            startInfo.ArgumentList.Add("net8.0");
++            startInfo.ArgumentList.Add("--project");
++            startInfo.ArgumentList.Add(agentProject);
++            startInfo.ArgumentList.Add("--");
++            startInfo.ArgumentList.Add("--url");
++            startInfo.ArgumentList.Add($"http://127.0.0.1:{port}");
++            startInfo.ArgumentList.Add("--dotnethome");
++            startInfo.ArgumentList.Add(workingDirectory);
++            startInfo.Environment["HOME"] = workingDirectory;
++            startInfo.Environment["DOTNET_CLI_HOME"] = workingDirectory;
++            startInfo.Environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
++
++            using var agent = Process.Start(startInfo);
++            Assert.NotNull(agent);
++
++            try
++            {
++                using var client = new HttpClient
++                {
++                    BaseAddress = new Uri($"http://127.0.0.1:{port}"),
++                    Timeout = TimeSpan.FromSeconds(2),
++                };
++                await WaitForAgentAsync(client, agent);
++
++                const string jobJson = """
++{
++  "DriverVersion": 2,
++  "State": "New",
++  "Service": "hidden-preflight",
++  "DotNetTrace": true,
++  "DotNetTraceCollectMode": "collect-linux"
++}
++""";
++                using var response = await client.PostAsync(
++                    "/jobs",
++                    new StringContent(jobJson, Encoding.UTF8, "application/json"));
++                Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
++
++                var job = await WaitForFailedJobAsync(client, agent);
++                Assert.Contains("collect-linux", job, StringComparison.OrdinalIgnoreCase);
++                Assert.Contains("effective UID 0", job, StringComparison.OrdinalIgnoreCase);
++                Assert.Contains("kernel", job, StringComparison.OrdinalIgnoreCase);
++                Assert.Contains("collect", job, StringComparison.OrdinalIgnoreCase);
++            }
++            finally
++            {
++                if (!agent.HasExited)
++                {
++                    agent.Kill(entireProcessTree: true);
++                    await agent.WaitForExitAsync();
++                }
++            }
++        }
++
++        private static void AssertFlagContains(
++            IReadOnlyList<string> arguments,
++            string flag,
++            string expectedToken)
++        {
++            Assert.Contains(
++                ValuesForFlag(arguments, flag).SelectMany(SplitOptionValue),
++                token => string.Equals(token, expectedToken, StringComparison.OrdinalIgnoreCase));
++        }
++
++        private static void AssertFlagDoesNotContain(
++            IReadOnlyList<string> arguments,
++            string flag,
++            string unexpectedToken)
++        {
++            Assert.DoesNotContain(
++                ValuesForFlag(arguments, flag).SelectMany(SplitOptionValue),
++                token => string.Equals(token, unexpectedToken, StringComparison.OrdinalIgnoreCase));
++        }
++
++        private static IEnumerable<string> ValuesForFlag(
++            IReadOnlyList<string> arguments,
++            string flag)
++        {
++            for (var i = 0; i < arguments.Count - 1; i++)
++            {
++                if (string.Equals(arguments[i], flag, StringComparison.OrdinalIgnoreCase))
++                {
++                    yield return arguments[i + 1];
++                }
++            }
++        }
++
++        private static IEnumerable<string> SplitOptionValue(string value) =>
++            value.Split(new[] { ',', '+' }, StringSplitOptions.RemoveEmptyEntries)
++                .Select(token => token.Trim());
++
++        private static async Task WaitForAgentAsync(HttpClient client, Process agent)
++        {
++            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
++            while (DateTime.UtcNow < deadline)
++            {
++                ThrowIfExited(agent);
++                try
++                {
++                    using var response = await client.GetAsync("/jobs/info");
++                    if (response.IsSuccessStatusCode)
++                    {
++                        return;
++                    }
++                }
++                catch (HttpRequestException)
++                {
++                }
++                catch (TaskCanceledException)
++                {
++                }
++
++                await Task.Delay(100);
++            }
++
++            throw new TimeoutException("The Crank agent did not start in time.");
++        }
++
++        private static async Task<string> WaitForFailedJobAsync(HttpClient client, Process agent)
++        {
++            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(12);
++            while (DateTime.UtcNow < deadline)
++            {
++                ThrowIfExited(agent);
++                try
++                {
++                    using var response = await client.GetAsync("/jobs/1");
++                    if (response.IsSuccessStatusCode)
++                    {
++                        var body = await response.Content.ReadAsStringAsync();
++                        if (body.Contains("\"State\":\"Failed\"", StringComparison.OrdinalIgnoreCase) ||
++                            body.Contains("\"state\":\"Failed\"", StringComparison.OrdinalIgnoreCase))
++                        {
++                            return body;
++                        }
++                    }
++                }
++                catch (HttpRequestException)
++                {
++                }
++                catch (TaskCanceledException)
++                {
++                }
++
++                await Task.Delay(100);
++            }
++
++            throw new TimeoutException("collect-linux did not fail its non-root preflight in time.");
++        }
++
++        private static void ThrowIfExited(Process process)
++        {
++            if (!process.HasExited)
++            {
++                return;
++            }
++
++            var stdout = process.StandardOutput.ReadToEnd();
++            var stderr = process.StandardError.ReadToEnd();
++            throw new InvalidOperationException(
++                $"Crank agent exited unexpectedly ({process.ExitCode}).\nstdout:\n{stdout}\nstderr:\n{stderr}");
++        }
++
++        private static string FindOnPath(string executable)
++        {
++            foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "")
++                         .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
++            {
++                var candidate = Path.Combine(directory, executable);
++                if (File.Exists(candidate))
++                {
++                    return candidate;
++                }
++            }
++            return null;
++        }
++
++        private static int GetUnusedTcpPort()
++        {
++            using var listener = new TcpListener(IPAddress.Loopback, 0);
++            listener.Start();
++            return ((IPEndPoint)listener.LocalEndpoint).Port;
++        }
++
++        private static void MakeWorldWritable(string path)
++        {
++            File.SetUnixFileMode(
++                path,
++                UnixFileMode.UserRead |
++                UnixFileMode.UserWrite |
++                UnixFileMode.UserExecute |
++                UnixFileMode.GroupRead |
++                UnixFileMode.GroupWrite |
++                UnixFileMode.GroupExecute |
++                UnixFileMode.OtherRead |
++                UnixFileMode.OtherWrite |
++                UnixFileMode.OtherExecute);
++        }
++    }
++
++    [CollectionDefinition(nameof(DotNetTraceProcessCollection), DisableParallelization = true)]
++    public sealed class DotNetTraceProcessCollection
++    {
++    }
++
++    internal sealed class DotNetTraceProcessRun : IDisposable
++    {
++        private const string ArgumentsFileName = "dotnet-trace.args";
++        private const string SignalFileName = "dotnet-trace.sigint";
++        private static readonly Type StartupType = typeof(Startup);
++        private static readonly MethodInfo StartMethod = StartupType.GetMethod(
++            "StartDotNetTrace",
++            BindingFlags.Static | BindingFlags.NonPublic);
++        private static readonly FieldInfo StopSignalField = StartupType.GetField(
++            "dotnetTraceManualReset",
++            BindingFlags.Static | BindingFlags.NonPublic);
++        private static readonly FieldInfo TraceTaskField = StartupType.GetField(
++            "dotnetTraceTask",
++            BindingFlags.Static | BindingFlags.NonPublic);
++        private static readonly FieldInfo RootTempField = StartupType.GetField(
++            "_rootTempDir",
++            BindingFlags.Static | BindingFlags.NonPublic);
++
++        private readonly string _directory;
++        private readonly string _originalPath;
++        private bool _stopped;
++
++        private DotNetTraceProcessRun(
++            string directory,
++            string originalPath,
++            IReadOnlyList<string> arguments)
++        {
++            _directory = directory;
++            _originalPath = originalPath;
++            Arguments = arguments;
++        }
++
++        public IReadOnlyList<string> Arguments { get; }
++
++        public static async Task<DotNetTraceProcessRun> StartAsync(
++            string mode,
++            string providers,
++            int bufferSizeMb = 256,
++            int stopTimeoutSec = 5,
++            bool writePartialTrace = false,
++            bool ignoreSigInt = false)
++        {
++            Assert.NotNull(StartMethod);
++            Assert.NotNull(StopSignalField);
++            Assert.NotNull(TraceTaskField);
++            Assert.NotNull(RootTempField);
++
++            var directory = Path.Combine(
++                Path.GetTempPath(),
++                "crank-dotnet-trace-hidden-" + Guid.NewGuid().ToString("N"));
++            Directory.CreateDirectory(directory);
++
++            var toolRoot = Path.Combine(directory, "agent-temp");
++            var toolDirectory = Path.Combine(toolRoot, "dotnet-trace-tools");
++            var binDirectory = Path.Combine(directory, "bin");
++            Directory.CreateDirectory(toolDirectory);
++            Directory.CreateDirectory(binDirectory);
++
++            var cachedTool = Path.Combine(toolDirectory, "dotnet-trace");
++            var pathTool = Path.Combine(binDirectory, "dotnet-trace");
++            WriteFakeDotNetTrace(cachedTool);
++            File.Copy(cachedTool, pathTool);
++
++            if (writePartialTrace)
++            {
++                File.WriteAllText(Path.Combine(directory, ".write-partial"), "");
++            }
++            if (ignoreSigInt)
++            {
++                File.WriteAllText(Path.Combine(directory, ".ignore-sigint"), "");
++            }
++
++            RootTempField.SetValue(null, toolRoot);
++            var originalPath = Environment.GetEnvironmentVariable("PATH") ?? "";
++            Environment.SetEnvironmentVariable(
++                "PATH",
++                binDirectory + Path.PathSeparator + originalPath);
++
++            var payload = JObject.FromObject(new
++            {
++                DotNetTrace = true,
++                DotNetTraceProviders = providers,
++                DotNetTraceBufferSizeMB = bufferSizeMb,
++                DotNetTraceCollectMode = mode,
++                DotNetTraceStopTimeoutSec = stopTimeoutSec,
++                BasePath = directory,
++                ProcessId = Process.GetCurrentProcess().Id,
++            });
++            var job = payload.ToObject<Job>();
++
++            StartMethod.Invoke(null, new object[] { job });
++
++            try
++            {
++                var argumentsPath = Path.Combine(directory, ArgumentsFileName);
++                await WaitForFileAsync(argumentsPath, TimeSpan.FromSeconds(3));
++                var arguments = File.ReadAllLines(argumentsPath);
++                return new DotNetTraceProcessRun(directory, originalPath, arguments);
++            }
++            catch
++            {
++                try
++                {
++                    await StopCurrentTraceAsync();
++                }
++                catch
++                {
++                }
++                Environment.SetEnvironmentVariable("PATH", originalPath);
++                throw;
++            }
++        }
++
++        public async Task StopAsync()
++        {
++            if (_stopped)
++            {
++                return;
++            }
++
++            _stopped = true;
++            try
++            {
++                await StopCurrentTraceAsync();
++            }
++            finally
++            {
++                Environment.SetEnvironmentVariable("PATH", _originalPath);
++            }
++        }
++
++        public bool ReceivedSigInt =>
++            File.Exists(Path.Combine(_directory, SignalFileName));
++
++        public string TracePath => Path.Combine(_directory, "trace.nettrace");
++
++        public void Dispose()
++        {
++            if (!_stopped)
++            {
++                StopAsync().GetAwaiter().GetResult();
++            }
++        }
++
++        private static async Task StopCurrentTraceAsync()
++        {
++            var stopSignal = StopSignalField.GetValue(null) as ManualResetEvent;
++            stopSignal?.Set();
++
++            if (TraceTaskField.GetValue(null) is Task traceTask)
++            {
++                await traceTask.WaitAsync(TimeSpan.FromSeconds(12));
++            }
++        }
++
++        private static async Task WaitForFileAsync(string path, TimeSpan timeout)
++        {
++            var deadline = DateTime.UtcNow + timeout;
++            while (!File.Exists(path))
++            {
++                if (DateTime.UtcNow >= deadline)
++                {
++                    throw new TimeoutException(
++                        $"dotnet-trace was not launched; expected argument log at {path}");
++                }
++                await Task.Delay(50);
++            }
++        }
++
++        private static void WriteFakeDotNetTrace(string path)
++        {
++            const string script = """
++#!/usr/bin/env bash
++set -u
++
++if [[ "${1:-}" == "--version" ]]; then
++  printf '%s\n' '10.0.721401'
++  exit 0
++fi
++
++printf '%s\n' "$@" > "$PWD/dotnet-trace.args"
++
++output=""
++previous=""
++for argument in "$@"; do
++  if [[ "$previous" == "-o" || "$previous" == "--output" ]]; then
++    output="$argument"
++  fi
++  previous="$argument"
++done
++
++if [[ -f "$PWD/.write-partial" && -n "$output" ]]; then
++  printf '%s\n' 'partial trace' > "$output"
++fi
++
++on_sigint() {
++  : > "$PWD/dotnet-trace.sigint"
++  if [[ ! -f "$PWD/.ignore-sigint" ]]; then
++    if [[ -n "$output" ]]; then
++      printf '%s\n' 'completed trace' > "$output"
++    fi
++    exit 0
++  fi
++}
++
++trap on_sigint INT
++while true; do
++  sleep 0.1
++done
++""";
++
++            File.WriteAllText(path, script);
++            File.SetUnixFileMode(
++                path,
++                UnixFileMode.UserRead |
++                UnixFileMode.UserWrite |
++                UnixFileMode.UserExecute);
++        }
++    }
++}

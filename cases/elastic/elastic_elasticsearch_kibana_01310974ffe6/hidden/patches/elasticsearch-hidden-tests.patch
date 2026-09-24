@@ -1,0 +1,79 @@
+diff --git a/x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/AuthorizationTaskExecutorIT.java b/x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/AuthorizationTaskExecutorIT.java
+index 822a21bcf02..643c3072ffa 100644
+--- a/x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/AuthorizationTaskExecutorIT.java
++++ b/x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/AuthorizationTaskExecutorIT.java
+@@ -445,6 +445,74 @@ public class AuthorizationTaskExecutorIT extends ESSingleNodeTestCase {
+         assertWebServerReceivedRequest();
+     }
+ 
++    public void testRemovedEndpointsContract_RemovesMultipleEndpoints() throws Exception {
++        testRemovedEndpointsResponse(
++            Strings.format("[\"%s\",\"%s\"]", RAINBOW_SPRINKLES_ENDPOINT_ID, JINA_EMBED_V3_ENDPOINT_ID),
++            Set.of()
++        );
++    }
++
++    public void testRemovedEndpointsContract_TreatsEmptyListAsNoRemovals() throws Exception {
++        testRemovedEndpointsResponse("[]", Set.of(RAINBOW_SPRINKLES_ENDPOINT_ID, JINA_EMBED_V3_ENDPOINT_ID));
++    }
++
++    public void testRemovedEndpointsContract_TreatsMissingFieldAsNoRemovals() throws Exception {
++        testRemovedEndpointsResponse(null, Set.of(RAINBOW_SPRINKLES_ENDPOINT_ID, JINA_EMBED_V3_ENDPOINT_ID));
++    }
++
++    public void testRemovedEndpointsContract_HandlesDuplicateAndUnknownIdsOnce() throws Exception {
++        testRemovedEndpointsResponse(
++            Strings.format(
++                "[\"%s\",\"%s\",\"unknown-endpoint\"]",
++                JINA_EMBED_V3_ENDPOINT_ID,
++                JINA_EMBED_V3_ENDPOINT_ID
++            ),
++            Set.of(RAINBOW_SPRINKLES_ENDPOINT_ID)
++        );
++    }
++
++    private void testRemovedEndpointsResponse(@Nullable String removedEndpointsJson, Set<String> expectedRemaining) throws Exception {
++        assertNoAuthorizedEisEndpoints();
++        resetWebServerQueues();
++
++        webServer.enqueue(new MockResponse().setResponseCode(200).setBody(chatCompletionResponseBody));
++        restartPollingTaskAndWaitForAuthResponse();
++        assertWebServerReceivedRequest();
++        resetWebServerQueues();
++
++        var jinaResponse = ElasticInferenceServiceAuthorizationResponseEntityTests.getEisJinaTextEmbedAuthorizationResponse(gatewayUrl)
++            .responseJson();
++        webServer.enqueue(new MockResponse().setResponseCode(200).setBody(jinaResponse));
++        restartPollingTaskAndWaitForAuthResponse();
++        assertWebServerReceivedRequest();
++        resetWebServerQueues();
++
++        assertBusy(() -> assertThat(getEisEndpoints(), hasSize(2)));
++
++        String response = removedEndpointsJson == null
++            ? """
++                { "inference_endpoints": [] }
++                """
++            : Strings.format(
++                """
++                    {
++                      "inference_endpoints": [],
++                      "removed_endpoints": %s
++                    }
++                    """,
++                removedEndpointsJson
++            );
++        webServer.enqueue(new MockResponse().setResponseCode(200).setBody(response));
++
++        restartPollingTaskAndWaitForAuthResponse();
++        assertWebServerReceivedRequest();
++
++        assertBusy(() -> {
++            Set<String> remaining = getEisEndpoints().stream().map(UnparsedModel::inferenceEntityId).collect(Collectors.toSet());
++            assertThat(remaining, is(expectedRemaining));
++        });
++    }
++
+     private static String createJsonResponseForSemiRandomEndpoint(String endpointId, @Nullable String fingerprint) {
+         String jsonTemplate = """
+             {

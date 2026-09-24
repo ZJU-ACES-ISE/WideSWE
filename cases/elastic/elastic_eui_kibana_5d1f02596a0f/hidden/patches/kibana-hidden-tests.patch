@@ -1,0 +1,73 @@
+diff --git a/src/platform/plugins/shared/discover/public/components/discover_grid_flyout/discover_grid_flyout.test.tsx b/src/platform/plugins/shared/discover/public/components/discover_grid_flyout/discover_grid_flyout.test.tsx
+index 141e689a528..43f766e3e9e 100644
+--- a/src/platform/plugins/shared/discover/public/components/discover_grid_flyout/discover_grid_flyout.test.tsx
++++ b/src/platform/plugins/shared/discover/public/components/discover_grid_flyout/discover_grid_flyout.test.tsx
+@@ -261,21 +261,38 @@ describe('Discover flyout', function () {
+     });
+     const singleDocumentView = findTestSubject(component, 'docTableRowAction');
+     expect(singleDocumentView.length).toBeFalsy();
+-    const flyoutTitle = findTestSubject(component, 'docViewerRowDetailsTitle');
+-    expect(flyoutTitle.text()).toBe('Result');
++    const sessionFlyout = component.findWhere(
++      (node) =>
++        node.prop('data-test-subj') === 'docViewerFlyout' && node.prop('session') === 'start'
++    );
++    expect(sessionFlyout.exists()).toBe(true);
++    const flyoutMenuProps = sessionFlyout.first().prop('flyoutMenuProps');
++    const visibleTitle =
++      flyoutMenuProps?.hideTitle === true
++        ? ''
++        : flyoutMenuProps?.title ?? sessionFlyout.first().text();
++    expect(visibleTitle).toContain('Result');
+   });
+ 
+   describe('with applied customizations', () => {
+     describe('when title is customized', () => {
+-      it('should display the passed string as title', async () => {
++      it('should display the passed string as title in the session flyout', async () => {
+         const customTitle = 'Custom flyout title';
+         mockFlyoutCustomization.title = customTitle;
+ 
+         const { component } = await mountComponent({});
+ 
+-        const titleNode = findTestSubject(component, 'docViewerRowDetailsTitle');
+-
+-        expect(titleNode.text()).toBe(customTitle);
++        const sessionFlyout = component.findWhere(
++          (node) =>
++            node.prop('data-test-subj') === 'docViewerFlyout' && node.prop('session') === 'start'
++        );
++        expect(sessionFlyout.exists()).toBe(true);
++        const flyoutMenuProps = sessionFlyout.first().prop('flyoutMenuProps');
++        const visibleTitle =
++          flyoutMenuProps?.hideTitle === true
++            ? ''
++            : flyoutMenuProps?.title ?? sessionFlyout.first().text();
++        expect(visibleTitle).toContain(customTitle);
+       });
+     });
+ 
+@@ -500,10 +522,21 @@ describe('Discover flyout', function () {
+           processRecord: (record) => scopedProfilesManager.resolveDocumentProfile({ record }),
+         });
+         const { component } = await mountComponent({ records, services });
+-        const title = findTestSubject(component, 'docViewerRowDetailsTitle');
+-        expect(title.text()).toBe('Document #new::1::');
++
+         const content = findTestSubject(component, 'kbnDocViewer');
+         expect(content.text()).toBe('Mock tab');
++
++        const sessionFlyout = component.findWhere(
++          (node) =>
++            node.prop('data-test-subj') === 'docViewerFlyout' && node.prop('session') === 'start'
++        );
++        expect(sessionFlyout.exists()).toBe(true);
++        const flyoutMenuProps = sessionFlyout.first().prop('flyoutMenuProps');
++        const visibleTitle =
++          flyoutMenuProps?.hideTitle === true
++            ? ''
++            : flyoutMenuProps?.title ?? sessionFlyout.first().text();
++        expect(visibleTitle).toContain('Document #new::1::');
+       });
+     });
+   });

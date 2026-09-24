@@ -1,0 +1,294 @@
+diff --git a/tests/sentry/preprod/api/endpoints/test_preprod_artifact_snapshot.py b/tests/sentry/preprod/api/endpoints/test_preprod_artifact_snapshot.py
+index 761b9d4f..c5d8ce87 100644
+--- a/tests/sentry/preprod/api/endpoints/test_preprod_artifact_snapshot.py
++++ b/tests/sentry/preprod/api/endpoints/test_preprod_artifact_snapshot.py
+@@ -1,3 +1,6 @@
++import json
++import urllib.request
++
+ from django.urls import reverse
+ 
+ from sentry.testutils.cases import APITestCase
+@@ -6,12 +9,21 @@ from sentry.testutils.cases import APITestCase
+ class ProjectPreprodSnapshotTest(APITestCase):
+     def setUp(self):
+         super().setUp()
++        objectstore_options = self.options(
++            {
++                "objectstore.config": {
++                    "base_url": "http://127.0.0.1:8888",
++                    "timeout_ms": 5000,
++                }
++            }
++        )
++        objectstore_options.__enter__()
++        self.addCleanup(objectstore_options.__exit__, None, None, None)
+         self.login_as(user=self.user)
+         self.org = self.create_organization(owner=self.user)
+         self.project = self.create_project(organization=self.org)
+ 
+     def _get_create_url(self):
+-        """URL for POST (creating snapshots)"""
+         return reverse(
+             "sentry-api-0-project-preprod-snapshots-create",
+             args=[self.org.slug, self.project.slug],
+@@ -24,138 +36,156 @@ class ProjectPreprodSnapshotTest(APITestCase):
+             args=[self.org.slug, self.project.slug, snapshot_id],
+         )
+ 
++    def _clear_objectstore(self):
++        request = urllib.request.Request(
++            "http://127.0.0.1:8888/__ecosync__/objects", method="DELETE"
++        )
++        with urllib.request.urlopen(request) as response:
++            assert response.status == 204
++
++    def _objectstore_object_count(self):
++        with urllib.request.urlopen(
++            "http://127.0.0.1:8888/__ecosync__/objects"
++        ) as response:
++            return json.load(response)["count"]
++
+     def test_successful_snapshot_upload(self):
+         url = self._get_create_url()
+         data = {
+-            "shardIndex": 0,
+-            "numShards": 2,
+-            "images": [
+-                {
++            "app_id": "com.example.app",
++            "images": {
++                "abc123def456": {
++                    "file_name": "test.png",
+                     "width": 375,
+                     "height": 812,
+-                    "colorScheme": "dark",
+-                    "orientation": "landscape",
+-                    "device": "iPhone 11",
++                    "dark_mode": True,
+                 },
+-                {
+-                    "width": 375,
+-                    "height": 812,
+-                    "colorScheme": "dark",
+-                    "orientation": "landscape",
+-                    "device": "iPhone 11",
++            },
++        }
++
++        with self.feature("organizations:preprod-frontend-routes"):
++            response = self.client.post(url, data, format="json")
++
++        assert 200 <= response.status_code < 300
++        assert "artifactId" in response.data
++        assert "snapshotMetricsId" in response.data
++        assert response.data["imageCount"] == 1
++
++    def test_snapshot_upload_creates_commit_comparison(self):
++        url = self._get_create_url()
++        data = {
++            "app_id": "com.example.app",
++            "head_sha": "a" * 40,
++            "base_sha": "b" * 40,
++            "provider": "github",
++            "head_repo_name": "owner/repo",
++            "head_ref": "feature-branch",
++            "pr_number": 123,
++            "images": {
++                "img1": {
++                    "width": 100,
++                    "height": 200,
++                    "device": "iPhone 14",
+                 },
+-            ],
+-            "errors": [],
++            },
+         }
+ 
+         with self.feature("organizations:preprod-frontend-routes"):
+             response = self.client.post(url, data, format="json")
+ 
+-        assert response.status_code == 200
++        assert 200 <= response.status_code < 300
++        assert "artifactId" in response.data
++        assert "snapshotMetricsId" in response.data
++        assert response.data["imageCount"] == 1
++
++    def test_snapshot_upload_stores_manifest(self):
++        self._clear_objectstore()
++        url = self._get_create_url()
++        data = {
++            "app_id": "com.example.app",
++            "images": {
++                "hash1": {
++                    "file_name": "screen1.png",
++                    "width": 100,
++                    "height": 200,
++                },
++            },
++        }
++
++        with self.feature("organizations:preprod-frontend-routes"):
++            response = self.client.post(url, data, format="json")
++
++        assert 200 <= response.status_code < 300
++        assert self._objectstore_object_count() > 0
+ 
+     def test_snapshot_with_empty_images(self):
+         url = self._get_create_url()
+         data = {
+-            "shardIndex": 1,
+-            "numShards": 3,
+-            "images": [],
+-            "errors": [],
++            "app_id": "com.example.app",
++            "images": {},
+         }
+ 
+         with self.feature("organizations:preprod-frontend-routes"):
+             response = self.client.post(url, data, format="json")
+ 
+-        assert response.status_code == 200
++        assert 200 <= response.status_code < 300
++        assert response.data["imageCount"] == 0
+ 
+     def test_snapshot_missing_required_field(self):
+         url = self._get_create_url()
+-        data = {
+-            "shardIndex": 0,
+-            "images": [
+-                {
+-                    "width": 375,
+-                    "height": 812,
+-                    "colorScheme": "dark",
+-                    "orientation": "portrait",
+-                    "device": "iPhone 11",
+-                },
+-            ],
+-            # Missing errors field
++        data: dict[str, str] = {
++            # Missing images field
+         }
+ 
+         with self.feature("organizations:preprod-frontend-routes"):
+             response = self.client.post(url, data, format="json")
+ 
+         assert response.status_code == 400
+-        assert "error" in response.data
+ 
+     def test_snapshot_invalid_image_schema(self):
+         url = self._get_create_url()
+         data = {
+-            "shardIndex": 0,
+-            "numShards": 1,
+-            "images": [
+-                {
++            "app_id": "com.example.app",
++            "images": {
++                "hash1": {
+                     "width": 375,
+-                    # Missing height
+-                    "colorScheme": "dark",
+-                    "orientation": "portrait",
+-                    "device": "iPhone 11",
++                    # Missing height (required)
+                 },
+-            ],
+-            "errors": [],
++            },
+         }
+ 
+         with self.feature("organizations:preprod-frontend-routes"):
+             response = self.client.post(url, data, format="json")
+ 
+         assert response.status_code == 400
+-        assert "error" in response.data
+ 
+     def test_snapshot_negative_dimensions(self):
+         url = self._get_create_url()
+         data = {
+-            "shardIndex": 0,
+-            "numShards": 1,
+-            "images": [
+-                {
++            "app_id": "com.example.app",
++            "images": {
++                "hash1": {
+                     "width": -100,
+                     "height": 812,
+-                    "colorScheme": "dark",
+-                    "orientation": "portrait",
+-                    "device": "iPhone 11",
+                 },
+-            ],
+-            "errors": [],
++            },
+         }
+ 
+         with self.feature("organizations:preprod-frontend-routes"):
+             response = self.client.post(url, data, format="json")
+ 
+         assert response.status_code == 400
+-        assert "error" in response.data
+ 
+     def test_snapshot_without_feature_flag(self):
+         url = self._get_create_url()
+         data = {
+-            "shardIndex": 0,
+-            "numShards": 1,
+-            "images": [
+-                {
+-                    "width": 375,
+-                    "height": 812,
+-                    "colorScheme": "dark",
+-                    "orientation": "portrait",
+-                    "device": "iPhone 11",
+-                },
+-            ],
+-            "errors": [],
++            "app_id": "com.example.app",
++            "images": {},
+         }
+ 
+         response = self.client.post(url, data, format="json")
+ 
+         assert response.status_code == 403
+-        assert response.data["error"] == "Feature not enabled"
+ 
+     def test_snapshot_invalid_json(self):
+         url = self._get_create_url()
+@@ -164,19 +194,15 @@ class ProjectPreprodSnapshotTest(APITestCase):
+             response = self.client.post(url, "invalid json", content_type="application/json")
+ 
+         assert response.status_code == 400
+-        assert "error" in response.data
+ 
+     def test_snapshot_requires_authentication(self):
+-        # Create a new unauthenticated client instead of logging out
+         from rest_framework.test import APIClient
+ 
+         unauthenticated_client = APIClient()
+         url = self._get_create_url()
+         data = {
+-            "shardIndex": 0,
+-            "numShards": 1,
+-            "images": [],
+-            "errors": [],
++            "app_id": "com.example.app",
++            "images": {},
+         }
+ 
+         with self.feature("organizations:preprod-frontend-routes"):
+@@ -190,10 +216,8 @@ class ProjectPreprodSnapshotTest(APITestCase):
+ 
+         url = self._get_create_url()
+         data = {
+-            "shardIndex": 0,
+-            "numShards": 1,
+-            "images": [],
+-            "errors": [],
++            "app_id": "com.example.app",
++            "images": {},
+         }
+ 
+         with self.feature("organizations:preprod-frontend-routes"):

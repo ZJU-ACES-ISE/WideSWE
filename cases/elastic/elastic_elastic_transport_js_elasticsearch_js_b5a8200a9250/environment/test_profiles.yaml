@@ -1,0 +1,35 @@
+profiles:
+  elastic_transport_js-hidden:
+    repo: elastic-transport-js
+    workdir: repos/elastic/elastic-transport-js
+    evaluator_node_modules_mode: persistent
+    command: environment/run_profile.sh elastic_transport_js-hidden
+    status: implemented
+    dependency_image: ecosyncbench/base/node:22-bookworm
+    public_smoke_command: npm install --prefer-offline --no-audit --no-fund && npm run build && npx tap --disable-coverage test/unit/transport.test.ts
+    test_files:
+    - test/types/dual-package-imports.mts
+    - test/unit/commonjs-import.test.ts
+    - test/unit/esm-import.test.mjs
+  elasticsearch_js-hidden:
+    repo: elasticsearch-js
+    workdir: repos/elastic/elasticsearch-js
+    evaluator_node_modules_mode: persistent
+    command: environment/run_profile.sh elasticsearch_js-hidden
+    status: implemented
+    dependency_image: ecosyncbench/base/node:22-bookworm
+    public_smoke_command: npm install --prefer-offline --no-audit --no-fund && npm run build && npx tap --disable-coverage test/unit/client.test.ts
+    test_files:
+    - test/unit/cjs-import.test.ts
+  elasticsearch_js-esm-hidden:
+    repo: elasticsearch-js
+    workdir: repos/elastic/elasticsearch-js
+    evaluator_node_modules_mode: persistent
+    command: environment/run_profile.sh elasticsearch_js-esm-hidden
+    status: implemented
+    dependency_image: ecosyncbench/base/node:22-bookworm
+    public_smoke_command: npm install --prefer-offline --no-audit --no-fund && npm run build && npm run test:esm
+    test_files:
+    - test/esm/package.json
+    - test/esm/test-import.mjs
+    - test/types/dual-package-imports.mts

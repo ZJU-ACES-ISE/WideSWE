@@ -1,0 +1,41 @@
+task_id: nextcloud_calendar_cdav_library_6ef04924e127
+hidden_test_patches:
+- repo: calendar
+  patch: hidden/patches/calendar-hidden-tests.patch
+  test_profile: calendar-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/javascript/unit/models/calendar.test.js
+  hidden_file: *id001
+  semantic_changes: contract-aligned delegation metadata matching
+  source: upstream test changes from nextcloud/calendar PR 8085
+- repo: cdav-library
+  patch: hidden/patches/cdav-library-hidden-tests.patch
+  test_profile: cdav_library-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test/unit/clientTest.js
+  hidden_file: *id002
+  semantic_changes: contract-aligned URL and absent-value semantics
+  source: upstream test changes from nextcloud/cdav-library PR 1040
+- repo: server
+  patch: hidden/patches/server-hidden-tests.patch
+  test_profile: server-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - apps/dav/tests/unit/CalDAV/CalendarTest.php
+  hidden_file: *id003
+  semantic_changes: contract-aligned ACL set comparison
+  source: upstream test changes from nextcloud/server PR 60641
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - calendar-hidden
+    - cdav_library-hidden
+    - server-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

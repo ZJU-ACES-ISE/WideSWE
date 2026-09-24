@@ -1,0 +1,194 @@
+diff --git a/doc/user-guide/src/environment-variables.md b/doc/user-guide/src/environment-variables.md
+index a9669be9..a0930aa3 100644
+--- a/doc/user-guide/src/environment-variables.md
++++ b/doc/user-guide/src/environment-variables.md
+@@ -72,6 +72,8 @@
+ - `RUSTUP_CONCURRENT_DOWNLOADS` *unstable* (default: the number of components to download). Controls the number of
+   downloads made concurrently.
+ 
++- `RUSTUP_TOOLCHAIN_SOURCE` *unstable*. Set by rustup to tell proxied tools how `RUSTUP_TOOLCHAIN` was determined.
++
+ [directive syntax]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
+ [dc]: https://docs.docker.com/storage/storagedriver/overlayfs-driver/#modifying-files-or-directories
+ [override]: overrides.md
+diff --git a/src/cli/proxy_mode.rs b/src/cli/proxy_mode.rs
+index 1cb24f82..c7bec9f1 100644
+--- a/src/cli/proxy_mode.rs
++++ b/src/cli/proxy_mode.rs
+@@ -5,6 +5,7 @@ use anyhow::Result;
+ use crate::{
+     cli::{common::set_globals, job, self_update},
+     command::run_command_for_dir,
++    config::ActiveSource,
+     process::Process,
+     toolchain::ResolvableLocalToolchainName,
+ };
+@@ -24,6 +25,7 @@ pub async fn main(arg0: &str, current_dir: PathBuf, process: &Process) -> Result
+         .filter(|arg| arg.starts_with('+'))
+         .map(|name| ResolvableLocalToolchainName::try_from(&name.as_ref()[1..]))
+         .transpose()?;
++    let toolchain_specified = toolchain.is_some();
+ 
+     // Build command args now while we know whether or not to skip arg 1.
+     let cmd_args: Vec<_> = process
+@@ -32,9 +34,15 @@ pub async fn main(arg0: &str, current_dir: PathBuf, process: &Process) -> Result
+         .collect();
+ 
+     let cfg = set_globals(current_dir, true, process)?;
+-    let cmd = cfg
+-        .resolve_local_toolchain(toolchain)
+-        .await?
+-        .command(arg0)?;
++    let toolchain = cfg.resolve_local_toolchain(toolchain).await?;
++    let mut cmd = toolchain.command(arg0)?;
++    if toolchain_specified {
++        cmd.env(
++            "RUSTUP_TOOLCHAIN_SOURCE",
++            ActiveSource::CommandLine.to_string(),
++        );
++    } else if let Ok(Some((_, source))) = cfg.active_toolchain() {
++        cmd.env("RUSTUP_TOOLCHAIN_SOURCE", source.to_string());
++    }
+     run_command_for_dir(cmd, arg0, &cmd_args)
+ }
+diff --git a/src/config.rs b/src/config.rs
+index 3ae1cd46..e4a72ef8 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -1,4 +1,4 @@
+-use std::fmt::{self, Debug};
++use std::fmt::{self, Debug, Display};
+ use std::io;
+ use std::path::{Path, PathBuf};
+ use std::str::FromStr;
+@@ -111,6 +111,18 @@ impl ActiveSource {
+     }
+ }
+ 
++impl Display for ActiveSource {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str(match self {
++            Self::Default => "default",
++            Self::Environment => "env",
++            Self::CommandLine => "cli",
++            Self::OverrideDB(_) => "path-override",
++            Self::ToolchainFile(_) => "toolchain-file",
++        })
++    }
++}
++
+ // Represents a toolchain override from a +toolchain command line option,
+ // RUSTUP_TOOLCHAIN environment variable, or rust-toolchain.toml file etc. Can
+ // include components and targets from a rust-toolchain.toml that should be
+diff --git a/src/test/mock_bin_src.rs b/src/test/mock_bin_src.rs
+index d85b8002..5ca84dba 100644
+--- a/src/test/mock_bin_src.rs
++++ b/src/test/mock_bin_src.rs
+@@ -106,6 +106,14 @@ fn main() {
+             let mut out = io::stderr();
+             writeln!(out, "{}", std::env::current_exe().unwrap().display()).unwrap();
+         }
++        Some("--echo-rustup-toolchain-source") => {
++            let mut out = io::stderr();
++            if let Ok(rustup_toolchain_source) = std::env::var("RUSTUP_TOOLCHAIN_SOURCE") {
++                writeln!(out, "{rustup_toolchain_source}").unwrap();
++            } else {
++                panic!("RUSTUP_TOOLCHAIN_SOURCE environment variable not set");
++            }
++        }
+         arg => panic!("bad mock proxy commandline: {:?}", arg),
+     }
+ }
+diff --git a/tests/suite/cli_rustup.rs b/tests/suite/cli_rustup.rs
+index d82aba33..09303bda 100644
+--- a/tests/suite/cli_rustup.rs
++++ b/tests/suite/cli_rustup.rs
+@@ -3038,6 +3038,88 @@ error: no active toolchain
+         .is_ok();
+ }
+ 
++#[tokio::test]
++async fn rustup_toolchain_source_cli() {
++    let cx = CliTestContext::new(Scenario::SimpleV2).await;
++    cx.config
++        .expect(&["rustup", "install", "nightly"])
++        .await
++        .is_ok();
++    cx.config
++        .expect(["cargo", "+nightly", "--echo-rustup-toolchain-source"])
++        .await
++        .with_stderr(snapbox::str![[r#"
++...
++cli
++
++"#]]);
++}
++
++#[tokio::test]
++async fn rustup_toolchain_source_env() {
++    let cx = CliTestContext::new(Scenario::SimpleV2).await;
++    cx.config
++        .expect_with_env(
++            ["cargo", "--echo-rustup-toolchain-source"],
++            [("RUSTUP_TOOLCHAIN", "nightly")],
++        )
++        .await
++        .with_stderr(snapbox::str![[r#"
++...
++env
++
++"#]]);
++}
++
++#[tokio::test]
++async fn rustup_toolchain_source_path_override() {
++    let cx = CliTestContext::new(Scenario::SimpleV2).await;
++    cx.config
++        .expect(["rustup", "override", "set", "nightly"])
++        .await
++        .is_ok();
++    cx.config
++        .expect(["cargo", "--echo-rustup-toolchain-source"])
++        .await
++        .with_stderr(snapbox::str![[r#"
++...
++path-override
++
++"#]]);
++}
++
++#[tokio::test]
++async fn rustup_toolchain_source_toolchain_file() {
++    let cx = CliTestContext::new(Scenario::SimpleV2).await;
++    let toolchain_file = cx.config.current_dir().join("rust-toolchain.toml");
++    raw::write_file(&toolchain_file, "[toolchain]\nchannel='nightly'").unwrap();
++    cx.config
++        .expect(["cargo", "--echo-rustup-toolchain-source"])
++        .await
++        .with_stderr(snapbox::str![[r#"
++...
++toolchain-file
++
++"#]]);
++}
++
++#[tokio::test]
++async fn rustup_toolchain_source_default() {
++    let cx = CliTestContext::new(Scenario::SimpleV2).await;
++    cx.config
++        .expect(&["rustup", "default", "stable"])
++        .await
++        .is_ok();
++    cx.config
++        .expect(["cargo", "--echo-rustup-toolchain-source"])
++        .await
++        .with_stderr(snapbox::str![[r#"
++...
++default
++
++"#]]);
++}
++
+ #[tokio::test]
+ async fn directory_override_doesnt_need_to_exist_unless_it_is_selected() {
+     let cx = CliTestContext::new(Scenario::SimpleV2).await;

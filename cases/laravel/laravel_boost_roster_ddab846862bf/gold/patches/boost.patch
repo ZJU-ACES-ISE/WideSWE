@@ -1,0 +1,433 @@
+diff --git a/.ai/inertia-laravel/1/core.blade.php b/.ai/inertia-laravel/1/core.blade.php
+index 78ae178..41274d3 100644
+--- a/.ai/inertia-laravel/1/core.blade.php
++++ b/.ai/inertia-laravel/1/core.blade.php
+@@ -1,3 +1,16 @@
++# Inertia
++
++- Inertia creates fully client-side rendered SPAs without modern SPA complexity, leveraging existing server-side patterns.
++- Components live in `{{ $assist->inertia()->pagesDirectory() }}` (unless specified in `vite.config.js`). Use `Inertia::render()` for server-side routing instead of Blade views.
++- ALWAYS use `search-docs` tool for version-specific Inertia documentation and updated code examples.
++@if($assist->hasPackage(\Laravel\Roster\Enums\Packages::INERTIA_REACT))
++- IMPORTANT: Activate `inertia-react-development` when working with Inertia client-side patterns.
++@elseif($assist->hasPackage(\Laravel\Roster\Enums\Packages::INERTIA_VUE))
++- IMPORTANT: Activate `inertia-vue-development` when working with Inertia Vue client-side patterns.
++@elseif($assist->hasPackage(\Laravel\Roster\Enums\Packages::INERTIA_SVELTE))
++- IMPORTANT: Activate `inertia-svelte-development` when working with Inertia Svelte client-side patterns.
++@endif
++
+ # Inertia v1
+ 
+ - Inertia v1 does not support the following v2 features: deferred props, infinite scrolling (merging props + `WhenVisible`), lazy loading on scroll, polling, or prefetching. Do not use these.
+diff --git a/.ai/inertia-laravel/2/core.blade.php b/.ai/inertia-laravel/2/core.blade.php
+index 38365a2..16a2526 100644
+--- a/.ai/inertia-laravel/2/core.blade.php
++++ b/.ai/inertia-laravel/2/core.blade.php
+@@ -1,3 +1,16 @@
++# Inertia
++
++- Inertia creates fully client-side rendered SPAs without modern SPA complexity, leveraging existing server-side patterns.
++- Components live in `{{ $assist->inertia()->pagesDirectory() }}` (unless specified in `vite.config.js`). Use `Inertia::render()` for server-side routing instead of Blade views.
++- ALWAYS use `search-docs` tool for version-specific Inertia documentation and updated code examples.
++@if($assist->hasPackage(\Laravel\Roster\Enums\Packages::INERTIA_REACT))
++- IMPORTANT: Activate `inertia-react-development` when working with Inertia client-side patterns.
++@elseif($assist->hasPackage(\Laravel\Roster\Enums\Packages::INERTIA_VUE))
++- IMPORTANT: Activate `inertia-vue-development` when working with Inertia Vue client-side patterns.
++@elseif($assist->hasPackage(\Laravel\Roster\Enums\Packages::INERTIA_SVELTE))
++- IMPORTANT: Activate `inertia-svelte-development` when working with Inertia Svelte client-side patterns.
++@endif
++
+ # Inertia v2
+ 
+ - Use all Inertia features from v1 and v2. Check the documentation before making changes to ensure the correct approach.
+diff --git a/.ai/inertia-laravel/core.blade.php b/.ai/inertia-laravel/core.blade.php
+deleted file mode 100644
+index f623abe..0000000
+--- a/.ai/inertia-laravel/core.blade.php
++++ /dev/null
+@@ -1,12 +0,0 @@
+-# Inertia
+-
+-- Inertia creates fully client-side rendered SPAs without modern SPA complexity, leveraging existing server-side patterns.
+-- Components live in `{{ $assist->inertia()->pagesDirectory() }}` (unless specified in `vite.config.js`). Use `Inertia::render()` for server-side routing instead of Blade views.
+-- ALWAYS use `search-docs` tool for version-specific Inertia documentation and updated code examples.
+-@if($assist->hasPackage(\Laravel\Roster\Enums\Packages::INERTIA_REACT))
+-- IMPORTANT: Activate `inertia-react-development` when working with Inertia client-side patterns.
+-@elseif($assist->hasPackage(\Laravel\Roster\Enums\Packages::INERTIA_VUE))
+-- IMPORTANT: Activate `inertia-vue-development` when working with Inertia Vue client-side patterns.
+-@elseif($assist->hasPackage(\Laravel\Roster\Enums\Packages::INERTIA_SVELTE))
+-- IMPORTANT: Activate `inertia-svelte-development` when working with Inertia Svelte client-side patterns.
+-@endif
+diff --git a/composer.json b/composer.json
+index fe21757..2ca02a7 100644
+--- a/composer.json
++++ b/composer.json
+@@ -21,7 +21,7 @@
+         "illuminate/support": "^11.45.3|^12.41.1",
+         "laravel/mcp": "^0.5.1",
+         "laravel/prompts": "^0.3.10",
+-        "laravel/roster": "^0.4.0"
++        "laravel/roster": "^0.5.0"
+     },
+     "require-dev": {
+         "laravel/pint": "^1.27.0",
+diff --git a/src/Install/Concerns/DiscoverPackagePaths.php b/src/Install/Concerns/DiscoverPackagePaths.php
+index 593cce2..bbc554e 100644
+--- a/src/Install/Concerns/DiscoverPackagePaths.php
++++ b/src/Install/Concerns/DiscoverPackagePaths.php
+@@ -5,6 +5,8 @@
+ namespace Laravel\Boost\Install\Concerns;
+ 
+ use Illuminate\Support\Collection;
++use Laravel\Boost\Support\Composer;
++use Laravel\Boost\Support\Npm;
+ use Laravel\Roster\Enums\Packages;
+ use Laravel\Roster\Package;
+ use Laravel\Roster\Roster;
+@@ -96,4 +98,15 @@ protected function getBoostAiPath(): string
+     {
+         return __DIR__.'/../../../.ai';
+     }
++
++    protected function resolveFirstPartyBoostPath(Package $package, string $subpath): ?string
++    {
++        if (! Composer::isFirstPartyPackage($package->rawName()) && ! Npm::isFirstPartyPackage($package->rawName())) {
++            return null;
++        }
++
++        $path = implode(DIRECTORY_SEPARATOR, [$package->path(), 'resources', 'boost', $subpath]);
++
++        return is_dir($path) ? $path : null;
++    }
+ }
+diff --git a/src/Install/GuidelineComposer.php b/src/Install/GuidelineComposer.php
+index 1e61ea7..a182618 100644
+--- a/src/Install/GuidelineComposer.php
++++ b/src/Install/GuidelineComposer.php
+@@ -10,7 +10,6 @@
+ use Laravel\Boost\Install\Concerns\DiscoverPackagePaths;
+ use Laravel\Boost\Support\Composer;
+ use Laravel\Roster\Package;
+-use Laravel\Roster\PackageCollection;
+ use Laravel\Roster\Roster;
+ use Symfony\Component\Finder\Exception\DirectoryNotFoundException;
+ use Symfony\Component\Finder\Finder;
+@@ -169,13 +168,23 @@ protected function getConditionalGuidelines(): Collection
+             ->mapWithKeys(fn ($config, $key): array => [$key => $this->guideline($config['path'])]);
+     }
+ 
+-    protected function getPackageGuidelines(): PackageCollection
++    protected function getPackageGuidelines(): Collection
+     {
+         return $this->roster->packages()
+             ->reject(fn (Package $package): bool => $this->shouldExcludePackage($package))
+-            ->flatMap(function ($package): Collection {
++            ->flatMap(function (Package $package): Collection {
+                 $guidelineDir = $this->normalizePackageName($package->name());
+-                $guidelines = collect([$guidelineDir.'/core' => $this->guideline($guidelineDir.'/core')]);
++
++                $vendorPath = $this->resolveFirstPartyBoostPath($package, 'guidelines');
++
++                $vendorCorePath = $vendorPath !== null
++                    ? implode(DIRECTORY_SEPARATOR, [$vendorPath, 'core'])
++                    : null;
++
++                $guidelines = collect([
++                    $guidelineDir.'/core' => $this->resolveGuideline($vendorCorePath, $guidelineDir.'/core'),
++                ]);
++
+                 $packageGuidelines = $this->guidelinesDir($guidelineDir.'/'.$package->majorVersion());
+ 
+                 foreach ($packageGuidelines as $guideline) {
+@@ -191,6 +200,22 @@ protected function getPackageGuidelines(): PackageCollection
+             });
+     }
+ 
++    /**
++     * @return array{content: string, name: string, description: string, path: ?string, custom: bool, third_party: bool}
++     */
++    private function resolveGuideline(?string $vendorPath, string $guidelineKey): array
++    {
++        if ($vendorPath !== null) {
++            foreach (['.blade.php', '.md'] as $ext) {
++                if (file_exists($vendorPath.$ext)) {
++                    return $this->guideline($vendorPath.$ext, false, $guidelineKey);
++                }
++            }
++        }
++
++        return $this->guideline($guidelineKey);
++    }
++
+     /**
+      * @return Collection<string, array>
+      */
+@@ -199,6 +224,10 @@ protected function getThirdPartyGuidelines(): Collection
+         $guidelines = collect();
+ 
+         foreach (Composer::packagesDirectoriesWithBoostGuidelines() as $package => $path) {
++            if (Composer::isFirstPartyPackage($package)) {
++                continue;
++            }
++
+             foreach ($this->guidelinesDir($path, true) as $guideline) {
+                 $guidelines->put($package, $guideline);
+             }
+@@ -242,9 +271,9 @@ protected function guidelinesDir(string $dirPath, bool $thirdParty = false): arr
+     /**
+      * @return array{content: string, name: string, description: string, path: ?string, custom: bool, third_party: bool}
+      */
+-    protected function guideline(string $path, bool $thirdParty = false): array
++    protected function guideline(string $path, bool $thirdParty = false, ?string $overrideKey = null): array
+     {
+-        $path = $this->guidelinePath($path);
++        $path = $this->guidelinePath($path, $overrideKey);
+ 
+         if ($path === null) {
+             return [
+@@ -304,7 +333,7 @@ private function prependGuidelinePath(string $path, string $basePath): string
+         return str_replace('/', DIRECTORY_SEPARATOR, $basePath.$path);
+     }
+ 
+-    protected function guidelinePath(string $path): ?string
++    protected function guidelinePath(string $path, ?string $overrideKey = null): ?string
+     {
+         // Relative path, prepend our package path to it
+         if (! file_exists($path)) {
+@@ -322,6 +351,18 @@ protected function guidelinePath(string $path): ?string
+             return $path;
+         }
+ 
++        if ($overrideKey !== null) {
++            foreach (['.blade.php', '.md'] as $ext) {
++                $customPath = $this->prependUserGuidelinePath($overrideKey.$ext);
++
++                if (file_exists($customPath)) {
++                    return $customPath;
++                }
++            }
++
++            return $path;
++        }
++
+         // The path is not a custom guideline, check if the user has an override for this
+         $basePath = realpath(__DIR__.'/../../');
+         $relativePath = Str::of($path)
+diff --git a/src/Install/SkillComposer.php b/src/Install/SkillComposer.php
+index 7c3addd..d804c44 100644
+--- a/src/Install/SkillComposer.php
++++ b/src/Install/SkillComposer.php
+@@ -9,6 +9,7 @@
+ use Laravel\Boost\Concerns\RendersBladeGuidelines;
+ use Laravel\Boost\Install\Concerns\DiscoverPackagePaths;
+ use Laravel\Boost\Support\Composer;
++use Laravel\Roster\Package;
+ use Laravel\Roster\Roster;
+ use Symfony\Component\Yaml\Yaml;
+ 
+@@ -63,12 +64,28 @@ public function skills(): Collection
+      */
+     protected function getBoostSkills(): Collection
+     {
+-        return $this->discoverPackagePaths($this->getBoostAiPath())
+-            ->flatMap(fn (array $package): Collection => $this->discoverSkillsFromPath(
+-                $package['path'],
+-                $package['name'],
+-                $package['version']
+-            ));
++        /** @var Collection<string, Skill> $skills */
++        $skills = $this->getRoster()->packages()
++            ->reject(fn (Package $package): bool => $this->shouldExcludePackage($package))
++            ->collect()
++            ->flatMap(function (Package $package): Collection {
++                $name = $this->normalizePackageName($package->name());
++
++                $vendorSkillPath = $this->resolveFirstPartyBoostPath($package, 'skills');
++
++                $vendorSkills = $vendorSkillPath !== null
++                    ? $this->discoverSkillsFromDirectory($vendorSkillPath, $name)
++                    : collect();
++
++                $aiPath = $this->getBoostAiPath().DIRECTORY_SEPARATOR.$name;
++                $aiSkills = is_dir($aiPath)
++                    ? $this->discoverSkillsFromPath($aiPath, $name, $package->majorVersion())
++                    : collect();
++
++                return $aiSkills->merge($vendorSkills);
++            });
++
++        return $skills;
+     }
+ 
+     /**
+@@ -77,6 +94,7 @@ protected function getBoostSkills(): Collection
+     protected function getThirdPartySkills(): Collection
+     {
+         $skills = collect(Composer::packagesDirectoriesWithBoostSkills())
++            ->reject(fn (string $path, string $package): bool => Composer::isFirstPartyPackage($package))
+             ->flatMap(fn (string $path, string $package): Collection => $this->discoverSkillsFromDirectory($path, $package));
+ 
+         $selectedPackages = $this->config->aiGuidelines ?? [];
+diff --git a/src/Install/ThirdPartyPackage.php b/src/Install/ThirdPartyPackage.php
+index a108624..8543e0b 100644
+--- a/src/Install/ThirdPartyPackage.php
++++ b/src/Install/ThirdPartyPackage.php
+@@ -33,6 +33,7 @@ public static function discover(): Collection
+         ));
+ 
+         return collect($allPackageNames)
++            ->reject(fn (string $name): bool => Composer::isFirstPartyPackage($name))
+             ->mapWithKeys(fn (string $name): array => [
+                 $name => new self(
+                     name: $name,
+diff --git a/src/Support/Composer.php b/src/Support/Composer.php
+index 14eeb0d..0ea27a3 100644
+--- a/src/Support/Composer.php
++++ b/src/Support/Composer.php
+@@ -6,6 +6,29 @@
+ 
+ class Composer
+ {
++    /** @var array<int, string> */
++    public const FIRST_PARTY_PACKAGES = [
++        'laravel/framework',
++        'laravel/folio',
++        'laravel/mcp',
++        'laravel/pennant',
++        'laravel/pint',
++        'laravel/sail',
++        'laravel/wayfinder',
++        'livewire/livewire',
++        'livewire/flux',
++        'livewire/flux-pro',
++        'livewire/volt',
++        'inertiajs/inertia-laravel',
++        'pestphp/pest',
++        'phpunit/phpunit',
++    ];
++
++    public static function isFirstPartyPackage(string $composerName): bool
++    {
++        return in_array($composerName, self::FIRST_PARTY_PACKAGES, true);
++    }
++
+     public static function packagesDirectories(): array
+     {
+         return collect(static::packages())
+@@ -48,9 +71,9 @@ public static function packagesDirectoriesWithBoostSkills(): array
+     }
+ 
+     /**
+-     * @param  string|null  $subpath  Optional subpath under resources/boost/ (e.g., 'guidelines')
++     * @return array<string, string>
+      */
+-    private static function packagesDirectoriesWithBoostSubpath(?string $subpath = null): array
++    private static function packagesDirectoriesWithBoostSubpath(string $subpath): array
+     {
+         return collect(self::packagesDirectories())
+             ->map(fn (string $path): string => implode(DIRECTORY_SEPARATOR, array_filter([
+diff --git a/src/Support/Npm.php b/src/Support/Npm.php
+new file mode 100644
+index 0000000..0470dc7
+--- /dev/null
++++ b/src/Support/Npm.php
+@@ -0,0 +1,99 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Boost\Support;
++
++class Npm
++{
++    /** @var array<int, string> */
++    public const FIRST_PARTY_SCOPES = [
++        '@inertiajs',
++        '@laravel',
++    ];
++
++    /** @var array<int, string> */
++    public const FIRST_PARTY_PACKAGES = [
++        'laravel-echo',
++        'laravel-precognition',
++        'laravel-vite-plugin',
++    ];
++
++    public static function isFirstPartyPackage(string $npmName): bool
++    {
++        if (collect(self::FIRST_PARTY_SCOPES)->contains(fn (string $scope): bool => str_starts_with($npmName, $scope.'/'))) {
++            return true;
++        }
++
++        return in_array($npmName, self::FIRST_PARTY_PACKAGES, true);
++    }
++
++    /**
++     * @return array<string, string>
++     */
++    public static function packagesDirectories(): array
++    {
++        return collect(static::packages())
++            ->mapWithKeys(fn (string $key, string $package): array => [$package => implode(DIRECTORY_SEPARATOR, [
++                base_path('node_modules'),
++                str_replace('/', DIRECTORY_SEPARATOR, $package),
++            ])])
++            ->filter(fn (string $path): bool => is_dir($path))
++            ->toArray();
++    }
++
++    /**
++     * @return array<string, string>
++     */
++    public static function packages(): array
++    {
++        $packageJsonPath = base_path('package.json');
++
++        if (! file_exists($packageJsonPath)) {
++            return [];
++        }
++
++        $packageData = json_decode(file_get_contents($packageJsonPath), true);
++
++        if (json_last_error() !== JSON_ERROR_NONE) {
++            return [];
++        }
++
++        return collect($packageData['dependencies'] ?? [])
++            ->merge($packageData['devDependencies'] ?? [])
++            ->mapWithKeys(fn (string $key, string $package): array => [$package => $key])
++            ->toArray();
++    }
++
++    /**
++     * @return array<string, string>
++     */
++    public static function packagesDirectoriesWithBoostGuidelines(): array
++    {
++        return self::packagesDirectoriesWithBoostSubpath('guidelines');
++    }
++
++    /**
++     * @return array<string, string>
++     */
++    public static function packagesDirectoriesWithBoostSkills(): array
++    {
++        return self::packagesDirectoriesWithBoostSubpath('skills');
++    }
++
++    /**
++     * @return array<string, string>
++     */
++    private static function packagesDirectoriesWithBoostSubpath(string $subpath): array
++    {
++        return collect(self::packagesDirectories())
++            ->map(fn (string $path): string => implode(DIRECTORY_SEPARATOR, array_filter([
++                $path,
++                'resources',
++                'boost',
++                $subpath,
++            ])))
++            ->filter(fn (string $path): bool => is_dir($path))
++            ->toArray();
++    }
++}

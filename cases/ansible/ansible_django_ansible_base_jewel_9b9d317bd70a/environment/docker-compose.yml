@@ -1,0 +1,19 @@
+services:
+  ansible-python:
+    image: ecosyncbench/base/ansible-django-py:3.12
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_TASK_DIR}/environment/ansible-django-py.Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/python:3.12-uv
+        HTTP_PROXY: ${ECOSYNC_DOCKER_PROXY:-}
+        HTTPS_PROXY: ${ECOSYNC_DOCKER_PROXY:-}
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    - ${ECOSYNC_CACHE_ROOT:-/tmp/ecosyncbench-release120-runtime/cache/legacy/python-cache/ansible}:/pip-cache
+    working_dir: /workspace
+    environment:
+      PIP_CACHE_DIR: /pip-cache/pip
+      XDG_CACHE_HOME: /pip-cache/xdg
+      CI: "1"
+    command: bash /workspace/.ecosyncbench/run-ansible-profile.sh ${ECOSYNC_PROFILE}

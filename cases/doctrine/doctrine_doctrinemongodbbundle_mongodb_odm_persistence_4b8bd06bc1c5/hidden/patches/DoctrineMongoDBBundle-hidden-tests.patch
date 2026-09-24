@@ -1,0 +1,79 @@
+diff --git a/tests/DependencyInjection/ConfigurationTest.php b/tests/DependencyInjection/ConfigurationTest.php
+index a0d8df4..571c829 100644
+--- a/tests/DependencyInjection/ConfigurationTest.php
++++ b/tests/DependencyInjection/ConfigurationTest.php
+@@ -28,6 +28,8 @@ use function array_merge;
+ use function file_get_contents;
+ use function method_exists;
+ 
++use const PHP_VERSION_ID;
++
+ class ConfigurationTest extends TestCase
+ {
+     use ExpectDeprecationTrait;
+@@ -42,7 +44,6 @@ class ConfigurationTest extends TestCase
+             'auto_generate_hydrator_classes' => false,
+             'auto_generate_proxy_classes'    => ODMConfiguration::AUTOGENERATE_EVAL,
+             'auto_generate_persistent_collection_classes' => ODMConfiguration::AUTOGENERATE_NEVER,
+-            'enable_lazy_ghost_objects'      => method_exists(ODMConfiguration::class, 'setUseLazyGhostObject'),
+             'default_database'               => 'default',
+             'document_managers'              => [],
+             'connections'                    => [],
+@@ -61,9 +62,21 @@ class ConfigurationTest extends TestCase
+             ],
+         ];
+ 
++        unset($options['enable_lazy_ghost_objects'], $options['enable_native_lazy_objects']);
+         $this->assertEquals($defaults, $options);
+     }
+ 
++    public function testNativeLazyObjectsAreEnabledByDefaultWhenSupported(): void
++    {
++        self::assertGreaterThanOrEqual(80400, PHP_VERSION_ID);
++        self::assertTrue(method_exists(ODMConfiguration::class, 'setUseNativeLazyObject'));
++
++        $processor = new Processor();
++        $options   = $processor->processConfiguration(new Configuration(), []);
++
++        self::assertTrue($options['enable_native_lazy_objects']);
++    }
++
+     #[Group('legacy')]
+     #[DataProvider('provideFullConfiguration')]
+     public function testFullConfiguration(array $config): void
+@@ -78,7 +91,8 @@ class ConfigurationTest extends TestCase
+             'auto_generate_hydrator_classes' => 1,
+             'auto_generate_proxy_classes'    => ODMConfiguration::AUTOGENERATE_FILE_NOT_EXISTS,
+             'auto_generate_persistent_collection_classes' => ODMConfiguration::AUTOGENERATE_EVAL,
+-            'enable_lazy_ghost_objects'      => method_exists(ODMConfiguration::class, 'setUseLazyGhostObject'),
++            'enable_native_lazy_objects'     => false,
++            'enable_lazy_ghost_objects'      => false,
+             'default_connection'             => 'conn1',
+             'default_database'               => 'default_db_name',
+             'default_document_manager'       => 'default_dm_name',
+diff --git a/tests/DependencyInjection/Fixtures/config/xml/full.xml b/tests/DependencyInjection/Fixtures/config/xml/full.xml
+index f76ee3e..555660c 100644
+--- a/tests/DependencyInjection/Fixtures/config/xml/full.xml
++++ b/tests/DependencyInjection/Fixtures/config/xml/full.xml
+@@ -10,6 +10,8 @@
+         auto-generate-hydrator-classes="1"
+         auto-generate-proxy-classes="2"
+         auto-generate-persistent-collection-classes="3"
++        enable-native-lazy-objects="false"
++        enable-lazy-ghost-objects="false"
+         default-connection="conn1"
+         default-database="default_db_name"
+         default-document-manager="default_dm_name"
+diff --git a/tests/DependencyInjection/Fixtures/config/yml/full.yml b/tests/DependencyInjection/Fixtures/config/yml/full.yml
+index d8bc2a2..acd1d20 100644
+--- a/tests/DependencyInjection/Fixtures/config/yml/full.yml
++++ b/tests/DependencyInjection/Fixtures/config/yml/full.yml
+@@ -2,6 +2,8 @@ doctrine_mongodb:
+     auto_generate_proxy_classes: 2
+     auto_generate_hydrator_classes: true
+     auto_generate_persistent_collection_classes: 3
++    enable_native_lazy_objects: false
++    enable_lazy_ghost_objects: false
+     default_connection: conn1
+     default_database: default_db_name
+     default_document_manager: default_dm_name

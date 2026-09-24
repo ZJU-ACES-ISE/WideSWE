@@ -1,0 +1,523 @@
+diff --git a/src/Microsoft.Android.Sdk.TrimmableTypeMap/Generator/PEAssemblyBuilder.cs b/src/Microsoft.Android.Sdk.TrimmableTypeMap/Generator/PEAssemblyBuilder.cs
+index b862cc2b2..bf913ce7f 100644
+--- a/src/Microsoft.Android.Sdk.TrimmableTypeMap/Generator/PEAssemblyBuilder.cs
++++ b/src/Microsoft.Android.Sdk.TrimmableTypeMap/Generator/PEAssemblyBuilder.cs
+@@ -28,6 +28,20 @@ sealed class PEAssemblyBuilder
+ 	readonly BlobBuilder _codeBlob = new BlobBuilder (256);
+ 	readonly BlobBuilder _attrBlob = new BlobBuilder (64);
+ 
++	// Holds raw byte data for fields with FieldAttributes.HasFieldRVA (e.g., UTF-8 string literals).
++	// Passed to ManagedPEBuilder as the mappedFieldData section.
++	readonly BlobBuilder _mappedFieldData = new BlobBuilder ();
++
++	// Cache of sized value types for RVA fields, keyed by byte length.
++	// Avoids creating duplicate __utf8_N types when multiple fields share the same size.
++	readonly Dictionary<int, TypeDefinitionHandle> _sizedTypeCache = new ();
++
++	// Deduplication cache for UTF-8 string RVA fields. Strings like "()V" that repeat across
++	// many proxy types are stored once and shared via the same FieldDefinitionHandle.
++	readonly Dictionary<string, FieldDefinitionHandle> _utf8FieldCache = new (StringComparer.Ordinal);
++	TypeDefinitionHandle _privateImplDetailsType;
++	int _utf8FieldCounter;
++
+ 	readonly Version _systemRuntimeVersion;
+ 
+ 	public MetadataBuilder Metadata { get; } = new MetadataBuilder ();
+@@ -102,7 +116,8 @@ sealed class PEAssemblyBuilder
+ 		var peBuilder = new ManagedPEBuilder (
+ 			new PEHeaderBuilder (imageCharacteristics: Characteristics.Dll),
+ 			new MetadataRootBuilder (Metadata),
+-			ILBuilder);
++			ILBuilder,
++			mappedFieldData: _mappedFieldData.Count > 0 ? _mappedFieldData : null);
+ 		var peBlob = new BlobBuilder ();
+ 		peBuilder.Serialize (peBlob);
+ 		peBlob.WriteContentTo (stream);
+@@ -167,6 +182,92 @@ sealed class PEAssemblyBuilder
+ 		return Metadata.AddTypeReference (scope, Metadata.GetOrAddString (ns), Metadata.GetOrAddString (name));
+ 	}
+ 
++	/// <summary>
++	/// Returns a deduplicated RVA field containing the null-terminated UTF-8 encoding of
++	/// <paramref name="value"/>. Strings like <c>"()V"</c> that appear across many proxy
++	/// types are stored once and share the same <see cref="FieldDefinitionHandle"/>.
++	/// The field is declared on an internal sized helper type (e.g. <c>__utf8_10</c>)
++	/// nested under <c>&lt;PrivateImplementationDetails&gt;</c>.
++	/// </summary>
++	public FieldDefinitionHandle GetOrAddUtf8Field (string value)
++	{
++		if (_utf8FieldCache.TryGetValue (value, out var existing)) {
++			return existing;
++		}
++
++		EnsurePrivateImplDetailsType ();
++
++		// Encode to null-terminated UTF-8 (all JNI names/signatures are ASCII).
++		int byteCount = System.Text.Encoding.UTF8.GetByteCount (value);
++		var bytes = new byte [byteCount + 1];
++		System.Text.Encoding.UTF8.GetBytes (value, 0, value.Length, bytes, 0);
++		// bytes[byteCount] is already 0 (null terminator)
++
++		var sizedType = GetOrCreateSizedType (bytes.Length);
++
++		_sigBlob.Clear ();
++		new BlobEncoder (_sigBlob).FieldSignature ().Type (sizedType, true);
++
++		int rva = _mappedFieldData.Count;
++		_mappedFieldData.WriteBytes (bytes);
++
++		var fieldHandle = Metadata.AddFieldDefinition (
++			FieldAttributes.Static | FieldAttributes.Assembly | FieldAttributes.HasFieldRVA | FieldAttributes.InitOnly,
++			Metadata.GetOrAddString ($"__utf8_{_utf8FieldCounter++}"),
++			Metadata.GetOrAddBlob (_sigBlob));
++
++		Metadata.AddFieldRelativeVirtualAddress (fieldHandle, rva);
++
++		_utf8FieldCache [value] = fieldHandle;
++		return fieldHandle;
++	}
++
++	void EnsurePrivateImplDetailsType ()
++	{
++		if (!_privateImplDetailsType.IsNil) {
++			return;
++		}
++
++		int typeFieldStart = Metadata.GetRowCount (TableIndex.Field) + 1;
++		int typeMethodStart = Metadata.GetRowCount (TableIndex.MethodDef) + 1;
++
++		_privateImplDetailsType = Metadata.AddTypeDefinition (
++			TypeAttributes.NotPublic | TypeAttributes.Sealed | TypeAttributes.Abstract | TypeAttributes.BeforeFieldInit,
++			default,
++			Metadata.GetOrAddString ("<PrivateImplementationDetails>"),
++			Metadata.AddTypeReference (SystemRuntimeRef,
++				Metadata.GetOrAddString ("System"), Metadata.GetOrAddString ("Object")),
++			MetadataTokens.FieldDefinitionHandle (typeFieldStart),
++			MetadataTokens.MethodDefinitionHandle (typeMethodStart));
++	}
++
++	TypeDefinitionHandle GetOrCreateSizedType (int size)
++	{
++		if (_sizedTypeCache.TryGetValue (size, out var existing)) {
++			return existing;
++		}
++
++		EnsurePrivateImplDetailsType ();
++
++		int typeFieldStart = Metadata.GetRowCount (TableIndex.Field) + 1;
++		int typeMethodStart = Metadata.GetRowCount (TableIndex.MethodDef) + 1;
++
++		var handle = Metadata.AddTypeDefinition (
++			TypeAttributes.NestedPrivate | TypeAttributes.ExplicitLayout | TypeAttributes.Sealed | TypeAttributes.AnsiClass,
++			default,
++			Metadata.GetOrAddString ($"__utf8_{size}"),
++			Metadata.AddTypeReference (SystemRuntimeRef,
++				Metadata.GetOrAddString ("System"), Metadata.GetOrAddString ("ValueType")),
++			MetadataTokens.FieldDefinitionHandle (typeFieldStart),
++			MetadataTokens.MethodDefinitionHandle (typeMethodStart));
++
++		Metadata.AddTypeLayout (handle, packingSize: 1, size: (uint) size);
++		Metadata.AddNestedType (handle, _privateImplDetailsType);
++
++		_sizedTypeCache [size] = handle;
++		return handle;
++	}
++
+ 	/// <summary>
+ 	/// Emits a method body and definition in one call.
+ 	/// </summary>
+diff --git a/src/Microsoft.Android.Sdk.TrimmableTypeMap/Generator/TypeMapAssemblyEmitter.cs b/src/Microsoft.Android.Sdk.TrimmableTypeMap/Generator/TypeMapAssemblyEmitter.cs
+index 775f48af6..9edb001f9 100644
+--- a/src/Microsoft.Android.Sdk.TrimmableTypeMap/Generator/TypeMapAssemblyEmitter.cs
++++ b/src/Microsoft.Android.Sdk.TrimmableTypeMap/Generator/TypeMapAssemblyEmitter.cs
+@@ -48,8 +48,10 @@ namespace Microsoft.Android.Sdk.TrimmableTypeMap;
+ ///     // Registers JNI native methods (ACWs only):
+ ///     public void RegisterNatives(JniType jniType)
+ ///     {
+-///         TrimmableNativeRegistration.RegisterMethod(jniType, "n_OnCreate", "(Landroid/os/Bundle;)V", &amp;n_OnCreate_uco_0);
+-///         TrimmableNativeRegistration.RegisterMethod(jniType, "nctor_0", "()V", &amp;nctor_0_uco);
++///         JniNativeMethod* methods = stackalloc JniNativeMethod[2];
++///         methods[0] = new JniNativeMethod(&amp;__utf8_0, &amp;__utf8_1, &amp;n_OnCreate_uco_0);
++///         methods[1] = new JniNativeMethod(&amp;__utf8_2, &amp;__utf8_3, &amp;nctor_0_uco);
++///         JniEnvironment.Types.RegisterNatives(jniType.PeerReference, new ReadOnlySpan&lt;JniNativeMethod&gt;(methods, 2));
+ ///     }
+ /// }
+ ///
+@@ -86,13 +88,23 @@ sealed class TypeMapAssemblyEmitter
+ 	MemberReferenceHandle _jniObjectReferenceCtorRef;
+ 	MemberReferenceHandle _jniEnvDeleteRefRef;
+ 	MemberReferenceHandle _activateInstanceRef;
+-	MemberReferenceHandle _registerMethodRef;
+ 	MemberReferenceHandle _ucoAttrCtorRef;
+ 	BlobHandle _ucoAttrBlobHandle;
+ 	MemberReferenceHandle _typeMapAttrCtorRef2Arg;
+ 	MemberReferenceHandle _typeMapAttrCtorRef3Arg;
+ 	MemberReferenceHandle _typeMapAssociationAttrCtorRef;
+ 
++	// RegisterNatives with JniNativeMethod
++	TypeReferenceHandle _jniNativeMethodRef;
++	TypeReferenceHandle _jniEnvironmentRef;
++	TypeReferenceHandle _jniEnvironmentTypesRef;
++	TypeReferenceHandle _readOnlySpanOpenRef;
++	TypeSpecificationHandle _readOnlySpanOfJniNativeMethodSpec;
++	MemberReferenceHandle _jniNativeMethodCtorRef;
++	MemberReferenceHandle _jniTypePeerReferenceRef;
++	MemberReferenceHandle _jniEnvTypesRegisterNativesRef;
++	MemberReferenceHandle _readOnlySpanOfJniNativeMethodCtorRef;
++
+ 	/// <summary>
+ 	/// Creates a new emitter.
+ 	/// </summary>
+@@ -194,6 +206,18 @@ sealed class TypeMapAssemblyEmitter
+ 			metadata.GetOrAddString ("System"), metadata.GetOrAddString ("NotSupportedException"));
+ 		_runtimeHelpersRef = metadata.AddTypeReference (_pe.SystemRuntimeRef,
+ 			metadata.GetOrAddString ("System.Runtime.CompilerServices"), metadata.GetOrAddString ("RuntimeHelpers"));
++
++		_jniNativeMethodRef = metadata.AddTypeReference (_javaInteropRef,
++			metadata.GetOrAddString ("Java.Interop"), metadata.GetOrAddString ("JniNativeMethod"));
++		_jniEnvironmentRef = metadata.AddTypeReference (_javaInteropRef,
++			metadata.GetOrAddString ("Java.Interop"), metadata.GetOrAddString ("JniEnvironment"));
++		_jniEnvironmentTypesRef = metadata.AddTypeReference (_jniEnvironmentRef,
++			default, metadata.GetOrAddString ("Types"));
++
++		// ReadOnlySpan<JniNativeMethod> — TypeSpec for generic instantiation
++		_readOnlySpanOpenRef = metadata.AddTypeReference (_pe.SystemRuntimeRef,
++			metadata.GetOrAddString ("System"), metadata.GetOrAddString ("ReadOnlySpan`1"));
++		_readOnlySpanOfJniNativeMethodSpec = MakeGenericTypeSpec_ValueType (_readOnlySpanOpenRef, _jniNativeMethodRef);
+ 	}
+ 
+ 	void EmitMemberReferences ()
+@@ -240,16 +264,41 @@ sealed class TypeMapAssemblyEmitter
+ 					p.AddParameter ().Type ().Type (_systemTypeRef, false);
+ 				}));
+ 
+-		_registerMethodRef = _pe.AddMemberRef (_trimmableNativeRegistrationRef, "RegisterMethod",
+-			sig => sig.MethodSignature ().Parameters (4,
++		// JniNativeMethod..ctor(byte*, byte*, IntPtr)
++		_jniNativeMethodCtorRef = _pe.AddMemberRef (_jniNativeMethodRef, ".ctor",
++			sig => sig.MethodSignature (isInstanceMethod: true).Parameters (3,
+ 				rt => rt.Void (),
+ 				p => {
+-					p.AddParameter ().Type ().Type (_jniTypeRef, false);
+-					p.AddParameter ().Type ().String ();
+-					p.AddParameter ().Type ().String ();
++					p.AddParameter ().Type ().Pointer ().Byte ();
++					p.AddParameter ().Type ().Pointer ().Byte ();
+ 					p.AddParameter ().Type ().IntPtr ();
+ 				}));
+ 
++		// JniType.get_PeerReference() -> JniObjectReference
++		_jniTypePeerReferenceRef = _pe.AddMemberRef (_jniTypeRef, "get_PeerReference",
++			sig => sig.MethodSignature (isInstanceMethod: true).Parameters (0,
++				rt => rt.Type ().Type (_jniObjectReferenceRef, true),
++				p => { }));
++
++		// JniEnvironment.Types.RegisterNatives(JniObjectReference, ReadOnlySpan<JniNativeMethod>)
++		_jniEnvTypesRegisterNativesRef = _pe.AddMemberRef (_jniEnvironmentTypesRef, "RegisterNatives",
++			sig => sig.MethodSignature ().Parameters (2,
++				rt => rt.Void (),
++				p => {
++					p.AddParameter ().Type ().Type (_jniObjectReferenceRef, true);
++					// ReadOnlySpan<JniNativeMethod> — must encode as GENERICINST manually
++					EncodeReadOnlySpanOfJniNativeMethod (p.AddParameter ().Type ());
++				}));
++
++		// ReadOnlySpan<JniNativeMethod>..ctor(void*, int)
++		_readOnlySpanOfJniNativeMethodCtorRef = _pe.AddMemberRef (_readOnlySpanOfJniNativeMethodSpec, ".ctor",
++			sig => sig.MethodSignature (isInstanceMethod: true).Parameters (2,
++				rt => rt.Void (),
++				p => {
++					p.AddParameter ().Type ().VoidPointer ();
++					p.AddParameter ().Type ().Int32 ();
++				}));
++
+ 		var ucoAttrTypeRef = _pe.Metadata.AddTypeReference (_pe.SystemRuntimeInteropServicesRef,
+ 			_pe.Metadata.GetOrAddString ("System.Runtime.InteropServices"),
+ 			_pe.Metadata.GetOrAddString ("UnmanagedCallersOnlyAttribute"));
+@@ -702,6 +751,35 @@ sealed class TypeMapAssemblyEmitter
+ 	void EmitRegisterNatives (List<NativeRegistrationData> registrations,
+ 		Dictionary<string, MethodDefinitionHandle> wrapperHandles)
+ 	{
++		// Filter to only registrations that have corresponding wrapper methods
++		var validRegs = new List<(NativeRegistrationData Reg, MethodDefinitionHandle Wrapper)> (registrations.Count);
++		foreach (var reg in registrations) {
++			if (wrapperHandles.TryGetValue (reg.WrapperMethodName, out var wrapperHandle)) {
++				validRegs.Add ((reg, wrapperHandle));
++			}
++		}
++
++		if (validRegs.Count == 0) {
++			_pe.EmitBody ("RegisterNatives",
++				MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig |
++				MethodAttributes.NewSlot | MethodAttributes.Final,
++				sig => sig.MethodSignature (isInstanceMethod: true).Parameters (1,
++					rt => rt.Void (),
++					p => p.AddParameter ().Type ().Type (_jniTypeRef, false)),
++				encoder => encoder.OpCode (ILOpCode.Ret));
++			return;
++		}
++
++		// Get or create deduplicated RVA fields for each unique name/signature string.
++		var nameFields = new FieldDefinitionHandle [validRegs.Count];
++		var sigFields = new FieldDefinitionHandle [validRegs.Count];
++		for (int i = 0; i < validRegs.Count; i++) {
++			nameFields [i] = _pe.GetOrAddUtf8Field (validRegs [i].Reg.JniMethodName);
++			sigFields [i] = _pe.GetOrAddUtf8Field (validRegs [i].Reg.JniSignature);
++		}
++
++		int methodCount = validRegs.Count;
++
+ 		_pe.EmitBody ("RegisterNatives",
+ 			MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig |
+ 			MethodAttributes.NewSlot | MethodAttributes.Final,
+@@ -709,18 +787,80 @@ sealed class TypeMapAssemblyEmitter
+ 				rt => rt.Void (),
+ 				p => p.AddParameter ().Type ().Type (_jniTypeRef, false)),
+ 			encoder => {
+-				foreach (var reg in registrations) {
+-					if (!wrapperHandles.TryGetValue (reg.WrapperMethodName, out var wrapperHandle)) {
+-						continue;
++				// stackalloc JniNativeMethod[N]
++				encoder.LoadConstantI4 (methodCount);
++				encoder.OpCode (ILOpCode.Sizeof);
++				encoder.Token (_jniNativeMethodRef);
++				encoder.OpCode (ILOpCode.Mul);
++				encoder.OpCode (ILOpCode.Localloc);
++				encoder.StoreLocal (0);
++
++				for (int i = 0; i < methodCount; i++) {
++					// &methods[i] — destination address for stobj
++					encoder.LoadLocal (0);
++					if (i > 0) {
++						encoder.LoadConstantI4 (i);
++						encoder.OpCode (ILOpCode.Sizeof);
++						encoder.Token (_jniNativeMethodRef);
++						encoder.OpCode (ILOpCode.Mul);
++						encoder.OpCode (ILOpCode.Add);
+ 					}
+-					encoder.LoadArgument (1);
+-					encoder.LoadString (_pe.Metadata.GetOrAddUserString (reg.JniMethodName));
+-					encoder.LoadString (_pe.Metadata.GetOrAddUserString (reg.JniSignature));
++
++					// byte* name — ldsflda of deduplicated field
++					encoder.OpCode (ILOpCode.Ldsflda);
++					encoder.Token (nameFields [i]);
++
++					// byte* signature
++					encoder.OpCode (ILOpCode.Ldsflda);
++					encoder.Token (sigFields [i]);
++
++					// IntPtr functionPointer
+ 					encoder.OpCode (ILOpCode.Ldftn);
+-					encoder.Token (wrapperHandle);
+-					encoder.Call (_registerMethodRef);
++					encoder.Token (validRegs [i].Wrapper);
++
++					// Construct the struct on the evaluation stack and store it
++					// at the destination address. This matches the Roslyn pattern:
++					//   newobj JniNativeMethod::.ctor(byte*, byte*, IntPtr)
++					//   stobj  JniNativeMethod
++					encoder.OpCode (ILOpCode.Newobj);
++					encoder.Token (_jniNativeMethodCtorRef);
++					encoder.OpCode (ILOpCode.Stobj);
++					encoder.Token (_jniNativeMethodRef);
+ 				}
++
++				// JniObjectReference peerRef = jniType.PeerReference
++				// JniType is a sealed reference type, so use ldarg + callvirt
++				encoder.LoadArgument (1);
++				encoder.OpCode (ILOpCode.Callvirt);
++				encoder.Token (_jniTypePeerReferenceRef);
++				encoder.StoreLocal (1);
++
++				// new ReadOnlySpan<JniNativeMethod>(methods, count)
++				encoder.LoadLocalAddress (2);
++				encoder.LoadLocal (0);
++				encoder.LoadConstantI4 (methodCount);
++				encoder.Call (_readOnlySpanOfJniNativeMethodCtorRef);
++
++				// JniEnvironment.Types.RegisterNatives(peerRef, span)
++				encoder.LoadLocal (1);
++				encoder.LoadLocal (2);
++				encoder.Call (_jniEnvTypesRegisterNativesRef);
++
+ 				encoder.OpCode (ILOpCode.Ret);
++			},
++			encodeLocals: localSig => {
++				localSig.WriteByte (0x07); // IMAGE_CEE_CS_CALLCONV_LOCAL_SIG
++				localSig.WriteCompressedInteger (3);
++
++				// local 0: native int (stackalloc pointer)
++				localSig.WriteByte (0x18); // ELEMENT_TYPE_I
++
++				// local 1: JniObjectReference
++				localSig.WriteByte (0x11); // ELEMENT_TYPE_VALUETYPE
++				localSig.WriteCompressedInteger (CodedIndex.TypeDefOrRefOrSpec (_jniObjectReferenceRef));
++
++				// local 2: ReadOnlySpan<JniNativeMethod>
++				EncodeGenericValueTypeInst (localSig, _readOnlySpanOpenRef, _jniNativeMethodRef);
+ 			});
+ 	}
+ 
+@@ -753,4 +893,38 @@ sealed class TypeMapAssemblyEmitter
+ 		});
+ 		_pe.Metadata.AddCustomAttribute (EntityHandle.AssemblyDefinition, _typeMapAssociationAttrCtorRef, blob);
+ 	}
++
++	/// <summary>
++	/// Writes the ECMA-335 blob for a closed generic value type with a single value-type argument.
++	/// E.g., <c>ReadOnlySpan&lt;JniNativeMethod&gt;</c>.
++	/// </summary>
++	static void EncodeGenericValueTypeInst (BlobBuilder builder, EntityHandle openType, EntityHandle valueTypeArg)
++	{
++		builder.WriteByte (0x15); // ELEMENT_TYPE_GENERICINST
++		builder.WriteByte (0x11); // ELEMENT_TYPE_VALUETYPE
++		builder.WriteCompressedInteger (CodedIndex.TypeDefOrRefOrSpec (openType));
++		builder.WriteCompressedInteger (1); // generic arity = 1
++		builder.WriteByte (0x11); // ELEMENT_TYPE_VALUETYPE
++		builder.WriteCompressedInteger (CodedIndex.TypeDefOrRefOrSpec (valueTypeArg));
++	}
++
++	/// <summary>
++	/// Builds a <c>TypeSpec</c> for a closed generic type with a single value-type argument.
++	/// E.g., <c>ReadOnlySpan&lt;JniNativeMethod&gt;</c>.
++	/// </summary>
++	TypeSpecificationHandle MakeGenericTypeSpec_ValueType (EntityHandle openType, EntityHandle valueTypeArg)
++	{
++		var sigBlob = new BlobBuilder (32);
++		EncodeGenericValueTypeInst (sigBlob, openType, valueTypeArg);
++		return _pe.Metadata.AddTypeSpecification (_pe.Metadata.GetOrAddBlob (sigBlob));
++	}
++
++	/// <summary>
++	/// Encodes <c>ReadOnlySpan&lt;JniNativeMethod&gt;</c> directly into a signature type encoder.
++	/// Required because <see cref="SignatureTypeEncoder.Type"/> doesn't accept TypeSpec handles.
++	/// </summary>
++	void EncodeReadOnlySpanOfJniNativeMethod (SignatureTypeEncoder encoder)
++	{
++		EncodeGenericValueTypeInst (encoder.Builder, _readOnlySpanOpenRef, _jniNativeMethodRef);
++	}
+ }
+diff --git a/src/Mono.Android/Microsoft.Android.Runtime/TrimmableTypeMap.cs b/src/Mono.Android/Microsoft.Android.Runtime/TrimmableTypeMap.cs
+index 8a2e44388..58865db79 100644
+--- a/src/Mono.Android/Microsoft.Android.Runtime/TrimmableTypeMap.cs
++++ b/src/Mono.Android/Microsoft.Android.Runtime/TrimmableTypeMap.cs
+@@ -174,29 +174,6 @@ class TrimmableTypeMap
+ 		}
+ 	}
+ 
+-	// TODO (https://github.com/dotnet/android/issues/10794): The generator currently emits per-method RegisterMethod() calls.
+-	// This should be changed to emit a single JNI RegisterNatives call with
+-	// all methods at once, eliminating this helper. Follow-up generator change.
+-
+-	/// <summary>
+-	/// Registers a single JNI native method. Called from generated
+-	/// <see cref="IAndroidCallableWrapper"/> implementations.
+-	/// </summary>
+-	public static void RegisterMethod (JniType nativeClass, string name, string signature, IntPtr functionPointer)
+-	{
+-		// The java-interop JniNativeMethodRegistration API requires a Delegate, but we have
+-		// a raw function pointer from an [UnmanagedCallersOnly] method. JNI only uses the
+-		// function pointer extracted via Marshal.GetFunctionPointerForDelegate(), so the
+-		// delegate type doesn't matter — Action is used as a lightweight wrapper.
+-		// TODO (https://github.com/dotnet/java-interop/pull/1391): Use JniNativeMethod overload to avoid delegate allocation.
+-		var registration = new JniNativeMethodRegistration (name, signature,
+-			Marshal.GetDelegateForFunctionPointer<Action> (functionPointer));
+-		JniEnvironment.Types.RegisterNatives (
+-			nativeClass.PeerReference,
+-			new [] { registration },
+-			1);
+-	}
+-
+ 	static readonly RegisterNativesHandler s_onRegisterNatives = OnRegisterNatives;
+ 
+ 	delegate void RegisterNativesHandler (IntPtr jnienv, IntPtr klass, IntPtr nativeClassHandle);
+diff --git a/tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests/Generator/TypeMapAssemblyGeneratorTests.cs b/tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests/Generator/TypeMapAssemblyGeneratorTests.cs
+index 5fb770fd3..104896377 100644
+--- a/tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests/Generator/TypeMapAssemblyGeneratorTests.cs
++++ b/tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests/Generator/TypeMapAssemblyGeneratorTests.cs
+@@ -504,4 +504,84 @@ public class TypeMapAssemblyGeneratorTests : FixtureTestBase
+ 	{
+ 		Assert.Empty (JniSignatureHelper.ParseParameterTypes ("("));
+ 	}
++
++	[Fact]
++	public void Generate_AcwProxy_UsesJniNativeMethodDirectly ()
++	{
++		var peers = ScanFixtures ();
++		var acwPeer = peers.First (p => p.JavaName == "my/app/MainActivity");
++
++		using var stream = GenerateAssembly (new [] { acwPeer }, "DirectRegisterTest");
++		using var pe = new PEReader (stream);
++		var reader = pe.GetMetadataReader ();
++
++		var memberNames = GetMemberRefNames (reader);
++		var typeNames = GetTypeRefNames (reader);
++
++		// Should reference JniNativeMethod and RegisterNatives directly
++		Assert.Contains ("JniNativeMethod", typeNames);
++		Assert.Contains ("Types", typeNames); // JniEnvironment.Types nested type
++		Assert.Contains ("RegisterNatives", memberNames);
++		Assert.Contains ("get_PeerReference", memberNames);
++
++		// Should NOT reference the old RegisterMethod helper
++		Assert.DoesNotContain ("RegisterMethod", memberNames);
++	}
++
++	[Fact]
++	public void Generate_AcwProxy_HasPrivateImplementationDetails ()
++	{
++		var peers = ScanFixtures ();
++		var acwPeer = peers.First (p => p.JavaName == "my/app/MainActivity");
++
++		using var stream = GenerateAssembly (new [] { acwPeer }, "PrivImplTest");
++		using var pe = new PEReader (stream);
++		var reader = pe.GetMetadataReader ();
++
++		var typeDefNames = reader.TypeDefinitions
++			.Select (h => reader.GetTypeDefinition (h))
++			.Select (t => reader.GetString (t.Name))
++			.ToList ();
++
++		Assert.Contains ("<PrivateImplementationDetails>", typeDefNames);
++	}
++
++	[Fact]
++	public void Generate_MultipleAcwProxies_DeduplicatesUtf8Strings ()
++	{
++		var peers = ScanFixtures ();
++		// Get all ACW peers — they likely share signatures like "()V"
++		var acwPeers = peers.Where (p => !p.DoNotGenerateAcw && p.MarshalMethods.Count > 0).ToList ();
++		Assert.True (acwPeers.Count >= 2, "Need at least 2 ACW peers to test deduplication");
++
++		using var stream = GenerateAssembly (acwPeers, "DedupTest");
++		using var pe = new PEReader (stream);
++		var reader = pe.GetMetadataReader ();
++
++		// Count fields with HasFieldRVA — these are our UTF-8 RVA fields.
++		// With deduplication, common strings like "()V" should appear only once.
++		var rvaFields = reader.FieldDefinitions
++			.Select (h => reader.GetFieldDefinition (h))
++			.Where (f => (f.Attributes & FieldAttributes.HasFieldRVA) != 0)
++			.ToList ();
++
++		// Collect all JNI method names and signatures from the ACW peers
++		var allStrings = acwPeers
++			.SelectMany (p => p.MarshalMethods)
++			.SelectMany (m => new [] { m.JniName, m.JniSignature })
++			.ToList ();
++		var uniqueStrings = allStrings.Distinct ().Count ();
++
++		// With dedup, RVA field count should equal unique string count, not total string count.
++		// Also include constructor registrations (nctor_*), so use <= for a safe assertion.
++		Assert.True (rvaFields.Count <= uniqueStrings + acwPeers.Count * 2,
++			$"Expected at most {uniqueStrings + acwPeers.Count * 2} RVA fields (unique strings + ctor names/sigs), " +
++			$"but found {rvaFields.Count}. Deduplication may not be working.");
++
++		// The key assertion: fewer RVA fields than total strings means dedup is working
++		if (allStrings.Count > uniqueStrings) {
++			Assert.True (rvaFields.Count < allStrings.Count,
++				$"Expected fewer RVA fields ({rvaFields.Count}) than total strings ({allStrings.Count}) due to deduplication");
++		}
++	}
+ }

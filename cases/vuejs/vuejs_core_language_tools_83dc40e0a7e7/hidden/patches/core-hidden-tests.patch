@@ -1,0 +1,197 @@
+diff --git a/packages/compiler-sfc/__tests__/compileScript/__snapshots__/definePropsDestructure.spec.ts.snap b/packages/compiler-sfc/__tests__/compileScript/__snapshots__/definePropsDestructure.spec.ts.snap
+index d3d6a31c..5e04c48d 100644
+--- a/packages/compiler-sfc/__tests__/compileScript/__snapshots__/definePropsDestructure.spec.ts.snap
++++ b/packages/compiler-sfc/__tests__/compileScript/__snapshots__/definePropsDestructure.spec.ts.snap
+@@ -388,6 +388,108 @@ return { rest }
+ }"
+ `;
+ 
++exports[`sfc reactive props destructure > var declaration shadowing before declaration in for loop 1`] = `
++"import { defineComponent as _defineComponent } from 'vue'
++
++export default /*@__PURE__*/_defineComponent({
++  props: {
++    foo: { type: String, required: false, default: "a" }
++  },
++  setup(__props: any) {
++
++
++let bar: string | undefined;
++function init() {
++  bar = foo;
++  for (var foo = "b"; false;) {}
++}
++init();
++
++return () => {}
++}
++
++})"
++`;
++
++exports[`sfc reactive props destructure > var declaration shadowing before declaration in nested block 1`] = `
++"import { defineComponent as _defineComponent } from 'vue'
++
++export default /*@__PURE__*/_defineComponent({
++  props: {
++    foo: { type: String, required: false, default: "a" }
++  },
++  setup(__props: any) {
++
++
++let bar: string | undefined;
++function init() {
++  bar = foo;
++  {
++    var foo = "b";
++  }
++}
++init();
++
++return () => {}
++}
++
++})"
++`;
++
++exports[`sfc reactive props destructure > var declaration shadowing does not cross function scope 1`] = `
++"import { defineComponent as _defineComponent } from 'vue'
++
++export default /*@__PURE__*/_defineComponent({
++  props: {
++    foo: { type: String, required: false, default: "a" }
++  },
++  setup(__props: any) {
++
++
++let bar: string | undefined;
++function init() {
++  function nested() {
++    {
++      var foo = "b";
++    }
++    return foo;
++  }
++  bar = __props.foo;
++  nested();
++}
++init();
++
++return () => {}
++}
++
++})"
++`;
++
++exports[`sfc reactive props destructure > var declaration shadowing in nested block 1`] = `
++"import { defineComponent as _defineComponent } from 'vue'
++
++export default /*@__PURE__*/_defineComponent({
++  props: {
++    foo: { type: String, required: false, default: "a" }
++  },
++  setup(__props: any) {
++
++
++let bar: string | undefined;
++function init() {
++  {
++    var foo = "b";
++  }
++  bar = foo;
++}
++init();
++
++return () => {}
++}
++
++})"
++`;
++
+ exports[`sfc reactive props destructure > with TSInstantiationExpression 1`] = `
+ "import { defineComponent as _defineComponent } from 'vue'
+ type Foo = <T extends string | number>(data: T) => void
+diff --git a/packages/compiler-sfc/__tests__/compileScript/definePropsDestructure.spec.ts b/packages/compiler-sfc/__tests__/compileScript/definePropsDestructure.spec.ts
+index cfb73a2a..70797e4c 100644
+--- a/packages/compiler-sfc/__tests__/compileScript/definePropsDestructure.spec.ts
++++ b/packages/compiler-sfc/__tests__/compileScript/definePropsDestructure.spec.ts
+@@ -108,6 +108,79 @@ describe('sfc reactive props destructure', () => {
+     assertCode(content)
+   })
+ 
++  test('var declaration shadowing in nested block', () => {
++    const { content } = compile(`<script setup lang="ts">
++const { foo = "a" } = defineProps<{ foo?: string }>();
++let bar: string | undefined;
++function init() {
++  {
++    var foo = "b";
++  }
++  bar = foo;
++}
++init();
++</script>`)
++    expect(content).toMatch(`var foo = "b"`)
++    expect(content).toMatch(`bar = foo`)
++    expect(content).not.toMatch(`bar = __props.foo`)
++    assertCode(content)
++  })
++
++  test('var declaration shadowing before declaration in nested block', () => {
++    const { content } = compile(`<script setup lang="ts">
++const { foo = "a" } = defineProps<{ foo?: string }>();
++let bar: string | undefined;
++function init() {
++  bar = foo;
++  {
++    var foo = "b";
++  }
++}
++init();
++</script>`)
++    expect(content).toMatch(`bar = foo`)
++    expect(content).toMatch(`var foo = "b"`)
++    expect(content).not.toMatch(`bar = __props.foo`)
++    assertCode(content)
++  })
++
++  test('var declaration shadowing before declaration in for loop', () => {
++    const { content } = compile(`<script setup lang="ts">
++const { foo = "a" } = defineProps<{ foo?: string }>();
++let bar: string | undefined;
++function init() {
++  bar = foo;
++  for (var foo = "b"; false;) {}
++}
++init();
++</script>`)
++    expect(content).toMatch(`bar = foo`)
++    expect(content).toMatch(`for (var foo = "b"; false;)`)
++    expect(content).not.toMatch(`bar = __props.foo`)
++    assertCode(content)
++  })
++
++  test('var declaration shadowing does not cross function scope', () => {
++    const { content } = compile(`<script setup lang="ts">
++const { foo = "a" } = defineProps<{ foo?: string }>();
++let bar: string | undefined;
++function init() {
++  function nested() {
++    {
++      var foo = "b";
++    }
++    return foo;
++  }
++  bar = foo;
++  nested();
++}
++init();
++</script>`)
++    expect(content).toMatch(`return foo`)
++    expect(content).toMatch(`bar = __props.foo`)
++    assertCode(content)
++  })
++
+   test('default values w/ array runtime declaration', () => {
+     const { content } = compile(`
+       <script setup>

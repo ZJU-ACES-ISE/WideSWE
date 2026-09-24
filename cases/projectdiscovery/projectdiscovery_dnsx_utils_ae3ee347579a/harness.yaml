@@ -1,0 +1,33 @@
+task_id: projectdiscovery_dnsx_utils_ae3ee347579a
+hidden_test_patches:
+- repo: dnsx
+  patch: hidden/patches/dnsx-hidden-tests.patch
+  test_profile: dnsx-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - internal/runner/runner_test.go
+  - internal/runner/wildcard_test.go
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from projectdiscovery/dnsx PR(s) 966
+- repo: utils
+  patch: hidden/patches/utils-hidden-tests.patch
+  test_profile: utils-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - dns/wildcard/resolver_test.go
+  - process/interrupt_windows_test.go
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from projectdiscovery/utils PR(s) 732
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - dnsx-hidden
+    - utils-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

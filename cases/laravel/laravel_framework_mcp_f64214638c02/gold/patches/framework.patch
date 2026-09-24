@@ -1,0 +1,1999 @@
+diff --git a/src/Illuminate/Broadcasting/BroadcastEvent.php b/src/Illuminate/Broadcasting/BroadcastEvent.php
+index 9ac0f70ae0..5c018e5a55 100644
+--- a/src/Illuminate/Broadcasting/BroadcastEvent.php
++++ b/src/Illuminate/Broadcasting/BroadcastEvent.php
+@@ -6,6 +6,12 @@
+ use Illuminate\Contracts\Broadcasting\Factory as BroadcastingFactory;
+ use Illuminate\Contracts\Queue\ShouldQueue;
+ use Illuminate\Contracts\Support\Arrayable;
++use Illuminate\Queue\Attributes\Backoff;
++use Illuminate\Queue\Attributes\DeleteWhenMissingModels;
++use Illuminate\Queue\Attributes\MaxExceptions;
++use Illuminate\Queue\Attributes\ReadsQueueAttributes;
++use Illuminate\Queue\Attributes\Timeout;
++use Illuminate\Queue\Attributes\Tries;
+ use Illuminate\Support\Arr;
+ use ReflectionClass;
+ use ReflectionProperty;
+@@ -13,7 +19,7 @@
+ 
+ class BroadcastEvent implements ShouldQueue
+ {
+-    use Queueable;
++    use Queueable, ReadsQueueAttributes;
+ 
+     /**
+      * The event instance.
+@@ -65,12 +71,12 @@ class BroadcastEvent implements ShouldQueue
+     public function __construct($event)
+     {
+         $this->event = $event;
+-        $this->tries = property_exists($event, 'tries') ? $event->tries : null;
+-        $this->timeout = property_exists($event, 'timeout') ? $event->timeout : null;
+-        $this->backoff = property_exists($event, 'backoff') ? $event->backoff : null;
++        $this->tries = $this->getAttributeValue($event, Tries::class, 'tries');
++        $this->timeout = $this->getAttributeValue($event, Timeout::class, 'timeout');
++        $this->backoff = $this->getAttributeValue($event, Backoff::class, 'backoff');
+         $this->afterCommit = property_exists($event, 'afterCommit') ? $event->afterCommit : null;
+-        $this->maxExceptions = property_exists($event, 'maxExceptions') ? $event->maxExceptions : null;
+-        $this->deleteWhenMissingModels = property_exists($event, 'deleteWhenMissingModels') ? $event->deleteWhenMissingModels : null;
++        $this->maxExceptions = $this->getAttributeValue($event, MaxExceptions::class, 'maxExceptions');
++        $this->deleteWhenMissingModels = $this->getAttributeValue($event, DeleteWhenMissingModels::class, 'deleteWhenMissingModels');
+     }
+ 
+     /**
+diff --git a/src/Illuminate/Broadcasting/BroadcastManager.php b/src/Illuminate/Broadcasting/BroadcastManager.php
+index 3f988f5149..b1cfa518f6 100644
+--- a/src/Illuminate/Broadcasting/BroadcastManager.php
++++ b/src/Illuminate/Broadcasting/BroadcastManager.php
+@@ -18,6 +18,9 @@
+ use Illuminate\Contracts\Bus\Dispatcher as BusDispatcherContract;
+ use Illuminate\Contracts\Cache\Repository as Cache;
+ use Illuminate\Contracts\Foundation\CachesRoutes;
++use Illuminate\Queue\Attributes\Connection as ConnectionAttribute;
++use Illuminate\Queue\Attributes\Queue as QueueAttribute;
++use Illuminate\Queue\Attributes\ReadsQueueAttributes;
+ use Illuminate\Support\Queue\Concerns\ResolvesQueueRoutes;
+ use InvalidArgumentException;
+ use Psr\Log\LoggerInterface;
+@@ -30,7 +33,7 @@
+  */
+ class BroadcastManager implements FactoryContract
+ {
+-    use ResolvesQueueRoutes;
++    use ReadsQueueAttributes, ResolvesQueueRoutes;
+ 
+     /**
+      * The application instance.
+@@ -203,7 +206,9 @@ public function queue($event)
+         }
+ 
+         if (is_null($queue)) {
+-            $queue = $this->resolveQueueFromQueueRoute($event) ?? null;
++            $queue = $this->getAttributeValue($event, QueueAttribute::class, 'queue')
++                ?? $this->resolveQueueFromQueueRoute($event)
++                ?? null;
+         }
+ 
+         $broadcastEvent = new BroadcastEvent(clone $event);
+@@ -219,6 +224,7 @@ public function queue($event)
+         $push = fn () => $this->app->make('queue')
+             ->connection(
+                 $event->connection
++                    ?? $this->getAttributeValue($event, ConnectionAttribute::class, 'connection')
+                     ?? $this->resolveConnectionFromQueueRoute($event)
+                     ?? null
+             )
+diff --git a/src/Illuminate/Bus/Dispatcher.php b/src/Illuminate/Bus/Dispatcher.php
+index ff9b532528..69b02e010a 100644
+--- a/src/Illuminate/Bus/Dispatcher.php
++++ b/src/Illuminate/Bus/Dispatcher.php
+@@ -9,6 +9,9 @@
+ use Illuminate\Contracts\Queue\ShouldQueue;
+ use Illuminate\Foundation\Bus\PendingChain;
+ use Illuminate\Pipeline\Pipeline;
++use Illuminate\Queue\Attributes\Connection;
++use Illuminate\Queue\Attributes\Queue as QueueAttribute;
++use Illuminate\Queue\Attributes\ReadsQueueAttributes;
+ use Illuminate\Queue\InteractsWithQueue;
+ use Illuminate\Queue\Jobs\SyncJob;
+ use Illuminate\Support\Collection;
+@@ -17,7 +20,7 @@
+ 
+ class Dispatcher implements QueueingDispatcher
+ {
+-    use ResolvesQueueRoutes;
++    use ReadsQueueAttributes, ResolvesQueueRoutes;
+ 
+     /**
+      * The container implementation.
+@@ -218,7 +221,7 @@ protected function commandShouldBeQueued($command)
+      */
+     public function dispatchToQueue($command)
+     {
+-        $connection = $command->connection
++        $connection = $this->getAttributeValue($command, Connection::class, 'connection')
+             ?? $this->resolveConnectionFromQueueRoute($command)
+             ?? null;
+ 
+@@ -244,7 +247,9 @@ public function dispatchToQueue($command)
+      */
+     protected function pushCommandToQueue($queue, $command)
+     {
+-        $queueName = $command->queue ?? $this->resolveQueueFromQueueRoute($command) ?? null;
++        $queueName = $this->getAttributeValue($command, QueueAttribute::class, 'queue')
++            ?? $this->resolveQueueFromQueueRoute($command)
++            ?? null;
+ 
+         if (isset($command->delay)) {
+             return $queue->later($command->delay, $command, queue: $queueName);
+diff --git a/src/Illuminate/Bus/UniqueLock.php b/src/Illuminate/Bus/UniqueLock.php
+index c928e65c09..c93beb0bdf 100644
+--- a/src/Illuminate/Bus/UniqueLock.php
++++ b/src/Illuminate/Bus/UniqueLock.php
+@@ -3,9 +3,13 @@
+ namespace Illuminate\Bus;
+ 
+ use Illuminate\Contracts\Cache\Repository as Cache;
++use Illuminate\Queue\Attributes\ReadsQueueAttributes;
++use Illuminate\Queue\Attributes\UniqueFor;
+ 
+ class UniqueLock
+ {
++    use ReadsQueueAttributes;
++
+     /**
+      * The cache repository implementation.
+      *
+@@ -33,7 +37,7 @@ public function acquire($job)
+     {
+         $uniqueFor = method_exists($job, 'uniqueFor')
+             ? $job->uniqueFor()
+-            : ($job->uniqueFor ?? 0);
++            : ($this->getAttributeValue($job, UniqueFor::class, 'uniqueFor') ?? 0);
+ 
+         $cache = method_exists($job, 'uniqueVia')
+             ? ($job->uniqueVia() ?? $this->cache)
+diff --git a/src/Illuminate/Console/Attributes/Description.php b/src/Illuminate/Console/Attributes/Description.php
+new file mode 100644
+index 0000000000..c4b93f3ef9
+--- /dev/null
++++ b/src/Illuminate/Console/Attributes/Description.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Console\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Description
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $description
++     */
++    public function __construct(public string $description)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Console/Attributes/Signature.php b/src/Illuminate/Console/Attributes/Signature.php
+new file mode 100644
+index 0000000000..436674950d
+--- /dev/null
++++ b/src/Illuminate/Console/Attributes/Signature.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Console\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Signature
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $signature
++     */
++    public function __construct(public string $signature)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Console/Command.php b/src/Illuminate/Console/Command.php
+index 89d5cdfe3b..44546df973 100755
+--- a/src/Illuminate/Console/Command.php
++++ b/src/Illuminate/Console/Command.php
+@@ -2,9 +2,12 @@
+ 
+ namespace Illuminate\Console;
+ 
++use Illuminate\Console\Attributes\Description;
++use Illuminate\Console\Attributes\Signature;
+ use Illuminate\Console\View\Components\Factory;
+ use Illuminate\Contracts\Console\Isolatable;
+ use Illuminate\Support\Traits\Macroable;
++use ReflectionClass;
+ use Symfony\Component\Console\Command\Command as SymfonyCommand;
+ use Symfony\Component\Console\Input\InputInterface;
+ use Symfony\Component\Console\Input\InputOption;
+@@ -89,6 +92,8 @@ class Command extends SymfonyCommand
+      */
+     public function __construct()
+     {
++        $this->configureFromAttributes();
++
+         // We will go ahead and set the name, description, and parameters on console
+         // commands just to make things a little easier on the developer. This is
+         // so they don't have to all be manually specified in the constructors.
+@@ -124,6 +129,28 @@ public function __construct()
+         }
+     }
+ 
++    /**
++     * Configure the command from class attributes.
++     *
++     * @return void
++     */
++    protected function configureFromAttributes()
++    {
++        $reflection = new ReflectionClass($this);
++
++        $signature = $reflection->getAttributes(Signature::class);
++
++        if (count($signature) > 0) {
++            $this->signature = $signature[0]->newInstance()->signature;
++        }
++
++        $description = $reflection->getAttributes(Description::class);
++
++        if (count($description) > 0) {
++            $this->description = $description[0]->newInstance()->description;
++        }
++    }
++
+     /**
+      * Configure the console command using a fluent definition.
+      *
+diff --git a/src/Illuminate/Database/Eloquent/Attributes/Appends.php b/src/Illuminate/Database/Eloquent/Attributes/Appends.php
+new file mode 100644
+index 0000000000..6b696e3123
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Attributes/Appends.php
+@@ -0,0 +1,18 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Appends
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  array<int, string>  $columns
++     */
++    public function __construct(public array $columns)
++    {
++    }
++}
+diff --git a/src/Illuminate/Database/Eloquent/Attributes/Connection.php b/src/Illuminate/Database/Eloquent/Attributes/Connection.php
+new file mode 100644
+index 0000000000..d02fcc502f
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Attributes/Connection.php
+@@ -0,0 +1,18 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Connection
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $name
++     */
++    public function __construct(public string $name)
++    {
++    }
++}
+diff --git a/src/Illuminate/Database/Eloquent/Attributes/Fillable.php b/src/Illuminate/Database/Eloquent/Attributes/Fillable.php
+new file mode 100644
+index 0000000000..e6558e95bc
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Attributes/Fillable.php
+@@ -0,0 +1,18 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Fillable
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  array<int, string>  $columns
++     */
++    public function __construct(public array $columns)
++    {
++    }
++}
+diff --git a/src/Illuminate/Database/Eloquent/Attributes/Guarded.php b/src/Illuminate/Database/Eloquent/Attributes/Guarded.php
+new file mode 100644
+index 0000000000..d2f9c34e8d
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Attributes/Guarded.php
+@@ -0,0 +1,18 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Guarded
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  array<int, string>  $columns
++     */
++    public function __construct(public array $columns)
++    {
++    }
++}
+diff --git a/src/Illuminate/Database/Eloquent/Attributes/Hidden.php b/src/Illuminate/Database/Eloquent/Attributes/Hidden.php
+new file mode 100644
+index 0000000000..a7dbfbc446
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Attributes/Hidden.php
+@@ -0,0 +1,18 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Hidden
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  array<int, string>  $columns
++     */
++    public function __construct(public array $columns)
++    {
++    }
++}
+diff --git a/src/Illuminate/Database/Eloquent/Attributes/Table.php b/src/Illuminate/Database/Eloquent/Attributes/Table.php
+new file mode 100644
+index 0000000000..217a45ac4d
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Attributes/Table.php
+@@ -0,0 +1,29 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Table
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string|null  $name
++     * @param  string|null  $key
++     * @param  string|null  $keyType
++     * @param  bool|null  $incrementing
++     * @param  bool|null  $timestamps
++     * @param  string|null  $dateFormat
++     */
++    public function __construct(
++        public ?string $name = null,
++        public ?string $key = null,
++        public ?string $keyType = null,
++        public ?bool $incrementing = null,
++        public ?bool $timestamps = null,
++        public ?string $dateFormat = null,
++    ) {
++    }
++}
+diff --git a/src/Illuminate/Database/Eloquent/Attributes/Touches.php b/src/Illuminate/Database/Eloquent/Attributes/Touches.php
+new file mode 100644
+index 0000000000..b016bd5ea1
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Attributes/Touches.php
+@@ -0,0 +1,18 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Touches
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  array<int, string>  $relations
++     */
++    public function __construct(public array $relations)
++    {
++    }
++}
+diff --git a/src/Illuminate/Database/Eloquent/Attributes/Unguarded.php b/src/Illuminate/Database/Eloquent/Attributes/Unguarded.php
+new file mode 100644
+index 0000000000..005105e47e
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Attributes/Unguarded.php
+@@ -0,0 +1,11 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Unguarded
++{
++    //
++}
+diff --git a/src/Illuminate/Database/Eloquent/Attributes/Visible.php b/src/Illuminate/Database/Eloquent/Attributes/Visible.php
+new file mode 100644
+index 0000000000..b9c87575a4
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Attributes/Visible.php
+@@ -0,0 +1,18 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Visible
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  array<int, string>  $columns
++     */
++    public function __construct(public array $columns)
++    {
++    }
++}
+diff --git a/src/Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php b/src/Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php
+index 759ba7a6db..aa9b2c60c9 100644
+--- a/src/Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php
++++ b/src/Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php
+@@ -2,6 +2,11 @@
+ 
+ namespace Illuminate\Database\Eloquent\Concerns;
+ 
++use Illuminate\Database\Eloquent\Attributes\Fillable;
++use Illuminate\Database\Eloquent\Attributes\Guarded;
++use Illuminate\Database\Eloquent\Attributes\Initialize;
++use Illuminate\Database\Eloquent\Attributes\Unguarded;
++
+ trait GuardsAttributes
+ {
+     /**
+@@ -32,6 +37,27 @@ trait GuardsAttributes
+      */
+     protected static $guardableColumns = [];
+ 
++    /**
++     * Initialize the GuardsAttributes trait.
++     *
++     * @return void
++     */
++    #[Initialize]
++    public function initializeGuardsAttributes()
++    {
++        if (empty($this->fillable)) {
++            $this->fillable = static::resolveClassAttribute(Fillable::class, 'columns') ?? [];
++        }
++
++        if ($this->guarded === ['*']) {
++            if (static::resolveClassAttribute(Unguarded::class) !== null) {
++                $this->guarded = [];
++            } else {
++                $this->guarded = static::resolveClassAttribute(Guarded::class, 'columns') ?? ['*'];
++            }
++        }
++    }
++
+     /**
+      * Get the fillable attributes for the model.
+      *
+diff --git a/src/Illuminate/Database/Eloquent/Concerns/HasAttributes.php b/src/Illuminate/Database/Eloquent/Concerns/HasAttributes.php
+index 5a1c67a658..4228cdea00 100644
+--- a/src/Illuminate/Database/Eloquent/Concerns/HasAttributes.php
++++ b/src/Illuminate/Database/Eloquent/Concerns/HasAttributes.php
+@@ -13,6 +13,9 @@
+ use Illuminate\Contracts\Database\Eloquent\Castable;
+ use Illuminate\Contracts\Database\Eloquent\CastsInboundAttributes;
+ use Illuminate\Contracts\Support\Arrayable;
++use Illuminate\Database\Eloquent\Attributes\Appends;
++use Illuminate\Database\Eloquent\Attributes\Initialize;
++use Illuminate\Database\Eloquent\Attributes\Table;
+ use Illuminate\Database\Eloquent\Casts\AsArrayObject;
+ use Illuminate\Database\Eloquent\Casts\AsCollection;
+ use Illuminate\Database\Eloquent\Casts\AsEncryptedArrayObject;
+@@ -205,6 +208,12 @@ protected function initializeHasAttributes()
+         $this->casts = $this->ensureCastsAreStringValues(
+             array_merge($this->casts, $this->casts()),
+         );
++
++        $this->dateFormat ??= static::resolveClassAttribute(Table::class)->dateFormat ?? null;
++
++        if (empty($this->appends)) {
++            $this->appends = static::resolveClassAttribute(Appends::class, 'columns') ?? [];
++        }
+     }
+ 
+     /**
+@@ -363,12 +372,14 @@ protected function getArrayableAttributes()
+      */
+     protected function getArrayableAppends()
+     {
+-        if (! count($this->appends)) {
++        $appends = $this->getAppends();
++
++        if (! count($appends)) {
+             return [];
+         }
+ 
+         return $this->getArrayableItems(
+-            array_combine($this->appends, $this->appends)
++            array_combine($appends, $appends)
+         );
+     }
+ 
+@@ -2420,7 +2431,7 @@ public function mergeAppends(array $appends)
+      */
+     public function hasAppended($attribute)
+     {
+-        return in_array($attribute, $this->appends);
++        return in_array($attribute, $this->getAppends());
+     }
+ 
+     /**
+diff --git a/src/Illuminate/Database/Eloquent/Concerns/HasRelationships.php b/src/Illuminate/Database/Eloquent/Concerns/HasRelationships.php
+index 4c087b6433..d829658440 100644
+--- a/src/Illuminate/Database/Eloquent/Concerns/HasRelationships.php
++++ b/src/Illuminate/Database/Eloquent/Concerns/HasRelationships.php
+@@ -4,6 +4,8 @@
+ 
+ use Closure;
+ use Illuminate\Database\ClassMorphViolationException;
++use Illuminate\Database\Eloquent\Attributes\Initialize;
++use Illuminate\Database\Eloquent\Attributes\Touches;
+ use Illuminate\Database\Eloquent\Builder;
+ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+ use Illuminate\Database\Eloquent\Model;
+@@ -69,6 +71,19 @@ trait HasRelationships
+      */
+     protected static $relationResolvers = [];
+ 
++    /**
++     * Initialize the HasRelationships trait.
++     *
++     * @return void
++     */
++    #[Initialize]
++    public function initializeHasRelationships()
++    {
++        if (empty($this->touches)) {
++            $this->touches = static::resolveClassAttribute(Touches::class, 'relations') ?? [];
++        }
++    }
++
+     /**
+      * Get the dynamic relation resolver if defined or inherited, or return null.
+      *
+@@ -1034,7 +1049,7 @@ protected function newRelatedInstance($class)
+     {
+         return tap(new $class, function ($instance) {
+             if (! $instance->getConnectionName()) {
+-                $instance->setConnection($this->connection);
++                $instance->setConnection($this->getConnectionName());
+             }
+         });
+     }
+diff --git a/src/Illuminate/Database/Eloquent/Concerns/HasTimestamps.php b/src/Illuminate/Database/Eloquent/Concerns/HasTimestamps.php
+index 19a7c254eb..983dc2ee9f 100644
+--- a/src/Illuminate/Database/Eloquent/Concerns/HasTimestamps.php
++++ b/src/Illuminate/Database/Eloquent/Concerns/HasTimestamps.php
+@@ -2,6 +2,8 @@
+ 
+ namespace Illuminate\Database\Eloquent\Concerns;
+ 
++use Illuminate\Database\Eloquent\Attributes\Initialize;
++use Illuminate\Database\Eloquent\Attributes\Table;
+ use Illuminate\Support\Facades\Date;
+ 
+ trait HasTimestamps
+@@ -20,6 +22,21 @@ trait HasTimestamps
+      */
+     protected static $ignoreTimestampsOn = [];
+ 
++    /**
++     * Initialize the HasTimestamps trait.
++     *
++     * @return void
++     */
++    #[Initialize]
++    public function initializeHasTimestamps()
++    {
++        if ($this->timestamps === true) {
++            if (($table = static::resolveClassAttribute(Table::class)) && $table->timestamps !== null) {
++                $this->timestamps = $table->timestamps;
++            }
++        }
++    }
++
+     /**
+      * Update the model's update timestamp.
+      *
+diff --git a/src/Illuminate/Database/Eloquent/Concerns/HasUniqueIds.php b/src/Illuminate/Database/Eloquent/Concerns/HasUniqueIds.php
+index 5392ca0958..b67343ac8c 100644
+--- a/src/Illuminate/Database/Eloquent/Concerns/HasUniqueIds.php
++++ b/src/Illuminate/Database/Eloquent/Concerns/HasUniqueIds.php
+@@ -5,14 +5,14 @@
+ trait HasUniqueIds
+ {
+     /**
+-     * Indicates if the model uses unique ids.
++     * Indicates if the model uses unique IDs.
+      *
+      * @var bool
+      */
+     public $usesUniqueIds = false;
+ 
+     /**
+-     * Determine if the model uses unique ids.
++     * Determine if the model uses unique IDs.
+      *
+      * @return bool
+      */
+diff --git a/src/Illuminate/Database/Eloquent/Concerns/HidesAttributes.php b/src/Illuminate/Database/Eloquent/Concerns/HidesAttributes.php
+index dde5ea0352..0bc64fc590 100644
+--- a/src/Illuminate/Database/Eloquent/Concerns/HidesAttributes.php
++++ b/src/Illuminate/Database/Eloquent/Concerns/HidesAttributes.php
+@@ -2,6 +2,10 @@
+ 
+ namespace Illuminate\Database\Eloquent\Concerns;
+ 
++use Illuminate\Database\Eloquent\Attributes\Hidden;
++use Illuminate\Database\Eloquent\Attributes\Initialize;
++use Illuminate\Database\Eloquent\Attributes\Visible;
++
+ trait HidesAttributes
+ {
+     /**
+@@ -18,6 +22,23 @@ trait HidesAttributes
+      */
+     protected $visible = [];
+ 
++    /**
++     * Initialize the HidesAttributes trait.
++     *
++     * @return void
++     */
++    #[Initialize]
++    public function initializeHidesAttributes()
++    {
++        if (empty($this->hidden)) {
++            $this->hidden = static::resolveClassAttribute(Hidden::class, 'columns') ?? [];
++        }
++
++        if (empty($this->visible)) {
++            $this->visible = static::resolveClassAttribute(Visible::class, 'columns') ?? [];
++        }
++    }
++
+     /**
+      * Get the hidden attributes for the model.
+      *
+diff --git a/src/Illuminate/Database/Eloquent/Factories/Attributes/UseModel.php b/src/Illuminate/Database/Eloquent/Factories/Attributes/UseModel.php
+new file mode 100644
+index 0000000000..0f7c10db10
+--- /dev/null
++++ b/src/Illuminate/Database/Eloquent/Factories/Attributes/UseModel.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Database\Eloquent\Factories\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class UseModel
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $class
++     */
++    public function __construct(public string $class)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Database/Eloquent/Factories/Factory.php b/src/Illuminate/Database/Eloquent/Factories/Factory.php
+index 5e3b950c90..9529534db9 100644
+--- a/src/Illuminate/Database/Eloquent/Factories/Factory.php
++++ b/src/Illuminate/Database/Eloquent/Factories/Factory.php
+@@ -7,6 +7,7 @@
+ use Illuminate\Container\Container;
+ use Illuminate\Contracts\Foundation\Application;
+ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
++use Illuminate\Database\Eloquent\Factories\Attributes\UseModel;
+ use Illuminate\Database\Eloquent\Model;
+ use Illuminate\Support\Carbon;
+ use Illuminate\Support\Collection;
+@@ -15,6 +16,7 @@
+ use Illuminate\Support\Traits\Conditionable;
+ use Illuminate\Support\Traits\ForwardsCalls;
+ use Illuminate\Support\Traits\Macroable;
++use ReflectionClass;
+ use Throwable;
+ use UnitEnum;
+ 
+@@ -150,6 +152,13 @@ abstract class Factory
+      */
+     protected static $expandRelationshipsByDefault = true;
+ 
++    /**
++     * The cached model class names resolved from attributes.
++     *
++     * @var array<class-string, class-string<TModel>|false>
++     */
++    protected static $cachedModelAttributes = [];
++
+     /**
+      * Create a new factory instance.
+      *
+@@ -892,6 +901,18 @@ public function newModel(array $attributes = [])
+      */
+     public function modelName()
+     {
++        if (! array_key_exists(static::class, static::$cachedModelAttributes)) {
++            $attribute = (new ReflectionClass($this))->getAttributes(UseModel::class);
++
++            static::$cachedModelAttributes[static::class] = count($attribute) > 0
++                ? $attribute[0]->newInstance()->class
++                : false;
++        }
++
++        if (static::$cachedModelAttributes[static::class]) {
++            return static::$cachedModelAttributes[static::class];
++        }
++
+         if ($this->model !== null) {
+             return $this->model;
+         }
+diff --git a/src/Illuminate/Database/Eloquent/Model.php b/src/Illuminate/Database/Eloquent/Model.php
+index da11d3c3c8..b8f08af955 100644
+--- a/src/Illuminate/Database/Eloquent/Model.php
++++ b/src/Illuminate/Database/Eloquent/Model.php
+@@ -14,8 +14,10 @@
+ use Illuminate\Contracts\Support\Jsonable;
+ use Illuminate\Database\ConnectionResolverInterface as Resolver;
+ use Illuminate\Database\Eloquent\Attributes\Boot;
++use Illuminate\Database\Eloquent\Attributes\Connection;
+ use Illuminate\Database\Eloquent\Attributes\Initialize;
+ use Illuminate\Database\Eloquent\Attributes\Scope as LocalScope;
++use Illuminate\Database\Eloquent\Attributes\Table;
+ use Illuminate\Database\Eloquent\Attributes\UseEloquentBuilder;
+ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+@@ -283,6 +285,13 @@ abstract class Model implements Arrayable, ArrayAccess, CanBeEscapedWhenCastToSt
+      */
+     protected static array $isMassPrunable;
+ 
++    /**
++     * Cache of resolved class attributes.
++     *
++     * @var array<class-string<self>, array<class-string, mixed>>
++     */
++    protected static array $classAttributes = [];
++
+     /**
+      * The name of the "created at" column.
+      *
+@@ -305,11 +314,9 @@ abstract class Model implements Arrayable, ArrayAccess, CanBeEscapedWhenCastToSt
+     public function __construct(array $attributes = [])
+     {
+         $this->bootIfNotBooted();
+-
+         $this->initializeTraits();
+-
++        $this->initializeModelAttributes();
+         $this->syncOriginal();
+-
+         $this->fill($attributes);
+     }
+ 
+@@ -416,6 +423,31 @@ protected function initializeTraits()
+         }
+     }
+ 
++    /**
++     * Initialize the model attributes from class attributes.
++     *
++     * @return void
++     */
++    public function initializeModelAttributes()
++    {
++        $table = static::resolveClassAttribute(Table::class);
++
++        $this->table ??= $table->name ?? null;
++        $this->connection ??= static::resolveClassAttribute(Connection::class, 'name');
++
++        if ($this->primaryKey === 'id' && $table && $table->key !== null) {
++            $this->primaryKey = $table->key;
++        }
++
++        if ($this->keyType === 'int' && $table && $table->keyType !== null) {
++            $this->keyType = $table->keyType;
++        }
++
++        if ($this->incrementing === true && $table && $table->incrementing !== null) {
++            $this->incrementing = $table->incrementing;
++        }
++    }
++
+     /**
+      * Perform any actions required after the model boots.
+      *
+@@ -448,7 +480,7 @@ public static function clearBootedModels()
+     {
+         static::$booted = [];
+         static::$bootedCallbacks = [];
+-
++        static::$classAttributes = [];
+         static::$globalScopes = [];
+     }
+ 
+@@ -491,7 +523,14 @@ public static function isIgnoringTouch($class = null)
+     {
+         $class = $class ?: static::class;
+ 
+-        if (! get_class_vars($class)['timestamps'] || ! $class::UPDATED_AT) {
++        if (! $class::UPDATED_AT) {
++            return true;
++        }
++
++        $timestamps = static::resolveClassAttribute(Table::class, 'timestamps', $class)
++            ?? get_class_vars($class)['timestamps'];
++
++        if (! $timestamps) {
+             return true;
+         }
+ 
+@@ -2428,6 +2467,45 @@ public function broadcastChannel()
+         return str_replace('\\', '.', get_class($this)).'.'.$this->getKey();
+     }
+ 
++    /**
++     * Resolve a class attribute value from the model.
++     *
++     * @template TAttribute of object
++     *
++     * @param  class-string<TAttribute>  $attributeClass
++     * @param  string|null  $property
++     * @param  string|null  $class
++     * @return mixed
++     */
++    protected static function resolveClassAttribute(string $attributeClass, ?string $property = null, ?string $class = null)
++    {
++        $class = $class ?? static::class;
++
++        $cacheKey = $class.'@'.$attributeClass;
++
++        if (array_key_exists($cacheKey, static::$classAttributes)) {
++            return static::$classAttributes[$cacheKey];
++        }
++
++        try {
++            $reflection = new ReflectionClass($class);
++
++            do {
++                $attributes = $reflection->getAttributes($attributeClass);
++
++                if (count($attributes) > 0) {
++                    $instance = $attributes[0]->newInstance();
++
++                    return static::$classAttributes[$cacheKey] = $property ? $instance->{$property} : $instance;
++                }
++            } while ($reflection = $reflection->getParentClass());
++        } catch (Exception) {
++            //
++        }
++
++        return static::$classAttributes[$cacheKey] = null;
++    }
++
+     /**
+      * Dynamically retrieve attributes on the model.
+      *
+@@ -2632,8 +2710,8 @@ public function __sleep()
+     public function __wakeup()
+     {
+         $this->bootIfNotBooted();
+-
+         $this->initializeTraits();
++        $this->initializeModelAttributes();
+ 
+         if (static::isAutomaticallyEagerLoadingRelationships()) {
+             $this->withRelationshipAutoloading();
+diff --git a/src/Illuminate/Events/Dispatcher.php b/src/Illuminate/Events/Dispatcher.php
+index 5fe37aa15d..02cd5ed9e4 100755
+--- a/src/Illuminate/Events/Dispatcher.php
++++ b/src/Illuminate/Events/Dispatcher.php
+@@ -18,6 +18,16 @@
+ use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
+ use Illuminate\Contracts\Queue\ShouldQueue;
+ use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
++use Illuminate\Queue\Attributes\Backoff;
++use Illuminate\Queue\Attributes\Connection;
++use Illuminate\Queue\Attributes\DeleteWhenMissingModels;
++use Illuminate\Queue\Attributes\FailOnTimeout;
++use Illuminate\Queue\Attributes\MaxExceptions;
++use Illuminate\Queue\Attributes\Queue as QueueAttribute;
++use Illuminate\Queue\Attributes\ReadsQueueAttributes;
++use Illuminate\Queue\Attributes\Timeout;
++use Illuminate\Queue\Attributes\Tries;
++use Illuminate\Queue\Attributes\UniqueFor;
+ use Illuminate\Support\Arr;
+ use Illuminate\Support\Collection;
+ use Illuminate\Support\Queue\Concerns\ResolvesQueueRoutes;
+@@ -30,7 +40,7 @@
+ 
+ class Dispatcher implements DispatcherContract
+ {
+-    use Macroable, ReflectsClosures, ResolvesQueueRoutes;
++    use Macroable, ReadsQueueAttributes, ReflectsClosures, ResolvesQueueRoutes;
+ 
+     /**
+      * The IoC container instance.
+@@ -97,8 +107,6 @@ class Dispatcher implements DispatcherContract
+ 
+     /**
+      * Create a new event dispatcher instance.
+-     *
+-     * @param  \Illuminate\Contracts\Container\Container|null  $container
+      */
+     public function __construct(?ContainerContract $container = null)
+     {
+@@ -358,7 +366,6 @@ protected function parseEventAndPayload($event, $payload)
+     /**
+      * Determine if the payload has a broadcastable event.
+      *
+-     * @param  array  $payload
+      * @return bool
+      */
+     protected function shouldBroadcast(array $payload)
+@@ -435,7 +442,6 @@ protected function getWildcardListeners($eventName)
+      * Add the listeners for the event's interfaces to the given array.
+      *
+      * @param  string  $eventName
+-     * @param  array  $listeners
+      * @return array
+      */
+     protected function addInterfaceListeners($eventName, array $listeners = [])
+@@ -454,7 +460,6 @@ protected function addInterfaceListeners($eventName, array $listeners = [])
+     /**
+      * Prepare the listeners for a given event.
+      *
+-     * @param  string  $eventName
+      * @return \Closure[]
+      */
+     protected function prepareListeners(string $eventName)
+@@ -661,7 +666,7 @@ protected function queueHandler($class, $method, $arguments)
+ 
+         $connectionName = method_exists($listener, 'viaConnection')
+             ? (isset($arguments[0]) ? $listener->viaConnection($arguments[0]) : $listener->viaConnection())
+-            : $listener->connection ?? null;
++            : $this->getAttributeValue($listener, Connection::class, 'connection');
+ 
+         $connection = $this->resolveQueue()->connection(
+             $connectionName ?? $this->resolveConnectionFromQueueRoute($listener) ?? null
+@@ -669,7 +674,7 @@ protected function queueHandler($class, $method, $arguments)
+ 
+         $queue = method_exists($listener, 'viaQueue')
+             ? (isset($arguments[0]) ? $listener->viaQueue($arguments[0]) : $listener->viaQueue())
+-            : $listener->queue ?? null;
++            : $this->getAttributeValue($listener, QueueAttribute::class, 'queue');
+ 
+         $delay = method_exists($listener, 'withDelay')
+             ? (isset($arguments[0]) ? $listener->withDelay($arguments[0]) : $listener->withDelay())
+@@ -721,14 +726,14 @@ protected function propagateListenerOptions($listener, $job)
+                 $job->afterCommit = property_exists($listener, 'afterCommit') ? $listener->afterCommit : null;
+             }
+ 
+-            $job->backoff = method_exists($listener, 'backoff') ? $listener->backoff(...$data) : ($listener->backoff ?? null);
+-            $job->maxExceptions = $listener->maxExceptions ?? null;
++            $job->backoff = method_exists($listener, 'backoff') ? $listener->backoff(...$data) : $this->getAttributeValue($listener, Backoff::class, 'backoff');
++            $job->maxExceptions = $this->getAttributeValue($listener, MaxExceptions::class, 'maxExceptions');
+             $job->retryUntil = method_exists($listener, 'retryUntil') ? $listener->retryUntil(...$data) : null;
+             $job->shouldBeEncrypted = $listener instanceof ShouldBeEncrypted;
+-            $job->timeout = $listener->timeout ?? null;
+-            $job->failOnTimeout = $listener->failOnTimeout ?? false;
+-            $job->deleteWhenMissingModels = $listener->deleteWhenMissingModels ?? false;
+-            $job->tries = method_exists($listener, 'tries') ? $listener->tries(...$data) : ($listener->tries ?? null);
++            $job->timeout = $this->getAttributeValue($listener, Timeout::class, 'timeout');
++            $job->failOnTimeout = $this->getAttributeValue($listener, FailOnTimeout::class, 'failOnTimeout') ?? false;
++            $job->deleteWhenMissingModels = $this->getAttributeValue($listener, DeleteWhenMissingModels::class, 'deleteWhenMissingModels') ?? false;
++            $job->tries = method_exists($listener, 'tries') ? $listener->tries(...$data) : $this->getAttributeValue($listener, Tries::class, 'tries');
+             $job->messageGroup = method_exists($listener, 'messageGroup') ? $listener->messageGroup(...$data) : ($listener->messageGroup ?? null);
+             $job->withDeduplicator(method_exists($listener, 'deduplicator')
+                 ? $listener->deduplicator(...$data)
+@@ -750,7 +755,7 @@ protected function propagateListenerOptions($listener, $job)
+ 
+                 $job->uniqueFor = method_exists($listener, 'uniqueFor')
+                     ? $listener->uniqueFor(...$data)
+-                    : ($listener->uniqueFor ?? 0);
++                    : ($this->getAttributeValue($listener, UniqueFor::class, 'uniqueFor') ?? 0);
+             }
+         });
+     }
+@@ -875,7 +880,6 @@ public function defer(callable $callback, ?array $events = null)
+     /**
+      * Determine if the given event should be deferred.
+      *
+-     * @param  string  $event
+      * @return bool
+      */
+     protected function shouldDeferEvent(string $event)
+diff --git a/src/Illuminate/Foundation/Console/stubs/console.stub b/src/Illuminate/Foundation/Console/stubs/console.stub
+index 055b7d8372..d5dee5e339 100644
+--- a/src/Illuminate/Foundation/Console/stubs/console.stub
++++ b/src/Illuminate/Foundation/Console/stubs/console.stub
+@@ -2,24 +2,14 @@
+ 
+ namespace {{ namespace }};
+ 
++use Illuminate\Console\Attributes\Description;
++use Illuminate\Console\Attributes\Signature;
+ use Illuminate\Console\Command;
+ 
++#[Signature('{{ command }}')]
++#[Description('Command description')]
+ class {{ class }} extends Command
+ {
+-    /**
+-     * The name and signature of the console command.
+-     *
+-     * @var string
+-     */
+-    protected $signature = '{{ command }}';
+-
+-    /**
+-     * The console command description.
+-     *
+-     * @var string
+-     */
+-    protected $description = 'Command description';
+-
+     /**
+      * Execute the console command.
+      */
+diff --git a/src/Illuminate/Foundation/Http/Attributes/RedirectTo.php b/src/Illuminate/Foundation/Http/Attributes/RedirectTo.php
+new file mode 100644
+index 0000000000..e61fab6ef9
+--- /dev/null
++++ b/src/Illuminate/Foundation/Http/Attributes/RedirectTo.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Foundation\Http\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class RedirectTo
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $url
++     */
++    public function __construct(public string $url)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Foundation/Http/Attributes/RedirectToRoute.php b/src/Illuminate/Foundation/Http/Attributes/RedirectToRoute.php
+new file mode 100644
+index 0000000000..a863fc86dc
+--- /dev/null
++++ b/src/Illuminate/Foundation/Http/Attributes/RedirectToRoute.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Foundation\Http\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class RedirectToRoute
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $route
++     */
++    public function __construct(public string $route)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Foundation/Http/Attributes/StopOnFirstFailure.php b/src/Illuminate/Foundation/Http/Attributes/StopOnFirstFailure.php
+new file mode 100644
+index 0000000000..009ee210eb
+--- /dev/null
++++ b/src/Illuminate/Foundation/Http/Attributes/StopOnFirstFailure.php
+@@ -0,0 +1,11 @@
++<?php
++
++namespace Illuminate\Foundation\Http\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class StopOnFirstFailure
++{
++    //
++}
+diff --git a/src/Illuminate/Foundation/Http/FormRequest.php b/src/Illuminate/Foundation/Http/FormRequest.php
+index f1cd50263e..7882e694a0 100644
+--- a/src/Illuminate/Foundation/Http/FormRequest.php
++++ b/src/Illuminate/Foundation/Http/FormRequest.php
+@@ -8,9 +8,13 @@
+ use Illuminate\Contracts\Validation\Factory as ValidationFactory;
+ use Illuminate\Contracts\Validation\ValidatesWhenResolved;
+ use Illuminate\Contracts\Validation\Validator;
++use Illuminate\Foundation\Http\Attributes\RedirectTo;
++use Illuminate\Foundation\Http\Attributes\RedirectToRoute;
++use Illuminate\Foundation\Http\Attributes\StopOnFirstFailure;
+ use Illuminate\Http\Request;
+ use Illuminate\Routing\Redirector;
+ use Illuminate\Validation\ValidatesWhenResolvedTrait;
++use ReflectionClass;
+ 
+ class FormRequest extends Request implements ValidatesWhenResolved
+ {
+@@ -83,6 +87,8 @@ protected function getValidatorInstance()
+             return $this->validator;
+         }
+ 
++        $this->configureFromAttributes();
++
+         $factory = $this->container->make(ValidationFactory::class);
+ 
+         if (method_exists($this, 'validator')) {
+@@ -107,6 +113,32 @@ protected function getValidatorInstance()
+         return $this->validator;
+     }
+ 
++    /**
++     * Configure the form request from class attributes.
++     *
++     * @return void
++     */
++    protected function configureFromAttributes()
++    {
++        $reflection = new ReflectionClass($this);
++
++        if (count($reflection->getAttributes(StopOnFirstFailure::class)) > 0) {
++            $this->stopOnFirstFailure = true;
++        }
++
++        $redirectTo = $reflection->getAttributes(RedirectTo::class);
++
++        if (count($redirectTo) > 0) {
++            $this->redirect = $redirectTo[0]->newInstance()->url;
++        }
++
++        $redirectToRoute = $reflection->getAttributes(RedirectToRoute::class);
++
++        if (count($redirectToRoute) > 0) {
++            $this->redirectRoute = $redirectToRoute[0]->newInstance()->route;
++        }
++    }
++
+     /**
+      * Create the default validator instance.
+      *
+diff --git a/src/Illuminate/Foundation/Testing/Attributes/Seed.php b/src/Illuminate/Foundation/Testing/Attributes/Seed.php
+new file mode 100644
+index 0000000000..2f1cd24d31
+--- /dev/null
++++ b/src/Illuminate/Foundation/Testing/Attributes/Seed.php
+@@ -0,0 +1,17 @@
++<?php
++
++namespace Illuminate\Foundation\Testing\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Seed
++{
++    /**
++     * Create a new attribute instance.
++     */
++    public function __construct()
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Foundation/Testing/Attributes/Seeder.php b/src/Illuminate/Foundation/Testing/Attributes/Seeder.php
+new file mode 100644
+index 0000000000..11d013ce09
+--- /dev/null
++++ b/src/Illuminate/Foundation/Testing/Attributes/Seeder.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Foundation\Testing\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Seeder
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $class
++     */
++    public function __construct(public string $class)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Foundation/Testing/Traits/CanConfigureMigrationCommands.php b/src/Illuminate/Foundation/Testing/Traits/CanConfigureMigrationCommands.php
+index aafca6f1f2..2e5029d527 100644
+--- a/src/Illuminate/Foundation/Testing/Traits/CanConfigureMigrationCommands.php
++++ b/src/Illuminate/Foundation/Testing/Traits/CanConfigureMigrationCommands.php
+@@ -2,6 +2,10 @@
+ 
+ namespace Illuminate\Foundation\Testing\Traits;
+ 
++use Illuminate\Foundation\Testing\Attributes\Seed;
++use Illuminate\Foundation\Testing\Attributes\Seeder;
++use ReflectionClass;
++
+ trait CanConfigureMigrationCommands
+ {
+     /**
+@@ -49,6 +53,14 @@ protected function shouldDropTypes()
+      */
+     protected function shouldSeed()
+     {
++        $class = new ReflectionClass($this);
++
++        do {
++            if (count($class->getAttributes(Seed::class)) > 0) {
++                return true;
++            }
++        } while ($class = $class->getParentClass());
++
+         return property_exists($this, 'seed') ? $this->seed : false;
+     }
+ 
+@@ -59,6 +71,16 @@ protected function shouldSeed()
+      */
+     protected function seeder()
+     {
++        $class = new ReflectionClass($this);
++
++        do {
++            $seeder = $class->getAttributes(Seeder::class);
++
++            if (count($seeder) > 0) {
++                return $seeder[0]->newInstance()->class;
++            }
++        } while ($class = $class->getParentClass());
++
+         return property_exists($this, 'seeder') ? $this->seeder : false;
+     }
+ }
+diff --git a/src/Illuminate/Http/Resources/Attributes/Collects.php b/src/Illuminate/Http/Resources/Attributes/Collects.php
+new file mode 100644
+index 0000000000..b92216d4a9
+--- /dev/null
++++ b/src/Illuminate/Http/Resources/Attributes/Collects.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Http\Resources\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Collects
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $class
++     */
++    public function __construct(public string $class)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Http/Resources/Attributes/PreserveKeys.php b/src/Illuminate/Http/Resources/Attributes/PreserveKeys.php
+new file mode 100644
+index 0000000000..e92c64d41b
+--- /dev/null
++++ b/src/Illuminate/Http/Resources/Attributes/PreserveKeys.php
+@@ -0,0 +1,17 @@
++<?php
++
++namespace Illuminate\Http\Resources\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class PreserveKeys
++{
++    /**
++     * Create a new attribute instance.
++     */
++    public function __construct()
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Http/Resources/CollectsResources.php b/src/Illuminate/Http/Resources/CollectsResources.php
+index 739a5199c0..1059f365c4 100644
+--- a/src/Illuminate/Http/Resources/CollectsResources.php
++++ b/src/Illuminate/Http/Resources/CollectsResources.php
+@@ -2,6 +2,7 @@
+ 
+ namespace Illuminate\Http\Resources;
+ 
++use Illuminate\Http\Resources\Attributes\Collects;
+ use Illuminate\Http\Resources\Json\JsonResource;
+ use Illuminate\Pagination\AbstractCursorPaginator;
+ use Illuminate\Pagination\AbstractPaginator;
+@@ -13,6 +14,13 @@
+ 
+ trait CollectsResources
+ {
++    /**
++     * The cached Collects attribute values.
++     *
++     * @var array<class-string, class-string|false>
++     */
++    protected static $cachedCollectsAttributes = [];
++
+     /**
+      * Map the given collection resource into its individual resources.
+      *
+@@ -49,7 +57,17 @@ protected function collects()
+     {
+         $collects = null;
+ 
+-        if ($this->collects) {
++        if (! array_key_exists(static::class, static::$cachedCollectsAttributes)) {
++            $attribute = (new ReflectionClass($this))->getAttributes(Collects::class);
++
++            static::$cachedCollectsAttributes[static::class] = count($attribute) > 0
++                ? $attribute[0]->newInstance()->class
++                : false;
++        }
++
++        if (static::$cachedCollectsAttributes[static::class]) {
++            $collects = static::$cachedCollectsAttributes[static::class];
++        } elseif ($this->collects) {
+             $collects = $this->collects;
+         } elseif (str_ends_with(class_basename($this), 'Collection') &&
+             (class_exists($class = Str::replaceLast('Collection', '', get_class($this))) ||
+diff --git a/src/Illuminate/Http/Resources/ConditionallyLoadsAttributes.php b/src/Illuminate/Http/Resources/ConditionallyLoadsAttributes.php
+index 9eeff4a5f1..661ec0a440 100644
+--- a/src/Illuminate/Http/Resources/ConditionallyLoadsAttributes.php
++++ b/src/Illuminate/Http/Resources/ConditionallyLoadsAttributes.php
+@@ -2,11 +2,20 @@
+ 
+ namespace Illuminate\Http\Resources;
+ 
++use Illuminate\Http\Resources\Attributes\PreserveKeys;
+ use Illuminate\Support\Arr;
+ use Illuminate\Support\Stringable;
++use ReflectionClass;
+ 
+ trait ConditionallyLoadsAttributes
+ {
++    /**
++     * The cached preserve keys attribute values.
++     *
++     * @var array<class-string, bool>
++     */
++    protected static $cachedPreserveKeysAttributes = [];
++
+     /**
+      * Filter the given data, removing any optional values.
+      *
+@@ -85,6 +94,16 @@ protected function removeMissingValues($data)
+             }
+         }
+ 
++        if (! array_key_exists(static::class, static::$cachedPreserveKeysAttributes)) {
++            static::$cachedPreserveKeysAttributes[static::class] = count(
++                (new ReflectionClass($this))->getAttributes(PreserveKeys::class)
++            ) > 0;
++        }
++
++        if (static::$cachedPreserveKeysAttributes[static::class]) {
++            return $data;
++        }
++
+         if (property_exists($this, 'preserveKeys') && $this->preserveKeys === true) {
+             return $data;
+         }
+diff --git a/src/Illuminate/Http/Resources/Json/JsonResource.php b/src/Illuminate/Http/Resources/Json/JsonResource.php
+index 7590a95d8e..f3119c3e9e 100644
+--- a/src/Illuminate/Http/Resources/Json/JsonResource.php
++++ b/src/Illuminate/Http/Resources/Json/JsonResource.php
+@@ -10,10 +10,12 @@
+ use Illuminate\Database\Eloquent\JsonEncodingException;
+ use Illuminate\Http\JsonResponse;
+ use Illuminate\Http\Request;
++use Illuminate\Http\Resources\Attributes\PreserveKeys;
+ use Illuminate\Http\Resources\ConditionallyLoadsAttributes;
+ use Illuminate\Http\Resources\DelegatesToResource;
+ use JsonException;
+ use JsonSerializable;
++use ReflectionClass;
+ 
+ class JsonResource implements ArrayAccess, JsonSerializable, Responsable, UrlRoutable
+ {
+@@ -86,7 +88,15 @@ public static function make(...$parameters)
+     public static function collection($resource)
+     {
+         return tap(static::newCollection($resource), function ($collection) {
+-            if (property_exists(static::class, 'preserveKeys')) {
++            if (! array_key_exists(static::class, static::$cachedPreserveKeysAttributes)) {
++                static::$cachedPreserveKeysAttributes[static::class] = count(
++                    (new ReflectionClass(static::class))->getAttributes(PreserveKeys::class)
++                ) > 0;
++            }
++
++            if (static::$cachedPreserveKeysAttributes[static::class]) {
++                $collection->preserveKeys = true;
++            } elseif (property_exists(static::class, 'preserveKeys')) {
+                 $collection->preserveKeys = (new static([]))->preserveKeys === true;
+             }
+         });
+diff --git a/src/Illuminate/Mail/SendQueuedMailable.php b/src/Illuminate/Mail/SendQueuedMailable.php
+index a5342da41f..916ec25043 100644
+--- a/src/Illuminate/Mail/SendQueuedMailable.php
++++ b/src/Illuminate/Mail/SendQueuedMailable.php
+@@ -7,11 +7,18 @@
+ use Illuminate\Contracts\Mail\Mailable as MailableContract;
+ use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+ use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
++use Illuminate\Queue\Attributes\Backoff;
++use Illuminate\Queue\Attributes\Connection;
++use Illuminate\Queue\Attributes\MaxExceptions;
++use Illuminate\Queue\Attributes\Queue as QueueAttribute;
++use Illuminate\Queue\Attributes\ReadsQueueAttributes;
++use Illuminate\Queue\Attributes\Timeout;
++use Illuminate\Queue\Attributes\Tries;
+ use Illuminate\Queue\InteractsWithQueue;
+ 
+ class SendQueuedMailable
+ {
+-    use Queueable, InteractsWithQueue;
++    use InteractsWithQueue, Queueable, ReadsQueueAttributes;
+ 
+     /**
+      * The mailable message instance.
+@@ -63,12 +70,12 @@ public function __construct(MailableContract $mailable)
+             $this->afterCommit = property_exists($mailable, 'afterCommit') ? $mailable->afterCommit : null;
+         }
+ 
+-        $this->connection = property_exists($mailable, 'connection') ? $mailable->connection : null;
+-        $this->maxExceptions = property_exists($mailable, 'maxExceptions') ? $mailable->maxExceptions : null;
+-        $this->queue = property_exists($mailable, 'queue') ? $mailable->queue : null;
++        $this->connection = $this->getAttributeValue($mailable, Connection::class, 'connection');
++        $this->maxExceptions = $this->getAttributeValue($mailable, MaxExceptions::class, 'maxExceptions');
++        $this->queue = $this->getAttributeValue($mailable, QueueAttribute::class, 'queue');
+         $this->shouldBeEncrypted = $mailable instanceof ShouldBeEncrypted;
+-        $this->timeout = property_exists($mailable, 'timeout') ? $mailable->timeout : null;
+-        $this->tries = property_exists($mailable, 'tries') ? $mailable->tries : null;
++        $this->timeout = $this->getAttributeValue($mailable, Timeout::class, 'timeout');
++        $this->tries = $this->getAttributeValue($mailable, Tries::class, 'tries');
+     }
+ 
+     /**
+@@ -89,11 +96,13 @@ public function handle(MailFactory $factory)
+      */
+     public function backoff()
+     {
+-        if (! method_exists($this->mailable, 'backoff') && ! isset($this->mailable->backoff)) {
+-            return;
++        $backoff = $this->getAttributeValue($this->mailable, Backoff::class, 'backoff');
++
++        if (method_exists($this->mailable, 'backoff')) {
++            $backoff = $this->mailable->backoff();
+         }
+ 
+-        return $this->mailable->backoff ?? $this->mailable->backoff();
++        return $backoff;
+     }
+ 
+     /**
+diff --git a/src/Illuminate/Notifications/NotificationSender.php b/src/Illuminate/Notifications/NotificationSender.php
+index d7ed0b1159..0d37f3185d 100644
+--- a/src/Illuminate/Notifications/NotificationSender.php
++++ b/src/Illuminate/Notifications/NotificationSender.php
+@@ -9,6 +9,9 @@
+ use Illuminate\Notifications\Events\NotificationFailed;
+ use Illuminate\Notifications\Events\NotificationSending;
+ use Illuminate\Notifications\Events\NotificationSent;
++use Illuminate\Queue\Attributes\Connection;
++use Illuminate\Queue\Attributes\Queue as QueueAttribute;
++use Illuminate\Queue\Attributes\ReadsQueueAttributes;
+ use Illuminate\Support\Collection;
+ use Illuminate\Support\Str;
+ use Illuminate\Support\Traits\Localizable;
+@@ -18,7 +21,7 @@
+ 
+ class NotificationSender
+ {
+-    use Localizable;
++    use Localizable, ReadsQueueAttributes;
+ 
+     /**
+      * The notification manager instance.
+@@ -229,7 +232,7 @@ protected function queueNotification($notifiables, $notification)
+                     $notification->locale = $this->locale;
+                 }
+ 
+-                $connection = $notification->connection
++                $connection = $this->getAttributeValue($notification, Connection::class, 'connection')
+                     ?? $this->manager->resolveConnectionFromQueueRoute($notification)
+                     ?? null;
+ 
+@@ -237,7 +240,7 @@ protected function queueNotification($notifiables, $notification)
+                     $connection = $notification->viaConnections()[$channel] ?? $connection;
+                 }
+ 
+-                $queue = $notification->queue
++                $queue = $this->getAttributeValue($notification, QueueAttribute::class, 'queue')
+                     ?? $this->manager->resolveQueueFromQueueRoute($notification)
+                     ?? null;
+ 
+diff --git a/src/Illuminate/Notifications/SendQueuedNotifications.php b/src/Illuminate/Notifications/SendQueuedNotifications.php
+index bdd6fc8b47..bcefff6b1d 100644
+--- a/src/Illuminate/Notifications/SendQueuedNotifications.php
++++ b/src/Illuminate/Notifications/SendQueuedNotifications.php
+@@ -8,13 +8,18 @@
+ use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
+ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+ use Illuminate\Database\Eloquent\Model;
++use Illuminate\Queue\Attributes\Backoff;
++use Illuminate\Queue\Attributes\MaxExceptions;
++use Illuminate\Queue\Attributes\ReadsQueueAttributes;
++use Illuminate\Queue\Attributes\Timeout;
++use Illuminate\Queue\Attributes\Tries;
+ use Illuminate\Queue\InteractsWithQueue;
+ use Illuminate\Queue\SerializesModels;
+ use Illuminate\Support\Collection;
+ 
+ class SendQueuedNotifications implements ShouldQueue
+ {
+-    use InteractsWithQueue, Queueable, SerializesModels;
++    use InteractsWithQueue, Queueable, ReadsQueueAttributes, SerializesModels;
+ 
+     /**
+      * The notifiable entities that should receive the notification.
+@@ -77,9 +82,9 @@ public function __construct($notifiables, $notification, ?array $channels = null
+         $this->channels = $channels;
+         $this->notification = $notification;
+         $this->notifiables = $this->wrapNotifiables($notifiables);
+-        $this->tries = property_exists($notification, 'tries') ? $notification->tries : null;
+-        $this->timeout = property_exists($notification, 'timeout') ? $notification->timeout : null;
+-        $this->maxExceptions = property_exists($notification, 'maxExceptions') ? $notification->maxExceptions : null;
++        $this->tries = $this->getAttributeValue($notification, Tries::class, 'tries');
++        $this->timeout = $this->getAttributeValue($notification, Timeout::class, 'timeout');
++        $this->maxExceptions = $this->getAttributeValue($notification, MaxExceptions::class, 'maxExceptions');
+ 
+         if ($notification instanceof ShouldQueueAfterCommit) {
+             $this->afterCommit = true;
+@@ -148,11 +153,13 @@ public function failed($e)
+      */
+     public function backoff()
+     {
+-        if (! method_exists($this->notification, 'backoff') && ! isset($this->notification->backoff)) {
+-            return;
++        $backoff = $this->getAttributeValue($this->notification, Backoff::class, 'backoff');
++
++        if (method_exists($this->notification, 'backoff')) {
++            $backoff = $this->notification->backoff();
+         }
+ 
+-        return $this->notification->backoff ?? $this->notification->backoff();
++        return $backoff;
+     }
+ 
+     /**
+diff --git a/src/Illuminate/Queue/Attributes/Backoff.php b/src/Illuminate/Queue/Attributes/Backoff.php
+new file mode 100644
+index 0000000000..b04374ee81
+--- /dev/null
++++ b/src/Illuminate/Queue/Attributes/Backoff.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Queue\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Backoff
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  array<int>|int  $backoff
++     */
++    public function __construct(public array|int $backoff)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Queue/Attributes/Connection.php b/src/Illuminate/Queue/Attributes/Connection.php
+new file mode 100644
+index 0000000000..7f7bd0e7d1
+--- /dev/null
++++ b/src/Illuminate/Queue/Attributes/Connection.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Queue\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Connection
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $connection
++     */
++    public function __construct(public string $connection)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Queue/Attributes/FailOnTimeout.php b/src/Illuminate/Queue/Attributes/FailOnTimeout.php
+new file mode 100644
+index 0000000000..c904340766
+--- /dev/null
++++ b/src/Illuminate/Queue/Attributes/FailOnTimeout.php
+@@ -0,0 +1,11 @@
++<?php
++
++namespace Illuminate\Queue\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class FailOnTimeout
++{
++    //
++}
+diff --git a/src/Illuminate/Queue/Attributes/MaxExceptions.php b/src/Illuminate/Queue/Attributes/MaxExceptions.php
+new file mode 100644
+index 0000000000..13eaa62e7f
+--- /dev/null
++++ b/src/Illuminate/Queue/Attributes/MaxExceptions.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Queue\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class MaxExceptions
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  int  $maxExceptions
++     */
++    public function __construct(public int $maxExceptions)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Queue/Attributes/Queue.php b/src/Illuminate/Queue/Attributes/Queue.php
+new file mode 100644
+index 0000000000..be886be30f
+--- /dev/null
++++ b/src/Illuminate/Queue/Attributes/Queue.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Queue\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Queue
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  string  $queue
++     */
++    public function __construct(public string $queue)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Queue/Attributes/ReadsQueueAttributes.php b/src/Illuminate/Queue/Attributes/ReadsQueueAttributes.php
+new file mode 100644
+index 0000000000..acd4a0b202
+--- /dev/null
++++ b/src/Illuminate/Queue/Attributes/ReadsQueueAttributes.php
+@@ -0,0 +1,59 @@
++<?php
++
++namespace Illuminate\Queue\Attributes;
++
++use Exception;
++use ReflectionClass;
++
++trait ReadsQueueAttributes
++{
++    /**
++     * Get a configuration value from an attribute, falling back to a property.
++     *
++     * @param  object  $job
++     * @param  string  $attributeClass
++     * @param  string|null  $property
++     * @param  mixed  $default
++     * @return mixed
++     */
++    protected function getAttributeValue($job, string $attributeClass, ?string $property = null, $default = null)
++    {
++        try {
++            $reflection = new ReflectionClass($job);
++
++            do {
++                $attributes = $reflection->getAttributes($attributeClass);
++
++                if (count($attributes) > 0) {
++                    return $this->extractAttributeValue($attributes[0]->newInstance());
++                }
++            } while ($reflection = $reflection->getParentClass());
++        } catch (Exception) {
++            //
++        }
++
++        if ($property !== null) {
++            return $job->{$property} ?? $default;
++        }
++
++        return $default;
++    }
++
++    /**
++     * Extract the value from an attribute instance.
++     *
++     * @param  object  $instance
++     * @return mixed
++     */
++    protected function extractAttributeValue($instance)
++    {
++        if ($instance instanceof DeleteWhenMissingModels || $instance instanceof FailOnTimeout) {
++            return true;
++        }
++
++        // For value attributes, return the first property value...
++        $properties = get_object_vars($instance);
++
++        return reset($properties);
++    }
++}
+diff --git a/src/Illuminate/Queue/Attributes/Timeout.php b/src/Illuminate/Queue/Attributes/Timeout.php
+new file mode 100644
+index 0000000000..2d01907b35
+--- /dev/null
++++ b/src/Illuminate/Queue/Attributes/Timeout.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Queue\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Timeout
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  int  $timeout
++     */
++    public function __construct(public int $timeout)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Queue/Attributes/Tries.php b/src/Illuminate/Queue/Attributes/Tries.php
+new file mode 100644
+index 0000000000..2381d612aa
+--- /dev/null
++++ b/src/Illuminate/Queue/Attributes/Tries.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Queue\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Tries
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  int  $tries
++     */
++    public function __construct(public int $tries)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Queue/Attributes/UniqueFor.php b/src/Illuminate/Queue/Attributes/UniqueFor.php
+new file mode 100644
+index 0000000000..0dfece3cbf
+--- /dev/null
++++ b/src/Illuminate/Queue/Attributes/UniqueFor.php
+@@ -0,0 +1,19 @@
++<?php
++
++namespace Illuminate\Queue\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class UniqueFor
++{
++    /**
++     * Create a new attribute instance.
++     *
++     * @param  int  $uniqueFor
++     */
++    public function __construct(public int $uniqueFor)
++    {
++        //
++    }
++}
+diff --git a/src/Illuminate/Queue/Queue.php b/src/Illuminate/Queue/Queue.php
+index ecf4ac3fdd..f11fbdf95a 100755
+--- a/src/Illuminate/Queue/Queue.php
++++ b/src/Illuminate/Queue/Queue.php
+@@ -12,6 +12,12 @@
+ use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+ use Illuminate\Contracts\Queue\ShouldBeUnique;
+ use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
++use Illuminate\Queue\Attributes\Backoff;
++use Illuminate\Queue\Attributes\FailOnTimeout;
++use Illuminate\Queue\Attributes\MaxExceptions;
++use Illuminate\Queue\Attributes\ReadsQueueAttributes;
++use Illuminate\Queue\Attributes\Timeout;
++use Illuminate\Queue\Attributes\Tries;
+ use Illuminate\Queue\Events\JobQueued;
+ use Illuminate\Queue\Events\JobQueueing;
+ use Illuminate\Support\Collection;
+@@ -22,7 +28,7 @@
+ 
+ abstract class Queue
+ {
+-    use InteractsWithTime;
++    use InteractsWithTime, ReadsQueueAttributes;
+ 
+     /**
+      * The IoC container instance.
+@@ -164,10 +170,10 @@ protected function createObjectPayload($job, $queue)
+             'displayName' => $this->getDisplayName($job),
+             'job' => 'Illuminate\Queue\CallQueuedHandler@call',
+             'maxTries' => $this->getJobTries($job),
+-            'maxExceptions' => $job->maxExceptions ?? null,
+-            'failOnTimeout' => $job->failOnTimeout ?? false,
++            'maxExceptions' => $this->getAttributeValue($job, MaxExceptions::class, 'maxExceptions'),
++            'failOnTimeout' => $this->getAttributeValue($job, FailOnTimeout::class, 'failOnTimeout') ?? false,
+             'backoff' => $this->getJobBackoff($job),
+-            'timeout' => $job->timeout ?? null,
++            'timeout' => $this->getAttributeValue($job, Timeout::class, 'timeout'),
+             'retryUntil' => $this->getJobExpiration($job),
+             'data' => [
+                 'commandName' => $job,
+@@ -217,12 +223,10 @@ protected function getDisplayName($job)
+      */
+     public function getJobTries($job)
+     {
+-        if (! method_exists($job, 'tries') && ! isset($job->tries)) {
+-            return;
+-        }
++        $tries = $this->getAttributeValue($job, Tries::class, 'tries');
+ 
+-        if (is_null($tries = $job->tries ?? $job->tries())) {
+-            return;
++        if (method_exists($job, 'tries')) {
++            $tries = $job->tries();
+         }
+ 
+         return $tries;
+@@ -236,11 +240,13 @@ public function getJobTries($job)
+      */
+     public function getJobBackoff($job)
+     {
+-        if (! method_exists($job, 'backoff') && ! isset($job->backoff)) {
+-            return;
++        $backoff = $this->getAttributeValue($job, Backoff::class, 'backoff');
++
++        if (method_exists($job, 'backoff')) {
++            $backoff = $job->backoff();
+         }
+ 
+-        if (is_null($backoff = $job->backoff ?? $job->backoff())) {
++        if (is_null($backoff)) {
+             return;
+         }
+ 
+@@ -326,7 +332,6 @@ public static function createPayloadUsing($callback)
+      * Create the given payload using any registered payload hooks.
+      *
+      * @param  string  $queue
+-     * @param  array  $payload
+      * @return array
+      */
+     protected function withCreatePayloadHooks($queue, array $payload)
+@@ -472,7 +477,6 @@ public function getConfig()
+     /**
+      * Set the queue configuration array.
+      *
+-     * @param  array  $config
+      * @return $this
+      */
+     public function setConfig(array $config)
+@@ -495,7 +499,6 @@ public function getContainer()
+     /**
+      * Set the IoC container instance.
+      *
+-     * @param  \Illuminate\Container\Container  $container
+      * @return void
+      */
+     public function setContainer(Container $container)

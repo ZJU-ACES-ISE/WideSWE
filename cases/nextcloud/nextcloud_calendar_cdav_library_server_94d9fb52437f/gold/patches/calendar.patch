@@ -1,0 +1,1442 @@
+diff --git a/lib/Controller/SettingsController.php b/lib/Controller/SettingsController.php
+index 0480c5ea..fb174a6a 100644
+--- a/lib/Controller/SettingsController.php
++++ b/lib/Controller/SettingsController.php
+@@ -72,6 +72,10 @@ class SettingsController extends Controller {
+ 				return $this->setSlotDuration($value);
+ 			case 'defaultReminder':
+ 				return $this->setDefaultReminder($value);
++			case 'defaultReminderPartDay':
++				return $this->setDefaultReminderPartDay($value);
++			case 'defaultReminderFullDay':
++				return $this->setDefaultReminderFullDay($value);
+ 			case 'showTasks':
+ 				return $this->setShowTasks($value);
+ 			case 'tasksSidebar':
+@@ -346,6 +350,23 @@ class SettingsController extends Controller {
+ 		return new JSONResponse();
+ 	}
+ 
++	/**
++	 * validates reminder values
++	 *
++	 * @param string $value User-selected reminder value
++	 * @param bool $allowPositive Whether positive trigger offsets are allowed
++	 * @return bool
++	 */
++	private function isValidReminderValue(string $value, bool $allowPositive = false): bool {
++		if ($value === 'none') {
++			return true;
++		}
++
++		$options = $allowPositive ? [] : ['options' => ['max_range' => 0]];
++
++		return filter_var($value, FILTER_VALIDATE_INT, $options) !== false;
++	}
++
+ 	/**
+ 	 * sets defaultReminder for user
+ 	 *
+@@ -353,9 +374,7 @@ class SettingsController extends Controller {
+ 	 * @return JSONResponse
+ 	 */
+ 	private function setDefaultReminder(string $value):JSONResponse {
+-		if ($value !== 'none'
+-			&& filter_var($value, FILTER_VALIDATE_INT,
+-				['options' => ['max_range' => 0]]) === false) {
++		if (!$this->isValidReminderValue($value)) {
+ 			return new JSONResponse([], Http::STATUS_UNPROCESSABLE_ENTITY);
+ 		}
+ 
+@@ -372,4 +391,54 @@ class SettingsController extends Controller {
+ 
+ 		return new JSONResponse();
+ 	}
++
++	/**
++	 * sets defaultReminderPartDay for user
++	 *
++	 * @param string $value User-selected option for the part-day default reminder
++	 * @return JSONResponse
++	 */
++	private function setDefaultReminderPartDay(string $value):JSONResponse {
++		if (!$this->isValidReminderValue($value)) {
++			return new JSONResponse([], Http::STATUS_UNPROCESSABLE_ENTITY);
++		}
++
++		try {
++			$this->config->setUserValue(
++				$this->userId,
++				$this->appName,
++				'defaultReminderPartDay',
++				$value
++			);
++		} catch (\Exception $e) {
++			return new JSONResponse([], Http::STATUS_INTERNAL_SERVER_ERROR);
++		}
++
++		return new JSONResponse();
++	}
++
++	/**
++	 * sets defaultReminderFullDay for user
++	 *
++	 * @param string $value User-selected option for the full-day default reminder
++	 * @return JSONResponse
++	 */
++	private function setDefaultReminderFullDay(string $value):JSONResponse {
++		if (!$this->isValidReminderValue($value, true)) {
++			return new JSONResponse([], Http::STATUS_UNPROCESSABLE_ENTITY);
++		}
++
++		try {
++			$this->config->setUserValue(
++				$this->userId,
++				$this->appName,
++				'defaultReminderFullDay',
++				$value
++			);
++		} catch (\Exception $e) {
++			return new JSONResponse([], Http::STATUS_INTERNAL_SERVER_ERROR);
++		}
++
++		return new JSONResponse();
++	}
+ }
+diff --git a/lib/Service/CalendarInitialStateService.php b/lib/Service/CalendarInitialStateService.php
+index 827fa2f8..705bc5f1 100644
+--- a/lib/Service/CalendarInitialStateService.php
++++ b/lib/Service/CalendarInitialStateService.php
+@@ -62,6 +62,8 @@ class CalendarInitialStateService {
+ 		$attachmentsFolder = $this->config->getUserValue($this->userId, 'dav', 'attachmentsFolder', '/Calendar');
+ 		$slotDuration = $this->config->getUserValue($this->userId, $this->appName, 'slotDuration', $defaultSlotDuration);
+ 		$defaultReminder = $this->config->getUserValue($this->userId, $this->appName, 'defaultReminder', $defaultDefaultReminder);
++		$defaultReminderPartDay = $this->config->getUserValue($this->userId, $this->appName, 'defaultReminderPartDay', $defaultReminder);
++		$defaultReminderFullDay = $this->config->getUserValue($this->userId, $this->appName, 'defaultReminderFullDay', $defaultReminder);
+ 		$showTasks = $this->config->getUserValue($this->userId, $this->appName, 'showTasks', $defaultShowTasks) === 'yes';
+ 		$tasksSidebar = $this->config->getUserValue($this->userId, $this->appName, 'tasksSidebar', $defaultTasksSidebar) === 'yes';
+ 		$hideEventExport = $this->config->getAppValue($this->appName, 'hideEventExport', 'no') === 'yes';
+@@ -104,6 +106,8 @@ class CalendarInitialStateService {
+ 		$this->initialStateService->provideInitialState('attachments_folder', $attachmentsFolder);
+ 		$this->initialStateService->provideInitialState('slot_duration', $slotDuration);
+ 		$this->initialStateService->provideInitialState('default_reminder', $defaultReminder);
++		$this->initialStateService->provideInitialState('default_reminder_part_day', $defaultReminderPartDay);
++		$this->initialStateService->provideInitialState('default_reminder_full_day', $defaultReminderFullDay);
+ 		$this->initialStateService->provideInitialState('show_tasks', $showTasks);
+ 		$this->initialStateService->provideInitialState('tasks_sidebar', $tasksSidebar);
+ 		$this->initialStateService->provideInitialState('tasks_enabled', $tasksEnabled);
+diff --git a/src/components/AppNavigation/EditCalendarModal.vue b/src/components/AppNavigation/EditCalendarModal.vue
+index dcd2da5a..855f7858 100644
+--- a/src/components/AppNavigation/EditCalendarModal.vue
++++ b/src/components/AppNavigation/EditCalendarModal.vue
+@@ -45,19 +45,32 @@
+ 			</template>
+ 			<template v-if="!calendar.isSharedWithMe && isAfterVersion">
+ 				<div class="edit-calendar-modal__default-alarm">
+-					<label for="default-alarm-select" class="edit-calendar-modal__default-alarm__label">
+-						{{ $t('calendar', 'Default reminder') }}
++					<label for="default-alarm-partday-select" class="edit-calendar-modal__default-alarm__label">
++						{{ $t('calendar', 'Default reminder for part-day events') }}
+ 					</label>
+ 					<NcSelect
+-						id="default-alarm-select"
+-						v-model="selectedDefaultAlarm"
+-						:options="defaultAlarmOptions"
++						id="default-alarm-partday-select"
++						v-model="selectedDefaultAlarmPartDay"
++						:options="defaultAlarmPartDayOptions"
++						:clearable="false"
++						:placeholder="$t('calendar', 'Select default reminder')"
++						class="edit-calendar-modal__default-alarm__select"
++						@update:modelValue="defaultAlarmChanged = true" />
++				</div>
++				<div class="edit-calendar-modal__default-alarm">
++					<label for="default-alarm-fullday-select" class="edit-calendar-modal__default-alarm__label">
++						{{ $t('calendar', 'Default reminder for full-day events') }}
++					</label>
++					<NcSelect
++						id="default-alarm-fullday-select"
++						v-model="selectedDefaultAlarmFullDay"
++						:options="defaultAlarmFullDayOptions"
+ 						:clearable="false"
+ 						:placeholder="$t('calendar', 'Select default reminder')"
+ 						class="edit-calendar-modal__default-alarm__select"
+ 						@update:modelValue="defaultAlarmChanged = true" />
+ 					<p class="edit-calendar-modal__default-alarm__hint">
+-						{{ $t('calendar', 'This reminder will be automatically added to all new events created in this calendar') }}
++						{{ $t('calendar', 'These reminders will be automatically added to new events created in this calendar') }}
+ 					</p>
+ 				</div>
+ 			</template>
+@@ -159,7 +172,8 @@ export default {
+ 			isTransparent: false,
+ 			calendarName: undefined,
+ 			calendarNameChanged: false,
+-			selectedDefaultAlarm: null,
++			selectedDefaultAlarmPartDay: null,
++			selectedDefaultAlarmFullDay: null,
+ 			defaultAlarmChanged: false,
+ 		}
+ 	},
+@@ -251,11 +265,11 @@ export default {
+ 		},
+ 
+ 		/**
+-		 * Get the default alarm options for the select dropdown
++		 * Get the default alarm options for part-day (timed) events
+ 		 *
+ 		 * @return {Array}
+ 		 */
+-		defaultAlarmOptions() {
++		defaultAlarmPartDayOptions() {
+ 			const settingsStore = useSettingsStore()
+ 			const currentUserTimezone = settingsStore.getResolvedTimezone
+ 			const locale = settingsStore.momentLocale
+@@ -267,7 +281,6 @@ export default {
+ 				},
+ 			]
+ 
+-			// Add standard alarm options for timed events
+ 			const alarms = getDefaultAlarms(false)
+ 			for (const alarm of alarms) {
+ 				const alarmObject = this.getAlarmObjectFromTriggerTime(alarm)
+@@ -280,6 +293,35 @@ export default {
+ 			return options
+ 		},
+ 
++		/**
++		 * Get the default alarm options for full-day (all-day) events
++		 *
++		 * @return {Array}
++		 */
++		defaultAlarmFullDayOptions() {
++			const settingsStore = useSettingsStore()
++			const currentUserTimezone = settingsStore.getResolvedTimezone
++			const locale = settingsStore.momentLocale
++
++			const options = [
++				{
++					label: this.$t('calendar', 'None'),
++					value: null,
++				},
++			]
++
++			const alarms = getDefaultAlarms(true)
++			for (const alarm of alarms) {
++				const alarmObject = this.getAlarmObjectFromTriggerTime(alarm)
++				options.push({
++					label: alarmFormat(alarmObject, true, currentUserTimezone, locale),
++					value: alarm,
++				})
++			}
++
++			return options
++		},
++
+ 		/**
+ 		 * Whether the default alarm feature is supported (Nextcloud 34+)
+ 		 *
+@@ -302,13 +344,22 @@ export default {
+ 			this.calendarColorChanged = false
+ 			this.isTransparent = calendar.transparency === 'transparent'
+ 
+-			// Initialize default alarm
+-			if (calendar.defaultAlarm === null) {
+-				this.selectedDefaultAlarm = this.defaultAlarmOptions[0]
++			// Initialize default alarm for part-day events
++			if (calendar.defaultAlarmPartDay === null) {
++				this.selectedDefaultAlarmPartDay = this.defaultAlarmPartDayOptions[0]
++			} else {
++				const value = parseInt(calendar.defaultAlarmPartDay)
++				const option = this.defaultAlarmPartDayOptions.find((opt) => opt.value === value)
++				this.selectedDefaultAlarmPartDay = option || this.defaultAlarmPartDayOptions[0]
++			}
++
++			// Initialize default alarm for full-day events
++			if (calendar.defaultAlarmFullDay === null) {
++				this.selectedDefaultAlarmFullDay = this.defaultAlarmFullDayOptions[0]
+ 			} else {
+-				const value = parseInt(calendar.defaultAlarm)
+-				const option = this.defaultAlarmOptions.find((opt) => opt.value === value)
+-				this.selectedDefaultAlarm = option || this.defaultAlarmOptions[0]
++				const value = parseInt(calendar.defaultAlarmFullDay)
++				const option = this.defaultAlarmFullDayOptions.find((opt) => opt.value === value)
++				this.selectedDefaultAlarmFullDay = option || this.defaultAlarmFullDayOptions[0]
+ 			}
+ 			this.defaultAlarmChanged = false
+ 		},
+@@ -377,19 +428,20 @@ export default {
+ 		},
+ 
+ 		/**
+-		 * Save the calendar default alarm.
++		 * Save the calendar default alarms.
+ 		 */
+ 		async saveDefaultAlarm() {
+ 			try {
+-				const defaultAlarmValue = this.selectedDefaultAlarm ? this.selectedDefaultAlarm.value : null
+-				await this.calendarsStore.changeCalendarDefaultAlarm({
++				const pdayValue = this.selectedDefaultAlarmPartDay ? this.selectedDefaultAlarmPartDay.value : null
++				const fdayValue = this.selectedDefaultAlarmFullDay ? this.selectedDefaultAlarmFullDay.value : null
++				await this.calendarsStore.changeCalendarDefaultAlarms({
+ 					calendar: this.calendar,
+-					defaultAlarm: defaultAlarmValue,
++					defaultAlarmPartDay: pdayValue,
++					defaultAlarmFullDay: fdayValue,
+ 				})
+ 			} catch (error) {
+-				logger.error('Failed to save calendar default alarm', {
++				logger.error('Failed to save calendar default alarms', {
+ 					calendar: this.calendar,
+-					defaultAlarm: this.selectedDefaultAlarm,
+ 				})
+ 				throw error
+ 			}
+diff --git a/src/components/AppNavigation/Settings.vue b/src/components/AppNavigation/Settings.vue
+index 7aef49bc..58aeab5b 100644
+--- a/src/components/AppNavigation/Settings.vue
++++ b/src/components/AppNavigation/Settings.vue
+@@ -103,14 +103,23 @@
+ 					id="app-settings-modal-editing"
+ 					:name="t('calendar', 'Editing')">
+ 					<NcSelect
+-						:options="defaultReminderOptions"
+-						:modelValue="selectedDefaultReminderOption"
+-						:disabled="savingDefaultReminder"
++						:options="defaultReminderPartDayOptions"
++						:modelValue="selectedDefaultReminderPartDayOption"
++						:disabled="savingDefaultReminderPartDay"
+ 						:clearable="false"
+-						:inputLabel="$t('calendar', 'Default reminder')"
++						:inputLabel="$t('calendar', 'Default reminder for part-day events')"
+ 						inputId="value"
+ 						label="label"
+-						@option:selected="changeDefaultReminder" />
++						@option:selected="changeDefaultReminderPartDay" />
++					<NcSelect
++						:options="defaultReminderFullDayOptions"
++						:modelValue="selectedDefaultReminderFullDayOption"
++						:disabled="savingDefaultReminderFullDay"
++						:clearable="false"
++						:inputLabel="$t('calendar', 'Default reminder for full-day events')"
++						inputId="value"
++						label="label"
++						@option:selected="changeDefaultReminderFullDay" />
+ 					<NcFormBox>
+ 						<NcFormBoxSwitch
+ 							v-model="simpleEventEditorBinding"
+@@ -162,6 +171,7 @@ import SettingsImportSection from './Settings/SettingsImportSection.vue'
+ import SettingsTimezoneSelect from './Settings/SettingsTimezoneSelect.vue'
+ import ShortcutOverview from './Settings/ShortcutOverview.vue'
+ import { getDefaultAlarms } from '../../defaults/defaultAlarmProvider.js'
++import alarmFormat from '../../filters/alarmFormat.js'
+ import {
+ 	IMPORT_STAGE_DEFAULT,
+ 	IMPORT_STAGE_IMPORTING,
+@@ -172,6 +182,10 @@ import useCalendarsStore from '../../store/calendars.js'
+ import useImportFilesStore from '../../store/importFiles.js'
+ import usePrincipalsStore from '../../store/principals.js'
+ import useSettingsStore from '../../store/settings.js'
++import {
++	getAmountAndUnitForTimedEvents,
++	getAmountHoursMinutesAndUnitForAllDayEvents,
++} from '../../utils/alarms.js'
+ import logger from '../../utils/logger.js'
+ 
+ export default {
+@@ -210,7 +224,8 @@ export default {
+ 			savingTasks: false,
+ 			savingPopover: false,
+ 			savingSlotDuration: false,
+-			savingDefaultReminder: false,
++			savingDefaultReminderPartDay: false,
++			savingDefaultReminderFullDay: false,
+ 			savingDefaultCalendarId: false,
+ 			savingWeekend: false,
+ 			savingWeekNumber: false,
+@@ -233,6 +248,8 @@ export default {
+ 			'showWeekends',
+ 			'showWeekNumbers',
+ 			'slotDuration',
++			'defaultReminderPartDay',
++			'defaultReminderFullDay',
+ 			'defaultReminder',
+ 		]),
+ 
+@@ -308,33 +325,22 @@ export default {
+ 			},
+ 		},
+ 
+-		defaultReminderOptions() {
+-			const defaultAlarms = getDefaultAlarms().map((seconds) => {
+-				const label = seconds === 0 ? t('calendar', 'At event start') : moment.duration(Math.abs(seconds) * 1000).locale(this.locale).humanize()
+-				return {
+-					label,
+-					value: seconds.toString(),
+-				}
+-			})
+-
+-			return [{
+-				label: this.$t('calendar', 'No reminder'),
+-				value: 'none',
+-			}].concat(defaultAlarms)
++		defaultReminderPartDayOptions() {
++			return this.getDefaultReminderOptions(false)
+ 		},
+ 
+-		selectedDefaultReminderOption() {
+-			return this.defaultReminderOptions.find((o) => o.value === this.defaultReminder)
++		defaultReminderFullDayOptions() {
++			return this.getDefaultReminderOptions(true)
+ 		},
+ 
+-		defaultReminderSelection: {
+-			get() {
+-				return this.selectedDefaultReminderOption
+-			},
++		selectedDefaultReminderPartDayOption() {
++			const selectedValue = this.defaultReminderPartDay ?? this.defaultReminder
++			return this.defaultReminderPartDayOptions.find((o) => o.value === selectedValue)
++		},
+ 
+-			set(option) {
+-				this.changeDefaultReminder(option)
+-			},
++		selectedDefaultReminderFullDayOption() {
++			const selectedValue = this.defaultReminderFullDay ?? this.defaultReminder
++			return this.defaultReminderFullDayOptions.find((o) => o.value === selectedValue)
+ 		},
+ 
+ 		availabilitySettingsUrl() {
+@@ -498,27 +504,114 @@ export default {
+ 		},
+ 
+ 		/**
+-		 * Updates the setting for the default reminder
++		 * Get the translated option list for default reminders.
++		 *
++		 * @param {boolean} allDay Whether full-day reminders should be returned
++		 * @return {Array<object>}
++		 */
++		getDefaultReminderOptions(allDay) {
++			const defaultAlarms = getDefaultAlarms(allDay).map((seconds) => ({
++				label: this.getDefaultReminderLabel(seconds, allDay),
++				value: seconds.toString(),
++			}))
++
++			return [{
++				label: this.$t('calendar', 'No reminder'),
++				value: 'none',
++			}].concat(defaultAlarms)
++		},
++
++		/**
++		 * Get the translated label for a default reminder option.
++		 *
++		 * @param {number} seconds The alarm trigger offset in seconds
++		 * @param {boolean} allDay Whether this is for a full-day event
++		 * @return {string}
++		 */
++		getDefaultReminderLabel(seconds, allDay) {
++			if (!allDay) {
++				return seconds === 0
++					? this.$t('calendar', 'At event start')
++					: moment.duration(Math.abs(seconds) * 1000).locale(this.locale).humanize()
++			}
++
++			const currentUserTimezone = this.settingsStore.getResolvedTimezone
++			return alarmFormat(this.getAlarmObjectFromTriggerTime(seconds), true, currentUserTimezone, this.locale)
++		},
++
++		/**
++		 * Create alarm object from trigger time for formatting.
++		 *
++		 * @param {number} time Total amount of seconds for the trigger
++		 * @return {object} The alarm object
++		 */
++		getAlarmObjectFromTriggerTime(time) {
++			const timedData = getAmountAndUnitForTimedEvents(time)
++			const allDayData = getAmountHoursMinutesAndUnitForAllDayEvents(time)
++
++			return {
++				isRelative: true,
++				absoluteDate: null,
++				absoluteTimezoneId: null,
++				relativeIsBefore: time < 0,
++				relativeIsRelatedToStart: true,
++				relativeUnitTimed: timedData.unit,
++				relativeAmountTimed: timedData.amount,
++				relativeUnitAllDay: allDayData.unit,
++				relativeAmountAllDay: allDayData.amount,
++				relativeHoursAllDay: allDayData.hours,
++				relativeMinutesAllDay: allDayData.minutes,
++				relativeTrigger: time,
++			}
++		},
++
++		/**
++		 * Updates the setting for the part-day default reminder
++		 *
++		 * @param {object} option The new selected value
++		 */
++		async changeDefaultReminderPartDay(option) {
++			if (!option) {
++				return
++			}
++
++			// change to loading status
++			this.savingDefaultReminderPartDay = true
++
++			try {
++				await this.settingsStore.setDefaultReminderPartDay({
++					defaultReminderPartDay: option.value,
++				})
++				this.savingDefaultReminderPartDay = false
++			} catch (error) {
++				console.error(error)
++				showError(this.$t('calendar', 'New setting was not saved successfully.'))
++				this.savingDefaultReminderPartDay = false
++			}
++		},
++
++		/**
++		 * Updates the setting for the full-day default reminder
+ 		 *
+ 		 * @param {object} option The new selected value
+ 		 */
+-		async changeDefaultReminder(option) {
++		async changeDefaultReminderFullDay(option) {
+ 			if (!option) {
+ 				return
+ 			}
+ 
+ 			// change to loading status
+-			this.savingDefaultReminder = true
++			this.savingDefaultReminderFullDay = true
+ 
+ 			try {
+-				await this.settingsStore.setDefaultReminder({
+-					defaultReminder: option.value,
++				await this.settingsStore.setDefaultReminderFullDay({
++					defaultReminderFullDay: option.value,
+ 				})
+-				this.savingDefaultReminder = false
++				this.savingDefaultReminderFullDay = false
+ 			} catch (error) {
+ 				console.error(error)
+ 				showError(this.$t('calendar', 'New setting was not saved successfully.'))
+-				this.savingDefaultReminder = false
++				this.savingDefaultReminderFullDay = false
+ 			}
+ 		},
+ 
+diff --git a/src/defaults/defaultAlarmProvider.js b/src/defaults/defaultAlarmProvider.js
+index 22939455..38ee695d 100644
+--- a/src/defaults/defaultAlarmProvider.js
++++ b/src/defaults/defaultAlarmProvider.js
+@@ -12,6 +12,7 @@ export function getDefaultAlarms(allDay = false) {
+ 			9 * 60 * 60, // On the day of the event at 9am
+ 			-15 * 60 * 60, // 1 day before at 9am
+ 			-39 * 60 * 60, // 2 days before at 9am
++			-63 * 60 * 60, // 3 days before at 9am
+ 			-159 * 60 * 60, // 1 week before at 9am
+ 		]
+ 	} else {
+@@ -21,8 +22,10 @@ export function getDefaultAlarms(allDay = false) {
+ 			-10 * 60, // 10 minutes before
+ 			-15 * 60, // 15 minutes before
+ 			-30 * 60, // 30 minutes before
++			-45 * 60, // 45 minutes before
+ 			-1 * 60 * 60, // 1 hour before
+ 			-2 * 60 * 60, // 2 hour before
++			-3 * 60 * 60, // 3 hour before
+ 			-1 * 24 * 60 * 60, // 1 day before
+ 			-2 * 24 * 60 * 60, // 2 days before
+ 		]
+diff --git a/src/mixins/EditorMixin.js b/src/mixins/EditorMixin.js
+index 9f21e643..a25a3a85 100644
+--- a/src/mixins/EditorMixin.js
++++ b/src/mixins/EditorMixin.js
+@@ -516,7 +516,7 @@ export default {
+ 				this.calendarObject.calendarId = selectedCalendar.id
+ 			}
+ 
+-			updateDefaultAlarm()
++			updateDefaultAlarm(this.calendarObject.calendarId, this.calendarObjectInstance)
+ 		},
+ 		/**
+ 		 * This will force the user to update this and all future occurrences when saving
+@@ -856,6 +856,8 @@ export default {
+ 			this.calendarObjectInstanceStore.toggleAllDay({
+ 				calendarObjectInstance: this.calendarObjectInstance,
+ 			})
++
++			updateDefaultAlarm(this.calendarObject.calendarId, this.calendarObjectInstance)
+ 		},
+ 		/**
+ 		 * Resets the internal state after changing the viewed calendar-object
+diff --git a/src/models/calendar.js b/src/models/calendar.js
+index aaa34eef..8b478bf4 100644
+--- a/src/models/calendar.js
++++ b/src/models/calendar.js
+@@ -63,8 +63,10 @@ function getDefaultCalendarObject(props = {}) {
+ 		fetchedTimeRanges: [],
+ 		// Scheduling transparency
+ 		transparency: 'opaque',
+-		// Default alarm/reminder for new events in seconds (null if disabled)
+-		defaultAlarm: null,
++		// Default alarm/reminder for part-day events in seconds (null if disabled)
++		defaultAlarmPartDay: null,
++		// Default alarm/reminder for full-day events in seconds (null if disabled)
++		defaultAlarmFullDay: null,
+ 		...props,
+ 	}
+ }
+@@ -106,9 +108,10 @@ function mapDavCollectionToCalendar(calendar, currentUserPrincipal) {
+ 	// then the default value CALDAV:opaque MUST be assumed.
+ 	// https://datatracker.ietf.org/doc/html/rfc6638#section-9.1
+ 	const transparency = calendar.transparency || 'opaque'
+-	// Default alarm for new events in this calendar (in seconds)
+-	// The value can be null or a number of seconds
+-	const defaultAlarm = isAfterVersion(34) && calendar.defaultAlarm !== undefined ? calendar.defaultAlarm : null
++	// Default alarm for part-day events in this calendar (in seconds)
++	const defaultAlarmPartDay = isAfterVersion(34) && calendar.defaultAlarmPartDay !== undefined ? calendar.defaultAlarmPartDay : null
++	// Default alarm for full-day events in this calendar (in seconds)
++	const defaultAlarmFullDay = isAfterVersion(34) && calendar.defaultAlarmFullDay !== undefined ? calendar.defaultAlarmFullDay : null
+ 
+ 	let isSharedWithMe = false
+ 	if (!currentUserPrincipal) {
+@@ -167,7 +170,8 @@ function mapDavCollectionToCalendar(calendar, currentUserPrincipal) {
+ 		shares,
+ 		timezone,
+ 		transparency,
+-		defaultAlarm,
++		defaultAlarmPartDay,
++		defaultAlarmFullDay,
+ 		dav: calendar,
+ 	})
+ }
+diff --git a/src/store/calendarObjectInstance.js b/src/store/calendarObjectInstance.js
+index e6299a50..74e4a0f2 100644
+--- a/src/store/calendarObjectInstance.js
++++ b/src/store/calendarObjectInstance.js
+@@ -21,14 +21,13 @@ import {
+ 	getTotalSecondsFromAmountAndUnitForTimedEvents,
+ 	getTotalSecondsFromAmountHourMinutesAndUnitForAllDayEvents,
+ 	updateAlarms,
++	updateDefaultAlarm,
+ } from '../utils/alarms.js'
+ import { getObjectAtRecurrenceId } from '../utils/calendarObject.js'
+ import { getClosestCSS3ColorNameForHex, getHexForColorName } from '../utils/color.js'
+ import {
+ 	getDateFromDateTimeValue,
+ } from '../utils/date.js'
+-import logger from '../utils/logger.js'
+-import { isAfterVersion } from '../utils/nextcloudVersion.ts'
+ import { getBySetPositionAndBySetFromDate, getWeekDayFromDate } from '../utils/recurrence.js'
+ import useCalendarObjectsStore from './calendarObjects.js'
+ import useCalendarsStore from './calendars.js'
+@@ -1403,7 +1402,6 @@ export default defineStore('calendarObjectInstance', {
+ 			timezoneId,
+ 		}) {
+ 			const calendarObjectsStore = useCalendarObjectsStore()
+-			const settingsStore = useSettingsStore()
+ 
+ 			if (this.isNew === true) {
+ 				return Promise.resolve({
+@@ -1422,8 +1420,6 @@ export default defineStore('calendarObjectInstance', {
+ 			const eventComponent = getObjectAtRecurrenceId(calendarObject, startDate)
+ 			const calendarObjectInstance = mapEventComponentToEventObject(eventComponent)
+ 
+-			// Add an alarm if set. First check for calendar-specific default alarm (Nextcloud 34+),
+-			// then fall back to the global default reminder setting.
+ 			const calendarsStore = useCalendarsStore()
+ 			const calendar = calendarsStore.getCalendarById(calendarObject.calendarId)
+ 
+@@ -1433,25 +1429,7 @@ export default defineStore('calendarObjectInstance', {
+ 				calendarObjectInstance.eventComponent.timeTransparency = 'transparent'
+ 			}
+ 
+-			let defaultReminder = null
+-			if (isAfterVersion(34) && calendar && calendar.defaultAlarm !== null) {
+-				defaultReminder = parseInt(calendar.defaultAlarm)
+-			} else {
+-				defaultReminder = parseInt(settingsStore.defaultReminder)
+-			}
+-
+-			if (
+-				!isNaN(defaultReminder)
+-				&& !calendarObjectInstance.alarms.some((alarm) => alarm.alarmComponent.getFirstPropertyFirstValue('X-NC-DEFAULT-ALARM'))
+-			) {
+-				this.addAlarmToCalendarObjectInstance({
+-					calendarObjectInstance,
+-					type: 'DISPLAY',
+-					totalSeconds: defaultReminder,
+-					isDefault: true,
+-				})
+-				logger.debug(`Added defaultReminder (${defaultReminder}s) to newly created event`)
+-			}
++			updateDefaultAlarm(calendarObject.calendarId, calendarObjectInstance)
+ 
+ 			// Add default status
+ 			const rfcProps = getRFCProperties()
+diff --git a/src/store/calendars.js b/src/store/calendars.js
+index 4673a9c8..3892c9da 100644
+--- a/src/store/calendars.js
++++ b/src/store/calendars.js
+@@ -588,26 +588,41 @@ export default defineStore('calendars', {
+ 		},
+ 
+ 		/**
+-		 * Change a calendar's default alarm
++		 * Change a calendar's default alarms for part-day and full-day events
+ 		 *
+ 		 * @param {object} data destructuring object
+ 		 * @param {object} data.calendar the calendar to modify
+-		 * @param {string|null} data.defaultAlarm the new default alarm in seconds (or null to disable)
++		 * @param {number|null} data.defaultAlarmPartDay the new default alarm for part-day events in seconds (or null to disable)
++		 * @param {number|null} data.defaultAlarmFullDay the new default alarm for full-day events in seconds (or null to disable)
+ 		 * @return {Promise}
+ 		 */
+-		async changeCalendarDefaultAlarm({ calendar, defaultAlarm }) {
++		async changeCalendarDefaultAlarms({ calendar, defaultAlarmPartDay, defaultAlarmFullDay }) {
+ 			if (!isAfterVersion(34)) {
+ 				return
+ 			}
+ 
+-			if (calendar.dav.defaultAlarm === defaultAlarm) {
++			const partDayChanged = calendar.dav.defaultAlarmPartDay !== defaultAlarmPartDay
++			const fullDayChanged = calendar.dav.defaultAlarmFullDay !== defaultAlarmFullDay
++
++			if (!partDayChanged && !fullDayChanged) {
+ 				return
+ 			}
+ 
+-			calendar.dav.defaultAlarm = defaultAlarm
++			if (partDayChanged) {
++				calendar.dav.defaultAlarmPartDay = defaultAlarmPartDay
++			}
++			if (fullDayChanged) {
++				calendar.dav.defaultAlarmFullDay = defaultAlarmFullDay
++			}
+ 
+ 			await calendar.dav.update()
+-			this.calendarsById[calendar.id].defaultAlarm = defaultAlarm
++
++			if (partDayChanged) {
++				this.calendarsById[calendar.id].defaultAlarmPartDay = defaultAlarmPartDay
++			}
++			if (fullDayChanged) {
++				this.calendarsById[calendar.id].defaultAlarmFullDay = defaultAlarmFullDay
++			}
+ 		},
+ 
+ 		/**
+diff --git a/src/store/settings.js b/src/store/settings.js
+index bde137d3..69380311 100644
+--- a/src/store/settings.js
++++ b/src/store/settings.js
+@@ -33,6 +33,9 @@ export default defineStore('settings', {
+ 			showWeekNumbers: null,
+ 			skipPopover: null,
+ 			slotDuration: null,
++			defaultReminderPartDay: null,
++			defaultReminderFullDay: null,
++			// Legacy fallback for users that have not saved separate part/full-day defaults yet.
+ 			defaultReminder: null,
+ 			tasksEnabled: false,
+ 			timezone: 'automatic',
+@@ -221,6 +224,36 @@ export default defineStore('settings', {
+ 			this.defaultReminder = defaultReminder
+ 		},
+ 
++		/**
++		 * Updates the user's preferred default reminder for part-day events
++		 *
++		 * @param {object} data The destructuring object
++		 * @param {string} data.defaultReminderPartDay The new part-day default reminder
++		 */
++		async setDefaultReminderPartDay({ defaultReminderPartDay }) {
++			if (this.defaultReminderPartDay === defaultReminderPartDay) {
++				return
++			}
++
++			await setConfig('defaultReminderPartDay', defaultReminderPartDay)
++			this.defaultReminderPartDay = defaultReminderPartDay
++		},
++
++		/**
++		 * Updates the user's preferred default reminder for full-day events
++		 *
++		 * @param {object} data The destructuring object
++		 * @param {string} data.defaultReminderFullDay The new full-day default reminder
++		 */
++		async setDefaultReminderFullDay({ defaultReminderFullDay }) {
++			if (this.defaultReminderFullDay === defaultReminderFullDay) {
++				return
++			}
++
++			await setConfig('defaultReminderFullDay', defaultReminderFullDay)
++			this.defaultReminderFullDay = defaultReminderFullDay
++		},
++
+ 		/**
+ 		 * Updates the user's timezone
+ 		 *
+@@ -299,7 +332,9 @@ export default defineStore('settings', {
+ 		 * @param {boolean} data.showWeekends Whether or not to display weekends
+ 		 * @param {boolean} data.skipPopover Whether or not to skip the simple event popover
+ 		 * @param {string} data.slotDuration The duration of one slot in the agendaView
+-		 * @param {string} data.defaultReminder The default reminder to set on newly created events
++		 * @param {string} data.defaultReminder Legacy default reminder fallback for older installs
++		 * @param {string} data.defaultReminderPartDay The default reminder for newly created part-day events
++		 * @param {string} data.defaultReminderFullDay The default reminder for newly created full-day events
+ 		 * @param {boolean} data.talkEnabled Whether or not the talk app is enabled
+ 		 * @param {boolean} data.tasksEnabled Whether ot not the tasks app is enabled
+ 		 * @param {string} data.timezone The timezone to view the calendar in. Either an Olsen timezone or "automatic"
+@@ -312,7 +347,7 @@ export default defineStore('settings', {
+ 		 * @param {boolean} data.showResources Show or hide the resources tab
+ 		 * @param {string} data.publicCalendars
+ 		 */
+-		loadSettingsFromServer({ appVersion, eventLimit, firstRun, showWeekNumbers, showTasks, showWeekends, skipPopover, slotDuration, defaultReminder, talkEnabled, tasksEnabled, timezone, hideEventExport, forceEventAlarmType, disableAppointments, tasksSidebar, canSubscribeLink, attachmentsFolder, showResources, publicCalendars }) {
++		loadSettingsFromServer({ appVersion, eventLimit, firstRun, showWeekNumbers, showTasks, showWeekends, skipPopover, slotDuration, defaultReminder, defaultReminderPartDay, defaultReminderFullDay, talkEnabled, tasksEnabled, timezone, hideEventExport, forceEventAlarmType, disableAppointments, tasksSidebar, canSubscribeLink, attachmentsFolder, showResources, publicCalendars }) {
+ 			logInfo(`
+ Initial settings:
+ 	- AppVersion: ${appVersion}
+@@ -324,6 +359,8 @@ Initial settings:
+ 	- SkipPopover: ${skipPopover}
+ 	- SlotDuration: ${slotDuration}
+ 	- DefaultReminder: ${defaultReminder}
++	- DefaultReminderPartDay: ${defaultReminderPartDay}
++	- DefaultReminderFullDay: ${defaultReminderFullDay}
+ 	- TalkEnabled: ${talkEnabled}
+ 	- TasksEnabled: ${tasksEnabled}
+ 	- TasksSidebar: ${tasksSidebar}
+@@ -346,6 +383,8 @@ Initial settings:
+ 			this.skipPopover = skipPopover
+ 			this.slotDuration = slotDuration
+ 			this.defaultReminder = defaultReminder
++			this.defaultReminderPartDay = defaultReminderPartDay ?? defaultReminder
++			this.defaultReminderFullDay = defaultReminderFullDay ?? defaultReminder
+ 			this.talkEnabled = talkEnabled
+ 			this.tasksEnabled = tasksEnabled
+ 			this.timezone = timezone
+diff --git a/src/utils/alarms.js b/src/utils/alarms.js
+index 297696cd..7c1eea15 100644
+--- a/src/utils/alarms.js
++++ b/src/utils/alarms.js
+@@ -7,6 +7,7 @@ import { AttendeeProperty, Property } from '@nextcloud/calendar-js'
+ import { translate as t } from '@nextcloud/l10n'
+ import useCalendarObjectInstanceStore from '../store/calendarObjectInstance.js'
+ import useCalendarsStore from '../store/calendars.js'
++import useSettingsStore from '../store/settings.js'
+ import { isAfterVersion } from './nextcloudVersion.ts'
+ 
+ /**
+@@ -202,22 +203,36 @@ export function getTotalSecondsFromAmountHourMinutesAndUnitForAllDayEvents(amoun
+ 	return amount
+ }
+ 
+-export function updateDefaultAlarm() {
++/**
++ * Updates or creates the default alarm for an event.
++ * When no default alarm exists yet, one is only created for newly constructed instances
++ * passed in by the caller.
++ *
++ * @param {string} calendarId The ID of the calendar to update the default alarm from
++ * @param {object} calendarObjectInstance The calendar object instance to update
++ */
++export function updateDefaultAlarm(calendarId, calendarObjectInstance) {
+ 	const calendarObjectInstanceStore = useCalendarObjectInstanceStore()
+-	const calendarObjectInstance = calendarObjectInstanceStore.calendarObjectInstance
+ 	const calendarsStore = useCalendarsStore()
+-	const calendar = calendarsStore.getCalendarById(calendarObjectInstanceStore.calendarObject.calendarId)
++	const calendar = calendarsStore.getCalendarById(calendarId)
+ 
+-	let defaultReminder = null
+-	if (isAfterVersion(34) && calendar && calendar.defaultAlarm !== null) {
+-		defaultReminder = calendar.defaultAlarm
++	if (!calendar || !calendarObjectInstance) {
++		console.error('Missing calendar or calendar object instance to update default alarm for.')
++		return
++	}
++
++	const defaultReminder = getDefaultReminderForEvent({
++		calendar,
++		isAllDay: calendarObjectInstance.isAllDay,
++	})
++
++	if (isNaN(defaultReminder)) {
++		return
+ 	}
+ 
+ 	// Find the existing default alarm (if any)
+ 	const existingDefaultAlarm = calendarObjectInstance.alarms.find((alarm) => alarm.alarmComponent.getFirstPropertyFirstValue('X-NC-DEFAULT-ALARM'))
+-	// Only update the default alarm if one already exists.
+-	// If the user has manually removed the default alarm, don't re-add it.
+-	if (!isNaN(defaultReminder) && existingDefaultAlarm) {
++	if (existingDefaultAlarm) {
+ 		calendarObjectInstanceStore.removeAlarmFromCalendarObjectInstance({
+ 			calendarObjectInstance,
+ 			alarm: existingDefaultAlarm,
+@@ -229,9 +244,52 @@ export function updateDefaultAlarm() {
+ 			totalSeconds: defaultReminder,
+ 			isDefault: true,
+ 		})
++		return
++	}
++
++	// Only create a missing default alarm for newly constructed event instances.
++	if (calendarObjectInstance !== calendarObjectInstanceStore.calendarObjectInstance) {
++		calendarObjectInstanceStore.addAlarmToCalendarObjectInstance({
++			calendarObjectInstance,
++			type: 'DISPLAY',
++			totalSeconds: defaultReminder,
++			isDefault: true,
++		})
+ 	}
+ }
+ 
++/**
++ * Resolves the default reminder for an event.
++ * Calendar-specific defaults win, then the global part/full-day defaults,
++ * then the legacy global defaultReminder for backwards compatibility.
++ *
++ * @param {object} data The destructuring object
++ * @param {object|undefined} data.calendar The selected calendar
++ * @param {boolean} data.isAllDay Whether the event is all-day
++ * @return {number|null}
++ */
++export function getDefaultReminderForEvent({ calendar, isAllDay }) {
++	const settingsStore = useSettingsStore()
++
++	if (isAfterVersion(34) && calendar) {
++		if (isAllDay && calendar.dav.defaultAlarmFullDay !== undefined) {
++			return calendar.dav.defaultAlarmFullDay
++		}
++
++		if (!isAllDay && calendar.dav.defaultAlarmPartDay !== undefined) {
++			return calendar.dav.defaultAlarmPartDay
++		}
++	}
++
++	const globalDefaultReminder = parseInt(isAllDay ? settingsStore.defaultReminderFullDay : settingsStore.defaultReminderPartDay)
++	if (!isNaN(globalDefaultReminder)) {
++		return globalDefaultReminder
++	}
++
++	const legacyDefaultReminder = parseInt(settingsStore.defaultReminder)
++	return isNaN(legacyDefaultReminder) ? null : legacyDefaultReminder
++}
++
+ /**
+  * Propagate data from an event component to all EMAIL alarm components.
+  * An alarm component must contain a description, summary and all attendees to be notified.
+diff --git a/src/views/Calendar.vue b/src/views/Calendar.vue
+index 81ef0c44..ca3ceee7 100644
+--- a/src/views/Calendar.vue
++++ b/src/views/Calendar.vue
+@@ -332,6 +332,8 @@ export default {
+ 			skipPopover: loadState('calendar', 'skip_popover'),
+ 			slotDuration: loadState('calendar', 'slot_duration'),
+ 			defaultReminder: loadState('calendar', 'default_reminder'),
++			defaultReminderPartDay: loadState('calendar', 'default_reminder_part_day', loadState('calendar', 'default_reminder')),
++			defaultReminderFullDay: loadState('calendar', 'default_reminder_full_day', loadState('calendar', 'default_reminder')),
+ 			talkEnabled: loadState('calendar', 'talk_enabled'),
+ 			tasksEnabled: loadState('calendar', 'tasks_enabled'),
+ 			timezone: loadState('calendar', 'timezone'),
+diff --git a/tests/javascript/unit/defaults/defaultAlarmProvider.test.js b/tests/javascript/unit/defaults/defaultAlarmProvider.test.js
+index 89e5df52..93e65cee 100644
+--- a/tests/javascript/unit/defaults/defaultAlarmProvider.test.js
++++ b/tests/javascript/unit/defaults/defaultAlarmProvider.test.js
+@@ -13,8 +13,10 @@ describe('defaults/defaultAlarmProvider test suite', () => {
+ 			-600,
+ 			-900,
+ 			-1800,
++			-2700,
+ 			-3600,
+ 			-7200,
++			-10800,
+ 			-86400,
+ 			-172800,
+ 		])
+@@ -25,6 +27,7 @@ describe('defaults/defaultAlarmProvider test suite', () => {
+ 			32400,
+ 			-54000,
+ 			-140400,
++			-226800,
+ 			-572400,
+ 		])
+ 	})
+diff --git a/tests/javascript/unit/models/calendar.test.js b/tests/javascript/unit/models/calendar.test.js
+index 16474746..95178405 100644
+--- a/tests/javascript/unit/models/calendar.test.js
++++ b/tests/javascript/unit/models/calendar.test.js
+@@ -42,7 +42,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			transparency: 'opaque',
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 	})
+ 
+@@ -77,7 +78,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			transparency: 'opaque',
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 	})
+ 
+@@ -127,7 +129,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -179,7 +182,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -229,7 +233,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -279,7 +284,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -329,7 +335,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -379,7 +386,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -429,7 +437,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -479,7 +488,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -585,7 +595,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(4)
+@@ -707,7 +718,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 
+ 		expect(mapDavShareeToCalendarShareObject).toHaveBeenCalledTimes(0)
+@@ -758,7 +770,8 @@ describe('Test suite: Calendar model (models/calendar.js)', () => {
+ 			calendarObjects: [],
+ 			fetchedTimeRanges: [],
+ 			loading: false,
+-			defaultAlarm: null,
++			defaultAlarmFullDay: null,
++			defaultAlarmPartDay: null,
+ 		})
+ 	})
+ 
+diff --git a/tests/javascript/unit/store/settings.test.js b/tests/javascript/unit/store/settings.test.js
+index adbd940c..eb94cc8d 100644
+--- a/tests/javascript/unit/store/settings.test.js
++++ b/tests/javascript/unit/store/settings.test.js
+@@ -49,6 +49,8 @@ describe('store/settings test suite', () => {
+ 			skipPopover: null,
+ 			slotDuration: null,
+ 			defaultReminder: null,
++			defaultReminderPartDay: null,
++			defaultReminderFullDay: null,
+ 			tasksEnabled: false,
+ 			tasksSidebar: true,
+ 			timezone: 'automatic',
+@@ -76,6 +78,8 @@ describe('store/settings test suite', () => {
+ 			skipPopover: null,
+ 			slotDuration: null,
+ 			defaultReminder: null,
++			defaultReminderPartDay: null,
++			defaultReminderFullDay: null,
+ 			tasksEnabled: false,
+ 			tasksSidebar: true,
+ 			timezone: 'automatic',
+@@ -102,6 +106,8 @@ describe('store/settings test suite', () => {
+ 			skipPopover: true,
+ 			slotDuration: '00:30:00',
+ 			defaultReminder: '-600',
++			defaultReminderPartDay: undefined,
++			defaultReminderFullDay: undefined,
+ 			talkEnabled: false,
+ 			tasksEnabled: true,
+ 			tasksSidebar: false,
+@@ -130,6 +136,8 @@ Initial settings:
+ 	- SkipPopover: true
+ 	- SlotDuration: 00:30:00
+ 	- DefaultReminder: -600
++	- DefaultReminderPartDay: undefined
++	- DefaultReminderFullDay: undefined
+ 	- TalkEnabled: false
+ 	- TasksEnabled: true
+ 	- TasksSidebar: false
+@@ -152,6 +160,8 @@ Initial settings:
+ 			skipPopover: true,
+ 			slotDuration: '00:30:00',
+ 			defaultReminder: '-600',
++			defaultReminderPartDay: '-600',
++			defaultReminderFullDay: '-600',
+ 			talkEnabled: false,
+ 			tasksEnabled: true,
+ 			tasksSidebar: false,
+diff --git a/tests/php/unit/Controller/SettingsControllerTest.php b/tests/php/unit/Controller/SettingsControllerTest.php
+index 5f05c237..17508414 100755
+--- a/tests/php/unit/Controller/SettingsControllerTest.php
++++ b/tests/php/unit/Controller/SettingsControllerTest.php
+@@ -406,6 +406,92 @@ class SettingsControllerTest extends TestCase {
+ 		$this->assertEquals(500, $actual->getStatus());
+ 	}
+ 
++	/**
++	 * @param string $value
++	 * @param int $expectedStatusCode
++	 *
++	 * @dataProvider setDefaultReminderPartDayWithAllowedValueDataProvider
++	 */
++	public function testSetDefaultReminderPartDayWithAllowedValue(string $value,
++		int $expectedStatusCode):void {
++		if ($expectedStatusCode === 200) {
++			$this->config->expects($this->once())
++				->method('setUserValue')
++				->with('user123', $this->appName, 'defaultReminderPartDay', $value);
++		}
++
++		$actual = $this->controller->setConfig('defaultReminderPartDay', $value);
++
++		$this->assertInstanceOf('OCP\AppFramework\Http\JSONResponse', $actual);
++		$this->assertEquals([], $actual->getData());
++		$this->assertEquals($expectedStatusCode, $actual->getStatus());
++	}
++
++	public function setDefaultReminderPartDayWithAllowedValueDataProvider():array {
++		return $this->setDefaultReminderWithAllowedValueDataProvider();
++	}
++
++	public function testSetDefaultReminderPartDayWithException():void {
++		$this->config->expects($this->once())
++			->method('setUserValue')
++			->with('user123', $this->appName, 'defaultReminderPartDay', 'none')
++			->will($this->throwException(new \Exception));
++
++		$actual = $this->controller->setConfig('defaultReminderPartDay', 'none');
++
++		$this->assertInstanceOf('OCP\AppFramework\Http\JSONResponse', $actual);
++		$this->assertEquals([], $actual->getData());
++		$this->assertEquals(500, $actual->getStatus());
++	}
++
++	/**
++	 * @param string $value
++	 * @param int $expectedStatusCode
++	 *
++	 * @dataProvider setDefaultReminderFullDayWithAllowedValueDataProvider
++	 */
++	public function testSetDefaultReminderFullDayWithAllowedValue(string $value,
++		int $expectedStatusCode):void {
++		if ($expectedStatusCode === 200) {
++			$this->config->expects($this->once())
++				->method('setUserValue')
++				->with('user123', $this->appName, 'defaultReminderFullDay', $value);
++		}
++
++		$actual = $this->controller->setConfig('defaultReminderFullDay', $value);
++
++		$this->assertInstanceOf('OCP\AppFramework\Http\JSONResponse', $actual);
++		$this->assertEquals([], $actual->getData());
++		$this->assertEquals($expectedStatusCode, $actual->getStatus());
++	}
++
++	public function setDefaultReminderFullDayWithAllowedValueDataProvider():array {
++		return [
++			['none', 200],
++			['-0', 200],
++			['0', 200],
++			['32400', 200],
++			['-54000', 200],
++			['-140400', 200],
++			['not-none', 422],
++			['NaN', 422],
++			['0.1', 422],
++		];
++	}
++
++	public function testSetDefaultReminderFullDayWithException():void {
++		$this->config->expects($this->once())
++			->method('setUserValue')
++			->with('user123', $this->appName, 'defaultReminderFullDay', 'none')
++			->will($this->throwException(new \Exception));
++
++		$actual = $this->controller->setConfig('defaultReminderFullDay', 'none');
++
++		$this->assertInstanceOf('OCP\AppFramework\Http\JSONResponse', $actual);
++		$this->assertEquals([], $actual->getData());
++		$this->assertEquals(500, $actual->getStatus());
++	}
++
+ 	public function testSetNotExistingConfig():void {
+ 		$actual = $this->controller->setConfig('foo', 'bar');
+ 
+diff --git a/tests/php/unit/Service/CalendarInitialStateServiceTest.php b/tests/php/unit/Service/CalendarInitialStateServiceTest.php
+index 99dcc4fd..39548fab 100755
+--- a/tests/php/unit/Service/CalendarInitialStateServiceTest.php
++++ b/tests/php/unit/Service/CalendarInitialStateServiceTest.php
+@@ -21,6 +21,7 @@ use OCP\Calendar\Room\IManager as IRoomManager;
+ use OCP\IAppConfig;
+ use OCP\IConfig;
+ use OCP\IGroupManager;
++use OCP\IUser;
+ use OCP\IUserManager;
+ use PHPUnit\Framework\MockObject\MockObject;
+ 
+@@ -77,6 +78,13 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 		}
+ 		$this->groupManager = $this->createMock(IGroupManager::class);
+ 		$this->userManager = $this->createMock(IUserManager::class);
++
++		$user = $this->createMock(IUser::class);
++		$this->userManager->method('get')
++			->willReturn($user);
++		$this->groupManager->method('getUserGroupIds')
++			->with($user)
++			->willReturn([]);
+ 	}
+ 
+ 	public function testRun(): void {
+@@ -95,7 +103,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 			$this->groupManager,
+ 			$this->userManager,
+ 		);
+-		$this->config->expects(self::exactly(17))
++		$this->config->expects(self::exactly(19))
+ 			->method('getAppValue')
+ 			->willReturnMap([
+ 				['calendar', 'eventLimit', 'yes', 'defaultEventLimit'],
+@@ -106,6 +114,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['calendar', 'timezone', 'automatic', 'defaultTimezone'],
+ 				['calendar', 'slotDuration', '00:30:00', 'defaultSlotDuration'],
+ 				['calendar', 'defaultReminder', 'none', 'defaultDefaultReminder'],
++				['calendar', 'defaultReminderPartDay', 'defaultDefaultReminder', 'defaultDefaultReminderPartDay'],
++				['calendar', 'defaultReminderFullDay', 'defaultDefaultReminder', 'defaultDefaultReminderFullDay'],
+ 				['calendar', 'showTasks', 'yes', 'defaultShowTasks'],
+ 				['calendar', 'tasksSidebar', 'yes', 'defaultTasksSidebar'],
+ 				['calendar', 'installed_version', '', '1.0.0'],
+@@ -115,8 +125,10 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['dav', 'allow_calendar_link_subscriptions', 'yes', 'no'],
+ 				['calendar', 'showResources', 'yes', 'yes'],
+ 				['calendar', 'publicCalendars', ''],
++				['spreed', 'start_conversations', '[]', '[]'],
++				['spreed', 'allowed_groups', '[]', '[]'],
+ 			]);
+-		$this->config->expects(self::exactly(12))
++		$this->config->expects(self::exactly(14))
+ 			->method('getUserValue')
+ 			->willReturnMap([
+ 				['user123', 'calendar', 'eventLimit', 'defaultEventLimit', 'yes'],
+@@ -129,6 +141,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['user123', 'dav', 'attachmentsFolder', '/Calendar', '/Calendar'],
+ 				['user123', 'calendar', 'slotDuration', 'defaultSlotDuration', '00:15:00'],
+ 				['user123', 'calendar', 'defaultReminder', 'defaultDefaultReminder', '00:10:00'],
++				['user123', 'calendar', 'defaultReminderPartDay', '00:10:00', '-900'],
++				['user123', 'calendar', 'defaultReminderFullDay', '00:10:00', '32400'],
+ 				['user123', 'calendar', 'showTasks', 'defaultShowTasks', '00:15:00'],
+ 				['user123', 'calendar', 'tasksSidebar', 'defaultTasksSidebar', 'yes'],
+ 			]);
+@@ -159,7 +173,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 			->willReturn([$this->createMock(IResourceBackend::class)]);
+ 		$this->roomManager->expects(self::never())
+ 			->method('getBackends');
+-		$this->initialStateService->expects(self::exactly(27))
++		$this->initialStateService->expects(self::exactly(29))
+ 			->method('provideInitialState')
+ 			->willReturnMap([
+ 				['app_version', '1.0.0'],
+@@ -175,6 +189,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['attachments_folder', '/Calendar'],
+ 				['slot_duration', '00:15:00'],
+ 				['default_reminder', '00:10:00'],
++				['default_reminder_part_day', '-900'],
++				['default_reminder_full_day', '32400'],
+ 				['show_tasks', false],
+ 				['tasks_sidebar', true],
+ 				['tasks_enabled', true],
+@@ -221,6 +237,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['calendar', 'timezone', 'automatic', 'defaultTimezone'],
+ 				['calendar', 'slotDuration', '00:30:00', 'defaultSlotDuration'],
+ 				['calendar', 'defaultReminder', 'none', 'defaultDefaultReminder'],
++				['calendar', 'defaultReminderPartDay', 'defaultDefaultReminder', 'defaultDefaultReminderPartDay'],
++				['calendar', 'defaultReminderFullDay', 'defaultDefaultReminder', 'defaultDefaultReminderFullDay'],
+ 				['calendar', 'showTasks', 'yes', 'defaultShowTasks'],
+ 				['calendar', 'tasksSidebar', 'yes', 'defaulttasksSidebar'],
+ 				['calendar', 'installed_version', '', '1.0.0'],
+@@ -230,14 +248,13 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['dav', 'allow_calendar_link_subscriptions', 'yes', 'no'],
+ 				['calendar', 'showResources', 'yes', 'yes'],
+ 				['calendar', 'publicCalendars', ''],
+-				['calendar', 'publicCalendars', ''],
+ 			]);
+ 		$this->appConfig->expects(self::once())
+ 			->method('getValueBool')
+ 			->willReturnMap([
+ 				['dav', 'enableCalendarFederation', true, false, false],
+ 			]);
+-		$this->config->expects(self::exactly(12))
++		$this->config->expects(self::exactly(14))
+ 			->method('getUserValue')
+ 			->willReturnMap([
+ 				[null, 'calendar', 'eventLimit', 'defaultEventLimit', 'yes'],
+@@ -250,6 +267,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				[null, 'dav', 'attachmentsFolder', '/Calendar', '/Calendar'],
+ 				[null, 'calendar', 'slotDuration', 'defaultSlotDuration', '00:15:00'],
+ 				[null, 'calendar', 'defaultReminder', 'defaultDefaultReminder', '00:10:00'],
++				[null, 'calendar', 'defaultReminderPartDay', '00:10:00', '-900'],
++				[null, 'calendar', 'defaultReminderFullDay', '00:10:00', '32400'],
+ 				[null, 'calendar', 'showTasks', 'defaultShowTasks', '00:15:00'],
+ 				[null, 'calendar', 'tasksSidebar', 'defaultTasksSidebar', 'yes'],
+ 			]);
+@@ -271,7 +290,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 		$this->roomManager->expects(self::once())
+ 			->method('getBackends')
+ 			->willReturn([]);
+-		$this->initialStateService->expects(self::exactly(26))
++		$this->initialStateService->expects(self::exactly(28))
+ 			->method('provideInitialState')
+ 			->willReturnMap([
+ 				['app_version', '1.0.0'],
+@@ -287,6 +306,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['attachments_folder', '/Calendar'],
+ 				['slot_duration', '00:15:00'],
+ 				['default_reminder', '00:10:00'],
++				['default_reminder_part_day', '-900'],
++				['default_reminder_full_day', '32400'],
+ 				['show_tasks', false],
+ 				['tasks_sidebar', false],
+ 				['tasks_enabled', true],
+@@ -327,7 +348,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 			$this->groupManager,
+ 			$this->userManager,
+ 		);
+-		$this->config->expects(self::exactly(17))
++		$this->config->expects(self::exactly(19))
+ 			->method('getAppValue')
+ 			->willReturnMap([
+ 				['calendar', 'eventLimit', 'yes', 'defaultEventLimit'],
+@@ -338,6 +359,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['calendar', 'timezone', 'automatic', 'defaultTimezone'],
+ 				['calendar', 'slotDuration', '00:30:00', 'defaultSlotDuration'],
+ 				['calendar', 'defaultReminder', 'none', 'defaultDefaultReminder'],
++				['calendar', 'defaultReminderPartDay', 'defaultDefaultReminder', 'defaultDefaultReminderPartDay'],
++				['calendar', 'defaultReminderFullDay', 'defaultDefaultReminder', 'defaultDefaultReminderFullDay'],
+ 				['calendar', 'showTasks', 'yes', 'defaultShowTasks'],
+ 				['calendar', 'tasksSidebar', 'yes', 'defaulttasksSidebar'],
+ 				['calendar', 'installed_version', '', '1.0.0'],
+@@ -347,8 +370,10 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['dav', 'allow_calendar_link_subscriptions', 'yes', 'no'],
+ 				['calendar', 'showResources', 'yes', 'yes'],
+ 				['calendar', 'publicCalendars', ''],
++				['spreed', 'start_conversations', '[]', '[]'],
++				['spreed', 'allowed_groups', '[]', '[]'],
+ 			]);
+-		$this->config->expects(self::exactly(12))
++		$this->config->expects(self::exactly(14))
+ 			->method('getUserValue')
+ 			->willReturnMap([
+ 				['user123', 'calendar', 'eventLimit', 'defaultEventLimit', 'yes'],
+@@ -361,6 +386,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['user123', 'dav', 'attachmentsFolder', '/Calendar', '/Calendar'],
+ 				['user123', 'calendar', 'slotDuration', 'defaultSlotDuration', '00:15:00'],
+ 				['user123', 'calendar', 'defaultReminder', 'defaultDefaultReminder', '00:10:00'],
++				['user123', 'calendar', 'defaultReminderPartDay', '00:10:00', '-900'],
++				['user123', 'calendar', 'defaultReminderFullDay', '00:10:00', '32400'],
+ 				['user123', 'calendar', 'showTasks', 'defaultShowTasks', '00:15:00'],
+ 				['user123', 'calendar', 'tasksSidebar', 'defaultTasksSidebar', 'yes'],
+ 			]);
+@@ -392,7 +419,7 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 		$this->roomManager->expects(self::once())
+ 			->method('getBackends')
+ 			->willReturn([$this->createMock(IRoomBackend::class)]);
+-		$this->initialStateService->expects(self::exactly(27))
++		$this->initialStateService->expects(self::exactly(29))
+ 			->method('provideInitialState')
+ 			->willReturnMap([
+ 				['app_version', '1.0.0'],
+@@ -408,6 +435,8 @@ class CalendarInitialStateServiceTest extends TestCase {
+ 				['attachments_folder', '/Calendar'],
+ 				['slot_duration', '00:15:00'],
+ 				['default_reminder', '00:10:00'],
++				['default_reminder_part_day', '-900'],
++				['default_reminder_full_day', '32400'],
+ 				['show_tasks', false],
+ 				['tasks_sidebar', false],
+ 				['tasks_enabled', false],

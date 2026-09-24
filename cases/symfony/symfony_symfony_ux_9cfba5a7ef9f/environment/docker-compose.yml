@@ -1,0 +1,54 @@
+services:
+  twig-hidden:
+    image: ecosyncbench/deps/symfony-twig-composer:ecb310e129f5
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/php-composer-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/php-composer:8.4
+        ECOSYNC_TASK_ID: symfony_symfony_ux_9cfba5a7ef9f
+        ECOSYNC_REPO: twigphp/Twig
+        ECOSYNC_REPO_PATH: repos/twigphp/Twig
+        ECOSYNC_BASE_COMMIT: ecb310e129f549daa3424f6565520bcc807d16f3
+        ECOSYNC_DEPENDENCY_FINGERPRINT: ecb310e129f5
+        ECOSYNC_COMPOSER_ROOT_VERSION: 3.x-dev
+    working_dir: /workspace/repos/twigphp/Twig
+    volumes:
+    - ${ECOSYNC_WORKSPACE:?ECOSYNC_WORKSPACE required}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-phpunit.sh twig-hidden tests/Extension/EscaperTest.php'
+
+  symfony-hidden:
+    image: ecosyncbench/deps/symfony-framework-composer:e0cc934437d8
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/cases/symfony/symfony_symfony_ux_9cfba5a7ef9f/environment/symfony-framework-composer.Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/php-composer:8.4
+        ECOSYNC_TASK_ID: symfony_symfony_ux_9cfba5a7ef9f
+        ECOSYNC_REPO: symfony/symfony
+        ECOSYNC_REPO_PATH: repos/symfony/symfony
+        ECOSYNC_BASE_COMMIT: e0cc934437d88373595ab198173e53b660ed36c2
+        ECOSYNC_DEPENDENCY_FINGERPRINT: e0cc934437d8
+        ECOSYNC_COMPOSER_ROOT_VERSION: 8.1.x-dev
+    working_dir: /workspace/repos/symfony/symfony
+    volumes:
+    - ${ECOSYNC_WORKSPACE:?ECOSYNC_WORKSPACE required}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-phpunit.sh symfony-hidden src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/Compiler/SafeClassPassTest.php src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php'
+
+  ux-hidden:
+    image: ecosyncbench/deps/symfony-ux-twig-component-composer:aa8fbe407748
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/php-composer-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/php-composer:8.4
+        ECOSYNC_TASK_ID: symfony_symfony_ux_9cfba5a7ef9f
+        ECOSYNC_REPO: symfony/ux
+        ECOSYNC_REPO_PATH: repos/symfony/ux/src/TwigComponent
+        ECOSYNC_BASE_COMMIT: aa8fbe40774878a22fb54d18dca1d796a2def370
+        ECOSYNC_DEPENDENCY_FINGERPRINT: aa8fbe407748
+        ECOSYNC_COMPOSER_ROOT_VERSION: 3.x-dev
+    working_dir: /workspace/repos/symfony/ux/src/TwigComponent
+    volumes:
+    - ${ECOSYNC_WORKSPACE:?ECOSYNC_WORKSPACE required}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-phpunit.sh ux-hidden tests/Unit/DependencyInjection/TwigComponentExtensionTest.php'

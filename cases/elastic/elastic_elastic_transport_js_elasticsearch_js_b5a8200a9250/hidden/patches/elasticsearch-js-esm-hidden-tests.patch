@@ -1,0 +1,105 @@
+diff --git a/test/esm/package.json b/test/esm/package.json
+index 5209563e..5e57e79d 100644
+--- a/test/esm/package.json
++++ b/test/esm/package.json
+@@ -1,7 +1,11 @@
+ {
+   "name": "esm",
+   "version": "1.0.0",
++  "type": "module",
+   "dependencies": {
+     "@elastic/elasticsearch": "file:../.."
++  },
++  "devDependencies": {
++    "tap": "^21.5.0"
+   }
+ }
+diff --git a/test/esm/test-import.mjs b/test/esm/test-import.mjs
+index 693ac3e1..2fdfffbc 100644
+--- a/test/esm/test-import.mjs
++++ b/test/esm/test-import.mjs
+@@ -3,12 +3,51 @@
+  * SPDX-License-Identifier: Apache-2.0
+  */
+ 
+-import { Client } from '@elastic/elasticsearch'
++import { createRequire } from 'node:module'
++import { pathToFileURL } from 'node:url'
++import { test } from 'tap'
+ 
+-new Client({
+-  node: 'http://localhost:9200',
+-  auth: {
+-    username: 'elastic',
+-    password: 'changeme',
++const require = createRequire(import.meta.url)
++
++test('ESM package import exposes usable public APIs', async (t) => {
++  const elasticsearch = await import('@elastic/elasticsearch')
++
++  for (const exported of [
++    'Client',
++    'SniffingTransport',
++    'Transport',
++    'Diagnostic',
++    'Serializer',
++    'BaseConnection',
++    'HttpConnection',
++    'UndiciConnection',
++    'BaseConnectionPool',
++    'ClusterConnectionPool',
++    'CloudConnectionPool',
++    'WeightedConnectionPool',
++    'errors',
++    'events'
++  ]) {
++    t.ok(elasticsearch[exported], `${exported} is exported`)
+   }
++
++  const client = new elasticsearch.Client({
++    node: 'http://localhost:9200',
++    auth: {
++      username: 'elastic',
++      password: 'changeme'
++    }
++  })
++  const serializer = new elasticsearch.Serializer()
++
++  t.ok(client)
++  t.equal(typeof serializer.serialize, 'function')
++  t.equal(typeof serializer.deserialize, 'function')
++})
++
++test('import and require use distinct package entry points', async (t) => {
++  const esmEntry = import.meta.resolve('@elastic/elasticsearch')
++  const cjsEntry = pathToFileURL(require.resolve('@elastic/elasticsearch')).href
++
++  t.not(esmEntry, cjsEntry)
+ })
+diff --git a/test/types/dual-package-imports.mts b/test/types/dual-package-imports.mts
+new file mode 100644
+index 00000000..948db180
+--- /dev/null
++++ b/test/types/dual-package-imports.mts
+@@ -0,0 +1,21 @@
++/*
++ * Copyright Elasticsearch B.V. and contributors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import {
++  Client,
++  Serializer,
++  Transport,
++  type ConnectionOptions
++} from '@elastic/elasticsearch'
++
++const client: Client = new Client({ node: 'http://localhost:9200' })
++const serializer: Serializer = new Serializer()
++const transportConstructor: typeof Transport = Transport
++const connectionOptions: ConnectionOptions | undefined = undefined
++
++void client
++void serializer
++void transportConstructor
++void connectionOptions

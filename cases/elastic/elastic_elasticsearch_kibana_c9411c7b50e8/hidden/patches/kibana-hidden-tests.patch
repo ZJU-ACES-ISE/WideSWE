@@ -1,0 +1,104 @@
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/buckets_contract.ecosync.test.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/buckets_contract.ecosync.test.ts
+new file mode 100644
+index 00000000000..41df7225414
+--- /dev/null
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/buckets_contract.ecosync.test.ts
+@@ -0,0 +1,98 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the "Elastic License
++ * 2.0", the "GNU Affero General Public License v3.0 only", and the "Server Side
++ * Public License, v 1"; you may not use this file except in compliance with, at
++ * your election, the Elastic License 2.0, the GNU Affero General Public License
++ * v3.0 only, or the Server Side Public License, v 1.
++ */
++
++import { Parser } from '../../../..';
++import { mockContext, getMockCallbacks } from '../../../__tests__/commands/context_fixtures';
++import { suggest } from '../../../__tests__/commands/autocomplete';
++import { autocomplete } from './autocomplete';
++import { columnsAfter } from './columns_after';
++import { summary } from './summary';
++import { validate } from './validate';
++
++const additionalFields = {
++  fromFrom: () => Promise.resolve([]),
++  fromJoin: () => Promise.resolve([]),
++  fromEnrich: () => Promise.resolve([]),
++  fromPromql: () =>
++    Promise.resolve([
++      { name: 'job', type: 'keyword' as const, userDefined: false },
++      { name: 'http_requests_total', type: 'double' as const, userDefined: false },
++    ]),
++};
++
++const validationErrors = (query: string) => {
++  const { root } = Parser.parse(query);
++  const command = root.commands.find(({ name }) => name === 'promql');
++  if (!command) {
++    throw new Error('PROMQL command not found');
++  }
++  return validate(command, root.commands, mockContext);
++};
++
++describe('PROMQL buckets contract', () => {
++  it('allows a query to start when step is omitted', async () => {
++    const callbacks = getMockCallbacks();
++    (callbacks.getSuggestedUserDefinedColumnName as jest.Mock).mockReturnValue('col0');
++    const suggestions = await suggest('PROMQL ', mockContext, 'promql', callbacks, autocomplete);
++
++    expect(suggestions.map(({ label }) => label)).toContain('buckets');
++    expect(suggestions.map(({ text }) => text)).toContain('col0 = ');
++  });
++
++  it('does not suggest mutually exclusive range parameters', async () => {
++    const withStep = await suggest(
++      'PROMQL step=5m ',
++      mockContext,
++      'promql',
++      getMockCallbacks(),
++      autocomplete
++    );
++    const withBuckets = await suggest(
++      'PROMQL buckets=6 ',
++      mockContext,
++      'promql',
++      getMockCallbacks(),
++      autocomplete
++    );
++
++    expect(withStep.map(({ label }) => label)).not.toContain('buckets');
++    expect(withBuckets.map(({ label }) => label)).not.toContain('step');
++  });
++
++  it('validates buckets by behavior rather than error wording', () => {
++    expect(
++      validationErrors(
++        'PROMQL buckets=6 start=?_tstart end=?_tend (avg(doubleField))'
++      )
++    ).toHaveLength(0);
++    expect(
++      validationErrors(
++        'PROMQL buckets=0 start=?_tstart end=?_tend (avg(doubleField))'
++      ).length
++    ).toBeGreaterThan(0);
++    expect(
++      validationErrors(
++        'PROMQL step=5m buckets=6 start=?_tstart end=?_tend (avg(doubleField))'
++      ).length
++    ).toBeGreaterThan(0);
++  });
++
++  it('passes the derived step column after the command', async () => {
++    const query =
++      'PROMQL index=metrics buckets=6 col0=(sum by (job) (http_requests_total))';
++    const {
++      root: {
++        commands: [command],
++      },
++    } = Parser.parseQuery(query);
++    const columns = await columnsAfter(command, [], `${query} | KEEP job`, additionalFields);
++    expect(columns.map(({ name }) => name)).toEqual(['step', 'col0', 'job']);
++    expect(Array.from(summary(command, query).newColumns)).toEqual(['step', 'col0']);
++  });
++});

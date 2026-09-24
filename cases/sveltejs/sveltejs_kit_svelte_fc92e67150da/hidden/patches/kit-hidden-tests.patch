@@ -1,0 +1,646 @@
+diff --git a/packages/adapter-netlify/test/apps/split/src/routes/remote/query/+page.svelte b/packages/adapter-netlify/test/apps/split/src/routes/remote/query/+page.svelte
+index a4728ea5c..5f92f6e7a 100644
+--- a/packages/adapter-netlify/test/apps/split/src/routes/remote/query/+page.svelte
++++ b/packages/adapter-netlify/test/apps/split/src/routes/remote/query/+page.svelte
+@@ -1,7 +1,17 @@
+ <script>
++	import { onMount } from 'svelte';
+ 	import { getData } from './example.remote';
++
++	let data = $state.raw(new Promise(() => {}));
++	onMount(() => {
++		data = getData();
++	});
+ </script>
+ 
+-{#await getData() then data}
+-	<p>a: {data.a}</p>
+-{/await}
++<svelte:boundary>
++	<p>a: {(await data).a}</p>
++
++	{#snippet pending()}
++		Loading...
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/adapter-netlify/test/apps/split/svelte.config.js b/packages/adapter-netlify/test/apps/split/svelte.config.js
+index f9615fced..82a386bcf 100644
+--- a/packages/adapter-netlify/test/apps/split/svelte.config.js
++++ b/packages/adapter-netlify/test/apps/split/svelte.config.js
+@@ -2,6 +2,7 @@ import adapter from '../../../index.js';
+ 
+ /** @type {import('@sveltejs/kit').Config} */
+ const config = {
++	compilerOptions: { experimental: { async: true } },
+ 	kit: {
+ 		adapter: adapter({ split: true }),
+ 		experimental: {
+diff --git a/packages/kit/test/apps/async/src/routes/remote/+page.js b/packages/kit/test/apps/async/src/routes/remote/+page.js
+index 6d4bc8ecb..fcc293874 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/+page.js
++++ b/packages/kit/test/apps/async/src/routes/remote/+page.js
+@@ -2,6 +2,6 @@ import { echo } from './query-command.remote';
+ 
+ export async function load() {
+ 	return {
+-		echo_result: await echo('Hello world')
++		echo_result: await echo('Hello world').run()
+ 	};
+ }
+diff --git a/packages/kit/test/apps/async/src/routes/remote/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/+page.svelte
+index 33d95c0f6..dcecfad8e 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/+page.svelte
++++ b/packages/kit/test/apps/async/src/routes/remote/+page.svelte
+@@ -12,24 +12,23 @@
+ 	} from './query-command.remote.js';
+ 	import { q } from './accessing-env.remote';
+ 
+-	let { data } = $props();
++	const { data } = $props();
+ 
+ 	let command_result = $state(null);
+ 
+ 	// we just want it not to be treeshaken away
++	// eslint-disable-next-line @typescript-eslint/no-unused-expressions
+ 	q;
+ 
+-	const count = browser ? get_count() : null; // so that we get a remote request in the browser
++	const count = get_count();
+ </script>
+ 
+ <p id="echo-result">{data.echo_result}</p>
+-{#if browser}
+-	<p id="count-result">
+-		{await count} / {count.current} ({count.loading})
+-	</p>
+-	<!-- this is just here to check that it is re-requested after the command -->
+-	{await add({ a: 2, b: 2 })}
+-{/if}
++<p id="count-result">
++	{await count} / {count.current} ({count.loading})
++</p>
++<!-- this is just here to check that it is re-requested after the command -->
++{await add({ a: 2, b: 2 })}
+ <p id="command-result">{command_result}</p>
+ 
+ <!-- Test pending state for commands -->
+diff --git a/packages/kit/test/apps/async/src/routes/remote/batch-ssr/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/batch-ssr/+page.svelte
+new file mode 100644
+index 000000000..0507d7eff
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/batch-ssr/+page.svelte
+@@ -0,0 +1,28 @@
++<script>
++	import { get_todo } from './batch.remote.js';
++
++	const todo_1 = get_todo('1');
++	const todo_2 = get_todo('2');
++	const todo_3 = get_todo('error');
++
++	function get_message(error) {
++		if (error instanceof Error) return error.message;
++
++		if (typeof error === 'object' && error && 'message' in error) {
++			return String(error.message);
++		}
++
++		return String(error);
++	}
++</script>
++
++<p id="ssr-batch-result-1">{(await todo_1).title}</p>
++<p id="ssr-batch-result-2">{(await todo_2).title}</p>
++
++<svelte:boundary>
++	<p id="ssr-batch-result-3">{(await todo_3).title}</p>
++
++	{#snippet failed(error)}
++		<p id="ssr-batch-result-3">{get_message(error)}</p>
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/batch-ssr/batch.remote.js b/packages/kit/test/apps/async/src/routes/remote/batch-ssr/batch.remote.js
+new file mode 100644
+index 000000000..f01d02dbe
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/batch-ssr/batch.remote.js
+@@ -0,0 +1,20 @@
++import { query } from '$app/server';
++import { error } from '@sveltejs/kit';
++
++/** @type {ReadonlyMap<string, { id: string; title: string }>} */
++const TODOS = new Map([
++	['1', { id: '1', title: 'Buy groceries' }],
++	['2', { id: '2', title: 'Walk the dog' }]
++]);
++
++export const get_todo = query.batch('unchecked', (ids) => {
++	if (new Set(ids).size !== ids.length) {
++		throw new Error(`batch queries must be deduplicated, but got ${JSON.stringify(ids)}`);
++	}
++
++	return (id) => {
++		if (id === 'error') return error(404, { message: 'Not found' });
++
++		return TODOS.get(id);
++	};
++});
+diff --git a/packages/kit/test/apps/async/src/routes/remote/batch/+page.js b/packages/kit/test/apps/async/src/routes/remote/batch/+page.js
+deleted file mode 100644
+index d87494778..000000000
+--- a/packages/kit/test/apps/async/src/routes/remote/batch/+page.js
++++ /dev/null
+@@ -1,2 +0,0 @@
+-// TODO remove once we have async SSR
+-export const ssr = false;
+diff --git a/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
+index a914e7646..5bac7d52c 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
++++ b/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
+@@ -20,10 +20,6 @@
+ 			<svelte:boundary>
+ 				<span id="batch-result-{idx + 1}">{(await promise).title}</span>
+ 
+-				{#snippet pending()}
+-					<span id="batch-result-{idx + 1}">Loading todo {id}...</span>
+-				{/snippet}
+-
+ 				{#snippet failed(error)}
+ 					<span id="batch-result-{idx + 1}"
+ 						>Error loading todo {id}: {(error as App.Error).message}</span
+diff --git a/packages/kit/test/apps/async/src/routes/remote/dev/preload/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/dev/preload/+page.svelte
+index 7f89d533c..e2fa823b8 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/dev/preload/+page.svelte
++++ b/packages/kit/test/apps/async/src/routes/remote/dev/preload/+page.svelte
+@@ -5,4 +5,4 @@
+ </script>
+ 
+ <p>{data.example}</p>
+-<button onclick={async () => (data.example = await example('baz'))}>Refresh</button>
++<button onclick={async () => (data.example = await example('baz').run())}>Refresh</button>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/+page.svelte
+new file mode 100644
+index 000000000..e5595400b
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/+page.svelte
+@@ -0,0 +1,46 @@
++<script lang="ts">
++	import { tick } from 'svelte';
++	import TrackedQuery from './TrackedQuery.svelte';
++	import type { RemoteQuery } from '@sveltejs/kit';
++
++	let show_child = $state(true);
++	let status = $state('child mounted');
++	let result = $state('');
++	let stored: RemoteQuery<number>;
++
++	function get_message(error) {
++		return error instanceof Error ? error.message : String(error);
++	}
++</script>
++
++<p id="status">{status}</p>
++<p id="result">{result}</p>
++
++{#if show_child}
++	<TrackedQuery expose={(query) => (stored = query)} />
++{/if}
++
++<button
++	id="unmount"
++	onclick={async () => {
++		show_child = false;
++		await tick();
++		status = 'child unmounted';
++	}}
++>
++	unmount child
++</button>
++
++<button
++	id="read-current"
++	onclick={async () => {
++		try {
++			await stored;
++			result = 'success :(';
++		} catch (error) {
++			result = get_message(error);
++		}
++	}}
++>
++	read current
++</button>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/TrackedQuery.svelte b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/TrackedQuery.svelte
+new file mode 100644
+index 000000000..e19d1f9b5
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/TrackedQuery.svelte
+@@ -0,0 +1,12 @@
++<script lang="ts">
++	import type { RemoteQuery } from '@sveltejs/kit';
++	import { get_count } from '../../query-command.remote.js';
++
++	const { expose }: { expose: (query: RemoteQuery<number>) => void } = $props();
++
++	const tracked = get_count();
++	// svelte-ignore state_referenced_locally
++	expose(tracked);
++</script>
++
++<p id="tracked-child">tracked query ready</p>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/not-tracked/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/not-tracked/+page.svelte
+new file mode 100644
+index 000000000..536a0acb9
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/not-tracked/+page.svelte
+@@ -0,0 +1,49 @@
++<script lang="ts">
++	import type { RemoteQuery } from '@sveltejs/kit';
++	import { get_count } from '../../query-command.remote.js';
++
++	let status = $state('idle');
++	let result = $state('');
++	let stored: RemoteQuery<number>;
++
++	function get_message(error) {
++		return error instanceof Error ? error.message : String(error);
++	}
++</script>
++
++<p id="status">{status}</p>
++<p id="result">{result}</p>
++
++<button
++	id="create"
++	onclick={() => {
++		stored = get_count();
++		status = 'query created';
++	}}
++>
++	create query
++</button>
++
++<button
++	id="run"
++	onclick={async () => {
++		result = String(await stored.run());
++		status = 'query run';
++	}}
++>
++	run query
++</button>
++
++<button
++	id="read-current"
++	onclick={async () => {
++		try {
++			await stored;
++			result = 'success! :(';
++		} catch (error) {
++			result = get_message(error);
++		}
++	}}
++>
++	read current
++</button>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/run-in-render/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/run-in-render/+page.svelte
+new file mode 100644
+index 000000000..843bf36dd
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/run-in-render/+page.svelte
+@@ -0,0 +1,21 @@
++<script>
++	import { get_count } from '../../query-command.remote.js';
++
++	function get_message(error) {
++		if (error instanceof Error) return error.message;
++
++		if (typeof error === 'object' && error && 'message' in error) {
++			return String(error.message);
++		}
++
++		return String(error);
++	}
++</script>
++
++<svelte:boundary>
++	<p>{get_count().run()}</p>
++
++	{#snippet failed(error)}
++		<p id="error">{get_message(error)}</p>
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/validation/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/validation/+page.svelte
+index ae8e0ed1c..44f9bb70e 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/validation/+page.svelte
++++ b/packages/kit/test/apps/async/src/routes/remote/validation/+page.svelte
+@@ -26,16 +26,16 @@
+ 	onclick={async () => {
+ 		status = 'pending';
+ 		try {
+-			validate_result(await validated_query_no_args());
++			validate_result(await validated_query_no_args().run());
+ 			validate_result(await validated_prerendered_query_no_args());
+ 			validate_result(await validated_command_no_args());
+ 
+-			validate_result(await validated_query_with_arg('valid'));
++			validate_result(await validated_query_with_arg('valid').run());
+ 			validate_result(await validated_prerendered_query_with_arg('valid'));
+ 			validate_result(await validated_command_with_arg('valid'));
+ 
+-			validate_result(await validated_batch_query_no_validation('valid'));
+-			validate_result(await validated_batch_query_with_validation('valid'));
++			validate_result(await validated_batch_query_no_validation('valid').run());
++			validate_result(await validated_batch_query_with_validation('valid').run());
+ 
+ 			status = 'success';
+ 		} catch (e) {
+@@ -51,7 +51,7 @@
+ 		status = 'pending';
+ 		try {
+ 			// @ts-expect-error
+-			await validated_query_no_args('invalid');
++			await validated_query_no_args('invalid').run();
+ 			status = 'error';
+ 		} catch {
+ 			try {
+@@ -78,7 +78,7 @@
+ 		status = 'pending';
+ 		try {
+ 			// @ts-expect-error
+-			await validated_query_with_arg(1);
++			await validated_query_with_arg(1).run();
+ 			status = 'error';
+ 		} catch (e) {
+ 			if (!isHttpError(e) || e.body.message !== 'Input must be a string') {
+@@ -106,7 +106,7 @@
+ 
+ 					try {
+ 						// @ts-expect-error
+-						await validated_batch_query_with_validation(123);
++						await validated_batch_query_with_validation(123).run();
+ 						status = 'error';
+ 					} catch (e) {
+ 						if (!isHttpError(e) || e.body.message !== 'Input must be a string') {
+@@ -128,13 +128,13 @@
+ 		status = 'pending';
+ 		try {
+ 			// @ts-expect-error
+-			validate_result(await validated_query_with_arg('valid', 'ignored'));
++			validate_result(await validated_query_with_arg('valid', 'ignored').run());
+ 			// @ts-expect-error
+ 			validate_result(await validated_prerendered_query_with_arg('valid', 'ignored'));
+ 			// @ts-expect-error
+ 			validate_result(await validated_command_with_arg('valid', 'ignored'));
+ 			// @ts-expect-error
+-			validate_result(await validated_batch_query_no_validation('valid', 'ignored'));
++			validate_result(await validated_batch_query_no_validation('valid', 'ignored').run());
+ 
+ 			status = 'success';
+ 		} catch (e) {
+diff --git a/packages/kit/test/apps/async/test/client.test.js b/packages/kit/test/apps/async/test/client.test.js
+index 63a76dc88..942931207 100644
+--- a/packages/kit/test/apps/async/test/client.test.js
++++ b/packages/kit/test/apps/async/test/client.test.js
+@@ -23,6 +23,8 @@ test.describe('remote functions', () => {
+ 		]);
+ 		await clicknav('a[href="/remote/dev/preload"]', { waitForURL: '/remote/dev/preload' });
+ 		await expect(page.locator('p')).toHaveText('foobar');
++		await page.getByRole('button', { name: 'Refresh' }).click();
++		await expect(page.locator('p')).toHaveText('foobaz');
+ 	});
+ });
+ 
+@@ -31,6 +33,7 @@ test.describe('remote function mutations', () => {
+ 	test.afterEach(async ({ page }) => {
+ 		if (page.url().endsWith('/remote')) {
+ 			await page.click('#reset-btn');
++			await expect(page.locator('#count-result')).toHaveText('0 / 0 (false)');
+ 		}
+ 	});
+ 
+@@ -52,7 +55,18 @@ test.describe('remote function mutations', () => {
+ 		await page.goto('/remote');
+ 		await expect(page.locator('#count-result')).toHaveText('0 / 0 (false)');
+ 		// only the calls in the template are done, not the one in the load function
+-		expect(request_count).toBe(2);
++		expect(request_count).toBe(0);
++	});
++
++	test('hydrated batch data is reused', async ({ page }) => {
++		let request_count = 0;
++		page.on('request', (r) => (request_count += r.url().includes('/_app/remote') ? 1 : 0));
++
++		await page.goto('/remote/batch-ssr');
++		await expect(page.locator('#ssr-batch-result-1')).toHaveText('Buy groceries');
++		await expect(page.locator('#ssr-batch-result-2')).toHaveText('Walk the dog');
++		await expect(page.locator('#ssr-batch-result-3')).toHaveText('Not found');
++		expect(request_count).toBe(0);
+ 	});
+ 
+ 	test('command returns correct sum but does not refresh data by default', async ({ page }) => {
+@@ -134,7 +148,7 @@ test.describe('remote function mutations', () => {
+ 		let request_count = 0;
+ 		page.on('request', (r) => (request_count += r.url().includes('/_app/remote') ? 1 : 0));
+ 
+-		page.click('#multiply-override-refresh-btn');
++		await page.click('#multiply-override-refresh-btn');
+ 		await expect(page.locator('#count-result')).toHaveText('6 / 6 (false)');
+ 		await expect(page.locator('#command-result')).toHaveText('5');
+ 		await expect(page.locator('#count-result')).toHaveText('5 / 5 (false)');
+@@ -179,16 +193,22 @@ test.describe('remote function mutations', () => {
+ 		expect(data.error).toContain('Cannot call a command');
+ 	});
+ 
+-	test('prerendered entries not called in prod', async ({ page }) => {
++	test('prerendered entries use prerender cache while live entries refetch', async ({ page }) => {
+ 		let request_count = 0;
+ 		page.on('request', (r) => (request_count += r.url().includes('/_app/remote') ? 1 : 0));
+ 		await page.goto('/remote/prerender');
+ 
+ 		await page.click('#fetch-prerendered');
+ 		await expect(page.locator('#fetch-prerendered')).toHaveText('yes');
++		expect(request_count).toBe(1);
++
++		await page.click('#fetch-prerendered');
++		await expect(page.locator('#fetch-prerendered')).toHaveText('yes');
++		expect(request_count).toBe(1);
+ 
+ 		await page.click('#fetch-not-prerendered');
+ 		await expect(page.locator('#fetch-not-prerendered')).toHaveText('d');
++		expect(request_count).toBe(2);
+ 	});
+ 
+ 	test('refreshAll reloads remote functions and load functions', async ({ page }) => {
+@@ -342,6 +362,48 @@ test.describe('remote function mutations', () => {
+ 		await expect(page.locator('#phrase')).toHaveText('i am your father');
+ 	});
+ 
++	test.describe('query runtime guardrails', () => {
++		test('query created outside tracking context can run but cannot expose reactive state', async ({
++			page
++		}) => {
++			await page.goto('/remote/query-runtime-errors/not-tracked');
++
++			await page.click('#create');
++			await expect(page.locator('#status')).toHaveText('query created');
++
++			await page.click('#run');
++			await expect(page.locator('#result')).toHaveText('0');
++
++			await page.click('#read-current');
++			await expect(page.locator('#result')).toContainText(
++				'This query was not created in a reactive context'
++			);
++		});
++
++		test('query becomes inactive after its tracking context is destroyed', async ({ page }) => {
++			await page.goto('/remote/query-runtime-errors/inactive');
++
++			await expect(page.locator('#tracked-child')).toHaveText('tracked query ready');
++			await page.click('#unmount');
++			await expect(page.locator('#status')).toHaveText('child unmounted');
++			await expect(page.locator('#tracked-child')).toHaveCount(0);
++
++			await page.click('#read-current');
++			await expect(page.locator('#result')).toContainText(
++				'This query instance is no longer active'
++			);
++		});
++
++		test('run is blocked during client render', async ({ page, app }) => {
++			await page.goto('/remote');
++			await app.goto('/remote/query-runtime-errors/run-in-render');
++
++			await expect(page.locator('#error')).toContainText(
++				'On the client, .run() can only be called outside render'
++			);
++		});
++	});
++
+ 	// TODO ditto
+ 	test('query works with transport', async ({ page }) => {
+ 		await page.goto('/remote/transport');
+diff --git a/packages/kit/test/apps/async/test/test.js b/packages/kit/test/apps/async/test/test.js
+index 2164e75ab..5bd7916d6 100644
+--- a/packages/kit/test/apps/async/test/test.js
++++ b/packages/kit/test/apps/async/test/test.js
+@@ -11,6 +11,22 @@ test.describe('remote functions', () => {
+ 		}
+ 	});
+ 
++	test('query.batch renders final values and errors on first load', async ({ page }) => {
++		await page.goto('/remote/batch-ssr');
++
++		await expect(page.locator('#ssr-batch-result-1')).toHaveText('Buy groceries');
++		await expect(page.locator('#ssr-batch-result-2')).toHaveText('Walk the dog');
++		await expect(page.locator('#ssr-batch-result-3')).toHaveText('Not found');
++		await expect(page.locator('body')).not.toContainText('Loading todo');
++	});
++
++	test('run is blocked during server render', async ({ page }) => {
++		await page.goto('/remote/query-runtime-errors/run-in-render');
++		await expect(page.locator('#error')).toContainText(
++			'On the server, .run() can only be called in universal `load` functions'
++		);
++	});
++
+ 	test('query redirects on page load (query in common layout)', async ({ page }) => {
+ 		await page.goto('/remote/query-redirect');
+ 		await page.click('a[href="/remote/query-redirect/from-common-layout"]');
+diff --git a/packages/kit/test/apps/options-2/src/routes/+page.svelte b/packages/kit/test/apps/options-2/src/routes/+page.svelte
+index c026409d9..33b8352a7 100644
+--- a/packages/kit/test/apps/options-2/src/routes/+page.svelte
++++ b/packages/kit/test/apps/options-2/src/routes/+page.svelte
+@@ -1,13 +1,13 @@
+ <script>
+-	import { base, assets } from '$app/paths';
++	import { resolve, asset } from '$app/paths';
+ </script>
+ 
+ <h1>Hello</h1>
+ 
+-<p data-testid="base">base: {base}</p>
+-<p data-testid="assets">assets: {assets}</p>
++<p data-testid="base">base: {resolve('/')}</p>
++<p data-testid="assets">assets: {asset('/')}</p>
+ 
+-<a href="{base}/hello" data-testid="link">Go to /hello</a>
++<a href={resolve('/hello')} data-testid="link">Go to /hello</a>
+ 
+ <style>
+ 	a {
+diff --git a/packages/kit/test/apps/options-2/src/routes/deeply/nested/page/+page.svelte b/packages/kit/test/apps/options-2/src/routes/deeply/nested/page/+page.svelte
+index ee77d1c9d..f645edd52 100644
+--- a/packages/kit/test/apps/options-2/src/routes/deeply/nested/page/+page.svelte
++++ b/packages/kit/test/apps/options-2/src/routes/deeply/nested/page/+page.svelte
+@@ -1,11 +1,11 @@
+ <script>
+-	import { base, assets } from '$app/paths';
++	import { resolve, asset } from '$app/paths';
+ </script>
+ 
+ <h1>Hello</h1>
+ 
+-<p data-testid="base">base: {base}</p>
+-<p data-testid="assets">assets: {assets}</p>
++<p data-testid="base">base: {resolve('/')}</p>
++<p data-testid="assets">assets: {asset('/')}</p>
+ 
+ <style>
+ 	p {
+diff --git a/packages/kit/test/apps/options-2/src/routes/remote/+page.svelte b/packages/kit/test/apps/options-2/src/routes/remote/+page.svelte
+index a7d595d09..66d315328 100644
+--- a/packages/kit/test/apps/options-2/src/routes/remote/+page.svelte
++++ b/packages/kit/test/apps/options-2/src/routes/remote/+page.svelte
+@@ -7,14 +7,14 @@
+ 
+ <p id="count">{count}</p>
+ 
+-<button onclick={async () => (count = await get_count())}>get count</button>
++<button onclick={async () => (count = await get_count().run())}>get count</button>
+ 
+ <button onclick={async () => (count = await set_count(0))} id="reset-btn">reset</button>
+ 
+ <form
+ 	{...set_count_form.enhance(async ({ submit }) => {
+ 		await submit().updates(get_count());
+-		count = await get_count();
++		count = await get_count().run();
+ 	})}
+ >
+ 	<input type="number" name="count" />
+diff --git a/packages/kit/test/apps/options-2/svelte.config.js b/packages/kit/test/apps/options-2/svelte.config.js
+index 1fee77785..3bea5d8ca 100644
+--- a/packages/kit/test/apps/options-2/svelte.config.js
++++ b/packages/kit/test/apps/options-2/svelte.config.js
+@@ -1,5 +1,10 @@
+ /** @type {import('@sveltejs/kit').Config} */
+ const config = {
++	compilerOptions: {
++		experimental: {
++			async: true
++		}
++	},
+ 	kit: {
+ 		paths: {
+ 			base: '/basepath',
+diff --git a/packages/kit/test/apps/options-2/test/test.js b/packages/kit/test/apps/options-2/test/test.js
+index f3df40146..c0cfc0fd1 100644
+--- a/packages/kit/test/apps/options-2/test/test.js
++++ b/packages/kit/test/apps/options-2/test/test.js
+@@ -30,13 +30,13 @@ test.describe('paths', () => {
+ 	test('uses relative paths during SSR', async ({ page, javaScriptEnabled }) => {
+ 		await page.goto('/basepath');
+ 
+-		let base = javaScriptEnabled ? '/basepath' : '.';
++		let base = javaScriptEnabled ? '/basepath/' : './';
+ 		expect(await page.textContent('[data-testid="base"]')).toBe(`base: ${base}`);
+ 		expect(await page.textContent('[data-testid="assets"]')).toBe(`assets: ${base}`);
+ 
+ 		await page.goto('/basepath/deeply/nested/page');
+ 
+-		base = javaScriptEnabled ? '/basepath' : '../..';
++		base = javaScriptEnabled ? '/basepath/' : '../../';
+ 		expect(await page.textContent('[data-testid="base"]')).toBe(`base: ${base}`);
+ 		expect(await page.textContent('[data-testid="assets"]')).toBe(`assets: ${base}`);
+ 	});

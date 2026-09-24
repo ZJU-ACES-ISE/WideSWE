@@ -1,0 +1,421 @@
+diff --git a/apps/tasks/collectors/collect_daily_metrics.py b/apps/tasks/collectors/collect_daily_metrics.py
+new file mode 100644
+index 0000000..5854f67
+--- /dev/null
++++ b/apps/tasks/collectors/collect_daily_metrics.py
+@@ -0,0 +1,121 @@
++"""
++Daily metrics collector for time-range data (not snapshot, runs once per day).
++
++Collects metrics for the previous full day using explicit since/until boundaries,
++and stores in HourlyMetricsCollection. Unlike hourly collectors (24×/day) and
++snapshot collectors (no time window), daily collectors run once per day with
++a full-day time window.
++
++Current daily collectors:
++  - task_executions_service: pipeline observability from the metrics-service DB
++"""
++
++import logging
++from datetime import timedelta
++from typing import Any
++
++from django.utils import timezone
++
++from ..utils import generic_collect_metrics, get_db_connection, parse_datetime_string, task, task_execution_wrapper
++
++logger = logging.getLogger(__name__)
++
++
++def _get_daily_collectors():
++    """
++    Get daily collectors registry with lazy imports.
++
++    These collectors:
++    - Use an explicit since/until time window (previous full day)
++    - Run once per day (not 24x like hourly collectors)
++    - May query a different DB than AWX (e.g. metrics-service own DB)
++    """
++    from metrics_utility.anonymized_rollups import TaskExecutionsAnonymizedRollup
++    from metrics_utility.library.collectors.service import task_executions_service
++
++    return {
++        "task_executions_service": {
++            "collector_func": task_executions_service,
++            "rollup_processor": TaskExecutionsAnonymizedRollup,
++            "description": "Task execution observability metrics (pipeline health)",
++        },
++    }
++
++
++@task(queue="metrics_collectors", decorate=False)
++@task_execution_wrapper("collect_daily_metrics")
++def collect_daily_metrics(**kwargs) -> dict[str, Any]:
++    """
++    Collect daily metrics for a specific collector type using a since/until time window.
++
++    Unlike hourly collectors (24x/day, 1-hour windows) and snapshot collectors
++    (current state, no time window), daily collectors run once per day and cover
++    the previous full calendar day.
++
++    The collection is stored with a timestamp of yesterday 23:00 UTC so that
++    the daily_metrics_rollup task finds it within its query window alongside
++    snapshot collections.
++
++    Args:
++        **kwargs: Task data containing:
++            - collector_type (str): Type of collector to run (required)
++            - since (str): ISO timestamp for start of window (defaults to yesterday 00:00 UTC)
++            - until (str): ISO timestamp for end of window (defaults to today 00:00 UTC)
++
++    Returns:
++        dict: Task result with collection status and record ID
++
++    Raises:
++        ValueError: If collector_type is missing or invalid
++    """
++    collector_type = kwargs.pop("collector_type", None)
++    if not collector_type:
++        raise ValueError("collector_type parameter is required")
++
++    execution_id = kwargs.get("execution_id")
++
++    # Determine since/until window (default: previous full calendar day, UTC).
++    # Use a scheduler-injected hour_timestamp (today's midnight at dispatch time) when
++    # available so that retries always operate on the originally intended window even if
++    # wall-clock "now" has rolled past midnight into the next day.
++    hour_timestamp_str = kwargs.pop("hour_timestamp", None)
++    if hour_timestamp_str:
++        today_midnight = parse_datetime_string(hour_timestamp_str)
++        if today_midnight is None:
++            raise ValueError(f"Invalid hour_timestamp format: {hour_timestamp_str}")
++    else:
++        now = timezone.now()
++        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
++
++    since_str = kwargs.get("since")
++    if since_str:
++        since = parse_datetime_string(since_str)
++        if since is None:
++            raise ValueError(f"Invalid since format: {since_str}")
++    else:
++        since = today_midnight - timedelta(days=1)
++
++    until_str = kwargs.get("until")
++    if until_str:
++        until = parse_datetime_string(until_str)
++        if until is None:
++            raise ValueError(f"Invalid until format: {until_str}")
++    else:
++        until = today_midnight
++
++    # Store at yesterday 23:00 UTC so the daily_metrics_rollup query window
++    # (yesterday 00:00 → today 00:00) picks this up alongside snapshot collections.
++    collection_timestamp = since.replace(hour=23, minute=0, second=0, microsecond=0)
++
++    # task_executions_service queries the metrics-service DB, not the AWX DB
++    db_connection = get_db_connection("default")
++
++    return generic_collect_metrics(
++        collector_type=collector_type,
++        collector_registry=_get_daily_collectors(),
++        collection_mode="daily",
++        timestamp=collection_timestamp,
++        db_connection=db_connection,
++        collector_kwargs={"since": since, "until": until},
++        task_execution_id=execution_id,
++    )
+diff --git a/apps/tasks/collectors/collect_snapshot_metrics.py b/apps/tasks/collectors/collect_snapshot_metrics.py
+index 4679d0b..71977d1 100644
+--- a/apps/tasks/collectors/collect_snapshot_metrics.py
++++ b/apps/tasks/collectors/collect_snapshot_metrics.py
+@@ -26,12 +26,14 @@ def _get_snapshot_collectors():
+     from metrics_utility.anonymized_rollups import (
+         ControllerVersionAnonymizedRollup,
+         ExecutionEnvironmentsAnonymizedRollup,
++        FeatureFlagsAnonymizedRollup,
+         TableMetadataAnonymizedRollup,
+     )
+     from metrics_utility.library.collectors.controller import (
+         config,
+         controller_version_service,
+         execution_environments,
++        feature_flags_service,
+         table_metadata,
+     )
+ 
+@@ -53,6 +55,11 @@ def _get_snapshot_collectors():
+             "rollup_processor": ControllerVersionAnonymizedRollup,
+             "description": "Controller version snapshot",
+         },
++        "feature_flags_service": {
++            "collector_func": feature_flags_service,
++            "rollup_processor": FeatureFlagsAnonymizedRollup,
++            "description": "Feature flags snapshot",
++        },
+         "table_metadata": {
+             "collector_func": table_metadata,
+             "rollup_processor": TableMetadataAnonymizedRollup,
+diff --git a/apps/tasks/collectors/daily_anonymize_and_prepare.py b/apps/tasks/collectors/daily_anonymize_and_prepare.py
+index 8c41391..4afa3bf 100644
+--- a/apps/tasks/collectors/daily_anonymize_and_prepare.py
++++ b/apps/tasks/collectors/daily_anonymize_and_prepare.py
+@@ -72,6 +72,8 @@ def daily_anonymize_and_prepare(**kwargs) -> dict[str, Any]:
+             credentials_rollup=metrics.get("credentials_service", {}),
+             table_metadata_rollup=metrics.get("table_metadata", {}),
+             controller_version_rollup=metrics.get("controller_version_service", {}),
++            feature_flags_rollup=metrics.get("feature_flags_service", {}),
++            task_executions_rollup=metrics.get("task_executions_service", []),
+             salt=kwargs.get("salt", generate_salt()),
+         )
+ 
+diff --git a/apps/tasks/collectors/daily_metrics_rollup.py b/apps/tasks/collectors/daily_metrics_rollup.py
+index f3b75b9..ab9b15e 100644
+--- a/apps/tasks/collectors/daily_metrics_rollup.py
++++ b/apps/tasks/collectors/daily_metrics_rollup.py
+@@ -101,9 +101,11 @@ def _merge_hourly_rollups(collections_by_type: dict[str, list]) -> tuple[dict, l
+         CredentialsAnonymizedRollup,
+         # EventModulesAnonymizedRollup,
+         ExecutionEnvironmentsAnonymizedRollup,
++        FeatureFlagsAnonymizedRollup,
+         JobHostSummaryAnonymizedRollup,
+         JobsAnonymizedRollup,
+         TableMetadataAnonymizedRollup,
++        TaskExecutionsAnonymizedRollup,
+     )
+ 
+     # Rollup processors for each collector type
+@@ -115,11 +117,14 @@ def _merge_hourly_rollups(collections_by_type: dict[str, list]) -> tuple[dict, l
+         "unified_jobs": JobsAnonymizedRollup(),
+     }
+ 
+-    # Daily snapshot collectors expect 1 collection per day
++    # Daily snapshot collectors expect 1 collection per day.
++    # task_executions_service is also 1/day (daily time-range collector, not snapshot).
+     daily_rollup_processors = {
+         "execution_environments": ExecutionEnvironmentsAnonymizedRollup(),
+         "controller_version_service": ControllerVersionAnonymizedRollup(),
++        "feature_flags_service": FeatureFlagsAnonymizedRollup(),
+         "table_metadata": TableMetadataAnonymizedRollup(),
++        "task_executions_service": TaskExecutionsAnonymizedRollup(),
+     }
+ 
+     # Merge hourly rollups into daily rollups
+@@ -147,7 +152,7 @@ def _merge_hourly_rollups(collections_by_type: dict[str, list]) -> tuple[dict, l
+             daily_rollup[collector_type] = _merge_collects(collections, processor)
+         else:
+             logger.warning(f"No {collector_type} collection found for summary date")
+-            daily_rollup[collector_type] = {}
++            daily_rollup[collector_type] = _merge_collects([], processor)
+ 
+     return daily_rollup, missing_hours
+ 
+diff --git a/apps/tasks/cron_scheduler.py b/apps/tasks/cron_scheduler.py
+index 44aeb74..5dac847 100644
+--- a/apps/tasks/cron_scheduler.py
++++ b/apps/tasks/cron_scheduler.py
+@@ -47,6 +47,10 @@ def _inject_dispatch_timestamps(function_name: str, task_data: dict) -> dict:
+             now.replace(hour=23, minute=0, second=0, microsecond=0) - timedelta(days=1)
+         ).isoformat()
+ 
++    elif function_name == "collect_daily_metrics" and "hour_timestamp" not in task_data:
++        now = timezone.now()
++        task_data["hour_timestamp"] = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
++
+     return task_data
+ 
+ 
+diff --git a/apps/tasks/task_groups.py b/apps/tasks/task_groups.py
+index e18b3cf..3d1cb54 100644
+--- a/apps/tasks/task_groups.py
++++ b/apps/tasks/task_groups.py
+@@ -220,6 +220,24 @@ METRICS_COLLECTION_GROUP = TaskGroup(
+             "description": "Collect table metadata snapshot daily",
+             "category": "daily_collection",
+         },
++        {
++            "task_id": "daily_feature_flags",
++            "function": "collect_snapshot_metrics",
++            "cron": "45 1 * * *",  # Daily at 1:45 AM
++            "args": {"collector_type": "feature_flags_service"},
++            "enabled": True,
++            "description": "Collect feature flags snapshot daily",
++            "category": "daily_collection",
++        },
++        {
++            "task_id": "daily_task_executions",
++            "function": "collect_daily_metrics",
++            "cron": "50 1 * * *",  # Daily at 1:50 AM — after snapshots (1:45 AM), before rollup (2:00 AM)
++            "args": {"collector_type": "task_executions_service"},
++            "enabled": True,
++            "description": "Collect task execution observability metrics for the previous day (pipeline health)",
++            "category": "daily_collection",
++        },
+         # Daily Rollup
+         {
+             "task_id": "daily_metrics_rollup",
+diff --git a/apps/tasks/tasks.py b/apps/tasks/tasks.py
+index 98bff0e..c5a9a97 100644
+--- a/apps/tasks/tasks.py
++++ b/apps/tasks/tasks.py
+@@ -17,6 +17,7 @@ from .cleanup.cleanup_metrics_data import cleanup_metrics_data
+ from .cleanup.cleanup_old_tasks import cleanup_old_tasks
+ 
+ # Import collector tasks
++from .collectors.collect_daily_metrics import collect_daily_metrics
+ from .collectors.collect_hourly_metrics import collect_hourly_metrics
+ from .collectors.collect_snapshot_metrics import collect_snapshot_metrics
+ from .collectors.daily_anonymize_and_prepare import daily_anonymize_and_prepare
+@@ -43,9 +44,10 @@ TASK_FUNCTIONS = {
+     "cleanup_activitystream": cleanup_activitystream,
+     "cleanup_metrics_data": cleanup_metrics_data,
+     "execute_db_task": execute_db_task,
+-    # Metrics Collection (hourly time-series and daily snapshots)
++    # Metrics Collection (hourly time-series, daily snapshots, and daily time-range)
+     "collect_hourly_metrics": collect_hourly_metrics,
+     "collect_snapshot_metrics": collect_snapshot_metrics,
++    "collect_daily_metrics": collect_daily_metrics,
+     # Daily Rollup and Anonymization Tasks
+     "daily_metrics_rollup": daily_metrics_rollup,
+     "daily_anonymize_and_prepare": daily_anonymize_and_prepare,
+@@ -194,6 +196,36 @@ TASK_METADATA = {
+             },
+         ],
+     },
++    "collect_daily_metrics": {
++        "category": "Metrics Collection",
++        "description": "Collect daily time-range metrics (previous full day) for a specific collector type",
++        "parameters": {
++            "collector_type": {
++                "type": "string",
++                "required": True,
++                "description": "Type of daily collector to run (e.g., task_executions_service)",
++            },
++            "since": {
++                "type": "string",
++                "description": "ISO timestamp for start of collection window (defaults to yesterday 00:00 UTC)",
++            },
++            "until": {
++                "type": "string",
++                "description": "ISO timestamp for end of collection window (defaults to today 00:00 UTC)",
++            },
++        },
++        "examples": [
++            {"name": "Task executions (default: yesterday)", "data": {"collector_type": "task_executions_service"}},
++            {
++                "name": "Task executions (specific day)",
++                "data": {
++                    "collector_type": "task_executions_service",
++                    "since": "2024-01-01T00:00:00Z",
++                    "until": "2024-01-02T00:00:00Z",
++                },
++            },
++        ],
++    },
+     "collect_snapshot_metrics": {
+         "category": "Metrics Collection",
+         "description": "Collect daily snapshot metrics for a specific collector type",
+@@ -286,9 +318,10 @@ __all__ = [
+     "submit_task_to_dispatcher",
+     "create_system_tasks",
+     "get_system_task_info",
+-    # Metrics collection (hourly and snapshot)
++    # Metrics collection (hourly, snapshot, and daily time-range)
+     "collect_hourly_metrics",
+     "collect_snapshot_metrics",
++    "collect_daily_metrics",
+     # Daily rollup and anonymization tasks
+     "daily_metrics_rollup",
+     "daily_anonymize_and_prepare",
+diff --git a/apps/tasks/tasks_system.py b/apps/tasks/tasks_system.py
+index a4b8223..e4044ae 100644
+--- a/apps/tasks/tasks_system.py
++++ b/apps/tasks/tasks_system.py
+@@ -80,9 +80,14 @@ def execute_db_task(**kwargs) -> dict[str, Any]:
+         update_task_status(task, execution, status="running")
+         log_task_execution(task.name, "running", f"Executing function: {task.function_name}")
+ 
+-        # Execute the actual task function
++        # Execute the actual task function, forwarding execution_id so inner
++        # tasks (e.g. collect_daily_metrics) can link their collections back to
++        # this TaskExecution record.
+         task_function = TASK_FUNCTIONS[task.function_name]
+-        result = task_function(**task.task_data)
++        task_kwargs = {**task.task_data}
++        if execution_id:
++            task_kwargs["execution_id"] = execution_id
++        result = task_function(**task_kwargs)
+ 
+         # Complete task execution
+         status = "completed" if result.get("status") == "success" else "failed"
+@@ -115,7 +120,6 @@ def submit_task_to_dispatcher(task: Any) -> None:
+     from .models import TaskExecution
+ 
+     try:
+-        # Create execution record
+         execution = TaskExecution.objects.create(task=task, status="pending", worker_id=f"dispatcher-{os.getpid()}")
+ 
+         # Ensure dispatcherd is configured before attempting to submit tasks
+@@ -145,6 +149,15 @@ def submit_task_to_dispatcher(task: Any) -> None:
+         task.status = "failed"
+         task.error_message = f"Failed to submit to dispatcher: {str(e)}"
+         task.save()
++        # Also mark the TaskExecution row as failed so it doesn't stay pending
++        # forever. Guard with try/except in case the create() call itself failed
++        # and `execution` was never bound.
++        try:
++            execution.status = "failed"
++            execution.error_message = f"Failed to submit to dispatcher: {str(e)}"
++            execution.save()
++        except Exception as save_err:  # execution may be unbound if create() failed
++            logger.debug(f"Could not mark TaskExecution as failed: {save_err}")
+ 
+ 
+ # runs during `manage.py metrics_service init-system-tasks`
+diff --git a/pyproject.toml b/pyproject.toml
+index 1c140d5..6242cc9 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -33,7 +33,7 @@ dependencies = [
+     "dispatcherd>=2026.1.27",
+     "croniter>=1.3.0",
+     "apscheduler>=3.10.0",
+-    "metrics-utility>=0.7.20260318",
++    "metrics-utility>=0.7.20260401",
+     "django-prometheus>=2.3.1",
+     "django-extensions>=3.2",
+     "gunicorn>=23.0",
+diff --git a/uv.lock b/uv.lock
+index 9c66d41..f6b26b9 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -825,7 +825,7 @@ requires-dist = [
+     { name = "factory-boy", marker = "extra == 'test'", specifier = ">=3.3" },
+     { name = "gunicorn", specifier = ">=23.0" },
+     { name = "ldap-filter", marker = "extra == 'ldap'", specifier = ">=1.0.1" },
+-    { name = "metrics-utility", specifier = ">=0.7.20260318" },
++    { name = "metrics-utility", specifier = ">=0.7.20260401" },
+     { name = "packaging", specifier = ">=20.0" },
+     { name = "pip", specifier = ">=25.2" },
+     { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
+@@ -864,7 +864,7 @@ dev = [
+ 
+ [[package]]
+ name = "metrics-utility"
+-version = "0.7.20260318"
++version = "0.7.20260401"
+ source = { registry = "https://pypi.org/simple" }
+ dependencies = [
+     { name = "boto3" },
+@@ -879,9 +879,9 @@ dependencies = [
+     { name = "segment-analytics-python" },
+     { name = "setuptools" },
+ ]
+-sdist = { url = "https://files.pythonhosted.org/packages/66/35/7ca7845716f827356fa0345951fe7f87946a184bb36308ef138cd2eef972/metrics_utility-0.7.20260318.tar.gz", hash = "sha256:81ff5f1ec4e05ba19d9e2e5e297143f6379081a055b45ad95f7b3fecbf633367", size = 960794, upload-time = "2026-03-18T13:39:34.694Z" }
++sdist = { url = "https://files.pythonhosted.org/packages/aa/f6/eeb17a4fa4ff0473e700f5e58a1be34e625c81b02ff4a8ae1a3d551b1a35/metrics_utility-0.7.20260401.tar.gz", hash = "sha256:eedf44b39dcfa3c123aa1375e5da3346f38bd0101e85ca5682964669c7d4ef66", size = 968956, upload-time = "2026-04-01T12:03:43.648Z" }
+ wheels = [
+-    { url = "https://files.pythonhosted.org/packages/14/87/24c171436e88c4b25923943c7a983a87cf77bdaefc1bf59c877779241eaf/metrics_utility-0.7.20260318-py3-none-any.whl", hash = "sha256:0a8ce6e2dea300d78c3ecaa8f6c98ffa8294142f607bd8889ea59a7c477a550a", size = 469573, upload-time = "2026-03-18T13:39:33.189Z" },
++    { url = "https://files.pythonhosted.org/packages/e4/b9/f2e75716c2366472ce2e0ebfc5a9f04da4e0bd36086868ee29651c4acf66/metrics_utility-0.7.20260401-py3-none-any.whl", hash = "sha256:668037cb822751bf6ad197b51ca1d86a8be95141381dccd2410eeaf1a58ae853", size = 482671, upload-time = "2026-04-01T12:03:45.112Z" },
+ ]
+ 
+ [[package]]

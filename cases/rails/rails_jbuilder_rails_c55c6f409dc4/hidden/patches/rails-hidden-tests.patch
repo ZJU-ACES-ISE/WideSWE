@@ -1,0 +1,111 @@
+diff --git a/actionmailbox/test/controllers/ingresses/postmark/inbound_emails_controller_test.rb b/actionmailbox/test/controllers/ingresses/postmark/inbound_emails_controller_test.rb
+index c371ad0cba..11982f74e8 100644
+--- a/actionmailbox/test/controllers/ingresses/postmark/inbound_emails_controller_test.rb
++++ b/actionmailbox/test/controllers/ingresses/postmark/inbound_emails_controller_test.rb
+@@ -53,7 +53,7 @@ class ActionMailbox::Ingresses::Postmark::InboundEmailsControllerTest < ActionDi
+         headers: { authorization: credentials }, params: { From: "someone@example.com" }
+     end
+ 
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+   end
+ 
+   test "rejecting an unauthorized inbound email from Postmark" do
+diff --git a/actionmailbox/test/controllers/ingresses/relay/inbound_emails_controller_test.rb b/actionmailbox/test/controllers/ingresses/relay/inbound_emails_controller_test.rb
+index ac0a6fab75..a0b121bb4b 100644
+--- a/actionmailbox/test/controllers/ingresses/relay/inbound_emails_controller_test.rb
++++ b/actionmailbox/test/controllers/ingresses/relay/inbound_emails_controller_test.rb
+@@ -37,7 +37,7 @@ class ActionMailbox::Ingresses::Relay::InboundEmailsControllerTest < ActionDispa
+         env: { "rack.input" => nil }
+     end
+ 
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+   end
+ 
+   test "rejecting an unauthorized inbound email" do
+diff --git a/actionpack/test/controller/rescue_test.rb b/actionpack/test/controller/rescue_test.rb
+index 8c2397cf48..642e16e49e 100644
+--- a/actionpack/test/controller/rescue_test.rb
++++ b/actionpack/test/controller/rescue_test.rb
+@@ -147,7 +147,7 @@ def deny_access
+     end
+ 
+     def show_errors(exception)
+-      head :unprocessable_entity
++      head ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     end
+ end
+ 
+@@ -289,12 +289,12 @@ def test_block_rescue_handler_with_argument_as_string
+ 
+   test "rescue when cause has more specific handler than wrapper" do
+     get :exception_with_more_specific_handler_for_cause
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+   end
+ 
+   test "rescue when cause has handler, but wrapper doesn't" do
+     get :exception_with_no_handler_for_wrapper
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+   end
+ 
+   test "can rescue a ParseError" do
+diff --git a/actionpack/test/dispatch/debug_exceptions_test.rb b/actionpack/test/dispatch/debug_exceptions_test.rb
+index 5d350ced92..e3cde6ba91 100644
+--- a/actionpack/test/dispatch/debug_exceptions_test.rb
++++ b/actionpack/test/dispatch/debug_exceptions_test.rb
+@@ -86,8 +86,6 @@ def call(env)
+         raise ActionController::UnknownHttpMethod
+       when "/not_implemented"
+         raise ActionController::NotImplemented
+-      when "/unprocessable_entity"
+-        raise ActionController::InvalidAuthenticityToken
+       when "/invalid_mimetype"
+         raise ActionDispatch::Http::MimeNegotiation::InvalidType
+       when "/not_found_original_exception"
+diff --git a/activestorage/test/controllers/disk_controller_test.rb b/activestorage/test/controllers/disk_controller_test.rb
+index ea563e6363..cb26184445 100644
+--- a/activestorage/test/controllers/disk_controller_test.rb
++++ b/activestorage/test/controllers/disk_controller_test.rb
+@@ -86,7 +86,7 @@ class ActiveStorage::DiskControllerTest < ActionDispatch::IntegrationTest
+     blob = create_blob_before_direct_upload byte_size: data.size, checksum: ActiveStorage.checksum_implementation.base64digest("bad data")
+ 
+     put blob.service_url_for_direct_upload, params: data
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     assert_not blob.service.exist?(blob.key)
+   end
+ 
+@@ -95,7 +95,7 @@ class ActiveStorage::DiskControllerTest < ActionDispatch::IntegrationTest
+     blob = create_blob_before_direct_upload byte_size: data.size, checksum: ActiveStorage.checksum_implementation.base64digest(data)
+ 
+     put blob.service_url_for_direct_upload, params: data, headers: { "Content-Type" => "application/octet-stream" }
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     assert_not blob.service.exist?(blob.key)
+   end
+ 
+@@ -114,7 +114,7 @@ class ActiveStorage::DiskControllerTest < ActionDispatch::IntegrationTest
+     blob = create_blob_before_direct_upload byte_size: data.size - 1, checksum: ActiveStorage.checksum_implementation.base64digest(data)
+ 
+     put blob.service_url_for_direct_upload, params: data, headers: { "Content-Type" => "text/plain" }
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     assert_not blob.service.exist?(blob.key)
+   end
+ 
+diff --git a/railties/test/application/active_storage/uploads_integration_test.rb b/railties/test/application/active_storage/uploads_integration_test.rb
+index ad8f48327a..82d23db8ff 100644
+--- a/railties/test/application/active_storage/uploads_integration_test.rb
++++ b/railties/test/application/active_storage/uploads_integration_test.rb
+@@ -45,7 +45,7 @@ def create
+             if @user.save
+               redirect_to user_url(@user), notice: "User was successfully created."
+             else
+-              render :new, status: :unprocessable_entity
++              render :new, status: #{ActionDispatch::Constants::UNPROCESSABLE_CONTENT.inspect}
+             end
+           end
+ 

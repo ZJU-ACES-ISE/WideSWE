@@ -1,0 +1,409 @@
+diff --git a/x-pack/platform/plugins/shared/fleet/common/types/models/epm.ts b/x-pack/platform/plugins/shared/fleet/common/types/models/epm.ts
+index 0a4d1c2fc3d..fc775f3dbc9 100644
+--- a/x-pack/platform/plugins/shared/fleet/common/types/models/epm.ts
++++ b/x-pack/platform/plugins/shared/fleet/common/types/models/epm.ts
+@@ -261,6 +261,7 @@ export enum RegistryPolicyTemplateKeys {
+   deployment_modes = 'deployment_modes',
+   configuration_links = 'configuration_links',
+   fips_compatible = 'fips_compatible',
++  dynamic_signal_types = 'dynamic_signal_types',
+ }
+ interface BaseTemplate {
+   [RegistryPolicyTemplateKeys.name]: string;
+@@ -286,6 +287,7 @@ export interface RegistryPolicyInputOnlyTemplate extends BaseTemplate {
+   [RegistryPolicyTemplateKeys.template_path]: string;
+   [RegistryPolicyTemplateKeys.required_vars]?: RegistryRequiredVars;
+   [RegistryPolicyTemplateKeys.vars]?: RegistryVarsEntry[];
++  [RegistryPolicyTemplateKeys.dynamic_signal_types]?: boolean;
+ }
+ 
+ export type RegistryPolicyTemplate =
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.tsx b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.tsx
+index a25e041ec43..1bdb55a8dcd 100644
+--- a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.tsx
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.tsx
+@@ -32,12 +32,14 @@ import { useQuery } from '@kbn/react-query';
+ import {
+   DATASET_VAR_NAME,
+   DATA_STREAM_TYPE_VAR_NAME,
++  OTEL_COLLECTOR_INPUT_TYPE,
+ } from '../../../../../../../../../common/constants';
+ 
+ import { sendGetDataStreams, useStartServices } from '../../../../../../../../hooks';
+ 
+ import {
+   getRegistryDataStreamAssetBaseName,
++  isInputOnlyPolicyTemplate,
+   mapPackageReleaseToIntegrationCardRelease,
+ } from '../../../../../../../../../common/services';
+ 
+@@ -56,6 +58,7 @@ import { useAgentless } from '../../../single_page_layout/hooks/setup_technology
+ 
+ import { useIndexTemplateExists } from '../../datastream_hooks';
+ 
++import type { RegistryPolicyInputOnlyTemplate } from '../../../../../../../../../common/types/models/epm';
+ import { shouldShowVar, isVarRequiredByVarGroup } from '../../../services/var_group_helpers';
+ 
+ import { PackagePolicyInputVarField } from './package_policy_input_var_field';
+@@ -111,9 +114,28 @@ export const PackagePolicyInputStreamConfig = memo<Props>(
+     const customDatasetVarValue = customDatasetVar?.value?.dataset || customDatasetVar?.value;
+ 
+     const customDataStreamTypeVar = packagePolicyInputStream.vars?.[DATA_STREAM_TYPE_VAR_NAME];
++
++    // Check if package uses dynamic_signal_types
++    const dynamicSignalTypes = useMemo(() => {
++      const inputOnlyTemplate = packageInfo?.policy_templates?.find(
++        (template) =>
++          isInputOnlyPolicyTemplate(template) && template.input === OTEL_COLLECTOR_INPUT_TYPE
++      ) as RegistryPolicyInputOnlyTemplate | undefined;
++
++      return inputOnlyTemplate?.dynamic_signal_types === true;
++    }, [packageInfo?.policy_templates]);
++
+     const customDataStreamTypeVarValue =
+       customDataStreamTypeVar?.value || packagePolicyInputStream.data_stream.type || 'logs';
+ 
++    const dataStreamTypeOptions = useMemo(() => {
++      return [
++        { id: 'logs', label: 'Logs' },
++        { id: 'metrics', label: 'Metrics' },
++        { id: 'traces', label: 'Traces' },
++      ];
++    }, []);
++
+     const { exists: indexTemplateExists, isLoading: isLoadingIndexTemplate } =
+       useIndexTemplateExists(
+         getRegistryDataStreamAssetBaseName({
+@@ -393,7 +415,7 @@ export const PackagePolicyInputStreamConfig = memo<Props>(
+                   </EuiFlexItem>
+                   {isShowingAdvanced ? (
+                     <>
+-                      {packageInfo.type === 'input' && (
++                      {packageInfo.type === 'input' && !dynamicSignalTypes && (
+                         <EuiFlexItem>
+                           <EuiFormRow
+                             label={
+@@ -433,20 +455,7 @@ export const PackagePolicyInputStreamConfig = memo<Props>(
+                               data-test-subj="packagePolicyDataStreamType"
+                               disabled={isEditPage}
+                               idSelected={customDataStreamTypeVarValue}
+-                              options={[
+-                                {
+-                                  id: 'logs',
+-                                  label: 'Logs',
+-                                },
+-                                {
+-                                  id: 'metrics',
+-                                  label: 'Metrics',
+-                                },
+-                                {
+-                                  id: 'traces',
+-                                  label: 'Traces',
+-                                },
+-                              ]}
++                              options={dataStreamTypeOptions}
+                               onChange={(type: string) => {
+                                 updatePackagePolicyInputStream({
+                                   vars: {
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/full_agent_policy.ts b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/full_agent_policy.ts
+index 841233b8b96..9b07886f72c 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/full_agent_policy.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/full_agent_policy.ts
+@@ -163,7 +163,7 @@ export async function getFullAgentPolicy(
+ 
+   let otelcolConfig;
+   if (experimentalFeature.enableOtelIntegrations) {
+-    otelcolConfig = generateOtelcolConfig(agentInputs, dataOutput);
++    otelcolConfig = generateOtelcolConfig(agentInputs, dataOutput, packageInfoCache);
+   }
+ 
+   const inputs = agentInputs
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/otel_collector.ts b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/otel_collector.ts
+index ad4191e74eb..3b4383e4e53 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/otel_collector.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/otel_collector.ts
+@@ -10,20 +10,36 @@ import type {
+   FullAgentPolicyInput,
+   OTelCollectorComponentID,
+   OTelCollectorConfig,
++  OTelCollectorPipeline,
+   OTelCollectorPipelineID,
++  PackageInfo,
+ } from '../../../common/types';
+ import { OTEL_COLLECTOR_INPUT_TYPE, outputType } from '../../../common/constants';
+ import { FleetError } from '../../errors';
+ import { getOutputIdForAgentPolicy } from '../../../common/services/output_helpers';
++import { pkgToPkgKey } from '../epm/registry';
++import { hasDynamicSignalTypes } from '../epm/packages/input_type_packages';
+ 
+ // Generate OTel Collector policy
+ export function generateOtelcolConfig(
+   inputs: FullAgentPolicyInput[] | TemplateAgentPolicyInput[],
+-  dataOutput?: Output
++  dataOutput?: Output,
++  packageInfoCache?: Map<string, PackageInfo>
+ ): OTelCollectorConfig {
+   const otelConfigs: OTelCollectorConfig[] = inputs
+     .filter((input) => input.type === OTEL_COLLECTOR_INPUT_TYPE)
+     .flatMap((input) => {
++      // Get package info from input meta if available
++      let packageInfo: PackageInfo | undefined;
++
++      if (packageInfoCache && 'meta' in input && (input as FullAgentPolicyInput).meta?.package) {
++        const pkgKey = pkgToPkgKey({
++          name: (input as FullAgentPolicyInput).meta?.package?.name || '',
++          version: (input as FullAgentPolicyInput).meta?.package?.version || '',
++        });
++        packageInfo = packageInfoCache.get(pkgKey);
++      }
++
+       const otelInputs: OTelCollectorConfig[] = (input?.streams ?? []).map((stream) => {
+         // Avoid dots in keys, as they can create subobjects in agent config.
+         const suffix = (input.id + '-' + stream.id).replaceAll('.', '-');
+@@ -33,7 +49,9 @@ export function generateOtelcolConfig(
+           'data_stream' in input
+             ? (input as FullAgentPolicyInput).data_stream.namespace
+             : 'default',
+-          suffix
++          suffix,
++          packageInfo,
++          stream.service?.pipelines
+         );
+         return appendOtelComponents(
+           {
+@@ -71,14 +89,14 @@ export function generateOtelcolConfig(
+   return attachOtelcolExporter(config, dataOutput);
+ }
+ 
+-function generateOTelAttributesTransform(
++function generateOtelTypeTransforms(
+   type: string,
+   dataset: string,
+-  namespace: string,
+-  suffix: string
+-): Record<OTelCollectorComponentID, any> {
++  namespace: string
++): Record<string, any> {
+   let otelType: string;
+   let context: string;
++
+   switch (type) {
+     case 'logs':
+       otelType = 'log';
+@@ -95,19 +113,62 @@ function generateOTelAttributesTransform(
+     default:
+       throw new FleetError(`unexpected data stream type ${type}`);
+   }
++
+   return {
+-    [`transform/${suffix}-routing`]: {
+-      [`${otelType}_statements`]: [
+-        {
+-          context,
+-          statements: [
+-            `set(attributes["data_stream.type"], "${type}")`,
+-            `set(attributes["data_stream.dataset"], "${dataset}")`,
+-            `set(attributes["data_stream.namespace"], "${namespace}")`,
+-          ],
+-        },
+-      ],
+-    },
++    [`${otelType}_statements`]: [
++      {
++        context,
++        statements: [
++          `set(attributes["data_stream.type"], "${type}")`,
++          `set(attributes["data_stream.dataset"], "${dataset}")`,
++          `set(attributes["data_stream.namespace"], "${namespace}")`,
++        ],
++      },
++    ],
++  };
++}
++
++function extractSignalTypesFromPipelines(
++  pipelines: Record<OTelCollectorPipelineID, OTelCollectorPipeline>
++): string[] {
++  const signalTypes = new Set<string>();
++  Object.keys(pipelines).forEach((pipelineId) => {
++    const signalType = getSignalType(pipelineId);
++    if (signalType && ['logs', 'metrics', 'traces'].includes(signalType)) {
++      signalTypes.add(signalType);
++    }
++  });
++  return Array.from(signalTypes);
++}
++
++function generateOTelAttributesTransform(
++  type: string,
++  dataset: string,
++  namespace: string,
++  suffix: string,
++  packageInfo?: PackageInfo,
++  streamPipelines?: Record<OTelCollectorPipelineID, OTelCollectorPipeline>
++): Record<OTelCollectorComponentID, any> {
++  const dynamicSignalTypes = hasDynamicSignalTypes(packageInfo);
++
++  let transformStatements: Record<string, any> = {};
++
++  if (dynamicSignalTypes && streamPipelines) {
++    // When dynamic_signal_types is true, extract signal types from pipeline IDs
++    // and generate transforms for each. This allows the collector to route data
++    // to the appropriate datastreams based on the pipelines configured in the policy.
++    const signalTypes = extractSignalTypesFromPipelines(streamPipelines);
++    // Generate transforms for each signal type found in pipelines
++    signalTypes.forEach((signalType) => {
++      const typeTransforms = generateOtelTypeTransforms(signalType, dataset, namespace);
++      Object.assign(transformStatements, typeTransforms);
++    });
++  } else {
++    // Default: single signal type from stream.data_stream.type
++    transformStatements = generateOtelTypeTransforms(type, dataset, namespace);
++  }
++  return {
++    [`transform/${suffix}-routing`]: transformStatements,
+   };
+ }
+ 
+@@ -243,7 +304,7 @@ function attachOtelcolExporter(
+         ...pipeline,
+         exporters: [...(pipeline.exporters || []), 'forward'],
+       };
+-      signalTypes.add(signalType(id));
++      signalTypes.add(getSignalType(id));
+     });
+ 
+     signalTypes.forEach((id) => {
+@@ -273,6 +334,9 @@ function generateOtelcolExporter(dataOutput: Output): Record<OTelCollectorCompon
+   }
+ }
+ 
+-function signalType(id: string): string {
+-  return id.substring(0, id.indexOf('/'));
++function getSignalType(id: string): string {
++  const slashIndex = id.indexOf('/');
++  // If there's a '/', return the part before it (e.g., 'logs' from 'logs/otlp')
++  // If there's no '/', return the whole string (e.g., 'logs')
++  return slashIndex > 0 ? id.substring(0, slashIndex) : id;
+ }
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/epm/archive/parse.ts b/x-pack/platform/plugins/shared/fleet/server/services/epm/archive/parse.ts
+index 3e4bcb9d8b7..b76c8873c00 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/epm/archive/parse.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/services/epm/archive/parse.ts
+@@ -266,7 +266,7 @@ export function parseAndVerifyArchive(
+   const parsed: ArchivePackage = { ...reqGiven, ...optGiven };
+ 
+   // Package name and version from the manifest must match those from the toplevel directory
+-  logger.debug(`Verifying archive - parsing manifest: ${parsed}`);
++  logger.debug(`Verifying archive - parsing manifest: ${parsed.name} - ${parsed.version}`);
+   const pkgKey = pkgToPkgKey({ name: parsed.name, version: parsed.version });
+ 
+   if (!topLevelDirOverride && toplevelDir !== pkgKey) {
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/get_template_inputs.ts b/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/get_template_inputs.ts
+index bdecef5030e..bc6965d7a3c 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/get_template_inputs.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/get_template_inputs.ts
+@@ -197,7 +197,8 @@ export async function getTemplateInputs(
+ 
+   let otelcolConfig;
+   if (experimentalFeature.enableOtelIntegrations) {
+-    otelcolConfig = generateOtelcolConfig(inputs);
++    // Template inputs don't have package info cache, so pass undefined
++    otelcolConfig = generateOtelcolConfig(inputs, undefined, undefined);
+   }
+   // filter out the otelcol inputs, they will be added at the root of the config
+   const filteredInputs = inputs.filter((input) => input.type !== OTEL_COLLECTOR_INPUT_TYPE);
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/input_type_packages.ts b/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/input_type_packages.ts
+index afb53aac79e..0f2fdab1c12 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/input_type_packages.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/input_type_packages.ts
+@@ -14,8 +14,13 @@ import type {
+   NewPackagePolicyInput,
+   PackageInfo,
+   PackagePolicy,
++  RegistryPolicyInputOnlyTemplate,
+ } from '../../../types';
+-import { DATASET_VAR_NAME, DATA_STREAM_TYPE_VAR_NAME } from '../../../../common/constants';
++import {
++  DATASET_VAR_NAME,
++  DATA_STREAM_TYPE_VAR_NAME,
++  OTEL_COLLECTOR_INPUT_TYPE,
++} from '../../../../common/constants';
+ import { PackagePolicyValidationError, PackageNotFoundError, FleetError } from '../../../errors';
+ 
+ import { dataStreamService } from '../..';
+@@ -80,6 +85,17 @@ export const isInputPackageDatasetUsedByMultiplePolicies = (
+   return filtered.length > 1;
+ };
+ 
++export const hasDynamicSignalTypes = (packageInfo?: PackageInfo): boolean => {
++  if (!packageInfo) {
++    return false;
++  }
++  const inputOnlyTemplate = packageInfo.policy_templates?.find(
++    (template) => 'input' in template && template.input === OTEL_COLLECTOR_INPUT_TYPE
++  ) as RegistryPolicyInputOnlyTemplate | undefined;
++
++  return inputOnlyTemplate?.dynamic_signal_types === true;
++};
++
+ // install the assets needed for inputs type packages
+ export async function installAssetsForInputPackagePolicy(opts: {
+   pkgInfo: PackageInfo;
+@@ -95,10 +111,40 @@ export async function installAssetsForInputPackagePolicy(opts: {
+ 
+   const datasetName = getDatasetName(packagePolicy.inputs);
+ 
+-  const dataStreamType =
+-    packagePolicy.inputs[0].streams[0].vars?.[DATA_STREAM_TYPE_VAR_NAME]?.value ||
+-    packagePolicy.inputs[0].streams[0].data_stream?.type ||
+-    'logs';
++  // For OTel packages with dynamic_signal_types, we need to create index templates for all signal types
++  const isDynamicSignalTypes = hasDynamicSignalTypes(pkgInfo);
++  const signalTypes: string[] = isDynamicSignalTypes
++    ? ['logs', 'metrics', 'traces']
++    : [
++        packagePolicy.inputs[0].streams[0].vars?.[DATA_STREAM_TYPE_VAR_NAME]?.value ||
++          packagePolicy.inputs[0].streams[0].data_stream?.type ||
++          'logs',
++      ];
++
++  // Check each signal type and install templates as needed
++  for (const dataStreamType of signalTypes) {
++    await installAssetsForDataStreamType({
++      pkgInfo,
++      logger,
++      datasetName,
++      dataStreamType,
++      esClient,
++      soClient,
++      force,
++    });
++  }
++}
++
++async function installAssetsForDataStreamType(opts: {
++  pkgInfo: PackageInfo;
++  logger: Logger;
++  datasetName: string;
++  dataStreamType: string;
++  esClient: ElasticsearchClient;
++  soClient: SavedObjectsClientContract;
++  force: boolean;
++}) {
++  const { pkgInfo, logger, datasetName, dataStreamType, esClient, soClient, force } = opts;
+ 
+   const { dataStream, existingDataStreams } = await findDataStreamsFromDifferentPackages(
+     datasetName,
+diff --git a/x-pack/platform/plugins/shared/fleet/server/types/index.ts b/x-pack/platform/plugins/shared/fleet/server/types/index.ts
+index 1fa5699a1b7..163ac5b3b13 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/types/index.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/types/index.ts
+@@ -103,6 +103,7 @@ export type {
+   TemplateAgentPolicyInput,
+   NewPackagePolicyInput,
+   OutputsForAgentPolicy,
++  RegistryPolicyInputOnlyTemplate,
+ } from '../../common/types';
+ export { ElasticsearchAssetType, KibanaAssetType, KibanaSavedObjectType } from '../../common/types';
+ export { dataTypes } from '../../common/constants';

@@ -1,0 +1,33 @@
+task_id: grpc_grpc_go_grpc_java_timeout_interop_0d0b76e12c8e_a17d5a29df9d
+hidden_test_patches:
+- repo: grpc-go
+  patch: hidden/patches/grpc-go-hidden-tests.patch
+  test_profile: grpc_go-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - internal/transport/http_util_test.go
+  hidden_file: *id001
+  semantic_changes: none
+  source: combined upstream test changes from grpc/grpc-go PRs 8290 and 8439
+- repo: grpc-java
+  patch: hidden/patches/grpc-java-hidden-tests.patch
+  test_profile: grpc_java-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - core/src/test/java/io/grpc/internal/AbstractClientStreamTest.java
+  - core/src/test/java/io/grpc/internal/GrpcUtilTest.java
+  - core/src/test/java/io/grpc/internal/ServerImplTest.java
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from grpc/grpc-java PR 12201
+profile_sets:
+  linux-docker:
+    description: Merged gRPC timeout interoperability chain; hidden profiles run upstream
+      test-file diffs for grpc-go and grpc-java.
+    hidden_tests:
+    - grpc_go-hidden
+    - grpc_java-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

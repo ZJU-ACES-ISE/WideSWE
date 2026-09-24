@@ -1,0 +1,201 @@
+diff --git a/src/sentry/api/handlers.py b/src/sentry/api/handlers.py
+index fed7e1d0d62..cd4e2112bc9 100644
+--- a/src/sentry/api/handlers.py
++++ b/src/sentry/api/handlers.py
+@@ -2,11 +2,26 @@ import sentry_sdk
+ from rest_framework.exceptions import Throttled
+ from rest_framework.views import exception_handler
+ 
++from sentry.types.ratelimit import SnubaRateLimitMeta
+ from sentry.utils.snuba import RateLimitExceeded
+ 
+ 
+ def custom_exception_handler(exc, context):
+     if isinstance(exc, RateLimitExceeded):
++        context_request = context.get("request")
++        request = getattr(context_request, "_request", None)
++
++        # Set rate limiting attributes on the underlying request object so access log middleware can log them
++        if request is not None:
++            request.will_be_rate_limited = True
++            request.snuba_rate_limit_metadata = SnubaRateLimitMeta(
++                policy=exc.policy,
++                quota_unit=exc.quota_unit,
++                storage_key=exc.storage_key,
++                quota_used=exc.quota_used,
++                rejection_threshold=exc.rejection_threshold,
++            )
++
+         # capture the rate limited exception so we can see it in Sentry
+         with sentry_sdk.new_scope() as scope:
+             scope.fingerprint = ["snuba-api-rate-limit-exceeded"]
+diff --git a/src/sentry/middleware/access_log.py b/src/sentry/middleware/access_log.py
+index 4cec80d898f..16d7058f7c0 100644
+--- a/src/sentry/middleware/access_log.py
++++ b/src/sentry/middleware/access_log.py
+@@ -12,6 +12,7 @@ from rest_framework.request import Request
+ from rest_framework.response import Response
+ 
+ from sentry.auth.services.auth import AuthenticatedToken
++from sentry.types.ratelimit import RateLimitMeta, SnubaRateLimitMeta
+ from sentry.utils import metrics
+ 
+ from . import is_frontend_request
+@@ -47,24 +48,37 @@ def _get_token_name(auth: AuthenticatedToken | None) -> str | None:
+ 
+ 
+ def _get_rate_limit_stats_dict(request: Request) -> dict[str, str]:
+-    # TODO:: plumb the rate limit group up here as well for better future analysis
+-    default = {
+-        "rate_limit_type": "DNE",
+-        "concurrent_limit": str(None),
+-        "concurrent_requests": str(None),
+-        "reset_time": str(None),
+-        "group": str(None),
+-        "limit": str(None),
+-        "remaining": str(None),
++
++    rate_limit_metadata: RateLimitMeta | None = getattr(request, "rate_limit_metadata", None)
++    snuba_rate_limit_metadata: SnubaRateLimitMeta | None = getattr(
++        request, "snuba_rate_limit_metadata", None
++    )
++
++    rate_limit_type = "DNE"
++    if rate_limit_metadata:
++        rate_limit_type = str(getattr(rate_limit_metadata, "rate_limit_type", "DNE"))
++    elif snuba_rate_limit_metadata:
++        rate_limit_type = "RateLimitType.SNUBA"
++
++    rate_limit_stats = {
++        "rate_limit_type": rate_limit_type,
++        "concurrent_limit": str(getattr(rate_limit_metadata, "concurrent_limit", None)),
++        "concurrent_requests": str(getattr(rate_limit_metadata, "concurrent_requests", None)),
++        "reset_time": str(getattr(rate_limit_metadata, "reset_time", None)),
++        "group": str(getattr(rate_limit_metadata, "group", None)),
++        "limit": str(getattr(rate_limit_metadata, "limit", None)),
++        "remaining": str(getattr(rate_limit_metadata, "remaining", None)),
++        # We prefix the snuba fields with snuba_ to avoid confusion with the standard rate limit metadata
++        "snuba_policy": str(getattr(snuba_rate_limit_metadata, "policy", None)),
++        "snuba_quota_unit": str(getattr(snuba_rate_limit_metadata, "quota_unit", None)),
++        "snuba_quota_used": str(getattr(snuba_rate_limit_metadata, "quota_used", None)),
++        "snuba_rejection_threshold": str(
++            getattr(snuba_rate_limit_metadata, "rejection_threshold", None)
++        ),
++        "snuba_storage_key": str(getattr(snuba_rate_limit_metadata, "storage_key", None)),
+     }
+ 
+-    rate_limit_metadata = getattr(request, "rate_limit_metadata", None)
+-    if not rate_limit_metadata:
+-        return default
+-    res = {}
+-    for field in default:
+-        res[field] = str(getattr(rate_limit_metadata, field, None))
+-    return res
++    return rate_limit_stats
+ 
+ 
+ def _create_api_access_log(
+diff --git a/src/sentry/options/defaults.py b/src/sentry/options/defaults.py
+index bf49511454c..6f8b4fbbe00 100644
+--- a/src/sentry/options/defaults.py
++++ b/src/sentry/options/defaults.py
+@@ -3666,3 +3666,6 @@ register(
+     default=0.0,
+     flags=FLAG_AUTOMATOR_MODIFIABLE,
+ )
++
++# Enable enhancing access logs with snuba responses
++register("issues.use-snuba-error-data", type=Float, default=0.0, flags=FLAG_AUTOMATOR_MODIFIABLE)
+diff --git a/src/sentry/types/ratelimit.py b/src/sentry/types/ratelimit.py
+index 09baeaed7bc..360bd4228ba 100644
+--- a/src/sentry/types/ratelimit.py
++++ b/src/sentry/types/ratelimit.py
+@@ -64,3 +64,16 @@ class RateLimitMeta:
+         if self.concurrent_limit is not None and self.concurrent_requests is not None:
+             return self.concurrent_limit - self.concurrent_requests
+         return None
++
++
++@dataclass
++class SnubaRateLimitMeta:
++    """
++    Rate Limit metadata for Snuba's RateLimitExceeded error
++    """
++
++    policy: str | None
++    quota_unit: str | None
++    quota_used: int | None
++    rejection_threshold: int | None
++    storage_key: str | None
+diff --git a/src/sentry/utils/snuba.py b/src/sentry/utils/snuba.py
+index 061b515bb37..4ea81b8fc2f 100644
+--- a/src/sentry/utils/snuba.py
++++ b/src/sentry/utils/snuba.py
+@@ -27,6 +27,7 @@ from snuba_sdk import Column, DeleteQuery, Function, MetricsQuery, Request
+ from snuba_sdk.legacy import json_to_snql
+ from snuba_sdk.query import SelectableExpression
+ 
++from sentry import options
+ from sentry.api.helpers.error_upsampling import (
+     UPSAMPLED_ERROR_AGGREGATION,
+     are_any_projects_error_upsampled,
+@@ -369,6 +370,22 @@ class RateLimitExceeded(SnubaError):
+     Exception raised when a query cannot be executed due to rate limits.
+     """
+ 
++    def __init__(
++        self,
++        message: str | None = None,
++        policy: str | None = None,
++        quota_unit: str | None = None,
++        storage_key: str | None = None,
++        quota_used: int | None = None,
++        rejection_threshold: int | None = None,
++    ) -> None:
++        super().__init__(message)
++        self.policy = policy
++        self.quota_unit = quota_unit
++        self.storage_key = storage_key
++        self.quota_used = quota_used
++        self.rejection_threshold = rejection_threshold
++
+ 
+ class SchemaValidationError(QueryExecutionError):
+     """
+@@ -1239,7 +1256,36 @@ def _bulk_snuba_query(snuba_requests: Sequence[SnubaRequest]) -> ResultSet:
+                 if body.get("error"):
+                     error = body["error"]
+                     if response.status == 429:
++                        if options.get("issues.use-snuba-error-data"):
++                            try:
++                                if "stats" not in error:
++                                    # Should not hit this - snuba always returns stats when there is an error
++                                    raise RateLimitExceeded(error["message"])
++                                quota_allowance_summary = error["stats"]["quota_allowance"][
++                                    "details"
++                                ]["summary"]
++                                rejected_by = quota_allowance_summary["rejected_by"]
++                                throttled_by = quota_allowance_summary["throttled_by"]
++
++                                policy_info = rejected_by or throttled_by
++
++                                if policy_info:
++                                    raise RateLimitExceeded(
++                                        error["message"],
++                                        policy=policy_info["policy"],
++                                        quota_unit=policy_info["quota_unit"],
++                                        storage_key=policy_info["storage_key"],
++                                        quota_used=policy_info["quota_used"],
++                                        rejection_threshold=policy_info["rejection_threshold"],
++                                    )
++                            except KeyError:
++                                logger.warning(
++                                    "Failed to parse rate limit error details from Snuba response",
++                                    extra={"error": error["message"]},
++                                )
++
+                         raise RateLimitExceeded(error["message"])
++
+                     elif error["type"] == "schema":
+                         raise SchemaValidationError(error["message"])
+                     elif error["type"] == "invalid_query":

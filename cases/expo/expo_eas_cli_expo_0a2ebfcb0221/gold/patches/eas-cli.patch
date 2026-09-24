@@ -1,0 +1,64 @@
+diff --git a/packages/eas-cli/src/user/SessionManager.ts b/packages/eas-cli/src/user/SessionManager.ts
+index 9a9d0484e..474bf5d2d 100644
+--- a/packages/eas-cli/src/user/SessionManager.ts
++++ b/packages/eas-cli/src/user/SessionManager.ts
+@@ -85,6 +85,16 @@ export default class SessionManager {
+   }
+ 
+   public async logoutAsync(): Promise<void> {
++    const sessionSecret = this.getSessionSecret();
++    if (sessionSecret) {
++      const apiV2Client = new ApiV2Client({ accessToken: null, sessionSecret });
++      try {
++        await apiV2Client.postAsync('auth/logout', { body: {} });
++      } catch (e) {
++        // Best-effort: clear the local session even if the server request fails
++        Log.debug('Failed to invalidate session secret on server:', e);
++      }
++    }
+     this.currentActor = undefined;
+     await this.setSessionAsync(undefined);
+   }
+diff --git a/packages/eas-cli/src/user/__tests__/SessionManager-test.ts b/packages/eas-cli/src/user/__tests__/SessionManager-test.ts
+index 209b9f193..8e6d11b05 100644
+--- a/packages/eas-cli/src/user/__tests__/SessionManager-test.ts
++++ b/packages/eas-cli/src/user/__tests__/SessionManager-test.ts
+@@ -219,6 +219,38 @@ describe(SessionManager, () => {
+       await sessionManager.logoutAsync();
+       expect(sessionManager['getSessionSecret']()).toBe(null);
+     });
++
++    it('calls the server logout endpoint when session secret exists', async () => {
++      jest.mocked(fetchSessionSecretAndUserAsync).mockResolvedValue({
++        sessionSecret: 'SESSION_SECRET',
++        id: 'USER_ID',
++        username: 'USERNAME',
++      });
++      const apiV2PostSpy = jest.spyOn(ApiV2Client.prototype, 'postAsync');
++
++      const sessionManager = new SessionManager(analytics);
++      await sessionManager['loginAsync']({ username: 'USERNAME', password: 'PASSWORD' });
++      await sessionManager.logoutAsync();
++
++      expect(apiV2PostSpy).toHaveBeenCalledWith('auth/logout', { body: {} });
++    });
++
++    it('clears the local session even if the server logout call fails', async () => {
++      jest.mocked(fetchSessionSecretAndUserAsync).mockResolvedValue({
++        sessionSecret: 'SESSION_SECRET',
++        id: 'USER_ID',
++        username: 'USERNAME',
++      });
++      jest
++        .spyOn(ApiV2Client.prototype, 'postAsync')
++        .mockRejectedValueOnce(new Error('Network error'));
++
++      const sessionManager = new SessionManager(analytics);
++      await sessionManager['loginAsync']({ username: 'USERNAME', password: 'PASSWORD' });
++      await sessionManager.logoutAsync();
++
++      expect(sessionManager['getSessionSecret']()).toBe(null);
++    });
+   });
+ 
+   describe('showLoginPromptAsync', () => {

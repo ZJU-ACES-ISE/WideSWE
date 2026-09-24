@@ -1,0 +1,94 @@
+diff --git a/src/tools/BaseTool.ts b/src/tools/BaseTool.ts
+index 02c35b6..a6fb1d9 100644
+--- a/src/tools/BaseTool.ts
++++ b/src/tools/BaseTool.ts
+@@ -87,4 +87,27 @@ export abstract class BaseTool<
+       void this.server.server.sendLoggingMessage({ level, data });
+     }
+   }
++
++  /**
++   * Validates output data against the output schema with graceful fallback.
++   * If validation fails, logs a warning and returns the raw data.
++   * @param rawData The raw data to validate
++   * @returns The validated data, or raw data if validation fails
++   */
++  protected validateOutput<T>(rawData: unknown): T {
++    if (!this.outputSchema) {
++      return rawData as T;
++    }
++
++    try {
++      return this.outputSchema.parse(rawData) as T;
++    } catch (validationError) {
++      this.log(
++        'warning',
++        `${this.name}: Output schema validation failed: ${validationError instanceof Error ? validationError.message : 'Unknown validation error'}`
++      );
++      // Graceful fallback to raw data
++      return rawData as T;
++    }
++  }
+ }
+diff --git a/src/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.ts b/src/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.ts
+index 57f0a25..a2308e3 100644
+--- a/src/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.ts
++++ b/src/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.ts
+@@ -96,7 +96,7 @@ const SearchBoxFeaturePropertiesSchema = z.object({
+   poi_category: z.array(z.string()).optional(),
+   poi_category_ids: z.array(z.string()).optional(),
+   brand: z.array(z.string()).optional(),
+-  brand_id: z.string().optional(),
++  brand_id: z.union([z.string(), z.array(z.string())]).optional(),
+   external_ids: z.record(z.string()).optional(),
+ 
+   // Additional metadata
+diff --git a/src/tools/version-tool/VersionTool.ts b/src/tools/version-tool/VersionTool.ts
+index d17c3e1..544a7c0 100644
+--- a/src/tools/version-tool/VersionTool.ts
++++ b/src/tools/version-tool/VersionTool.ts
+@@ -41,7 +41,12 @@ export class VersionTool extends BaseTool<
+         try {
+           const versionInfo = getVersionInfo();
+           const versionText = `MCP Server Version Information:\n- Name: ${versionInfo.name}\n- Version: ${versionInfo.version}\n- SHA: ${versionInfo.sha}\n- Tag: ${versionInfo.tag}\n- Branch: ${versionInfo.branch}`;
+-          const validatedVersionInfo = VersionResponseSchema.parse(versionInfo);
++
++          // Validate with graceful fallback
++          const validatedVersionInfo = this.validateOutput(
++            versionInfo
++          ) as Record<string, unknown>;
++
+           toolContext.span.setStatus({ code: SpanStatusCode.OK });
+           toolContext.span.end();
+           return {
+@@ -49,24 +54,23 @@ export class VersionTool extends BaseTool<
+             structuredContent: validatedVersionInfo,
+             isError: false
+           };
+-        } catch (validationError) {
++        } catch (error) {
++          const errorMessage =
++            error instanceof Error ? error.message : String(error);
+           toolContext.span.setStatus({
+             code: SpanStatusCode.ERROR,
+-            message:
+-              validationError instanceof Error
+-                ? validationError.message
+-                : 'Unknown validation error'
++            message: errorMessage
+           });
+           toolContext.span.end();
+           this.log(
+             'error',
+-            `Output schema validation failed: ${validationError instanceof Error ? validationError.message : 'Unknown validation error'}`
++            `${this.name}: Error during execution: ${errorMessage}`
+           );
+           return {
+             content: [
+               {
+                 type: 'text' as const,
+-                text: 'VersionTool: Output schema validation failed.'
++                text: `VersionTool: Error during execution: ${errorMessage}`
+               }
+             ],
+             isError: true

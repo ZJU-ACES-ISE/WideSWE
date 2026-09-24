@@ -1,0 +1,37 @@
+task_id: huggingface_hf_csi_driver_hf_mount_c1fa2eab143e
+hidden_test_patches:
+- repo: hf-csi-driver
+  patch: hidden/patches/hf-csi-driver-hidden-tests.patch
+  test_profile: hf_csi_driver-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - pkg/webhook/sidecar_test.go
+  hidden_file: *id001
+  semantic_changes: Replaced direct calls to PR-introduced resource helpers
+    with the existing public admission handler and assertions on the actually
+    injected sidecar. Defaults, overrides, invalid-value handling, order-independent
+    maxima, and request clamping remain covered.
+  source: behavior derived from huggingface/hf-csi-driver PR(s) 24
+- repo: hf-mount
+  patch: hidden/patches/hf-mount-hidden-tests.patch
+  test_profile: hf_mount-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/inode_lru_contract.rs
+  hidden_file: *id002
+  semantic_changes: Replaced implementation-coupled unit-test overlays with a
+    public CLI and VirtualFs behavior contract. The test still exercises bounded
+    crawler growth and the prompt-stated non-evictable states without naming the
+    Gold eviction helpers or internal inode-table representation.
+  source: behavior derived from huggingface/hf-mount PR(s) 105
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - hf_csi_driver-hidden
+    - hf_mount-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

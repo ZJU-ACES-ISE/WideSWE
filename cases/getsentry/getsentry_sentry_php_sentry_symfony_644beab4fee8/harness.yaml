@@ -1,0 +1,50 @@
+task_id: getsentry_sentry_php_sentry_symfony_644beab4fee8
+hidden_test_patches:
+- repo: sentry-laravel
+  patch: hidden/patches/sentry-laravel-hidden-tests.patch
+  test_profile: sentry_laravel-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test/Sentry/Features/LogLogsIntegrationTest.php
+  - test/Sentry/Laravel/LaravelContainerConfigOptionsTest.php
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-laravel PR(s) 1116
+- repo: sentry-php
+  patch: hidden/patches/sentry-php-hidden-tests.patch
+  test_profile: sentry_php-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/Logs/LogsAggregatorTest.php
+  - tests/OptionsTest.php
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-php PR(s) 2032
+- repo: sentry-symfony
+  patch: hidden/patches/sentry-symfony-hidden-tests.patch
+  test_profile: sentry_symfony-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - tests/DependencyInjection/ConfigurationTest.php
+  - tests/DependencyInjection/Fixtures/php/full.php
+  - tests/DependencyInjection/Fixtures/xml/full.xml
+  - tests/DependencyInjection/Fixtures/yml/full.yml
+  - tests/DependencyInjection/SentryExtensionTest.php
+  - tests/End2End/App/config/log_flush_threshold.yml
+  - tests/End2End/App/config/log_flush_threshold_null.yml
+  - tests/End2End/LoggingFlushThresholdEnd2EndTest.php
+  hidden_file: *id003
+  semantic_changes: Symfony null configuration accepts either an omitted option or an explicit null in the processed intermediate config
+  source: upstream test changes from getsentry/sentry-symfony PR(s) 1012
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - sentry_laravel-hidden
+    - sentry_php-hidden
+    - sentry_symfony-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

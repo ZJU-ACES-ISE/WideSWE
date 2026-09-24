@@ -1,0 +1,282 @@
+diff --git a/internal/kibana/qualified_input_contract_test.go b/internal/kibana/qualified_input_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..688e000050d150a52c79d228632a60b5a8d7d673
+--- /dev/null
++++ b/internal/kibana/qualified_input_contract_test.go
+@@ -0,0 +1,89 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License;
++// you may not use this file except in compliance with the Elastic License.
++
++package kibana
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	"github.com/elastic/elastic-package/internal/common"
++	"github.com/elastic/elastic-package/internal/packages"
++)
++
++func TestQualifiedInputFleetPolicyContract(t *testing.T) {
++	manifest, err := packages.ReadPackageManifestBytes([]byte(`
++format_version: 3.6.0
++name: qualified_integration
++title: Qualified integration
++description: Qualified integration fixture.
++version: 0.1.0
++type: integration
++policy_templates:
++  - name: qualified
++    title: Qualified
++    description: Qualified policy template.
++    data_streams:
++      - qualified_logs
++      - qualified_metrics
++    inputs:
++      - name: qualified_logs_input
++        type: otelcol
++        title: Logs input
++      - name: qualified_metrics_input
++        type: otelcol
++        title: Metrics input
++`))
++	require.NoError(t, err)
++	require.Len(t, manifest.PolicyTemplates, 1)
++
++	logs := readQualifiedPolicyDataStream(t, `
++name: qualified_logs
++title: Qualified logs
++type: logs
++dataset: qualified_integration.logs
++streams:
++  - input: qualified_logs_input
++    title: Qualified logs stream
++`)
++	metrics := readQualifiedPolicyDataStream(t, `
++name: qualified_metrics
++title: Qualified metrics
++type: metrics
++dataset: qualified_integration.metrics
++streams:
++  - input: qualified_metrics_input
++    title: Qualified metrics stream
++`)
++
++	policy, err := BuildIntegrationPackagePolicy(
++		"policy-id",
++		"default",
++		"qualified-policy",
++		*manifest,
++		manifest.PolicyTemplates[0],
++		logs,
++		"qualified_logs_input",
++		common.MapStr{},
++		common.MapStr{},
++		true,
++		[]packages.DataStreamManifest{logs, metrics},
++	)
++	require.NoError(t, err)
++	require.Len(t, policy.Inputs, 2, "same-type inputs must not overwrite each other")
++
++	legacy := policy.toLegacy()
++	require.Len(t, legacy.Inputs, 1)
++	require.Equal(t, "otelcol", legacy.Inputs[0].Type)
++	require.Len(t, legacy.Inputs[0].Streams, 1)
++	require.Equal(t, "qualified_integration.logs", legacy.Inputs[0].Streams[0].DataStream.Dataset)
++}
++
++func readQualifiedPolicyDataStream(t *testing.T, contents string) packages.DataStreamManifest {
++	t.Helper()
++	manifest, err := packages.ReadDataStreamManifestBytes([]byte(contents))
++	require.NoError(t, err)
++	return *manifest
++}
+diff --git a/internal/qualifiedinputcontract/requiredinputs_contract_test.go b/internal/qualifiedinputcontract/requiredinputs_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..106b90494324b680eae4f10a9a5c06d7f67fef0f
+--- /dev/null
++++ b/internal/qualifiedinputcontract/requiredinputs_contract_test.go
+@@ -0,0 +1,181 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License;
++// you may not use this file except in compliance with the Elastic License.
++
++package qualifiedinputcontract
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"sort"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++	"gopkg.in/yaml.v3"
++
++	"github.com/elastic/elastic-package/internal/requiredinputs"
++)
++
++type qualifiedInputEPRClient struct {
++	packageDirs map[string]string
++}
++
++func (c qualifiedInputEPRClient) DownloadPackage(packageName, _, _ string) (string, error) {
++	packageDir, ok := c.packageDirs[packageName]
++	if !ok {
++		return "", fmt.Errorf("unknown input package %q", packageName)
++	}
++	return packageDir, nil
++}
++
++type qualifiedInputContractManifest struct {
++	PolicyTemplates []struct {
++		Inputs []struct {
++			Name    string `yaml:"name"`
++			Type    string `yaml:"type"`
++			Package string `yaml:"package"`
++		} `yaml:"inputs"`
++	} `yaml:"policy_templates"`
++}
++
++type qualifiedInputContractDataStream struct {
++	Streams []struct {
++		Input   string `yaml:"input"`
++		Package string `yaml:"package"`
++	} `yaml:"streams"`
++}
++
++type qualifiedInputContractResult struct {
++	inputNames  []string
++	inputTypes  []string
++	streamRefs  []string
++	packageRefs []string
++}
++
++func TestQualifiedInputBundleContract(t *testing.T) {
++	t.Run("duplicate types use stable qualifiers", func(t *testing.T) {
++		first := runQualifiedInputBundle(t, []string{"otelcol", "otelcol"})
++		second := runQualifiedInputBundle(t, []string{"otelcol", "otelcol"})
++
++		require.Equal(t, []string{"otelcol", "otelcol"}, first.inputTypes)
++		require.Len(t, first.inputNames, 2)
++		require.NotEmpty(t, first.inputNames[0])
++		require.NotEmpty(t, first.inputNames[1])
++		require.NotEqual(t, first.inputNames[0], first.inputNames[1])
++		require.ElementsMatch(t, first.inputNames, first.streamRefs)
++		require.Equal(t, first.inputNames, second.inputNames)
++		require.Equal(t, []string{"", "", "", ""}, first.packageRefs)
++	})
++
++	t.Run("unique types preserve type references", func(t *testing.T) {
++		result := runQualifiedInputBundle(t, []string{"logfile", "winlog"})
++		require.Equal(t, []string{"", ""}, result.inputNames)
++		require.Equal(t, []string{"logfile", "winlog"}, result.inputTypes)
++		require.ElementsMatch(t, result.inputTypes, result.streamRefs)
++		require.Equal(t, []string{"", "", "", ""}, result.packageRefs)
++	})
++}
++
++func runQualifiedInputBundle(t *testing.T, inputTypes []string) qualifiedInputContractResult {
++	t.Helper()
++	require.Len(t, inputTypes, 2)
++
++	packageNames := []string{"qualified_logs_pkg", "qualified_metrics_pkg"}
++	packageDirs := make(map[string]string, len(packageNames))
++	for i, packageName := range packageNames {
++		packageDir := t.TempDir()
++		writeQualifiedInputContractFile(t, filepath.Join(packageDir, "manifest.yml"), `
++name: `+packageName+`
++title: Qualified input
++description: Qualified input fixture.
++version: 0.1.0
++type: input
++policy_templates:
++  - name: input
++    input: `+inputTypes[i]+`
++    type: logs
++`)
++		packageDirs[packageName] = packageDir
++	}
++
++	buildRoot := t.TempDir()
++	writeQualifiedInputContractFile(t, filepath.Join(buildRoot, "manifest.yml"), `
++format_version: 3.6.0
++name: qualified_integration
++title: Qualified integration
++description: Qualified integration fixture.
++version: 0.1.0
++type: integration
++requires:
++  input:
++    - package: qualified_logs_pkg
++      version: 0.1.0
++    - package: qualified_metrics_pkg
++      version: 0.1.0
++policy_templates:
++  - name: qualified
++    title: Qualified
++    description: Qualified policy template.
++    data_streams:
++      - qualified_logs
++      - qualified_metrics
++    inputs:
++      - package: qualified_logs_pkg
++        title: Logs input
++      - package: qualified_metrics_pkg
++        title: Metrics input
++`)
++
++	dataStreams := []string{"qualified_logs", "qualified_metrics"}
++	for i, dataStream := range dataStreams {
++		dataStreamDir := filepath.Join(buildRoot, "data_stream", dataStream)
++		require.NoError(t, os.MkdirAll(dataStreamDir, 0o755))
++		writeQualifiedInputContractFile(t, filepath.Join(dataStreamDir, "manifest.yml"), `
++title: Qualified stream
++type: logs
++streams:
++  - package: `+packageNames[i]+`
++    title: Qualified stream
++`)
++	}
++
++	epr := qualifiedInputEPRClient{packageDirs: packageDirs}
++	require.NoError(t, requiredinputs.NewRequiredInputsResolver(epr).Bundle(buildRoot))
++
++	var manifest qualifiedInputContractManifest
++	readQualifiedInputContractYAML(t, filepath.Join(buildRoot, "manifest.yml"), &manifest)
++	require.Len(t, manifest.PolicyTemplates, 1)
++	require.Len(t, manifest.PolicyTemplates[0].Inputs, 2)
++
++	result := qualifiedInputContractResult{}
++	for _, input := range manifest.PolicyTemplates[0].Inputs {
++		result.inputNames = append(result.inputNames, input.Name)
++		result.inputTypes = append(result.inputTypes, input.Type)
++		result.packageRefs = append(result.packageRefs, input.Package)
++	}
++	for _, dataStream := range dataStreams {
++		var manifest qualifiedInputContractDataStream
++		readQualifiedInputContractYAML(t, filepath.Join(buildRoot, "data_stream", dataStream, "manifest.yml"), &manifest)
++		require.Len(t, manifest.Streams, 1)
++		result.streamRefs = append(result.streamRefs, manifest.Streams[0].Input)
++		result.packageRefs = append(result.packageRefs, manifest.Streams[0].Package)
++	}
++
++	sort.Strings(result.inputNames)
++	sort.Strings(result.inputTypes)
++	sort.Strings(result.streamRefs)
++	return result
++}
++
++func writeQualifiedInputContractFile(t *testing.T, path, contents string) {
++	t.Helper()
++	require.NoError(t, os.WriteFile(path, []byte(contents), 0o644))
++}
++
++func readQualifiedInputContractYAML(t *testing.T, path string, target any) {
++	t.Helper()
++	contents, err := os.ReadFile(path)
++	require.NoError(t, err)
++	require.NoError(t, yaml.Unmarshal(contents, target))
++}

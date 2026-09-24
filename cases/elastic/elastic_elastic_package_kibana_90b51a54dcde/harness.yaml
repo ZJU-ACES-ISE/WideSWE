@@ -1,0 +1,71 @@
+task_id: elastic_elastic_package_kibana_90b51a54dcde
+hidden_test_patches:
+- repo: elastic-package
+  patch: hidden/patches/elastic-package-hidden-tests.patch
+  test_profile: elastic_package-hidden
+  origin: independent_behavior_contract
+  source_file: &id001
+  - internal/kibana/qualified_input_contract_test.go
+  - internal/qualifiedinputcontract/requiredinputs_contract_test.go
+  hidden_file: *id001
+  semantic_changes: prompt-visible qualified-input behavior; implementation-independent assertions
+  source: behavior contract derived from the upstream PR requirements without importing Gold-only helpers
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: independent_behavior_contract
+  source_file: &id002
+  - x-pack/platform/plugins/shared/fleet/common/services/qualified_input_contract.test.ts
+  - x-pack/platform/plugins/shared/fleet/public/applications/integrations/sections/epm/screens/detail/documentation/qualified_input_contract.test.tsx
+  hidden_file: *id002
+  semantic_changes: prompt-visible qualified-input behavior; implementation-independent assertions
+  source: behavior contract derived from the upstream PR requirements without importing Gold-only helpers
+- repo: package-spec
+  patch: hidden/patches/package-spec-hidden-tests.patch
+  test_profile: package_spec-hidden
+  origin: independent_behavior_contract
+  source_file: &id003
+  - code/go/pkg/validator/qualified_input_contract_test.go
+  - test/packages/bad_input_qualifier_ambiguous/changelog.yml
+  - test/packages/bad_input_qualifier_ambiguous/data_stream/access/agent/stream/stream.yml.hbs
+  - test/packages/bad_input_qualifier_ambiguous/data_stream/access/elasticsearch/ingest_pipeline/default.yml
+  - test/packages/bad_input_qualifier_ambiguous/data_stream/access/fields/fields.yml
+  - test/packages/bad_input_qualifier_ambiguous/data_stream/access/manifest.yml
+  - test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/agent/stream/stream.yml.hbs
+  - test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/elasticsearch/ingest_pipeline/default.yml
+  - test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/fields/fields.yml
+  - test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/manifest.yml
+  - test/packages/bad_input_qualifier_ambiguous/docs/README.md
+  - test/packages/bad_input_qualifier_ambiguous/manifest.yml
+  - test/packages/bad_input_qualifier_old_version/LICENSE.txt
+  - test/packages/bad_input_qualifier_old_version/changelog.yml
+  - test/packages/bad_input_qualifier_old_version/docs/README.md
+  - test/packages/bad_input_qualifier_old_version/img/sample-logo.svg
+  - test/packages/bad_input_qualifier_old_version/img/sample-screenshot.png
+  - test/packages/bad_input_qualifier_old_version/manifest.yml
+  - test/packages/bad_input_qualifier_old_version/sample_event.json
+  - test/packages/good_input_qualifier/changelog.yml
+  - test/packages/good_input_qualifier/data_stream/access/agent/stream/stream.yml.hbs
+  - test/packages/good_input_qualifier/data_stream/access/elasticsearch/ingest_pipeline/default.yml
+  - test/packages/good_input_qualifier/data_stream/access/fields/fields.yml
+  - test/packages/good_input_qualifier/data_stream/access/manifest.yml
+  - test/packages/good_input_qualifier/data_stream/stubstatus/agent/stream/stream.yml.hbs
+  - test/packages/good_input_qualifier/data_stream/stubstatus/elasticsearch/ingest_pipeline/default.yml
+  - test/packages/good_input_qualifier/data_stream/stubstatus/fields/fields.yml
+  - test/packages/good_input_qualifier/data_stream/stubstatus/manifest.yml
+  - test/packages/good_input_qualifier/docs/README.md
+  - test/packages/good_input_qualifier/manifest.yml
+  hidden_file: *id003
+  semantic_changes: prompt-visible qualified-input behavior; implementation-independent assertions
+  source: behavior contract derived from the upstream PR requirements without importing Gold-only helpers
+profile_sets:
+  linux-docker:
+    description: Prompt-aligned behavior contracts plus unchanged public regression tests.
+    hidden_tests:
+    - elastic_package-hidden
+    - kibana-hidden
+    - package_spec-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

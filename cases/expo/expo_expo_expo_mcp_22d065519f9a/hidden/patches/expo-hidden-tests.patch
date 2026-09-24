@@ -1,0 +1,265 @@
+diff --git a/packages/@expo/cli/src/start/server/__tests__/MCP-test.ts b/packages/@expo/cli/src/start/server/__tests__/MCP-test.ts
+--- a/packages/@expo/cli/src/start/server/__tests__/MCP-test.ts
++++ b/packages/@expo/cli/src/start/server/__tests__/MCP-test.ts
+@@ -13,6 +13,8 @@ jest.mock('@expo/cli/add-module', () =>
+     TunnelMcpServerProxy: jest.fn().mockImplementation((mcpServerUrl: string) => ({
+       // Adding a mock property that allows checking the server URL
+       mockServerUrl: mcpServerUrl,
++      start: jest.fn(),
++      close: jest.fn(),
+     })),
+     addMcpCapabilities: jest.fn(),
+   })
+@@ -19,6 +21,9 @@ jest.mock('@expo/cli/add-module', () =>
+ );
+ jest.mock('resolve-from');
+ jest.mock('../../../log');
++jest.mock('../../../utils/exit', () => ({
++  installExitHooks: jest.fn(() => jest.fn()),
++}));
+ 
+ describe(maybeCreateMCPServerAsync, () => {
+   const mockResolveFromSilent = resolveFrom.silent as jest.MockedFunction<
+@@ -64,25 +69,36 @@ describe(maybeCreateMCPServerAsync, () => {
+   it('should use production MCP server by default', async () => {
+     process.env.EXPO_UNSTABLE_MCP_SERVER = '1';
+     mockResolveFromSilent.mockReturnValue('/app/node_modules/expo-mcp');
+-    const server = await maybeCreateMCPServerAsync('/app');
+-    // @ts-expect-error
+-    expect(server?.mockServerUrl).toBe('wss://mcp.expo.dev');
++    await maybeCreateMCPServerAsync('/app');
++    expect(getTunnelMcpServerProxy()).toHaveBeenLastCalledWith(
++      'wss://mcp.expo.dev',
++      expect.any(Object)
++    );
+   });
+ 
+   it('should use staging MCP server if the EXPO_STAGING environment variable is set', async () => {
+     process.env.EXPO_UNSTABLE_MCP_SERVER = '1';
+     process.env.EXPO_STAGING = '1';
+     mockResolveFromSilent.mockReturnValue('/app/node_modules/expo-mcp');
+-    const server = await maybeCreateMCPServerAsync('/app');
+-    // @ts-expect-error
+-    expect(server?.mockServerUrl).toBe('wss://staging-mcp.expo.dev');
++    await maybeCreateMCPServerAsync('/app');
++    expect(getTunnelMcpServerProxy()).toHaveBeenLastCalledWith(
++      'wss://staging-mcp.expo.dev',
++      expect.any(Object)
++    );
+   });
+ 
+   it('should allow specifying custom MCP server URL', async () => {
+     process.env.EXPO_UNSTABLE_MCP_SERVER = 'ws://localhost:8787';
+     mockResolveFromSilent.mockReturnValue('/app/node_modules/expo-mcp');
+-    const server = await maybeCreateMCPServerAsync('/app');
+-    // @ts-expect-error
+-    expect(server?.mockServerUrl).toBe('ws://localhost:8787');
++    await maybeCreateMCPServerAsync('/app');
++    expect(getTunnelMcpServerProxy()).toHaveBeenLastCalledWith(
++      'ws://localhost:8787',
++      expect.any(Object)
++    );
+   });
+ });
++
++function getTunnelMcpServerProxy(): jest.Mock {
++  const importESM = require('@expo/cli/add-module') as jest.Mock;
++  return importESM().TunnelMcpServerProxy;
++}
+diff --git a/packages/@expo/cli/src/start/server/__tests__/MCP-lifecycle-test.ts b/packages/@expo/cli/src/start/server/__tests__/MCP-lifecycle-test.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/@expo/cli/src/start/server/__tests__/MCP-lifecycle-test.ts
+@@ -0,0 +1,192 @@
++import resolveFrom from 'resolve-from';
++
++import { startAsync } from '../../startAsync';
++import { installExitHooks } from '../../../utils/exit';
++
++const mockRemoveExitHook = jest.fn();
++const mockStopDevServer = jest.fn().mockResolvedValue(undefined);
++const mockDefaultDevServer = {
++  getDevServerUrl: jest.fn(() => 'http://localhost:8081'),
++  getDevServerUrlOrAssert: jest.fn(() => 'http://localhost:8081'),
++  isTargetingNative: jest.fn(() => false),
++};
++const mockDevServerManager = {
++  projectRoot: '/app',
++  options: { devClient: true },
++  startAsync: jest.fn().mockResolvedValue(undefined),
++  stopAsync: mockStopDevServer,
++  watchEnvironmentVariables: jest.fn().mockResolvedValue(undefined),
++  bootstrapTypeScriptAsync: jest.fn().mockResolvedValue(undefined),
++  getDefaultDevServer: jest.fn(() => mockDefaultDevServer),
++  getWebDevServer: jest.fn(),
++};
++let mockOnPressAsync: ((key: string) => Promise<unknown>) | undefined;
++
++jest.mock('@expo/cli/add-module', () => {
++  const start = jest.fn().mockResolvedValue(undefined);
++  const close = jest.fn().mockResolvedValue(undefined);
++  const server = {
++    start,
++    close,
++    mockStart: start,
++    mockClose: close,
++  };
++  const TunnelMcpServerProxy = jest.fn().mockImplementation(() => server);
++  return jest.fn().mockReturnValue({
++    TunnelMcpServerProxy,
++    addMcpCapabilities: jest.fn(),
++  });
++});
++jest.mock('resolve-from', () => {
++  const actual = jest.requireActual<typeof import('resolve-from')>('resolve-from');
++  const resolve = jest.fn(actual) as any as typeof actual;
++  resolve.silent = jest.fn(actual.silent);
++  return resolve;
++});
++jest.mock('@expo/config', () => ({
++  getConfig: jest.fn(() => ({ exp: { platforms: [] }, pkg: {} })),
++}));
++jest.mock('../../../log', () => ({
++  clear: jest.fn(),
++  error: jest.fn(),
++  exception: jest.fn(),
++  log: jest.fn(),
++  warn: jest.fn(),
++}));
++jest.mock('../../../utils/exit', () => ({
++  installExitHooks: jest.fn(),
++}));
++jest.mock('../../../utils/env', () => ({
++  env: {
++    EXPO_NO_DEPENDENCY_VALIDATION: true,
++    EXPO_STAGING: false,
++    EXPO_UNSTABLE_MCP_SERVER: 'mcp.expo.dev',
++    __EXPO_E2E_TEST: false,
++  },
++}));
++jest.mock('../../../utils/interactive', () => ({
++  isInteractive: jest.fn(() => true),
++}));
++jest.mock('../../../utils/profile', () => ({
++  profile: jest.fn((fn) => fn),
++}));
++jest.mock('../../doctor/apple/SimulatorAppPrerequisite', () => ({
++  SimulatorAppPrerequisite: { instance: { assertAsync: jest.fn() } },
++}));
++jest.mock('../../doctor/apple/XcodePrerequisite', () => ({
++  getXcodeVersionAsync: jest.fn(),
++}));
++jest.mock('../../doctor/dependencies/validateDependenciesVersions', () => ({
++  validateDependenciesVersionsAsync: jest.fn(),
++}));
++jest.mock('../../resolveOptions', () => ({
++  resolvePortsAsync: jest.fn(async () => ({ metroPort: 8081, webpackPort: 19006 })),
++}));
++jest.mock('../DevServerManager', () => ({
++  DevServerManager: jest.fn().mockImplementation(() => mockDevServerManager),
++}));
++jest.mock('../openPlatforms', () => ({
++  openPlatformsAsync: jest.fn(),
++}));
++jest.mock('../platformBundlers', () => ({
++  getPlatformBundlers: jest.fn(() => ({ ios: 'metro', android: 'metro' })),
++}));
++jest.mock('../../interface/interactiveActions', () => ({
++  DevServerManagerActions: jest.fn().mockImplementation(() => ({
++    printDevServerInfo: jest.fn(),
++  })),
++}));
++jest.mock('../../interface/KeyPressHandler', () => ({
++  KeyPressHandler: jest.fn().mockImplementation((onPressAsync) => {
++    mockOnPressAsync = onPressAsync;
++    return {
++      createInteractionListener: jest.fn(),
++      startInterceptingKeyStrokes: jest.fn(),
++    };
++  }),
++}));
++jest.mock('../../../utils/ora', () => ({
++  getAllSpinners: jest.fn(() => []),
++  ora: jest.fn(() => ({
++    start: jest.fn(() => ({
++      fail: jest.fn(),
++      stopAndPersist: jest.fn(),
++    })),
++  })),
++}));
++jest.mock('../../../utils/progress', () => ({
++  getProgressBar: jest.fn(() => null),
++  setProgressBar: jest.fn(),
++}));
++jest.mock('../../../utils/prompts', () => ({
++  addInteractionListener: jest.fn(),
++  pauseInteractions: jest.fn(),
++}));
++
++const mockResolveFromSilent = resolveFrom.silent as jest.MockedFunction<
++  typeof resolveFrom.silent
++>;
++const mockInstallExitHooks = installExitHooks as jest.MockedFunction<typeof installExitHooks>;
++const mockImportESM = require('@expo/cli/add-module') as jest.Mock;
++
++function getTunnelMcpServerProxy(): jest.Mock {
++  return mockImportESM().TunnelMcpServerProxy;
++}
++
++function getTunnelServer(): { start: jest.Mock; close: jest.Mock; mockStart: jest.Mock; mockClose: jest.Mock } {
++  return getTunnelMcpServerProxy().mock.results[0]?.value;
++}
++
++async function startProjectAsync() {
++  await startAsync('/app', { devClient: true } as any, {});
++}
++
++describe('MCP lifecycle integration', () => {
++  beforeEach(() => {
++    mockResolveFromSilent.mockReturnValue('/app/node_modules/expo-mcp');
++    mockInstallExitHooks.mockReturnValue(mockRemoveExitHook);
++    mockOnPressAsync = undefined;
++  });
++
++  afterEach(() => {
++    jest.clearAllMocks();
++  });
++
++  it('passes project information to the tunnel and starts it', async () => {
++    await startProjectAsync();
++
++    const constructor = getTunnelMcpServerProxy();
++    expect(constructor).toHaveBeenCalledTimes(1);
++    expect(JSON.stringify(constructor.mock.calls[0])).toContain('/app');
++    expect(JSON.stringify(constructor.mock.calls[0])).toContain('http://localhost:8081');
++    expect(getTunnelServer().mockStart).toHaveBeenCalledTimes(1);
++  });
++
++  it('closes the tunnel during process shutdown', async () => {
++    await startProjectAsync();
++
++    expect(mockInstallExitHooks).toHaveBeenCalledTimes(1);
++    const shutdownHook = mockInstallExitHooks.mock.calls[0][0];
++    await shutdownHook('SIGTERM');
++    expect(getTunnelServer().mockClose).toHaveBeenCalledTimes(1);
++  });
++
++  it('closes the tunnel and unregisters its exit hook on explicit shutdown', async () => {
++    const emitSpy = jest.spyOn(process, 'emit').mockReturnValue(true);
++    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => undefined as never);
++
++    try {
++      await startProjectAsync();
++      expect(mockOnPressAsync).toBeDefined();
++
++      await mockOnPressAsync!('\u0003');
++
++      expect(mockStopDevServer).toHaveBeenCalledTimes(1);
++      expect(getTunnelServer().mockClose).toHaveBeenCalledTimes(1);
++      expect(mockRemoveExitHook).toHaveBeenCalledTimes(1);
++    } finally {
++      emitSpy.mockRestore();
++      exitSpy.mockRestore();
++    }
++  });
++});

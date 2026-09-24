@@ -1,0 +1,283 @@
+diff --git a/schema-engine/sql-migration-tests/tests/migrations/diff.rs b/schema-engine/sql-migration-tests/tests/migrations/diff.rs
+index d5fe3c1ee7..3321ac7d96 100644
+--- a/schema-engine/sql-migration-tests/tests/migrations/diff.rs
++++ b/schema-engine/sql-migration-tests/tests/migrations/diff.rs
+@@ -720,6 +720,7 @@ fn with_schema_filters(mut api: TestApi) {
+         to: DiffTarget::Url(UrlContainer { url: second_url }),
+         filters: Some(SchemaFilter {
+             external_tables: vec!["external_table".to_string()],
++            ..Default::default()
+         }),
+     };
+ 
+@@ -769,6 +770,7 @@ fn with_invalid_schema_filters(mut api: TestApi) {
+         to: DiffTarget::Url(UrlContainer { url: second_url }),
+         filters: Some(SchemaFilter {
+             external_tables: vec!["public.external_table".to_string()],
++            ..Default::default()
+         }),
+     };
+ 
+diff --git a/schema-engine/sql-migration-tests/tests/migrations/migration_persistence_tests.rs b/schema-engine/sql-migration-tests/tests/migrations/migration_persistence_tests.rs
+index 87b9f282d3..58eb46459f 100644
+--- a/schema-engine/sql-migration-tests/tests/migrations/migration_persistence_tests.rs
++++ b/schema-engine/sql-migration-tests/tests/migrations/migration_persistence_tests.rs
+@@ -204,6 +204,7 @@ fn starting_a_migration_on_db_with_existing_external_table_does_not_errors(api:
+         None,
+         SchemaFilter {
+             external_tables: vec!["cats".to_string()],
++            ..Default::default()
+         },
+     ));
+ 
+diff --git a/schema-engine/sql-migration-tests/tests/migrations/schema_filter.rs b/schema-engine/sql-migration-tests/tests/migrations/schema_filter.rs
+index 5df4e42c18..cefdb4787e 100644
+--- a/schema-engine/sql-migration-tests/tests/migrations/schema_filter.rs
++++ b/schema-engine/sql-migration-tests/tests/migrations/schema_filter.rs
+@@ -16,10 +16,13 @@ fn schema_filter_migration_adding_external_table(api: TestApi) {
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["ExternalTable".to_string()],
++        ..Default::default()
+     };
+     api.create_migration_with_filter("custom", &schema, &dir, filter, "")
+         .send_sync()
+         .assert_migration_directories_count(0);
++    // Table is external => migrations should not touch it => created no migration => external table should not be there
++    api.assert_schema().assert_has_no_table("ExternalTable");
+ }
+ 
+ #[test_connector]
+@@ -32,20 +35,21 @@ fn schema_filter_migration_removing_external_table(mut api: TestApi) {
+         }
+     "#,
+     );
+-
+-    let dir = api.create_migrations_directory();
+-
+     // No filter applied here to actually create the external tables first
+-    api.create_migration("create", &schema_1, &dir).send_sync();
++    api.schema_push(schema_1).send();
+ 
++    let dir = api.create_migrations_directory();
+     let schema_2 = api.datamodel_with_provider("");
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["ExternalTable".to_string()],
++        ..Default::default()
+     };
+     api.create_migration_with_filter("remove", &schema_2, &dir, filter, "")
+         .send_sync()
+-        .assert_migration_directories_count(1);
++        .assert_migration_directories_count(0);
++    // Table is external => migrations should not touch it => created no migration => external table should still be there
++    api.assert_schema().assert_has_table("ExternalTable");
+ }
+ 
+ #[test_connector]
+@@ -58,20 +62,17 @@ fn schema_filter_migration_removing_external_table_with_contents(mut api: TestAp
+         }
+     "#,
+     );
+-
+-    let dir = api.create_migrations_directory();
+-
+     // No filter applied here to actually create the external tables first
+-    api.create_migration("create", &schema_1, &dir).send_sync();
+-    api.apply_migrations(&dir).send_sync();
+-
++    api.schema_push(schema_1).send();
+     api.insert("Cat").value("id", 1).value("name", "Felix").result_raw();
+     api.insert("Cat").value("id", 2).value("name", "Norbert").result_raw();
+ 
++    let dir = api.create_migrations_directory();
+     let schema_2 = api.datamodel_with_provider("");
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["Cat".to_string()],
++        ..Default::default()
+     };
+     api.evaluate_data_loss_with_filter(&dir, schema_2.clone(), filter)
+         .send()
+@@ -87,12 +88,10 @@ fn schema_filter_migration_modifying_external_table(mut api: TestApi) {
+         }
+     "#,
+     );
+-
+-    let dir = api.create_migrations_directory();
+-
+     // No filter applied here to actually create the external tables first
+-    api.create_migration("create", &schema_1, &dir).send_sync();
++    api.schema_push(schema_1).send();
+ 
++    let dir = api.create_migrations_directory();
+     let schema_2 = api.datamodel_with_provider(
+         r#"
+             model ExternalTable {
+@@ -104,10 +103,69 @@ fn schema_filter_migration_modifying_external_table(mut api: TestApi) {
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["ExternalTable".to_string()],
++        ..Default::default()
+     };
+     api.create_migration_with_filter("modify", &schema_2, &dir, filter, "")
+         .send_sync()
+-        .assert_migration_directories_count(1);
++        .assert_migration_directories_count(0);
++    // Table is external => migrations should not touch it => created no migration => external table should still be in the old state
++    api.assert_schema().assert_table("ExternalTable", |table_assertions| {
++        table_assertions.assert_column_count(1)
++    });
++}
++
++#[test_connector(tags(Postgres), exclude(CockroachDb))]
++fn schema_filter_migration_adding_external_enum(api: TestApi) {
++    let schema = api.datamodel_with_provider(
++        r#"
++        enum ExternalEnum {
++            ONE
++            TWO
++        }
++    "#,
++    );
++
++    let dir = api.create_migrations_directory();
++
++    let filter = serde_json::from_value(serde_json::json!({
++        "externalTables": [],
++        "externalEnums": ["ExternalEnum"],
++    })).unwrap();
++    api.create_migration_with_filter("custom", &schema, &dir, filter, "")
++        .send_sync()
++        .assert_migration_directories_count(0);
++    // Enum is external => migrations should not touch it => created no migration => external enum should not be there
++    api.assert_schema().assert_has_no_enum("ExternalEnum");
++}
++
++#[test_connector(tags(Postgres), exclude(CockroachDb))]
++fn schema_filter_migration_removing_external_enum(mut api: TestApi) {
++    let schema_1 = api.datamodel_with_provider(
++        r#"
++        enum ExternalEnum {
++            ONE
++            TWO
++        }
++    "#,
++    );
++    // Create the external enum in the database
++    api.schema_push(schema_1).send();
++
++    let dir = api.create_migrations_directory();
++
++    let schema_2 = api.datamodel_with_provider("");
++
++    let filter = serde_json::from_value(serde_json::json!({
++        "externalTables": [],
++        "externalEnums": ["ExternalEnum"],
++    })).unwrap();
++    api.create_migration_with_filter("remove", &schema_2, &dir, filter, "")
++        .send_sync()
++        .assert_migration_directories_count(0);
++    // Enum is external => migrations should not touch it => created no migration => external enum should still be there
++    api.assert_schema().assert_enum("ExternalEnum", |enum_assertions| {
++        enum_assertions.assert_values(&["ONE", "TWO"])
++    });
+ }
+ 
+ #[test_connector(exclude(CockroachDb, Vitess))]
+@@ -152,6 +210,7 @@ fn schema_filter_migration_adding_external_tables_incl_relations(api: TestApi) {
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["ExternalTableA".to_string(), "ExternalTableB".to_string()],
++        ..Default::default()
+     };
+     api.create_migration_with_filter("custom", &schema, &dir, filter, "")
+         .send_sync()
+@@ -283,6 +342,7 @@ fn schema_filter_migration_removing_external_tables_incl_relations(mut api: Test
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["ExternalTableA".to_string(), "ExternalTableB".to_string()],
++        ..Default::default()
+     };
+     api.create_migration_with_filter("remove", &schema_2, &dir, filter, "")
+         .send_sync()
+@@ -436,6 +496,7 @@ fn schema_filter_migration_modifying_external_tables_incl_relations(mut api: Tes
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["ExternalTableA".to_string(), "ExternalTableB".to_string()],
++        ..Default::default()
+     };
+     api.create_migration_with_filter("modify", &schema_2, &dir, filter, "")
+         .send_sync()
+@@ -542,6 +603,7 @@ fn schema_filter_leveraging_init_script(api: TestApi) {
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["external".to_string()],
++        ..Default::default()
+     };
+     api.create_migration_with_filter("custom", &schema, &dir, filter, init_script)
+         .send_sync()
+@@ -652,6 +714,7 @@ fn schema_filter_migration_multi_schema_requires_namespaced_table_names(api: Tes
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["two.ExternalTable".to_string()],
++        ..Default::default()
+     };
+     api.create_migration_with_filter("custom", &schema, &dir, filter, "")
+         .send_sync()
+@@ -731,6 +794,7 @@ fn schema_filter_migration_multi_schema_without_namespaced_table_names(api: Test
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["ExternalTable".to_string()],
++        ..Default::default()
+     };
+     let err = api
+         .create_migration_with_filter("custom", &schema, &dir, filter, "")
+@@ -763,6 +827,7 @@ fn schema_filter_migration_with_namespaced_table_names_and_no_explicit_schemas_l
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["public.ExternalTable".to_string()],
++        ..Default::default()
+     };
+     let err = api
+         .create_migration_with_filter("custom", &schema, &dir, filter, "")
+@@ -785,6 +850,7 @@ fn schema_filter_migration_dev_diagnostic_drift_detection(api: TestApi) {
+ 
+     let filter = SchemaFilter {
+         external_tables: vec!["external_table".to_string()],
++        ..Default::default()
+     };
+     // Table exists in DB and is missing in the schema but is marked as external => not a drift.
+     api.dev_diagnostic_with_filter(&dir, filter)
+diff --git a/schema-engine/sql-migration-tests/tests/migrations/soft_resets.rs b/schema-engine/sql-migration-tests/tests/migrations/soft_resets.rs
+index 134c88b4f6..2df8e513ec 100644
+--- a/schema-engine/sql-migration-tests/tests/migrations/soft_resets.rs
++++ b/schema-engine/sql-migration-tests/tests/migrations/soft_resets.rs
+@@ -273,6 +273,7 @@ fn soft_resets_does_not_drop_external_tables(mut api: TestApi) {
+         .soft(true)
+         .filter(SchemaFilter {
+             external_tables: vec!["external_table".to_string()],
++            ..Default::default()
+         })
+         .send_sync(None);
+ 
+diff --git a/schema-engine/sql-migration-tests/tests/schema_push/mod.rs b/schema-engine/sql-migration-tests/tests/schema_push/mod.rs
+index 1f28a0802a..b768151530 100644
+--- a/schema-engine/sql-migration-tests/tests/schema_push/mod.rs
++++ b/schema-engine/sql-migration-tests/tests/schema_push/mod.rs
+@@ -473,6 +473,7 @@ fn schema_push_with_schema_filters(api: TestApi) {
+         dm,
+         Some(SchemaFilter {
+             external_tables: vec!["ExternalTable".to_string()],
++            ..Default::default()
+         }),
+     )
+     .send()
+@@ -501,6 +502,7 @@ fn schema_push_with_invalid_schema_filters(api: TestApi) {
+             dm,
+             Some(SchemaFilter {
+                 external_tables: vec!["public.ExternalTable".to_string()],
++                ..Default::default()
+             }),
+         )
+         .send_unwrap_err();

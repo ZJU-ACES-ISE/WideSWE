@@ -1,0 +1,32 @@
+task_id: getsentry_sentry_godot_sentry_native_9eb78fc734a5
+hidden_test_patches:
+- repo: sentry-godot
+  patch: hidden/patches/sentry-godot-hidden-tests.patch
+  test_profile: sentry_godot-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - project/test/isolated/test_structured_logs.gd
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-godot PR(s) 578
+- repo: sentry-native
+  patch: hidden/patches/sentry-native-hidden-tests.patch
+  test_profile: sentry_native-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/unit/test_logs.c
+  - tests/unit/tests.inc
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-native PR(s) 1566
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - sentry_godot-hidden
+    - sentry_native-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

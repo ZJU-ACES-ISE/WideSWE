@@ -1,0 +1,76 @@
+diff --git a/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.test.tsx b/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.test.tsx
+index 8a14d84a688..c22034ec213 100644
+--- a/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.test.tsx
++++ b/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.test.tsx
+@@ -14,10 +14,36 @@ import { i18nServiceMock } from '@kbn/core-i18n-browser-mocks';
+ import { themeServiceMock } from '@kbn/core-theme-browser-mocks';
+ import { userProfileServiceMock } from '@kbn/core-user-profile-browser-mocks';
+ import { SystemFlyoutService } from './system_flyout_service';
+ import type { OverlayRef } from '@kbn/core-mount-utils-browser';
+ import type { OverlaySystemFlyoutStart } from '@kbn/core-overlays-browser';
+ import React from 'react';
+ 
++interface FlyoutManagerEvent {
++  type: 'CLOSE_SESSION';
++  session: { mainFlyoutId: string; childFlyoutId: string | null };
++}
++
++const eventListeners = new Set<(event: FlyoutManagerEvent) => void>();
++const mockSubscribeToEvents = jest.fn((listener: (event: FlyoutManagerEvent) => void) => {
++  eventListeners.add(listener);
++  return () => {
++    eventListeners.delete(listener);
++  };
++});
++
++const emitEvent = (event: FlyoutManagerEvent) => {
++  eventListeners.forEach((listener) => listener(event));
++};
++
++jest.mock('@elastic/eui', () => {
++  const actual = jest.requireActual('@elastic/eui');
++  return {
++    ...actual,
++    CLOSE_SESSION: 'CLOSE_SESSION',
++    getFlyoutManagerStore: jest.fn(() => ({ subscribeToEvents: mockSubscribeToEvents })),
++  };
++});
++
+ const analyticsMock = analyticsServiceMock.createAnalyticsServiceStart();
+ const i18nMock = i18nServiceMock.createStartContract();
+ const themeMock = themeServiceMock.createStartContract();
+@@ -26,6 +52,8 @@ const userProfileMock = userProfileServiceMock.createStart();
+ beforeEach(() => {
+   mockReactDomRender.mockClear();
+   mockReactDomUnmount.mockClear();
++  mockSubscribeToEvents.mockClear();
++  eventListeners.clear();
+ });
+ 
+ afterEach(() => {
+@@ -58,6 +86,25 @@ describe('SystemFlyoutService', () => {
+   });
+ 
+   describe('openSystemFlyout()', () => {
++    it('closes the flyout when a CLOSE_SESSION event removes its session', () => {
++      systemFlyouts.open(<div>System flyout content</div>, {
++        id: 'parent-flyout-demo',
++        session: 'start',
++      });
++
++      expect(mockReactDomUnmount).not.toHaveBeenCalled();
++
++      emitEvent({
++        type: 'CLOSE_SESSION',
++        session: {
++          mainFlyoutId: 'parent-flyout-demo',
++          childFlyoutId: null,
++        },
++      });
++
++      expect(mockReactDomUnmount).toHaveBeenCalledTimes(1);
++    });
++
+     it('renders a system flyout to the DOM', () => {
+       expect(mockReactDomRender).not.toHaveBeenCalled();
+       systemFlyouts.open(<div>System flyout content</div>);

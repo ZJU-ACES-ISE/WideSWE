@@ -1,0 +1,36 @@
+task_id: storybookjs_mcp_storybook_ef32abdd2d6c
+hidden_test_patches:
+- repo: mcp
+  patch: hidden/patches/mcp-hidden-tests.patch
+  test_profile: mcp-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - packages/mcp/src/utils/format-manifest.test.ts
+  - packages/mcp/src/utils/get-manifest.test.ts
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from storybookjs/mcp PR(s) 50
+- repo: storybook
+  patch: hidden/patches/storybook-contract-tests.patch
+  test_profile: storybook-hidden
+  origin: upstream_test_diff
+  clean_overlay: true
+  source_file: &id002
+  - code/renderers/react/src/componentManifest/generator.test.ts
+  hidden_file: *id002
+  semantic_changes: Replaces Gold's private getCodeSnippet signature and complete
+    output snapshots with public componentManifestGenerator checks for required path,
+    retained component/example errors, source context, absent failed snippets, and
+    supported story forms. Existing enrichCsf tests remain regression coverage.
+  source: contract-aligned behavior from storybookjs/storybook PR(s) 32855
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - mcp-hidden
+    - storybook-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

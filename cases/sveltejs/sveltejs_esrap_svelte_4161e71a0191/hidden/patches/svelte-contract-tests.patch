@@ -1,0 +1,86 @@
+diff --git a/packages/svelte/tests/print/ecosync-contract.test.ts b/packages/svelte/tests/print/ecosync-contract.test.ts
+new file mode 100644
+index 0000000..1842d3d
+--- /dev/null
++++ b/packages/svelte/tests/print/ecosync-contract.test.ts
+@@ -0,0 +1,80 @@
++import { expect, test } from 'vitest';
++
++async function compiler() {
++	return import('svelte/compiler');
++}
++
++function collect_types(value: unknown, types = new Set<string>()) {
++	if (Array.isArray(value)) {
++		for (const item of value) collect_types(item, types);
++	} else if (value && typeof value === 'object') {
++		const node = value as Record<string, unknown>;
++		if (typeof node.type === 'string') types.add(node.type);
++		for (const child of Object.values(node)) collect_types(child, types);
++	}
++	return types;
++}
++
++async function roundtrip(source: string) {
++	const { parse, print } = await compiler();
++	const ast = parse(source, { modern: true });
++	const result = print(ast);
++	expect(typeof result.code).toBe('string');
++	expect(result.code.length).toBeGreaterThan(0);
++	expect(result.map).toBeDefined();
++	return { ast, result, reparsed: parse(result.code, { modern: true }) };
++}
++
++test('contract: prints elements, attributes and directives as valid Svelte', async () => {
++	const source = `<script>let active = true; let value = '';</script>\n<input bind:value class:active={active} />\n<button on:click={() => active = !active}>{value}</button>`;
++	const { result, reparsed } = await roundtrip(source);
++	const types = collect_types(reparsed);
++	expect(types).toContain('BindDirective');
++	expect(types).toContain('ClassDirective');
++	expect(types).toContain('OnDirective');
++	expect(result.code).toContain('active');
++	expect(result.code).toContain('value');
++});
++
++test('contract: prints control-flow blocks and snippets as valid Svelte', async () => {
++	const source = `{#snippet row(item)}<span>{item}</span>{/snippet}\n{#each items as item, i (item.id)}{#if i % 2}{@render row(item.name)}{:else}{item.name}{/if}{/each}\n{#await promise}<p>waiting</p>{:then value}<p>{value}</p>{:catch error}<p>{error.message}</p>{/await}`;
++	const { reparsed } = await roundtrip(source);
++	const types = collect_types(reparsed);
++	for (const type of ['SnippetBlock', 'EachBlock', 'IfBlock', 'RenderTag', 'AwaitBlock']) {
++		expect(types).toContain(type);
++	}
++});
++
++test('contract: prints component and special-element nodes as valid Svelte', async () => {
++	const source = `<script>import Widget from './Widget.svelte'; let tag = 'section';</script>\n<svelte:head><title>Title</title></svelte:head>\n<svelte:window onkeydown={() => {}} />\n<Widget answer={42} />\n<svelte:element this={tag}>content</svelte:element>`;
++	const { reparsed } = await roundtrip(source);
++	const types = collect_types(reparsed);
++	for (const type of ['SvelteHead', 'SvelteWindow', 'Component', 'SvelteElement']) {
++		expect(types).toContain(type);
++	}
++});
++
++test('contract: preserves root comments while printing script and style content', async () => {
++	const source = `<!-- root marker -->\n<script lang="ts">const count: number = 1;</script>\n<style>.item { color: red; }</style>\n<div class="item">{count}</div>`;
++	const { result, reparsed } = await roundtrip(source);
++	expect(result.code).toContain('root marker');
++	const types = collect_types(reparsed);
++	expect(types).toContain('Comment');
++	expect(types).toContain('StyleSheet');
++	expect(result.code).toContain('count');
++	expect(result.code).toContain('number');
++});
++
++test('contract: prints a modern AST sub-node independently', async () => {
++	const { parse, print } = await compiler();
++	const ast = parse(`<div data-kind="sample"><span>{name}</span></div>`, { modern: true });
++	const element = ast.fragment.nodes[0];
++	const result = print(element);
++	const reparsed = parse(result.code, { modern: true });
++	const types = collect_types(reparsed);
++
++	expect(types).toContain('RegularElement');
++	expect(result.code).toContain('data-kind');
++	expect(result.code).toContain('name');
++	expect(result.map).toBeDefined();
++});

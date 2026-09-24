@@ -1,0 +1,94 @@
+diff --git a/setup.py b/setup.py
+index 799150fd0..e0c810a92 100644
+--- a/setup.py
++++ b/setup.py
+@@ -116,7 +116,7 @@ _deps = [
+     "librosa",
+     "numpy",
+     "parameterized",
+-    "peft>=0.15.0",
++    "peft>=0.17.0",
+     "protobuf>=3.20.3,<4",
+     "pytest",
+     "pytest-timeout",
+diff --git a/src/diffusers/dependency_versions_table.py b/src/diffusers/dependency_versions_table.py
+index 3d14a8b3e..a3832cf9b 100644
+--- a/src/diffusers/dependency_versions_table.py
++++ b/src/diffusers/dependency_versions_table.py
+@@ -23,7 +23,7 @@ deps = {
+     "librosa": "librosa",
+     "numpy": "numpy",
+     "parameterized": "parameterized",
+-    "peft": "peft>=0.15.0",
++    "peft": "peft>=0.17.0",
+     "protobuf": "protobuf>=3.20.3,<4",
+     "pytest": "pytest",
+     "pytest-timeout": "pytest-timeout",
+diff --git a/src/diffusers/loaders/peft.py b/src/diffusers/loaders/peft.py
+index d048298fd..2381ccfef 100644
+--- a/src/diffusers/loaders/peft.py
++++ b/src/diffusers/loaders/peft.py
+@@ -320,7 +320,9 @@ class PeftAdapterMixin:
+                     # it to None
+                     incompatible_keys = None
+                 else:
+-                    inject_adapter_in_model(lora_config, self, adapter_name=adapter_name, **peft_kwargs)
++                    inject_adapter_in_model(
++                        lora_config, self, adapter_name=adapter_name, state_dict=state_dict, **peft_kwargs
++                    )
+                     incompatible_keys = set_peft_model_state_dict(self, state_dict, adapter_name, **peft_kwargs)
+ 
+                     if self._prepare_lora_hotswap_kwargs is not None:
+diff --git a/src/diffusers/utils/peft_utils.py b/src/diffusers/utils/peft_utils.py
+index 651fa2729..12066ee3f 100644
+--- a/src/diffusers/utils/peft_utils.py
++++ b/src/diffusers/utils/peft_utils.py
+@@ -197,20 +197,6 @@ def get_peft_kwargs(
+         "lora_bias": lora_bias,
+     }
+ 
+-    # Example: try load FusionX LoRA into Wan VACE
+-    exclude_modules = _derive_exclude_modules(model_state_dict, peft_state_dict, adapter_name)
+-    if exclude_modules:
+-        if not is_peft_version(">=", "0.14.0"):
+-            msg = """
+-It seems like there are certain modules that need to be excluded when initializing `LoraConfig`. Your current `peft`
+-version doesn't support passing an `exclude_modules` to `LoraConfig`. Please update it by running `pip install -U
+-peft`. For most cases, this can be completely ignored. But if it seems unexpected, please file an issue -
+-https://github.com/huggingface/diffusers/issues/new
+-            """
+-            logger.debug(msg)
+-        else:
+-            lora_config_kwargs.update({"exclude_modules": exclude_modules})
+-
+     return lora_config_kwargs
+ 
+ 
+@@ -388,27 +374,3 @@ def _maybe_warn_for_unhandled_keys(incompatible_keys, adapter_name):
+ 
+     if warn_msg:
+         logger.warning(warn_msg)
+-
+-
+-def _derive_exclude_modules(model_state_dict, peft_state_dict, adapter_name=None):
+-    """
+-    Derives the modules to exclude while initializing `LoraConfig` through `exclude_modules`. It works by comparing the
+-    `model_state_dict` and `peft_state_dict` and adds a module from `model_state_dict` to the exclusion set if it
+-    doesn't exist in `peft_state_dict`.
+-    """
+-    if model_state_dict is None:
+-        return
+-    all_modules = set()
+-    string_to_replace = f"{adapter_name}." if adapter_name else ""
+-
+-    for name in model_state_dict.keys():
+-        if string_to_replace:
+-            name = name.replace(string_to_replace, "")
+-        if "." in name:
+-            module_name = name.rsplit(".", 1)[0]
+-            all_modules.add(module_name)
+-
+-    target_modules_set = {name.split(".lora")[0] for name in peft_state_dict.keys()}
+-    exclude_modules = list(all_modules - target_modules_set)
+-
+-    return exclude_modules

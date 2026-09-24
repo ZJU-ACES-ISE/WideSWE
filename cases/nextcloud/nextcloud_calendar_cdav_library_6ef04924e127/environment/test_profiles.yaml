@@ -1,0 +1,38 @@
+profiles:
+  calendar-hidden:
+    repo: calendar
+    workdir: repos/nextcloud/calendar
+    evaluator_node_modules_mode: persistent
+    command: npm ci && npx vitest run tests/javascript/unit/models/calendar.test.js
+      --reporter=junit
+    status: implemented
+    test_files:
+    - tests/javascript/unit/models/calendar.test.js
+    dependency_image: ecosyncbench/base/node:24-bookworm
+    docker_service: node24
+    patched_files:
+    - tests/javascript/unit/models/calendar.test.js
+  cdav_library-hidden:
+    repo: cdav-library
+    workdir: repos/nextcloud/cdav-library
+    evaluator_node_modules_mode: persistent
+    command: npm ci && npx vitest run test/unit/clientTest.js --reporter=junit
+    status: implemented
+    test_files:
+    - test/unit/clientTest.js
+    dependency_image: ecosyncbench/base/node:24-bookworm
+    docker_service: node24
+    patched_files:
+    - test/unit/clientTest.js
+  server-hidden:
+    repo: server
+    workdir: repos/nextcloud/server
+    command: composer install && php lib/composer/bin/phpunit --configuration tests/phpunit-autotest.xml
+      apps/dav/tests/unit/CalDAV/CalendarTest.php
+    status: implemented
+    test_files:
+    - apps/dav/tests/unit/CalDAV/CalendarTest.php
+    dependency_image: ecosyncbench/deps/nextcloud-php:8.4-apcu-gd-v1
+    docker_service: php84-nextcloud
+    patched_files:
+    - apps/dav/tests/unit/CalDAV/CalendarTest.php

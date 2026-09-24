@@ -1,0 +1,1617 @@
+diff --git a/.changeset/brave-guests-hope.md b/.changeset/brave-guests-hope.md
+new file mode 100644
+index 000000000..d21af1c05
+--- /dev/null
++++ b/.changeset/brave-guests-hope.md
+@@ -0,0 +1,5 @@
++---
++'@sveltejs/kit': patch
++---
++
++fix: ensure inlined CSS follows `paths.assets` and `paths.relative` settings
+diff --git a/.changeset/shy-tables-shout.md b/.changeset/shy-tables-shout.md
+new file mode 100644
+index 000000000..ce5bc8a09
+--- /dev/null
++++ b/.changeset/shy-tables-shout.md
+@@ -0,0 +1,5 @@
++---
++'@sveltejs/kit': patch
++---
++
++fix: ensure CSS inlining includes components that are conditionally rendered
+diff --git a/packages/enhanced-img/package.json b/packages/enhanced-img/package.json
+index fca5b0383..b6c9c794b 100644
+--- a/packages/enhanced-img/package.json
++++ b/packages/enhanced-img/package.json
+@@ -38,7 +38,7 @@
+ 	},
+ 	"types": "types/index.d.ts",
+ 	"dependencies": {
+-		"magic-string": "^0.30.5",
++		"magic-string": "catalog:",
+ 		"sharp": "^0.34.1",
+ 		"svelte-parse-markup": "^0.1.5",
+ 		"vite-imagetools": "^9.0.2",
+diff --git a/packages/kit/package.json b/packages/kit/package.json
+index 23931ecb7..da682d780 100644
+--- a/packages/kit/package.json
++++ b/packages/kit/package.json
+@@ -26,7 +26,7 @@
+ 		"devalue": "^5.6.2",
+ 		"esm-env": "^1.2.2",
+ 		"kleur": "^4.1.5",
+-		"magic-string": "^0.30.5",
++		"magic-string": "catalog:",
+ 		"mrmime": "^2.0.0",
+ 		"sade": "^1.8.1",
+ 		"set-cookie-parser": "^2.6.0",
+diff --git a/packages/kit/src/exports/vite/build/build_server.js b/packages/kit/src/exports/vite/build/build_server.js
+index 6a1e13fcc..5c0c280c8 100644
+--- a/packages/kit/src/exports/vite/build/build_server.js
++++ b/packages/kit/src/exports/vite/build/build_server.js
+@@ -5,14 +5,43 @@ import { s } from '../../../utils/misc.js';
+ import { normalizePath } from 'vite';
+ import { basename, join } from 'node:path';
+ import { create_node_analyser } from '../static_analysis/index.js';
++import { fix_css_urls } from '../../../utils/css.js';
+ 
++/**
++ * Regenerate server nodes after acquiring client manifest
++ * @overload
++ * @param {string} out
++ * @param {import('types').ValidatedKitConfig} kit
++ * @param {import('types').ManifestData} manifest_data
++ * @param {import('vite').Manifest} server_manifest
++ * @param {import('vite').Manifest} client_manifest
++ * @param {string} assets_path
++ * @param {import('vite').Rollup.RollupOutput['output']} client_chunks
++ * @param {import('types').RecursiveRequired<import('types').ValidatedConfig['kit']['output']>} output_config
++ * @param {Map<string, { page_options: Record<string, any> | null, children: string[] }>} static_exports
++ * @returns {Promise<void>}
++ */
++/**
++ * Build server nodes without client manifest for analysis phase
++ * @overload
++ * @param {string} out
++ * @param {import('types').ValidatedKitConfig} kit
++ * @param {import('types').ManifestData} manifest_data
++ * @param {import('vite').Manifest} server_manifest
++ * @param {null} client_manifest
++ * @param {null} assets_path
++ * @param {null} client_chunks
++ * @param {import('types').RecursiveRequired<import('types').ValidatedConfig['kit']['output']>} output_config
++ * @param {Map<string, { page_options: Record<string, any> | null, children: string[] }>} static_exports
++ * @returns {Promise<void>}
++ */
+ /**
+  * @param {string} out
+  * @param {import('types').ValidatedKitConfig} kit
+  * @param {import('types').ManifestData} manifest_data
+  * @param {import('vite').Manifest} server_manifest
+  * @param {import('vite').Manifest | null} client_manifest
+- * @param {import('vite').Rollup.OutputBundle | null} server_bundle
++ * @param {string | null} assets_path
+  * @param {import('vite').Rollup.RollupOutput['output'] | null} client_chunks
+  * @param {import('types').RecursiveRequired<import('types').ValidatedConfig['kit']['output']>} output_config
+  * @param {Map<string, { page_options: Record<string, any> | null, children: string[] }>} static_exports
+@@ -23,7 +52,7 @@ export async function build_server_nodes(
+ 	manifest_data,
+ 	server_manifest,
+ 	client_manifest,
+-	server_bundle,
++	assets_path,
+ 	client_chunks,
+ 	output_config,
+ 	static_exports
+@@ -31,38 +60,59 @@ export async function build_server_nodes(
+ 	mkdirp(`${out}/server/nodes`);
+ 	mkdirp(`${out}/server/stylesheets`);
+ 
+-	/** @type {Map<string, string>} */
++	/**
++	 * Stylesheet names and their contents which are below the inline threshold
++	 * @type {Map<string, string>}
++	 */
+ 	const stylesheets_to_inline = new Map();
+ 
+-	if (server_bundle && client_chunks && kit.inlineStyleThreshold > 0) {
+-		const client = get_stylesheets(client_chunks);
+-		const server = get_stylesheets(Object.values(server_bundle));
++	/**
++	 * For CSS inlining, we either store a string or a function that returns the
++	 * styles with the correct relative URLs
++	 * @type {(css: string, eager_assets: Set<string>) => string}
++	 */
++	let prepare_css_for_inlining = (css) => s(css);
+ 
+-		// map server stylesheet name to the client stylesheet name
+-		for (const [id, client_stylesheet] of client.stylesheets_used) {
+-			const server_stylesheet = server.stylesheets_used.get(id);
+-			if (!server_stylesheet) {
++	if (client_chunks && kit.inlineStyleThreshold > 0 && output_config.bundleStrategy === 'split') {
++		for (const chunk of client_chunks) {
++			if (chunk.type !== 'asset' || !chunk.fileName.endsWith('.css')) {
+ 				continue;
+ 			}
+-			client_stylesheet.forEach((file, i) => {
+-				stylesheets_to_inline.set(file, server_stylesheet[i]);
+-			});
+-		}
+ 
+-		// filter out stylesheets that should not be inlined
+-		for (const [fileName, content] of client.stylesheet_content) {
+-			if (content.length >= kit.inlineStyleThreshold) {
+-				stylesheets_to_inline.delete(fileName);
++			const source = chunk.source.toString();
++			if (source.length < kit.inlineStyleThreshold) {
++				stylesheets_to_inline.set(chunk.fileName, source);
+ 			}
+ 		}
+ 
+-		// map server stylesheet source to the client stylesheet name
+-		for (const [client_file, server_file] of stylesheets_to_inline) {
+-			const source = server.stylesheet_content.get(server_file);
+-			if (!source) {
+-				throw new Error(`Server stylesheet source not found for client stylesheet ${client_file}`);
+-			}
+-			stylesheets_to_inline.set(client_file, source);
++		// If the client CSS has URL references to assets, we need to adjust the
++		// relative path so that they are correct when inlined into the document.
++		// Although `paths.assets` is static, we need to pass in a fake path
++		// `/_svelte_kit_assets` at runtime when running `vite preview`
++		if (kit.paths.assets || kit.paths.relative) {
++			const static_assets = new Set(
++				manifest_data.assets.map((asset) => decodeURIComponent(asset.file))
++			);
++
++			const segments = /** @type {string} */ (assets_path).split('/');
++			const static_asset_prefix = segments.map(() => '..').join('/') + '/';
++
++			prepare_css_for_inlining = (css, eager_assets) => {
++				const transformed_css = fix_css_urls({
++					css,
++					vite_assets: eager_assets,
++					static_assets,
++					paths_assets: '${assets}',
++					base: '${base}',
++					static_asset_prefix
++				});
++
++				// only convert to a function if we have adjusted any URLs
++				if (css !== transformed_css) {
++					return `function css(assets, base) { return \`${s(transformed_css).slice(1, -1)}\`; }`;
++				}
++				return s(css);
++			};
+ 		}
+ 	}
+ 
+@@ -96,6 +146,9 @@ export async function build_server_nodes(
+ 		/** @type {string[]} */
+ 		let fonts = [];
+ 
++		/** @type {Set<string>} */
++		let eager_assets = new Set();
++
+ 		if (node.component && client_manifest) {
+ 			exports.push(
+ 				'let component_cache;',
+@@ -135,7 +188,7 @@ export async function build_server_nodes(
+ 			const entry_path = `${normalizePath(kit.outDir)}/generated/client-optimized/nodes/${i}.js`;
+ 			const entry = find_deps(client_manifest, entry_path, true);
+ 
+-			// eagerly load client stylesheets and fonts imported by the SSR-ed page to avoid FOUC.
++			// Eagerly load client stylesheets and fonts imported by the SSR-ed page to avoid FOUC.
+ 			// However, if it is not used during SSR (not present in the server manifest),
+ 			// then it can be lazily loaded in the browser.
+ 
+@@ -153,8 +206,6 @@ export async function build_server_nodes(
+ 
+ 			/** @type {Set<string>} */
+ 			const eager_css = new Set();
+-			/** @type {Set<string>} */
+-			const eager_assets = new Set();
+ 
+ 			entry.stylesheet_map.forEach((value, filepath) => {
+ 				// pages and layouts are renamed to node indexes when optimised for the client
+@@ -180,27 +231,46 @@ export async function build_server_nodes(
+ 			`export const fonts = ${s(fonts)};`
+ 		);
+ 
+-		/** @type {string[]} */
+-		const inline_styles = [];
+-
+-		stylesheets.forEach((file, i) => {
+-			if (stylesheets_to_inline.has(file)) {
+-				const filename = basename(file);
+-				const dest = `${out}/server/stylesheets/${filename}.js`;
+-				const source = stylesheets_to_inline.get(file);
+-				if (!source) {
+-					throw new Error(`Server stylesheet source not found for client stylesheet ${file}`);
++		/**
++		 * Assets that have been processed by Vite (decoded and with the asset path stripped)
++		 * @type {Set<string>}
++		 */
++		let vite_assets = new Set();
++
++		// Keep track of Vite asset filenames so that we avoid touching unrelated ones
++		// when adjusting the inlined CSS
++		if (stylesheets_to_inline.size && assets_path && eager_assets.size) {
++			vite_assets = new Set(
++				Array.from(eager_assets).map((asset) => {
++					return decodeURIComponent(asset.replace(`${assets_path}/`, ''));
++				})
++			);
++		}
++
++		if (stylesheets_to_inline.size) {
++			/** @type {string[]} */
++			const inline_styles = [];
++
++			stylesheets.forEach((file, i) => {
++				if (stylesheets_to_inline.has(file)) {
++					const filename = basename(file);
++					const dest = `${out}/server/stylesheets/${filename}.js`;
++
++					let css = /** @type {string} */ (stylesheets_to_inline.get(file));
++
++					fs.writeFileSync(
++						dest,
++						`// ${filename}\nexport default ${prepare_css_for_inlining(css, vite_assets)};`
++					);
++					const name = `stylesheet_${i}`;
++					imports.push(`import ${name} from '../stylesheets/${filename}.js';`);
++					inline_styles.push(`\t${s(file)}: ${name}`);
+ 				}
+-				fs.writeFileSync(dest, `// ${filename}\nexport default ${s(source)};`);
++			});
+ 
+-				const name = `stylesheet_${i}`;
+-				imports.push(`import ${name} from '../stylesheets/${filename}.js';`);
+-				inline_styles.push(`\t${s(file)}: ${name}`);
++			if (inline_styles.length > 0) {
++				exports.push(`export const inline_styles = () => ({\n${inline_styles.join(',\n')}\n});`);
+ 			}
+-		});
+-
+-		if (inline_styles.length > 0) {
+-			exports.push(`export const inline_styles = () => ({\n${inline_styles.join(',\n')}\n});`);
+ 		}
+ 
+ 		fs.writeFileSync(
+@@ -209,37 +279,3 @@ export async function build_server_nodes(
+ 		);
+ 	}
+ }
+-
+-/**
+- * @param {(import('vite').Rollup.OutputAsset | import('vite').Rollup.OutputChunk)[]} chunks
+- */
+-function get_stylesheets(chunks) {
+-	/**
+-	 * A map of module IDs and the stylesheets they use.
+-	 * @type {Map<string, string[]>}
+-	 */
+-	const stylesheets_used = new Map();
+-
+-	/**
+-	 * A map of stylesheet names and their content.
+-	 * @type {Map<string, string>}
+-	 */
+-	const stylesheet_content = new Map();
+-
+-	for (const chunk of chunks) {
+-		if (chunk.type === 'asset') {
+-			if (chunk.fileName.endsWith('.css')) {
+-				stylesheet_content.set(chunk.fileName, chunk.source.toString());
+-			}
+-			continue;
+-		}
+-
+-		if (chunk.viteMetadata?.importedCss.size) {
+-			const css = Array.from(chunk.viteMetadata.importedCss);
+-			for (const id of chunk.moduleIds) {
+-				stylesheets_used.set(id, css);
+-			}
+-		}
+-	}
+-	return { stylesheets_used, stylesheet_content };
+-}
+diff --git a/packages/kit/src/exports/vite/index.js b/packages/kit/src/exports/vite/index.js
+index 47116b441..445001139 100644
+--- a/packages/kit/src/exports/vite/index.js
++++ b/packages/kit/src/exports/vite/index.js
+@@ -1031,7 +1031,7 @@ async function kit({ svelte_config }) {
+ 		 */
+ 		writeBundle: {
+ 			sequential: true,
+-			async handler(_options, bundle) {
++			async handler(_options) {
+ 				if (secondary_build_started) return; // only run this once
+ 
+ 				const verbose = vite_config.logLevel === 'info';
+@@ -1271,7 +1271,7 @@ async function kit({ svelte_config }) {
+ 					manifest_data,
+ 					server_manifest,
+ 					client_manifest,
+-					bundle,
++					assets_path,
+ 					client_chunks,
+ 					svelte_config.kit.output,
+ 					static_exports
+diff --git a/packages/kit/src/runtime/server/page/render.js b/packages/kit/src/runtime/server/page/render.js
+index 6163610a6..0c39c90d4 100644
+--- a/packages/kit/src/runtime/server/page/render.js
++++ b/packages/kit/src/runtime/server/page/render.js
+@@ -245,7 +245,14 @@ export async function render_response({
+ 			for (const url of node.fonts) fonts.add(url);
+ 
+ 			if (node.inline_styles && !client.inline) {
+-				Object.entries(await node.inline_styles()).forEach(([k, v]) => inline_styles.set(k, v));
++				Object.entries(await node.inline_styles()).forEach(([filename, css]) => {
++					if (typeof css === 'string') {
++						inline_styles.set(filename, css);
++						return;
++					}
++
++					inline_styles.set(filename, css(`${assets}/${paths.app_dir}/immutable/assets`, assets));
++				});
+ 			}
+ 		}
+ 	} else {
+diff --git a/packages/kit/src/types/internal.d.ts b/packages/kit/src/types/internal.d.ts
+index 6384201af..096d9c214 100644
+--- a/packages/kit/src/types/internal.d.ts
++++ b/packages/kit/src/types/internal.d.ts
+@@ -431,7 +431,9 @@ export interface SSRNode {
+ 	server_id?: string;
+ 
+ 	/** inlined styles */
+-	inline_styles?(): MaybePromise<Record<string, string>>;
++	inline_styles?(): MaybePromise<
++		Record<string, string | ((assets: string, base: string) => string)>
++	>;
+ 	/** Svelte component */
+ 	component?: SSRComponentLoader;
+ 	/** +page.js or +layout.js */
+diff --git a/packages/kit/src/utils/css.js b/packages/kit/src/utils/css.js
+new file mode 100644
+index 000000000..9953de3b6
+--- /dev/null
++++ b/packages/kit/src/utils/css.js
+@@ -0,0 +1,210 @@
++import MagicString from 'magic-string';
++import * as svelte from 'svelte/compiler';
++
++/** @typedef {ReturnType<typeof import('svelte/compiler').parseCss>['children']} StyleSheetChildren */
++
++/** @typedef {{ property: string; value: string; start: number; end: number; type: 'Declaration' }} Declaration */
++
++const parse = svelte.parseCss
++	? svelte.parseCss
++	: /** @param {string} css */
++		(css) => {
++			return /** @type {{ css: { children: StyleSheetChildren } }} */ (
++				svelte.parse(`<style>${css}</style>`)
++			).css;
++		};
++
++const SKIP_PARSING_REGEX = /url\(/i;
++
++/** Capture a single url(...) so we can process them one at a time */
++const URL_FUNCTION_REGEX = /url\(\s*.*?\)/gi;
++
++/** Captures the value inside a CSS url(...) */
++const URL_PARAMETER_REGEX = /url\(\s*(['"]?)(.*?)\1\s*\)/i;
++
++/** Splits the URL if there's a query string or hash fragment */
++const HASH_OR_QUERY_REGEX = /[#?]/;
++
++/**
++ * Assets handled by Vite that are referenced in the stylesheet always start
++ * with this prefix because Vite emits them into the same directory as the CSS file
++ */
++const VITE_ASSET_PREFIX = './';
++
++const AST_OFFSET = '<style>'.length;
++
++/**
++ * We need to fix the asset URLs in the CSS before we inline them into a document
++ * because they are now relative to the document instead of the CSS file.
++ * @param {{
++ * 	css: string;
++ * 	vite_assets: Set<string>;
++ * 	static_assets: Set<string>;
++ * 	paths_assets: string;
++ * 	base: string;
++ * 	static_asset_prefix: string;
++ * }} opts
++ * @returns {string}
++ */
++export function fix_css_urls({
++	css,
++	vite_assets,
++	static_assets,
++	paths_assets,
++	base,
++	static_asset_prefix
++}) {
++	// skip parsing if there are no url(...) occurrences
++	if (!SKIP_PARSING_REGEX.test(css)) {
++		return css;
++	}
++
++	// safe guard in case of trailing slashes (but this should never happen)
++	if (paths_assets.endsWith('/')) {
++		paths_assets = paths_assets.slice(0, -1);
++	}
++
++	if (base.endsWith('/')) {
++		base = base.slice(0, -1);
++	}
++
++	const s = new MagicString(css);
++
++	const parsed = parse(css);
++
++	for (const child of parsed.children) {
++		find_declarations(child, (declaration) => {
++			if (!SKIP_PARSING_REGEX.test) return;
++
++			const cleaned = tippex_comments_and_strings(declaration.value);
++
++			/** @type {string} */
++			let new_value = declaration.value;
++
++			/** @type {RegExpExecArray | null} */
++			let url_function_found;
++			URL_FUNCTION_REGEX.lastIndex = 0;
++			while ((url_function_found = URL_FUNCTION_REGEX.exec(cleaned))) {
++				const [url_function] = url_function_found;
++
++				// After finding a legitimate url(...), we want to operate on the original
++				// that may have a string inside it
++				const original_url_function = declaration.value.slice(
++					url_function_found.index,
++					url_function_found.index + url_function.length
++				);
++
++				const url_parameter_found = URL_PARAMETER_REGEX.exec(original_url_function);
++				if (!url_parameter_found) continue;
++
++				const [, , url] = url_parameter_found;
++				const [url_without_hash_or_query] = url.split(HASH_OR_QUERY_REGEX);
++
++				/** @type {string | undefined} */
++				let new_prefix;
++
++				// Check if it's an asset processed by Vite...
++				let current_prefix = url_without_hash_or_query.slice(0, VITE_ASSET_PREFIX.length);
++				let filename = url_without_hash_or_query.slice(VITE_ASSET_PREFIX.length);
++				const decoded = decodeURIComponent(filename);
++
++				if (current_prefix === VITE_ASSET_PREFIX && vite_assets.has(decoded)) {
++					new_prefix = paths_assets;
++				} else {
++					// ...or if it's from the static directory
++					current_prefix = url_without_hash_or_query.slice(0, static_asset_prefix.length);
++					filename = url_without_hash_or_query.slice(static_asset_prefix.length);
++					const decoded = decodeURIComponent(filename);
++
++					if (current_prefix === static_asset_prefix && static_assets.has(decoded)) {
++						new_prefix = base;
++					}
++				}
++
++				if (!new_prefix) continue;
++
++				new_value = new_value.replace(`${current_prefix}${filename}`, `${new_prefix}/${filename}`);
++			}
++
++			if (declaration.value === new_value) return;
++
++			if (!svelte.parseCss) {
++				declaration.start = declaration.start - AST_OFFSET;
++				declaration.end = declaration.end - AST_OFFSET;
++			}
++
++			s.update(declaration.start, declaration.end, `${declaration.property}: ${new_value}`);
++		});
++	}
++
++	return s.toString();
++}
++
++/**
++ * @param {StyleSheetChildren[0]} rule
++ * @param {(declaration: Declaration) => void} callback
++ */
++function find_declarations(rule, callback) {
++	// Vite already inlines relative @import rules, so we don't need to handle them here
++	if (!rule.block) return;
++
++	for (const child of rule.block.children) {
++		if (child.type !== 'Declaration') {
++			find_declarations(child, callback);
++			continue;
++		}
++		callback(child);
++	}
++}
++
++/**
++ * Replaces comment and string contents with whitespace.
++ * @param {string} value
++ * @returns {string}
++ */
++export function tippex_comments_and_strings(value) {
++	let new_value = '';
++	let escaped = false;
++	let in_comment = false;
++
++	/** @type {null | '"' | "'"} */
++	let quote_mark = null;
++
++	let i = 0;
++	while (i < value.length) {
++		const char = value[i];
++
++		if (in_comment) {
++			if (char === '*' && value[i + 1] === '/') {
++				in_comment = false;
++				new_value += char;
++			} else {
++				new_value += ' ';
++			}
++		} else if (!quote_mark && char === '/' && value[i + 1] === '*') {
++			in_comment = true;
++			new_value += '/*';
++			i++; // skip the '*' since we already added it
++		} else if (escaped) {
++			new_value += ' ';
++			escaped = false;
++		} else if (quote_mark && char === '\\') {
++			escaped = true;
++			new_value += ' ';
++		} else if (char === quote_mark) {
++			quote_mark = null;
++			new_value += char;
++		} else if (quote_mark) {
++			new_value += ' ';
++		} else if (quote_mark === null && (char === '"' || char === "'")) {
++			quote_mark = char;
++			new_value += char;
++		} else {
++			new_value += char;
++		}
++
++		i++;
++	}
++
++	return new_value;
++}
+diff --git a/packages/kit/types/index.d.ts b/packages/kit/types/index.d.ts
+index b301ec991..25c95fe9b 100644
+--- a/packages/kit/types/index.d.ts
++++ b/packages/kit/types/index.d.ts
+@@ -2560,7 +2560,9 @@ declare module '@sveltejs/kit' {
+ 		server_id?: string;
+ 
+ 		/** inlined styles */
+-		inline_styles?(): MaybePromise<Record<string, string>>;
++		inline_styles?(): MaybePromise<
++			Record<string, string | ((assets: string, base: string) => string)>
++		>;
+ 		/** Svelte component */
+ 		component?: SSRComponentLoader;
+ 		/** +page.js or +layout.js */
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index d26d85d52..652903e47 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -81,6 +81,9 @@ catalogs:
+     eslint:
+       specifier: ^9.34.0
+       version: 9.34.0
++    magic-string:
++      specifier: ^0.30.21
++      version: 0.30.21
+     polka:
+       specifier: ^1.0.0-next.28
+       version: 1.0.0-next.28
+@@ -91,8 +94,8 @@ catalogs:
+       specifier: ^3.0.0
+       version: 3.0.0
+     svelte:
+-      specifier: ^5.46.4
+-      version: 5.46.4
++      specifier: ^5.48.4
++      version: 5.48.4
+     svelte-check:
+       specifier: ^4.3.4
+       version: 4.3.4
+@@ -127,7 +130,7 @@ importers:
+         version: 1.56.0
+       '@sveltejs/eslint-config':
+         specifier: 'catalog:'
+-        version: 8.2.0(@stylistic/eslint-plugin-js@2.1.0(eslint@9.34.0(jiti@2.4.2)))(eslint-config-prettier@9.1.0(eslint@9.34.0(jiti@2.4.2)))(eslint-plugin-n@17.16.1(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3))(eslint-plugin-svelte@3.9.3(eslint@9.34.0(jiti@2.4.2))(svelte@5.46.4)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(eslint@9.34.0(jiti@2.4.2))(typescript-eslint@8.43.0(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3))(typescript@5.8.3)
++        version: 8.2.0(@stylistic/eslint-plugin-js@2.1.0(eslint@9.34.0(jiti@2.4.2)))(eslint-config-prettier@9.1.0(eslint@9.34.0(jiti@2.4.2)))(eslint-plugin-n@17.16.1(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3))(eslint-plugin-svelte@3.9.3(eslint@9.34.0(jiti@2.4.2))(svelte@5.48.4)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(eslint@9.34.0(jiti@2.4.2))(typescript-eslint@8.43.0(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3))(typescript@5.8.3)
+       '@svitejs/changesets-changelog-github-compact':
+         specifier: 'catalog:'
+         version: 1.2.0
+@@ -139,7 +142,7 @@ importers:
+         version: 3.6.0
+       prettier-plugin-svelte:
+         specifier: ^3.4.0
+-        version: 3.4.0(prettier@3.6.0)(svelte@5.46.4)
++        version: 3.4.0(prettier@3.6.0)(svelte@5.48.4)
+       typescript-eslint:
+         specifier: 'catalog:'
+         version: 8.43.0(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3)
+@@ -151,7 +154,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -200,13 +203,13 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       server-side-dep:
+         specifier: file:server-side-dep
+         version: file:packages/adapter-cloudflare/test/apps/pages/server-side-dep
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       vite:
+         specifier: 'catalog:'
+         version: 6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -221,13 +224,13 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       server-side-dep:
+         specifier: file:server-side-dep
+         version: file:packages/adapter-cloudflare/test/apps/workers/server-side-dep
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       vite:
+         specifier: 'catalog:'
+         version: 6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -276,7 +279,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -300,10 +303,10 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       vite:
+         specifier: 'catalog:'
+         version: 6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -315,10 +318,10 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       vite:
+         specifier: 'catalog:'
+         version: 6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -346,7 +349,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -373,7 +376,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -382,7 +385,7 @@ importers:
+         version: 3.0.2
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       typescript:
+         specifier: ^5.3.3
+         version: 5.8.3
+@@ -397,13 +400,13 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       sirv-cli:
+         specifier: 'catalog:'
+         version: 3.0.0
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       vite:
+         specifier: 'catalog:'
+         version: 6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -415,13 +418,13 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       sirv-cli:
+         specifier: 'catalog:'
+         version: 3.0.0
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       vite:
+         specifier: 'catalog:'
+         version: 6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -440,7 +443,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -463,14 +466,14 @@ importers:
+   packages/enhanced-img:
+     dependencies:
+       magic-string:
+-        specifier: ^0.30.5
++        specifier: 'catalog:'
+         version: 0.30.21
+       sharp:
+         specifier: ^0.34.1
+         version: 0.34.4
+       svelte-parse-markup:
+         specifier: ^0.1.5
+-        version: 0.1.5(svelte@5.46.4)
++        version: 0.1.5(svelte@5.48.4)
+       vite-imagetools:
+         specifier: ^9.0.2
+         version: 9.0.2(rollup@4.50.1)
+@@ -480,7 +483,7 @@ importers:
+     devDependencies:
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/estree':
+         specifier: 'catalog:'
+         version: 1.0.8
+@@ -492,7 +495,7 @@ importers:
+         version: 4.50.1
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       typescript:
+         specifier: ^5.6.3
+         version: 5.8.3
+@@ -513,10 +516,10 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       vite:
+         specifier: 'catalog:'
+         version: 6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -548,7 +551,7 @@ importers:
+         specifier: ^4.1.5
+         version: 4.1.5
+       magic-string:
+-        specifier: ^0.30.5
++        specifier: 'catalog:'
+         version: 0.30.21
+       mrmime:
+         specifier: ^2.0.0
+@@ -571,7 +574,7 @@ importers:
+         version: 1.56.0
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/connect':
+         specifier: 'catalog:'
+         version: 3.4.38
+@@ -589,10 +592,10 @@ importers:
+         version: 4.50.1
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-preprocess:
+         specifier: 'catalog:'
+-        version: 6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.46.4)(typescript@5.8.3)
++        version: 6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.3.3
+         version: 5.8.3
+@@ -613,16 +616,16 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       dropcss:
+         specifier: 'catalog:'
+         version: 1.0.16
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -637,13 +640,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -670,16 +673,16 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@vitest/browser-playwright':
+         specifier: 'catalog:'
+         version: 4.0.16(playwright@1.56.0)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))(vitest@4.0.16)
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       test-redirect-importer:
+         specifier: workspace:*
+         version: link:../../../../test-redirect-importer
+@@ -703,7 +706,7 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       e2e-test-dep-error:
+         specifier: file:./_test_dependencies/cjs-only
+         version: e2e-test-dep-cjs-only@file:packages/kit/test/apps/dev-only/_test_dependencies/cjs-only
+@@ -736,10 +739,10 @@ importers:
+         version: e2e-test-dep-cjs-only@file:packages/kit/test/apps/dev-only/_test_dependencies/cjs-only
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -754,13 +757,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -775,13 +778,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -796,13 +799,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -820,13 +823,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -844,13 +847,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -871,13 +874,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -892,13 +895,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -913,13 +916,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -943,13 +946,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -967,13 +970,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -991,13 +994,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1015,13 +1018,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1036,13 +1039,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1057,13 +1060,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1078,13 +1081,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1099,13 +1102,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1120,13 +1123,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1141,13 +1144,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1162,13 +1165,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1183,13 +1186,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1204,13 +1207,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1225,13 +1228,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1246,13 +1249,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1267,13 +1270,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1291,13 +1294,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1315,13 +1318,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1348,11 +1351,11 @@ importers:
+         version: 7.7.3
+       svelte2tsx:
+         specifier: ~0.7.33
+-        version: 0.7.33(svelte@5.46.4)(typescript@5.8.3)
++        version: 0.7.33(svelte@5.48.4)(typescript@5.8.3)
+     devDependencies:
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -1364,10 +1367,10 @@ importers:
+         version: 3.6.0
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-preprocess:
+         specifier: 'catalog:'
+-        version: 6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.46.4)(typescript@5.8.3)
++        version: 6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.3.3
+         version: 5.8.3
+@@ -1415,22 +1418,22 @@ importers:
+         version: link:../../packages/package
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       prettier:
+         specifier: ^3.3.2
+         version: 3.6.0
+       prettier-plugin-svelte:
+         specifier: ^3.2.6
+-        version: 3.4.0(prettier@3.6.0)(svelte@5.46.4)
++        version: 3.4.0(prettier@3.6.0)(svelte@5.48.4)
+       publint:
+         specifier: 'catalog:'
+         version: 0.3.0
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.46.4
++        version: 5.48.4
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3)
++        version: 4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.0
+         version: 5.8.3
+@@ -5514,8 +5517,8 @@ packages:
+       svelte: ^3.55 || ^4.0.0-next.0 || ^4.0 || ^5.0.0-next.0
+       typescript: ^4.9.4 || ^5.0.0
+ 
+-  svelte@5.46.4:
+-    resolution: {integrity: sha512-VJwdXrmv9L8L7ZasJeWcCjoIuMRVbhuxbss0fpVnR8yorMmjNDwcjIH08vS6wmSzzzgAG5CADQ1JuXPS2nwt9w==}
++  svelte@5.48.4:
++    resolution: {integrity: sha512-JV3E7ckuQwxGVm9GbECVtgrs57E9uDz95H2mYpo38QIJd+ET2aR8zDK/iWI8J7VJtib4bwnJ3MMc6FKBJ0hGrQ==}
+     engines: {node: '>=18'}
+ 
+   svgo@4.0.0:
+@@ -7624,34 +7627,34 @@ snapshots:
+     dependencies:
+       acorn: 8.15.0
+ 
+-  '@sveltejs/eslint-config@8.2.0(@stylistic/eslint-plugin-js@2.1.0(eslint@9.34.0(jiti@2.4.2)))(eslint-config-prettier@9.1.0(eslint@9.34.0(jiti@2.4.2)))(eslint-plugin-n@17.16.1(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3))(eslint-plugin-svelte@3.9.3(eslint@9.34.0(jiti@2.4.2))(svelte@5.46.4)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(eslint@9.34.0(jiti@2.4.2))(typescript-eslint@8.43.0(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3))(typescript@5.8.3)':
++  '@sveltejs/eslint-config@8.2.0(@stylistic/eslint-plugin-js@2.1.0(eslint@9.34.0(jiti@2.4.2)))(eslint-config-prettier@9.1.0(eslint@9.34.0(jiti@2.4.2)))(eslint-plugin-n@17.16.1(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3))(eslint-plugin-svelte@3.9.3(eslint@9.34.0(jiti@2.4.2))(svelte@5.48.4)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(eslint@9.34.0(jiti@2.4.2))(typescript-eslint@8.43.0(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3))(typescript@5.8.3)':
+     dependencies:
+       '@stylistic/eslint-plugin-js': 2.1.0(eslint@9.34.0(jiti@2.4.2))
+       eslint: 9.34.0(jiti@2.4.2)
+       eslint-config-prettier: 9.1.0(eslint@9.34.0(jiti@2.4.2))
+       eslint-plugin-n: 17.16.1(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3)
+-      eslint-plugin-svelte: 3.9.3(eslint@9.34.0(jiti@2.4.2))(svelte@5.46.4)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3))
++      eslint-plugin-svelte: 3.9.3(eslint@9.34.0(jiti@2.4.2))(svelte@5.48.4)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3))
+       globals: 15.15.0
+       typescript: 5.8.3
+       typescript-eslint: 8.43.0(eslint@9.34.0(jiti@2.4.2))(typescript@5.8.3)
+ 
+-  '@sveltejs/vite-plugin-svelte-inspector@5.0.0-next.0(@sveltejs/vite-plugin-svelte@6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)))(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))':
++  '@sveltejs/vite-plugin-svelte-inspector@5.0.0-next.0(@sveltejs/vite-plugin-svelte@6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)))(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))':
+     dependencies:
+-      '@sveltejs/vite-plugin-svelte': 6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++      '@sveltejs/vite-plugin-svelte': 6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       debug: 4.4.3
+-      svelte: 5.46.4
++      svelte: 5.48.4
+       vite: 6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+     transitivePeerDependencies:
+       - supports-color
+ 
+-  '@sveltejs/vite-plugin-svelte@6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))':
++  '@sveltejs/vite-plugin-svelte@6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))':
+     dependencies:
+-      '@sveltejs/vite-plugin-svelte-inspector': 5.0.0-next.0(@sveltejs/vite-plugin-svelte@6.0.0-next.3(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)))(svelte@5.46.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++      '@sveltejs/vite-plugin-svelte-inspector': 5.0.0-next.0(@sveltejs/vite-plugin-svelte@6.0.0-next.3(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)))(svelte@5.48.4)(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       debug: 4.4.3
+       deepmerge: 4.3.1
+       kleur: 4.1.5
+       magic-string: 0.30.21
+-      svelte: 5.46.4
++      svelte: 5.48.4
+       vite: 6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+       vitefu: 1.1.1(vite@6.3.6(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+     transitivePeerDependencies:
+@@ -8678,7 +8681,7 @@ snapshots:
+       - supports-color
+       - typescript
+ 
+-  eslint-plugin-svelte@3.9.3(eslint@9.34.0(jiti@2.4.2))(svelte@5.46.4)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)):
++  eslint-plugin-svelte@3.9.3(eslint@9.34.0(jiti@2.4.2))(svelte@5.48.4)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)):
+     dependencies:
+       '@eslint-community/eslint-utils': 4.9.1(eslint@9.34.0(jiti@2.4.2))
+       '@jridgewell/sourcemap-codec': 1.5.5
+@@ -8690,9 +8693,9 @@ snapshots:
+       postcss-load-config: 3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3))
+       postcss-safe-parser: 7.0.1(postcss@8.5.6)
+       semver: 7.7.3
+-      svelte-eslint-parser: 1.4.1(svelte@5.46.4)
++      svelte-eslint-parser: 1.4.1(svelte@5.48.4)
+     optionalDependencies:
+-      svelte: 5.46.4
++      svelte: 5.48.4
+     transitivePeerDependencies:
+       - ts-node
+ 
+@@ -9810,10 +9813,10 @@ snapshots:
+ 
+   prelude-ls@1.2.1: {}
+ 
+-  prettier-plugin-svelte@3.4.0(prettier@3.6.0)(svelte@5.46.4):
++  prettier-plugin-svelte@3.4.0(prettier@3.6.0)(svelte@5.48.4):
+     dependencies:
+       prettier: 3.6.0
+-      svelte: 5.46.4
++      svelte: 5.48.4
+ 
+   prettier@2.8.8: {}
+ 
+@@ -10202,19 +10205,19 @@ snapshots:
+ 
+   supports-preserve-symlinks-flag@1.0.0: {}
+ 
+-  svelte-check@4.3.4(picomatch@4.0.3)(svelte@5.46.4)(typescript@5.8.3):
++  svelte-check@4.3.4(picomatch@4.0.3)(svelte@5.48.4)(typescript@5.8.3):
+     dependencies:
+       '@jridgewell/trace-mapping': 0.3.25
+       chokidar: 4.0.3
+       fdir: 6.5.0(picomatch@4.0.3)
+       picocolors: 1.1.1
+       sade: 1.8.1
+-      svelte: 5.46.4
++      svelte: 5.48.4
+       typescript: 5.8.3
+     transitivePeerDependencies:
+       - picomatch
+ 
+-  svelte-eslint-parser@1.4.1(svelte@5.46.4):
++  svelte-eslint-parser@1.4.1(svelte@5.48.4):
+     dependencies:
+       eslint-scope: 8.4.0
+       eslint-visitor-keys: 4.2.1
+@@ -10223,30 +10226,30 @@ snapshots:
+       postcss-scss: 4.0.9(postcss@8.5.6)
+       postcss-selector-parser: 7.1.1
+     optionalDependencies:
+-      svelte: 5.46.4
++      svelte: 5.48.4
+ 
+-  svelte-parse-markup@0.1.5(svelte@5.46.4):
++  svelte-parse-markup@0.1.5(svelte@5.48.4):
+     dependencies:
+-      svelte: 5.46.4
++      svelte: 5.48.4
+ 
+-  svelte-preprocess@6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.46.4)(typescript@5.8.3):
++  svelte-preprocess@6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.48.4)(typescript@5.8.3):
+     dependencies:
+       detect-indent: 6.1.0
+       strip-indent: 3.0.0
+-      svelte: 5.46.4
++      svelte: 5.48.4
+     optionalDependencies:
+       postcss: 8.5.6
+       postcss-load-config: 3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3))
+       typescript: 5.8.3
+ 
+-  svelte2tsx@0.7.33(svelte@5.46.4)(typescript@5.8.3):
++  svelte2tsx@0.7.33(svelte@5.48.4)(typescript@5.8.3):
+     dependencies:
+       dedent-js: 1.0.1
+       pascal-case: 3.1.2
+-      svelte: 5.46.4
++      svelte: 5.48.4
+       typescript: 5.8.3
+ 
+-  svelte@5.46.4:
++  svelte@5.48.4:
+     dependencies:
+       '@jridgewell/remapping': 2.3.5
+       '@jridgewell/sourcemap-codec': 1.5.5
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index 52a2ac109..eb77d9294 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -36,11 +36,12 @@ catalog:
+   dts-buddy: ^0.6.2
+   esbuild: ^0.25.4
+   eslint: ^9.34.0
++  magic-string: ^0.30.21
+   polka: ^1.0.0-next.28
+   publint: ^0.3.0
+   semver: ^7.5.4
+   sirv-cli: ^3.0.0
+-  svelte: ^5.46.4
++  svelte: ^5.48.4
+   svelte-check: ^4.3.4
+   svelte-preprocess: ^6.0.0
+   typescript-eslint: ^8.43.0

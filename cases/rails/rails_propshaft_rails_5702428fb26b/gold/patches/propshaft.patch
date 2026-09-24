@@ -1,0 +1,126 @@
+diff --git a/Gemfile.lock b/Gemfile.lock
+index 31dc8e2..f8fd58a 100644
+--- a/Gemfile.lock
++++ b/Gemfile.lock
+@@ -115,7 +115,8 @@ GEM
+     marcel (1.0.4)
+     mini_mime (1.1.5)
+     mini_portile2 (2.8.9)
+-    minitest (5.25.5)
++    minitest (5.27.0)
++    minitest-mock (5.27.0)
+     net-imap (0.5.9)
+       date
+       net-protocol
+@@ -207,6 +208,7 @@ PLATFORMS
+ 
+ DEPENDENCIES
+   debug
++  minitest-mock
+   propshaft!
+   rails (>= 7.0.1)
+   rake
+diff --git a/lib/propshaft/asset.rb b/lib/propshaft/asset.rb
+index 227d6cc..e4c67c7 100644
+--- a/lib/propshaft/asset.rb
++++ b/lib/propshaft/asset.rb
+@@ -5,6 +5,8 @@ require "action_dispatch/http/mime_type"
+ class Propshaft::Asset
+   attr_reader :path, :logical_path, :load_path
+ 
++  CONTENT_TYPES_WITH_UTF8_CHARSET = [ Mime::Type.lookup("text/html"), Mime::Type.lookup("text/css") ]
++
+   class << self
+     def extract_path_and_digest(digested_path)
+       digest = digested_path[/-([0-9a-zA-Z]{7,128})\.(?!digested)([^.]|.map)+\z/, 1]
+@@ -27,7 +29,15 @@ class Propshaft::Asset
+   end
+ 
+   def content_type
+-    Mime::Type.lookup_by_extension(logical_path.extname.from(1))
++    @content_type ||= Mime::Type.lookup_by_extension(logical_path.extname.from(1))
++  end
++
++  def content_type_with_charset
++    if content_type.in? CONTENT_TYPES_WITH_UTF8_CHARSET
++      "#{content_type}; charset=utf-8"
++    else
++      content_type
++    end
+   end
+ 
+   def length
+diff --git a/lib/propshaft/server.rb b/lib/propshaft/server.rb
+index f35913c..306eb0c 100644
+--- a/lib/propshaft/server.rb
++++ b/lib/propshaft/server.rb
+@@ -23,7 +23,7 @@ class Propshaft::Server
+           200,
+           {
+             Rack::CONTENT_LENGTH  => compiled_content.length.to_s,
+-            Rack::CONTENT_TYPE    => asset.content_type.to_s,
++            Rack::CONTENT_TYPE    => asset.content_type_with_charset.to_s,
+             VARY                  => "Accept-Encoding",
+             Rack::ETAG            => "\"#{asset.digest}\"",
+             Rack::CACHE_CONTROL   => "public, max-age=31536000, immutable"
+diff --git a/test/fixtures/assets/first_path/test.html b/test/fixtures/assets/first_path/test.html
+new file mode 100644
+index 0000000..76c3ac3
+--- /dev/null
++++ b/test/fixtures/assets/first_path/test.html
+@@ -0,0 +1 @@
++<html><body>hello</body></html>
+diff --git a/test/propshaft/asset_test.rb b/test/propshaft/asset_test.rb
+index a5f024a..037c199 100644
+--- a/test/propshaft/asset_test.rb
++++ b/test/propshaft/asset_test.rb
+@@ -19,6 +19,13 @@ class Propshaft::AssetTest < ActiveSupport::TestCase
+     assert_equal "text/css", find_asset("another.css").content_type.to_s
+   end
+ 
++  test "content type with charset" do
++    assert_equal "text/plain", find_asset("one.txt").content_type_with_charset.to_s
++    assert_equal "text/javascript", find_asset("again.js").content_type_with_charset.to_s
++    assert_equal "text/css; charset=utf-8", find_asset("another.css").content_type_with_charset.to_s
++    assert_equal "text/html; charset=utf-8", find_asset("test.html").content_type_with_charset.to_s
++  end
++
+   test "length" do
+     assert_equal 19, find_asset("one.txt").length
+   end
+diff --git a/test/propshaft/server_test.rb b/test/propshaft/server_test.rb
+index 6db5581..51d175d 100644
+--- a/test/propshaft/server_test.rb
++++ b/test/propshaft/server_test.rb
+@@ -47,7 +47,7 @@ class Propshaft::ServerTest < ActiveSupport::TestCase
+ 
+     assert_equal 200, last_response.status
+     assert_equal last_response.body.bytesize.to_s, last_response.headers['content-length']
+-    assert_equal "text/css", last_response.headers['content-type']
++    assert_equal "text/css; charset=utf-8", last_response.headers['content-type']
+     assert_equal "Accept-Encoding", last_response.headers['vary']
+     assert_equal "\"#{asset.digest}\"", last_response.headers['etag']
+     assert_equal "public, max-age=31536000, immutable", last_response.headers['cache-control']
+@@ -67,6 +67,22 @@ class Propshaft::ServerTest < ActiveSupport::TestCase
+     assert_equal 200, last_response.status
+   end
+ 
++  test "serve an HTML file with charset" do
++    asset = @assembly.load_path.find("test.html")
++    get "/assets/#{asset.digested_path}"
++
++    assert_equal 200, last_response.status
++    assert_equal "text/html; charset=utf-8", last_response.headers['content-type']
++  end
++
++  test "serve a JS file without charset" do
++    asset = @assembly.load_path.find("again.js")
++    get "/assets/#{asset.digested_path}"
++
++    assert_equal 200, last_response.status
++    assert_equal "text/javascript", last_response.headers['content-type']
++  end
++
+   test "not found" do
+     get "/assets/not-found.js"
+ 

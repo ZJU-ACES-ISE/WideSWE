@@ -1,0 +1,30 @@
+profiles:
+  prisma-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: prisma
+    workdir: repos/prisma/prisma
+    image: ecosyncbench/base/node:22-bookworm
+    command: pnpm install/build @prisma/config, then run the upstream-touched loadConfigFromFile Vitest module.
+    status: implemented
+    report: junit
+    test_files:
+    - packages/config/src/__tests__/fixtures/loadConfigFromFile/enums/prisma.config.ts
+    - packages/config/src/__tests__/loadConfigFromFile.test.ts
+  prisma_engines-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: prisma-engines
+    workdir: repos/prisma/prisma-engines
+    image: rust:1.91-bookworm with rustup toolchain 1.92.0 cached under /data
+    command: cargo test -p sql-migration-tests --test migration_tests for the upstream-touched migrations and schema_push modules.
+    status: implemented
+    report: cargo text converted to junit
+    test_files:
+    - schema-engine/sql-migration-tests/tests/migrations/diff.rs
+    - schema-engine/sql-migration-tests/tests/migrations/migration_persistence_tests.rs
+    - schema-engine/sql-migration-tests/tests/migrations/schema_filter.rs
+    - schema-engine/sql-migration-tests/tests/migrations/soft_resets.rs
+    - schema-engine/sql-migration-tests/tests/schema_push/mod.rs

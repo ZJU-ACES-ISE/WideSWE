@@ -1,0 +1,113 @@
+diff --git a/src/DeepClone/DeepClone.php b/src/DeepClone/DeepClone.php
+index 7b831d1..2711034 100644
+--- a/src/DeepClone/DeepClone.php
++++ b/src/DeepClone/DeepClone.php
+@@ -787,7 +787,12 @@ final class DeepClone
+ 
+         foreach ($objectMeta as $id => [$class]) {
+             if (':' === ($class[1] ?? null)) {
+-                $objects[$id] = unserialize($class, null !== $allowedClasses ? ['allowed_classes' => $allowedClasses] : []);
++                // The result is used as an object below; a malformed payload can
++                // carry any serialize form (i:…, s:…, a:…), so reject anything
++                // that did not decode to an object rather than mistreating it.
++                if (!\is_object($objects[$id] = unserialize($class, null !== $allowedClasses ? ['allowed_classes' => $allowedClasses] : []))) {
++                    throw new \ValueError('deepclone_from_array(): Argument #1 ($data) object '.$id.' did not unserialize to an object, '.get_debug_type($objects[$id]).' given');
++                }
+                 continue;
+             }
+             try {
+@@ -953,6 +958,9 @@ final class DeepClone
+ 
+                 return $objects[$prepared];
+             }
++            if (\PHP_INT_MIN === $prepared) {
++                throw new \ValueError('deepclone_from_array(): Argument #1 ($data) "prepared" references unknown ref id out of range');
++            }
+             if (!isset($refs[-$prepared])) {
+                 throw new \ValueError('deepclone_from_array(): Argument #1 ($data) "prepared" references unknown ref id '.(-$prepared));
+             }
+@@ -980,6 +988,9 @@ final class DeepClone
+ 
+                 return $objects[$value];
+             }
++            if (\PHP_INT_MIN === $value) {
++                throw new \ValueError('deepclone_from_array(): Argument #1 ($data) malformed payload, ref id out of range');
++            }
+             if (!isset($refs[-$value])) {
+                 throw new \ValueError('deepclone_from_array(): Argument #1 ($data) malformed payload, unknown ref id '.(-$value));
+             }
+@@ -1091,7 +1102,7 @@ final class DeepClone
+                 }
+                 $obj = $objects[$obj];
+             } else {
+-                if (!isset($refs[-$obj])) {
++                if (\PHP_INT_MIN === $obj || !isset($refs[-$obj])) {
+                     throw new \ValueError('deepclone_from_array(): Argument #1 ($data) malformed payload, named-closure references unknown id '.$obj);
+                 }
+                 $obj = $refs[-$obj];
+diff --git a/tests/DeepClone/DeepCloneTest.php b/tests/DeepClone/DeepCloneTest.php
+index 815e670..78fee2c 100644
+--- a/tests/DeepClone/DeepCloneTest.php
++++ b/tests/DeepClone/DeepCloneTest.php
+@@ -341,6 +341,16 @@ class DeepCloneTest extends TestCase
+         deepclone_from_array(['classes' => [42], 'objectMeta' => 0, 'prepared' => 0]);
+     }
+ 
++    public function testFromArrayRejectsNonObjectUnserializeResult()
++    {
++        // A class-name string whose second byte is ':' is replayed through
++        // unserialize(); a scalar/array serialize form must be rejected rather
++        // than stored and later treated as an object.
++        $this->expectException(\ValueError::class);
++        $this->expectExceptionMessage('deepclone_from_array(): Argument #1 ($data) object 0 did not unserialize to an object, int given');
++        deepclone_from_array(['classes' => 'i:1234;', 'objectMeta' => 1, 'prepared' => 0]);
++    }
++
+     public function testFromArrayRejectsObjectMetaWrongType()
+     {
+         $this->expectException(\ValueError::class);
+@@ -470,6 +480,44 @@ class DeepCloneTest extends TestCase
+         deepclone_from_array(['classes' => '', 'objectMeta' => 0, 'prepared' => -99]);
+     }
+ 
++    public function testFromArrayRejectsIntMinRefIdsWithoutWarning()
++    {
++        // Negating PHP_INT_MIN overflows to a float and emits a runtime warning
++        // before the value can be used as a ref-id array key. Every resolution
++        // path must reject it cleanly. A strict error handler turns any emitted
++        // diagnostic into a failure so the warning cannot regress unnoticed.
++        $cases = [
++            [
++                ['classes' => 'stdClass', 'objectMeta' => 0, 'prepared' => \PHP_INT_MIN],
++                '"prepared" references unknown ref id out of range',
++            ],
++            [
++                ['classes' => 'stdClass', 'objectMeta' => 0, 'prepared' => [0 => \PHP_INT_MIN], 'mask' => [0 => true]],
++                'malformed payload, ref id out of range',
++            ],
++            [
++                ['classes' => 'stdClass', 'objectMeta' => 0, 'prepared' => [\PHP_INT_MIN, 'strlen'], 'mask' => 0],
++                'malformed payload, named-closure references unknown id -9223372036854775808',
++            ],
++        ];
++
++        set_error_handler(static function ($type, $message) {
++            throw new \RuntimeException('unexpected diagnostic: '.$message);
++        });
++        try {
++            foreach ($cases as [$payload, $expected]) {
++                try {
++                    deepclone_from_array($payload);
++                    $this->fail('Expected ValueError was not thrown');
++                } catch (\ValueError $e) {
++                    $this->assertStringContainsString($expected, $e->getMessage());
++                }
++            }
++        } finally {
++            restore_error_handler();
++        }
++    }
++
+     public function testClosureGlobalFunctionWireFormat()
+     {
+         $d = deepclone_to_array(\Closure::fromCallable('strlen'));

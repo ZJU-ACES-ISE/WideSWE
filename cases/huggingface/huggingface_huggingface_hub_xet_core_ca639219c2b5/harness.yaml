@@ -1,0 +1,38 @@
+task_id: huggingface_huggingface_hub_xet_core_ca639219c2b5
+hidden_test_patches:
+- repo: huggingface_hub
+  patch: hidden/patches/huggingface_hub-hidden-tests.patch
+  test_profile: huggingface_hub-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/test_xet_download.py
+  - tests/test_xet_upload.py
+  hidden_file: *id001
+  semantic_changes: Runs the three request-header contract tests and six stable
+    mocked regressions. Live Hub upload/download, large-upload, and end-to-end
+    tests are excluded because their outcome and runtime depend on external CI
+    service credentials rather than this task.
+  source: upstream test changes from huggingface/huggingface_hub PR(s) 3858
+- repo: xet-core
+  patch: hidden/patches/xet-core-hidden-tests.patch
+  test_profile: xet_core-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id002
+  - hf_xet/tests/request_headers_contract.py
+  hidden_file: *id002
+  semantic_changes: Replaces a Gold-private HTTP-client signature check and unrelated
+    adaptive-concurrency scenario with public hf_xet Python API tests. The tests
+    verify all three APIs accept request_headers and observe actual outgoing CAS
+    headers for custom-header forwarding and both user-agent merge cases.
+  source: upstream test changes from huggingface/xet-core PR(s) 661
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - huggingface_hub-hidden
+    - xet_core-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

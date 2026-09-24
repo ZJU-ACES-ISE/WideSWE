@@ -1,0 +1,168 @@
+diff --git a/aap_gateway_api/models/user.py b/aap_gateway_api/models/user.py
+index 8187bd17..271ef4f1 100644
+--- a/aap_gateway_api/models/user.py
++++ b/aap_gateway_api/models/user.py
+@@ -183,8 +183,12 @@ class User(AbstractDABUser, CommonModel, AuditableModel):
+ 
+     def get_is_platform_auditor(self):
+         if not hasattr(self, '_is_platform_auditor'):
+-            # For performance purposes, catch the value from the database
+-            self._is_platform_auditor = self.fetch_platform_auditor_membership()
++            # Prefer the queryset annotation (set by UserViewSet.get_queryset on list views)
++            # to avoid a per-object .exists() query during serialization.
++            if hasattr(self, '_annotated_is_platform_auditor'):
++                self._is_platform_auditor = self._annotated_is_platform_auditor
++            else:
++                self._is_platform_auditor = self.fetch_platform_auditor_membership()
+         return self._is_platform_auditor
+ 
+     def set_is_platform_auditor(self, value):
+diff --git a/aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py b/aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py
+new file mode 100644
+index 00000000..64ebda2a
+--- /dev/null
++++ b/aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py
+@@ -0,0 +1,96 @@
++import pytest
++from ansible_base.lib.utils.response import get_relative_url
++from django.db import connection
++from django.test.utils import CaptureQueriesContext
++
++
++@pytest.mark.django_db
++class TestUserListQueryOptimization:
++    """Verify that the user list endpoint uses optimized queries
++    (select_related + is_platform_auditor annotation) and produces
++    correct serialized output."""
++
++    def test_user_list_query_count_reduced(self, admin_api_client, system_user):
++        """The select_related + annotation optimization should reduce per-user
++        queries. Without optimization, each user adds ~8 queries (3 FK loads
++        + 1 .exists() from DAB, plus 4 from UserSerializer authenticator lookups).
++        With optimization, the DAB queries are eliminated, leaving ~4/user from
++        the serializer's authenticator queries (a separate optimization target)."""
++        from aap_gateway_api.models import User
++
++        url = get_relative_url("user-list")
++
++        # Baseline with few users
++        with CaptureQueriesContext(connection) as baseline_ctx:
++            response = admin_api_client.get(url)
++        assert response.status_code == 200
++        baseline_queries = len(baseline_ctx.captured_queries)
++        baseline_users = response.data["count"]
++
++        # Add 10 more users
++        for i in range(10):
++            User.objects.create(username=f"perf-test-user-{i}")
++
++        with CaptureQueriesContext(connection) as after_ctx:
++            response = admin_api_client.get(url)
++        assert response.status_code == 200
++        after_queries = len(after_ctx.captured_queries)
++        after_users = response.data["count"]
++
++        users_added = after_users - baseline_users
++        queries_added = after_queries - baseline_queries
++        queries_per_user = queries_added / users_added if users_added else 0
++
++        # Without optimization: ~8 queries per user (DAB FK loads + serializer authenticator queries)
++        # With optimization: ~4 queries per user (only serializer authenticator queries remain)
++        assert queries_per_user <= 5, (
++            f"Adding {users_added} users added {queries_per_user:.1f} queries/user "
++            f"(expected <=5, got {queries_added} additional queries). "
++            f"Before: {baseline_queries}, after: {after_queries}."
++        )
++
++    def test_user_list_contains_related_and_summary_fields(self, admin_api_client, system_user):
++        """The optimized list endpoint must still return related and
++        summary_fields in the serialized output."""
++        from aap_gateway_api.models import User
++
++        User.objects.create(username="related-fields-test")
++        url = get_relative_url("user-list")
++
++        response = admin_api_client.get(url)
++        assert response.status_code == 200
++        assert response.data["count"] > 0
++
++        user_data = response.data["results"][0]
++        assert "related" in user_data
++        assert "summary_fields" in user_data
++        assert "url" in user_data
++
++    def test_user_list_is_platform_auditor_correct(self, admin_api_client, user, system_user):
++        """is_platform_auditor should reflect actual role assignment,
++        whether computed via annotation or .exists() fallback."""
++        url = get_relative_url("user-list")
++
++        # Before assigning role
++        response = admin_api_client.get(url)
++        user_data = next(u for u in response.data["results"] if u["id"] == user.pk)
++        assert user_data["is_platform_auditor"] is False
++
++        # Assign platform auditor role
++        user.is_platform_auditor = True
++        user.save()
++
++        response = admin_api_client.get(url)
++        user_data = next(u for u in response.data["results"] if u["id"] == user.pk)
++        assert user_data["is_platform_auditor"] is True
++
++    def test_user_detail_not_affected_by_list_optimization(self, admin_api_client, user, system_user):
++        """Detail view should work correctly without the list-only
++        select_related/annotation optimizations."""
++        url = get_relative_url("user-detail", kwargs={"pk": user.pk})
++        response = admin_api_client.get(url)
++
++        assert response.status_code == 200
++        assert "related" in response.data
++        assert "summary_fields" in response.data
++        assert response.data["is_platform_auditor"] is False
+diff --git a/aap_gateway_api/views/api/v1/user.py b/aap_gateway_api/views/api/v1/user.py
+index 1d97ecb0..22d12eaa 100644
+--- a/aap_gateway_api/views/api/v1/user.py
++++ b/aap_gateway_api/views/api/v1/user.py
+@@ -5,7 +5,9 @@ from ansible_base.lib.utils.views.permissions import IsSuperuserOrAuditor
+ from ansible_base.oauth2_provider.permissions import OAuth2ScopePermission
+ from ansible_base.oauth2_provider.views import DABOAuth2UserViewsetMixin
+ from ansible_base.rbac.api.permissions import AnsibleBaseUserPermissions
++from ansible_base.rbac.models import RoleUserAssignment
+ from ansible_base.rbac.policies import can_view_all_users, visible_users
++from django.db.models import Exists, OuterRef
+ from drf_spectacular.utils import extend_schema
+ from rest_framework.decorators import action
+ from rest_framework.exceptions import ValidationError
+@@ -13,6 +15,7 @@ from rest_framework.response import Response
+ 
+ from aap_gateway_api.models import User
+ from aap_gateway_api.serializers import UserSerializer
++from aap_gateway_api.utils.rbac import get_platform_auditor_role
+ from aap_gateway_api.views.api.v1.common import GatewayModelViewSet, ResourceAPIUpdateMixin
+ 
+ 
+@@ -41,7 +44,23 @@ class UserViewSet(DABOAuth2UserViewsetMixin, ResourceAPIUpdateMixin, GatewayMode
+     def get_queryset(self):
+         if self.detail:
+             return User.all_objects.select_related("resource").all()
+-        return super().get_queryset()
++        qs = super().get_queryset()
++        # Note: get_platform_auditor_role() does a DB lookup per call (ManagedRoleManager
++        # cache is not populated). Single query, negligible vs the N+1 queries eliminated.
++        rd = get_platform_auditor_role()
++        # Optimize list queries to avoid N+1 per-object queries during serialization:
++        # - select_related: prevents lazy-loading FK objects in get_summary_fields()
++        #   (adds self-referential JOINs; may affect query plans on very large user tables)
++        # - annotate: computes is_platform_auditor in a single subquery instead of
++        #   one .exists() call per user object
++        return qs.select_related("modified_by", "created_by", "last_login_from").annotate(
++            _annotated_is_platform_auditor=Exists(
++                RoleUserAssignment.objects.filter(
++                    user_id=OuterRef("pk"),
++                    role_definition=rd,
++                )
++            ),
++        )
+ 
+     @action(detail=True, methods=["get"], url_name="authenticators-list")
+     def authenticators(self, request, pk=None):

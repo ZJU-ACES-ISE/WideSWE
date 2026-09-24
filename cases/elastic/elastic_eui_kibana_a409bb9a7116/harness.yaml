@@ -1,0 +1,31 @@
+task_id: elastic_eui_kibana_a409bb9a7116
+hidden_test_patches:
+- repo: eui
+  patch: hidden/patches/eui-hidden-tests.patch
+  test_profile: eui-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - packages/eui/src/components/flyout/manager/store.test.ts
+  hidden_file: *id001
+  semantic_changes: Completed the mocked public EUI event surface and removed the Gold-specific SystemFlyoutRef.isClosed assertion; closure remains verified by root unmount.
+  source: upstream test changes from elastic/eui PR(s) 9347
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.test.tsx
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from elastic/kibana PR(s) 251146
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - eui-hidden
+    - kibana-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

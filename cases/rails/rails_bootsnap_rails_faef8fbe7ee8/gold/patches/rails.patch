@@ -1,0 +1,93 @@
+diff --git a/railties/CHANGELOG.md b/railties/CHANGELOG.md
+index e55e3a2481..270cd317fa 100644
+--- a/railties/CHANGELOG.md
++++ b/railties/CHANGELOG.md
+@@ -1,3 +1,18 @@
++*   Enable Ruby `frozen_string_literal` by default.
++
++    New Rails apps now include a `config/bootsnap.rb` file that enables frozen string
++    literals. This only impact the application code, not the dependencies.
++
++    It is also possible to enable it for dependencies for reduce allocations, but
++    some older gems may not yet be compatible. If you do attempt this an run into
++    incompatibilites please do report it on the gem bug tracker.
++
++    Additionally, `.rubocop.yml` is configured to assume frozen string literals
++    are enabled, if you decide not to enable frozen string literals for your application,
++    make sureto update the rubocop configuration accordingly.
++
++    *Jean Boussier*
++
+ *   Add offline fallback page to the PWA scaffold.
+ 
+     New Rails apps now include an `app/views/pwa/offline.html.erb` template and
+diff --git a/railties/lib/rails/generators/rails/app/app_generator.rb b/railties/lib/rails/generators/rails/app/app_generator.rb
+index dedbc7adbe..47619df2a0 100644
+--- a/railties/lib/rails/generators/rails/app/app_generator.rb
++++ b/railties/lib/rails/generators/rails/app/app_generator.rb
+@@ -128,6 +128,7 @@ def config
+         template "application.rb"
+         template "environment.rb"
+         template "bundler-audit.yml" unless skip_bundler_audit?
++        template "bootsnap.rb" if depend_on_bootsnap?
+         template "cable.yml" unless options[:update] || skip_action_cable?
+         template "ci.rb"
+         template "puma.rb"
+diff --git a/railties/lib/rails/generators/rails/app/templates/Gemfile.tt b/railties/lib/rails/generators/rails/app/templates/Gemfile.tt
+index 737150db88..3a49718754 100644
+--- a/railties/lib/rails/generators/rails/app/templates/Gemfile.tt
++++ b/railties/lib/rails/generators/rails/app/templates/Gemfile.tt
+@@ -27,7 +27,7 @@ gem "solid_cable"
+ <% if depend_on_bootsnap? -%>
+ 
+ # Reduces boot times through caching; required in config/boot.rb
+-gem "bootsnap", require: false
++gem "bootsnap", ">= 1.24", require: false
+ <% end -%>
+ <% unless options.skip_kamal? -%>
+ 
+diff --git a/railties/lib/rails/generators/rails/app/templates/config/bootsnap.rb.tt b/railties/lib/rails/generators/rails/app/templates/config/bootsnap.rb.tt
+new file mode 100644
+index 0000000000..fa0f59a0dd
+--- /dev/null
++++ b/railties/lib/rails/generators/rails/app/templates/config/bootsnap.rb.tt
+@@ -0,0 +1,4 @@
++# Enable frozen string literal across the app, but not dependencies.
++# This configuration should be kept in sync with
++# `AllCops/StringLiteralsFrozenByDefault` in `.rubocop.yml`
++Bootsnap.enable_frozen_string_literal(app_only: true)
+diff --git a/railties/lib/rails/generators/rails/app/templates/rubocop.yml.tt b/railties/lib/rails/generators/rails/app/templates/rubocop.yml.tt
+index f9d86d4a54..a2d910bc47 100644
+--- a/railties/lib/rails/generators/rails/app/templates/rubocop.yml.tt
++++ b/railties/lib/rails/generators/rails/app/templates/rubocop.yml.tt
+@@ -1,6 +1,12 @@
+ # Omakase Ruby styling for Rails
+ inherit_gem: { rubocop-rails-omakase: rubocop.yml }
+ 
++<% if depend_on_bootsnap? -%>
++AllCops:
++    # This configuration should be kept in sync with `config/bootsnap.rb`
++    StringLiteralsFrozenByDefault: true
++
++<% end -%>
+ # Overwrite or add rules to create your own house style
+ #
+ # # Use `[a, [b, c]]` not `[ a, [ b, c ] ]`
+diff --git a/railties/test/generators/app_generator_test.rb b/railties/test/generators/app_generator_test.rb
+index 767f417bc6..fc7550aef7 100644
+--- a/railties/test/generators/app_generator_test.rb
++++ b/railties/test/generators/app_generator_test.rb
+@@ -768,6 +768,13 @@ def test_inclusion_of_kamal_files
+     assert_file ".kamal/secrets"
+   end
+ 
++  def test_inclusion_of_bootsnap_files
++    generator [destination_root]
++    run_generator_instance
++
++    assert_file "config/bootsnap.rb"
++  end
++
+   def test_kamal_files_are_skipped_if_required
+     generator [destination_root], ["--skip-kamal"]
+     run_generator_instance

@@ -1,0 +1,27 @@
+profiles:
+  django_ansible_base-hidden:
+    repo: django-ansible-base
+    workdir: repos/ansible/django-ansible-base
+    command: pytest --junit-xml=/workspace/.ecosyncbench/test-reports/django-ansible-base-hidden.xml
+      test_app/tests/lib/abstract_models/test_common_query_optimization.py
+    public_smoke_command: DJANGO_SETTINGS_MODULE=test_app.sqlite3settings TESTAPP_MODE=sqlite python -m pytest -q -o addopts="" test_app/tests/feature_flags/test_utils.py::test_get_django_flags
+    docker_service: ansible-python
+    dependency_image: ecosyncbench/base/ansible-django-py:3.12
+    status: candidate_profile_unverified
+    test_files:
+    - test_app/tests/lib/abstract_models/test_common_query_optimization.py
+    patched_files:
+    - test_app/tests/lib/abstract_models/test_common_query_optimization.py
+  jewel-hidden:
+    repo: jewel
+    workdir: repos/ansible/jewel
+    command: pytest --jwt-keypair-file=<generated> --junit-xml=/workspace/.ecosyncbench/test-reports/jewel-hidden.xml
+      aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py
+    public_smoke_command: ln -sfn ../django-ansible-base django-ansible-base; jwt_file="$(python tools/scripts/generate_test_jwt_keypair.py)"; DJANGO_SETTINGS_MODULE=aap_gateway_api.tests.settings_overrides GATEWAY_SECRET_KEY_FILE=/workspace/repos/ansible/jewel/tools/configs/dev_secret_key python -m pytest -q -o addopts="" --jwt-keypair-file="$jwt_file" aap_gateway_api/tests/fields/test_multiple_choice_field.py; rm -f "$jwt_file"
+    docker_service: ansible-python
+    dependency_image: ecosyncbench/base/ansible-django-py:3.12
+    status: candidate_profile_unverified
+    test_files:
+    - aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py
+    patched_files:
+    - aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py

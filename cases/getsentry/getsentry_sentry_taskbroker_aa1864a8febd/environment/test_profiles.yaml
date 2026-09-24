@@ -1,0 +1,25 @@
+profiles:
+  sentry-hidden:
+    repo: sentry
+    workdir: repos/getsentry/sentry
+    command: uv run python -m pytest -q tests/sentry/taskworker/test_adapters.py
+      --junitxml=/workspace/.ecosyncbench/test-reports/sentry-hidden.xml
+    status: implemented
+    dependency_image: ecosyncbench/deps/getsentry-sentry-py313:aa1864a8febd
+    test_files:
+    - tests/sentry/taskworker/test_adapters.py
+    patched_files:
+    - tests/sentry/taskworker/test_adapters.py
+  taskbroker-hidden:
+    repo: taskbroker
+    workdir: repos/getsentry/taskbroker
+    command: uv run pytest -q clients/python/tests/test_task.py clients/python/tests/worker/test_worker.py
+      --junitxml=/workspace/.ecosyncbench/test-reports/taskbroker-hidden.xml
+    status: implemented
+    dependency_image: ecosyncbench/deps/getsentry-taskbroker-rust-py311:aa1864a8febd
+    test_files:
+    - clients/python/tests/test_task.py
+    - clients/python/tests/worker/test_worker.py
+    patched_files:
+    - clients/python/tests/test_task.py
+    - clients/python/tests/worker/test_worker.py

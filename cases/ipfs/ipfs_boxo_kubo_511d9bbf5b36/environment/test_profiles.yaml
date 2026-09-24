@@ -1,0 +1,39 @@
+profiles:
+  boxo-hidden:
+    repo: boxo
+    workdir: repos/ipfs/boxo
+    command: go test -count=1 -json ./bitswap/server/internal/decision && go test -count=1 -json -run '^(TestIdentityHashSizeLimit|TestGatewayIdentityCIDSizeLimit|TestIdentityCIDHandling|TestRawNodeGrowthConversion|TestDefaultAllowList|TestValidateCid)$' ./blockservice ./gateway ./ipld/unixfs/mod ./verifcid
+    status: implemented
+    docker_service: boxo-hidden
+    dependency_image: ecosyncbench/deps/ipfs-boxo-go:511d9bbf5b36
+    test_files:
+    - bitswap/server/internal/decision/engine_test.go
+    - blockservice/blockservice_test.go
+    - gateway/gateway_test.go
+    - ipld/unixfs/mod/dagmodifier_test.go
+    - verifcid/allowlist_test.go
+    - verifcid/cid_test.go
+    test_packages:
+    - ./bitswap/server/internal/decision
+    - ./blockservice
+    - ./gateway
+    - ./ipld/unixfs/mod
+    - ./verifcid
+  kubo-hidden:
+    repo: kubo
+    workdir: repos/ipfs/kubo
+    command: GOWORK=off go mod edit -replace github.com/ipfs/boxo=/workspace/repos/ipfs/boxo && GOWORK=off go mod edit -exclude google.golang.org/genproto@v0.0.0-20230410155749-daa745c078e1 && GOWORK=off go build -o cmd/ipfs/ipfs ./cmd/ipfs && GOWORK=off go test -count=1 -json -parallel=1 ./test/cli -run '^TestIdentityCIDOverflowProtection$' && GOWORK=off TEST_JUNIT=1 test/sharness/t0275-cid-security.sh
+    status: implemented
+    docker_service: kubo-hidden
+    dependency_image: ecosyncbench/deps/ipfs-kubo-go:511d9bbf5b36
+    test_files:
+    - test/cli/identity_cid_test.go
+    - test/dependencies/go.mod
+    - test/dependencies/go.sum
+    - test/sharness/t0275-cid-security.sh
+    test_packages:
+    - ./test/cli
+    sharness_tests:
+    - test/sharness/t0275-cid-security.sh
+    local_replaces:
+      github.com/ipfs/boxo: /workspace/repos/ipfs/boxo

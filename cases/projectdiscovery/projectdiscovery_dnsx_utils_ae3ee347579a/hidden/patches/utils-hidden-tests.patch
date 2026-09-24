@@ -1,0 +1,220 @@
+diff --git a/dns/wildcard/resolver_test.go b/dns/wildcard/resolver_test.go
+new file mode 100644
+index 0000000..7a9e501
+--- /dev/null
++++ b/dns/wildcard/resolver_test.go
+@@ -0,0 +1,170 @@
++package wildcard
++
++import (
++	"errors"
++	"net"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	sliceutil "github.com/projectdiscovery/utils/slice"
++	"github.com/stretchr/testify/require"
++)
++
++func TestResolverLookupHostDetectsNestedWildcard(t *testing.T) {
++	const target = "xyz.abc.test.example.com"
++	resolver := NewResolver([]string{"example.com"}, func(host string) ([]string, error) {
++		if host != target && strings.HasSuffix(host, ".abc.test.example.com") {
++			return []string{"1.1.1.1"}, nil
++		}
++		return nil, nil
++	})
++
++	isWildcard, wildcards := resolver.LookupHost(target, []string{"1.1.1.1"})
++	require.True(t, isWildcard)
++	require.Contains(t, wildcards, "1.1.1.1")
++}
++
++func TestResolverLookupHostSkipsUnknownDomain(t *testing.T) {
++	resolver := NewResolver([]string{"example.com"}, func(host string) ([]string, error) {
++		t.Fatalf("unexpected lookup for %s", host)
++		return nil, nil
++	})
++
++	isWildcard, wildcards := resolver.LookupHost("www.other.com", []string{"1.1.1.1"})
++	require.False(t, isWildcard)
++	require.Nil(t, wildcards)
++}
++
++func TestResolverLookupHostReturnsCachedWildcardIPs(t *testing.T) {
++	resolver := NewResolver([]string{"example.com"}, func(host string) ([]string, error) {
++		return []string{"1.1.1.1", "2.2.2.2"}, nil
++	})
++
++	isWildcard, wildcards := resolver.LookupHost("www.example.com", []string{"1.1.1.1"})
++	require.True(t, isWildcard)
++	require.Equal(t, map[string]struct{}{"1.1.1.1": {}, "2.2.2.2": {}}, wildcards)
++	require.Equal(t, wildcards, resolver.GetAllWildcardIPs())
++}
++
++func TestResolverLookupHostReturnsObservedWildcardIPsForNonMatch(t *testing.T) {
++	resolver := NewResolver([]string{"example.com"}, func(host string) ([]string, error) {
++		if host == "www.example.com" {
++			return []string{"3.3.3.3"}, nil
++		}
++		return []string{"1.1.1.1", "2.2.2.2"}, nil
++	})
++
++	isWildcard, wildcards := resolver.LookupHost("www.example.com", []string{"3.3.3.3"})
++	require.False(t, isWildcard)
++	require.Equal(t, map[string]struct{}{"1.1.1.1": {}, "2.2.2.2": {}}, wildcards)
++}
++
++func TestResolverLookupHostReprobesCachedWildcard(t *testing.T) {
++	var count atomic.Int32
++	resolver := NewResolver([]string{"example.com"}, func(host string) ([]string, error) {
++		c := count.Add(1)
++		if c == 1 {
++			return []string{"1.1.1.1"}, nil
++		}
++		return []string{"1.1.1.1", "2.2.2.2"}, nil
++	})
++
++	isWildcard, _ := resolver.LookupHost("www.example.com", []string{"1.1.1.1"})
++	require.True(t, isWildcard)
++
++	isWildcard, wildcards := resolver.LookupHost("api.example.com", []string{"2.2.2.2"})
++	require.True(t, isWildcard)
++	require.Contains(t, wildcards, "2.2.2.2")
++}
++
++func TestResolverLookupHostRevalidatesCurrentHost(t *testing.T) {
++	hostLookups := 0
++	resolver := NewResolver([]string{"example.com"}, func(host string) ([]string, error) {
++		if host == "target.example.com" {
++			hostLookups++
++			if hostLookups < 3 {
++				return []string{"3.3.3.3"}, nil
++			}
++			return []string{"2.2.2.2"}, nil
++		}
++		return []string{"2.2.2.2"}, nil
++	})
++
++	isWildcard, wildcards := resolver.LookupHost("target.example.com", []string{"3.3.3.3"})
++	require.True(t, isWildcard)
++	require.Contains(t, wildcards, "2.2.2.2")
++	require.Equal(t, 3, hostLookups)
++}
++
++func TestResolverLookupHostIgnoresProbeErrors(t *testing.T) {
++	resolver := NewResolver([]string{"example.com"}, func(host string) ([]string, error) {
++		return nil, errors.New("lookup failed")
++	})
++
++	isWildcard, wildcards := resolver.LookupHost("www.example.com", []string{"1.1.1.1"})
++	require.False(t, isWildcard)
++	require.Empty(t, wildcards)
++}
++
++func TestResolverLookupHostDoesNotCacheProbeErrorsAsNormal(t *testing.T) {
++	var probeCalls atomic.Int32
++	resolver := NewResolver([]string{"example.com"}, func(host string) ([]string, error) {
++		switch host {
++		case "target.example.com", "api.example.com":
++			return []string{"1.1.1.1"}, nil
++		default:
++			if strings.HasSuffix(host, ".example.com") {
++				c := probeCalls.Add(1)
++				if c == 1 {
++					return nil, errors.New("temporary failure")
++				}
++				return []string{"1.1.1.1"}, nil
++			}
++			return nil, nil
++		}
++	})
++
++	isWildcard, wildcards := resolver.LookupHost("target.example.com", []string{"1.1.1.1"})
++	require.False(t, isWildcard)
++	require.Empty(t, wildcards)
++
++	isWildcard, wildcards = resolver.LookupHost("api.example.com", []string{"1.1.1.1"})
++	require.True(t, isWildcard)
++	require.Equal(t, map[string]struct{}{"1.1.1.1": {}}, wildcards)
++}
++
++func TestRegistrableRoot(t *testing.T) {
++	tests := []struct {
++		name string
++		host string
++		root string
++		ok   bool
++	}{
++		{name: "fqdn", host: "WWW.Example.COM.", root: "example.com", ok: true},
++		{name: "multi level suffix", host: "Api.Foo.Co.Uk.", root: "foo.co.uk", ok: true},
++		{name: "wildcard input", host: "*.sub.example.com", root: "example.com", ok: true},
++		{name: "ip address", host: net.ParseIP("127.0.0.1").String(), ok: false},
++		{name: "invalid host", host: "localhost", ok: false},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			root, ok := RegistrableRoot(tt.host)
++			require.Equal(t, tt.ok, ok)
++			require.Equal(t, tt.root, root)
++		})
++	}
++}
++
++func TestNewResolverWithDomainsSharesDomainSlice(t *testing.T) {
++	domains := sliceutil.NewSyncSlice[string]()
++	domains.Append("example.com")
++	resolver := NewResolverWithDomains(domains, func(host string) ([]string, error) {
++		return []string{"1.1.1.1"}, nil
++	})
++
++	domains.Append("example.org")
++	isWildcard, _ := resolver.LookupHost("www.example.org", []string{"1.1.1.1"})
++	require.True(t, isWildcard)
++}
+diff --git a/process/interrupt_windows_test.go b/process/interrupt_windows_test.go
+index ad7d071..530eaa2 100644
+--- a/process/interrupt_windows_test.go
++++ b/process/interrupt_windows_test.go
+@@ -2,19 +2,27 @@
+ 
+ package process
+ 
+-import "testing"
++import (
++	"os"
++	"os/exec"
++	"syscall"
++	"testing"
++)
+ 
+ func TestSendInterrupt(t *testing.T) {
+-	// On Windows CI (GitHub Actions), GenerateConsoleCtrlEvent may not work
+-	// as expected without a proper console attached.
+-	// This test verifies the function doesn't panic and the syscall loads correctly.
+-	defer func() {
+-		if r := recover(); r != nil {
+-			t.Fatalf("SendInterrupt panicked: %v", r)
+-		}
+-	}()
++	// Re-exec in a child with its own process group so the CTRL_BREAK_EVENT
++	// stays isolated and does not kill sibling processes (e.g. the Go
++	// compiler running in parallel during "go test ./...").
++	if os.Getenv("TEST_SEND_INTERRUPT_CHILD") == "1" {
++		SendInterrupt()
++		return
++	}
+ 
+-	// Just verify it doesn't crash - the actual signal delivery
+-	// depends on console configuration which varies in CI
+-	SendInterrupt()
++	cmd := exec.Command(os.Args[0], "-test.run=^TestSendInterrupt$")
++	cmd.Env = append(os.Environ(), "TEST_SEND_INTERRUPT_CHILD=1")
++	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
++	out, err := cmd.CombinedOutput()
++	if err != nil {
++		t.Fatalf("child process failed: %v\n%s", err, out)
++	}
+ }

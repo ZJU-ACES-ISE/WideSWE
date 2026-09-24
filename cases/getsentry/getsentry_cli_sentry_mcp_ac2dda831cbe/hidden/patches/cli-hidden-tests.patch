@@ -1,0 +1,680 @@
+diff --git a/test/commands/local/behavior.test.ts b/test/commands/local/behavior.test.ts
+new file mode 100644
+index 0000000..86e2936
+--- /dev/null
++++ b/test/commands/local/behavior.test.ts
+@@ -0,0 +1,241 @@
++import { createServer } from "node:http";
++import { afterEach, describe, expect, test, vi } from "vitest";
++import { serverCommand } from "../../../src/commands/local/server.js";
++import { logger } from "../../../src/lib/logger.js";
++
++const mockedFetch = globalThis.fetch;
++const realFetch = (globalThis as { __originalFetch?: typeof fetch })
++  .__originalFetch;
++
++type LocalFlags = {
++  port: number;
++  host: string;
++  quiet: boolean;
++  filter: string[];
++  format: string;
++};
++
++type ServerFunc = (
++  this: ReturnType<typeof makeContext>,
++  flags: LocalFlags
++) => Promise<void>;
++
++function makeContext(onWrite: (value: string) => void = () => undefined) {
++  return {
++    cwd: process.cwd(),
++    stdout: {
++      write: vi.fn((value: string) => {
++        onWrite(String(value));
++        return true;
++      }),
++    },
++    stderr: { write: vi.fn(() => true) },
++  };
++}
++
++async function waitFor(
++  predicate: () => boolean | Promise<boolean>,
++  timeoutMs = 10_000
++) {
++  const deadline = Date.now() + timeoutMs;
++  while (Date.now() < deadline) {
++    if (await predicate()) {
++      return;
++    }
++    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
++  }
++  throw new Error("Timed out waiting for local CLI behavior");
++}
++
++async function availablePort(): Promise<number> {
++  const server = createServer();
++  await new Promise<void>((resolveListen) =>
++    server.listen(0, "127.0.0.1", resolveListen)
++  );
++  const address = server.address();
++  const port = typeof address === "object" && address ? address.port : 0;
++  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
++  return port;
++}
++
++function stopRegisteredCommand(previousListeners: Set<(...args: never[]) => void>) {
++  const stop = process
++    .listeners("SIGINT")
++    .find((listener) => !previousListeners.has(listener));
++  stop?.();
++}
++
++afterEach(() => {
++  globalThis.fetch = mockedFetch;
++  vi.restoreAllMocks();
++});
++
++describe.sequential("sentry local public behavior", () => {
++  test("emits filtered AI transactions as NDJSON", async () => {
++    if (!realFetch) {
++      throw new Error("Original fetch implementation is unavailable");
++    }
++    globalThis.fetch = realFetch;
++    const outputParts: string[] = [];
++    const infoLines: string[] = [];
++    vi.spyOn(logger, "log").mockImplementation((message) => {
++      outputParts.push(String(message));
++    });
++    vi.spyOn(logger, "info").mockImplementation((message) => {
++      infoLines.push(String(message));
++    });
++
++    const port = await availablePort();
++    const beforeSignals = new Set(process.listeners("SIGINT"));
++    const func = (await serverCommand.loader()) as unknown as ServerFunc;
++    const running = func.call(makeContext((value) => outputParts.push(value)), {
++      host: "127.0.0.1",
++      port,
++      quiet: false,
++      format: "json",
++      filter: ["ai"],
++    });
++
++    try {
++      await waitFor(async () => {
++        try {
++          return (await realFetch(`http://127.0.0.1:${port}/health`)).ok;
++        } catch {
++          return false;
++        }
++      });
++
++      const header = JSON.stringify({
++        event_id: "0123456789abcdef0123456789abcdef",
++        sdk: { name: "sentry.node" },
++      });
++      const transaction = JSON.stringify({
++        type: "transaction",
++        transaction: "fallback name",
++        start_timestamp: 1_700_000_000,
++        timestamp: 1_700_000_001,
++        contexts: {
++          trace: {
++            op: "ai.pipeline",
++            data: {
++              "gen_ai.operation.name": "chat",
++              "gen_ai.provider.name": "anthropic",
++              "gen_ai.request.model": "claude-sonnet",
++            },
++          },
++        },
++      });
++      const error = JSON.stringify({
++        type: "event",
++        timestamp: 1_700_000_002,
++        message: "must be filtered out",
++      });
++
++      for (const [itemType, payload] of [
++        ["transaction", transaction],
++        ["event", error],
++      ]) {
++        const response = await realFetch(`http://127.0.0.1:${port}/stream`, {
++          method: "POST",
++          headers: { "Content-Type": "application/x-sentry-envelope" },
++          body: `${header}\n${JSON.stringify({ type: itemType })}\n${payload}`,
++        });
++        expect(response.status).toBe(204);
++      }
++
++      const outputLines = () =>
++        outputParts.flatMap((part) => part.split("\n"));
++      await waitFor(
++        () => outputLines().some((line) => line.startsWith("{")),
++        3000
++      );
++      const records = outputLines()
++        .filter((line) => line.startsWith("{"))
++        .map((line) => JSON.parse(line) as Record<string, unknown>);
++      expect(records).toHaveLength(1);
++      const semanticRecord = JSON.stringify(records[0]);
++      expect(semanticRecord).toContain("server");
++      expect(semanticRecord).toContain("chat");
++      expect(semanticRecord).toContain("anthropic");
++      expect(semanticRecord).toContain("claude-sonnet");
++      const banner = infoLines.join("\n");
++      expect(banner).toContain(`http://127.0.0.1:${port}/stream`);
++      expect(banner).toContain("SSE");
++      expect(banner).toContain("SENTRY_SPOTLIGHT");
++    } finally {
++      stopRegisteredCommand(beforeSignals);
++      await running;
++    }
++  });
++
++  test("reconnects SSE with Last-Event-ID after a transient HTTP error", async () => {
++    if (!realFetch) {
++      throw new Error("Original fetch implementation is unavailable");
++    }
++    globalThis.fetch = realFetch;
++    let streamRequests = 0;
++    const lastEventIds: Array<string | undefined> = [];
++    const envelope = JSON.stringify([
++      { sdk: { name: "sentry.node" } },
++      [[{ type: "transaction" }, { transaction: "trace" }]],
++    ]);
++    const mockServer = createServer((request, response) => {
++      if (request.url === "/health") {
++        response.writeHead(200).end("OK");
++        return;
++      }
++      if (request.url !== "/stream") {
++        response.writeHead(404).end();
++        return;
++      }
++
++      streamRequests += 1;
++      lastEventIds.push(
++        typeof request.headers["last-event-id"] === "string"
++          ? request.headers["last-event-id"]
++          : undefined
++      );
++      if (streamRequests === 1) {
++        response.writeHead(200, { "Content-Type": "text/event-stream" });
++        response.end(
++          `id: event-42\nevent: application/x-sentry-envelope\ndata: ${envelope}\n\n`
++        );
++      } else if (streamRequests === 2) {
++        response.writeHead(503).end("retry later");
++      } else {
++        response.writeHead(200, { "Content-Type": "text/event-stream" });
++        response.write(": connected\n\n");
++      }
++    });
++    await new Promise<void>((resolveListen) =>
++      mockServer.listen(0, "127.0.0.1", resolveListen)
++    );
++    const address = mockServer.address();
++    const port = typeof address === "object" && address ? address.port : 0;
++    const beforeSignals = new Set(process.listeners("SIGINT"));
++    const func = (await serverCommand.loader()) as unknown as ServerFunc;
++    const running = func.call(makeContext(), {
++      host: "127.0.0.1",
++      port,
++      quiet: false,
++      format: "human",
++      filter: [],
++    });
++
++    try {
++      await Promise.race([
++        waitFor(() => streamRequests >= 3, 10_000),
++        running.then(() => {
++          throw new Error("SSE consumer exited before reconnecting");
++        }),
++      ]);
++      expect(lastEventIds).toEqual([undefined, "event-42", "event-42"]);
++    } finally {
++      stopRegisteredCommand(beforeSignals);
++      await running;
++      await new Promise<void>((resolveClose) =>
++        mockServer.close(() => resolveClose())
++      );
++    }
++  }, 12_000);
++});
+diff --git a/test/commands/local/run.test.ts b/test/commands/local/run.test.ts
+index a9eeb51..f2fbc2a 100644
+--- a/test/commands/local/run.test.ts
++++ b/test/commands/local/run.test.ts
+@@ -1,8 +1,8 @@
+ /**
+  * Tests for the `sentry local run` command.
+  *
+- * Exercises the command's func() body directly to verify env var injection
+- * and exit code propagation.
++ * Exercises the command's func() body directly to verify env var injection,
++ * exit code propagation, signal handling, and error cases.
+  */
+ 
+ import { describe, expect, test, vi } from "vitest";
+@@ -36,6 +36,17 @@ describe("sentry local run", () => {
+     }
+   });
+ 
++  test("throws ValidationError with only -- separator", async () => {
++    const func = (await runCommand.loader()) as unknown as RunFunc;
++    const ctx = makeContext();
++    try {
++      await func.call(ctx, { port: 0, host: "localhost" }, "--");
++      expect.unreachable("should have thrown");
++    } catch (err) {
++      expect(err).toBeInstanceOf(ValidationError);
++    }
++  });
++
+   test("injects SENTRY_SPOTLIGHT env var into child process", async () => {
+     const func = (await runCommand.loader()) as unknown as RunFunc;
+     const ctx = makeContext();
+@@ -49,6 +60,29 @@ describe("sentry local run", () => {
+     );
+   });
+ 
++  test("preserves existing SENTRY_TRACES_SAMPLE_RATE", async () => {
++    const originalRate = process.env.SENTRY_TRACES_SAMPLE_RATE;
++    process.env.SENTRY_TRACES_SAMPLE_RATE = "0.5";
++    try {
++      const func = (await runCommand.loader()) as unknown as RunFunc;
++      const ctx = makeContext();
++      // The child process should get 0.5, not 1
++      // We verify this indirectly — if it doesn't throw, the env was set
++      await func.call(
++        ctx,
++        { port: 19_878, host: "127.0.0.1" },
++        "printenv",
++        "SENTRY_TRACES_SAMPLE_RATE"
++      );
++    } finally {
++      if (originalRate === undefined) {
++        delete process.env.SENTRY_TRACES_SAMPLE_RATE;
++      } else {
++        process.env.SENTRY_TRACES_SAMPLE_RATE = originalRate;
++      }
++    }
++  });
++
+   test("propagates non-zero exit code as CliError", async () => {
+     const func = (await runCommand.loader()) as unknown as RunFunc;
+     const ctx = makeContext();
+@@ -62,4 +96,31 @@ describe("sentry local run", () => {
+       expect((err as CliError).message).toContain("exited with code");
+     }
+   });
++
++  test("throws on ENOENT (command not found)", async () => {
++    const func = (await runCommand.loader()) as unknown as RunFunc;
++    const ctx = makeContext();
++
++    try {
++      await func.call(
++        ctx,
++        { port: 19_879, host: "127.0.0.1" },
++        "nonexistent-command-that-does-not-exist"
++      );
++      expect.unreachable("should have thrown");
++    } catch (err) {
++      expect(err).toBeInstanceOf(Error);
++      expect((err as Error).message).toMatch(
++        /exited with code|Failed to start|ENOENT|spawn/i
++      );
++    }
++  });
++
++  test("strips leading -- separator from args", async () => {
++    const func = (await runCommand.loader()) as unknown as RunFunc;
++    const ctx = makeContext();
++
++    // "-- true" should strip "--" and run "true" successfully
++    await func.call(ctx, { port: 19_880, host: "127.0.0.1" }, "--", "true");
++  });
+ });
+diff --git a/test/commands/local/server.test.ts b/test/commands/local/server.test.ts
+new file mode 100644
+index 0000000..c251560
+--- /dev/null
++++ b/test/commands/local/server.test.ts
+@@ -0,0 +1,145 @@
++/**
++ * Tests for the `sentry local serve` command infrastructure.
++ *
++ * Exercises buildApp (HTTP ingest, SSE streaming, CORS), isServerRunning,
++ * and the public --port parser.
++ */
++
++import { createSpotlightBuffer } from "@spotlightjs/spotlight/sdk";
++import { describe, expect, test } from "vitest";
++import {
++  buildApp,
++  isServerRunning,
++  serverCommand,
++} from "../../../src/commands/local/server.js";
++import { SENTRY_CONTENT_TYPE } from "../../../src/lib/formatters/local.js";
++
++const parsePortOption = (
++  serverCommand.parameters.flags.port as {
++    parse: (value: string) => number;
++  }
++).parse;
++
++describe("--port parsing", () => {
++  test("parses valid port numbers", () => {
++    expect(parsePortOption("8969")).toBe(8969);
++    expect(parsePortOption("0")).toBe(0);
++    expect(parsePortOption("65535")).toBe(65_535);
++  });
++
++  test("throws on negative port", () => {
++    expect(() => parsePortOption("-1")).toThrow();
++  });
++
++  test("throws on port above 65535", () => {
++    expect(() => parsePortOption("70000")).toThrow();
++  });
++
++  test("throws on non-integer", () => {
++    expect(() => parsePortOption("8969.5")).toThrow();
++  });
++
++  test("throws on non-numeric", () => {
++    expect(() => parsePortOption("abc")).toThrow();
++  });
++});
++
++describe("buildApp", () => {
++  test("health endpoint returns OK", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/health");
++    expect(res.status).toBe(200);
++    expect(await res.text()).toBe("OK");
++  });
++
++  test("ingest endpoint accepts envelopes and returns 204", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const envelope =
++      '{"sdk":{"name":"sentry.node"}}\n{"type":"event"}\n{"message":"test"}';
++    const res = await app.request("/stream", {
++      method: "POST",
++      headers: { "Content-Type": SENTRY_CONTENT_TYPE },
++      body: envelope,
++    });
++    expect(res.status).toBe(204);
++  });
++
++  test("ingest via /api/:projectId/envelope/ returns 204", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const envelope =
++      '{"sdk":{"name":"sentry.node"}}\n{"type":"event"}\n{"message":"test"}';
++    const res = await app.request("/api/123/envelope/", {
++      method: "POST",
++      headers: { "Content-Type": SENTRY_CONTENT_TYPE },
++      body: envelope,
++    });
++    expect(res.status).toBe(204);
++  });
++
++  test("ingest rejects oversized payloads with 413", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/stream", {
++      method: "POST",
++      headers: {
++        "Content-Type": SENTRY_CONTENT_TYPE,
++        "Content-Length": String(11 * 1024 * 1024),
++      },
++      body: "x".repeat(1024),
++    });
++    expect(res.status).toBe(413);
++  });
++
++  test("CORS allows localhost origins", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/health", {
++      headers: { Origin: "http://localhost:3000" },
++    });
++    expect(res.headers.get("access-control-allow-origin")).toBe(
++      "http://localhost:3000"
++    );
++  });
++
++  test("CORS blocks non-localhost origins", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/health", {
++      headers: { Origin: "http://evil.example.com" },
++    });
++    expect(res.headers.get("access-control-allow-origin")).toBeNull();
++  });
++
++  test("SSE stream endpoint returns event-stream content type", async () => {
++    const buffer = createSpotlightBuffer(10);
++    const app = buildApp(buffer);
++
++    const res = await app.request("/stream", {
++      headers: { Accept: "text/event-stream" },
++    });
++    expect(res.status).toBe(200);
++    expect(res.headers.get("content-type")).toContain("text/event-stream");
++    // Abort to avoid hanging
++    if (res.body) {
++      await res.body.cancel();
++    }
++  });
++});
++
++describe("isServerRunning", () => {
++  test("returns false when no server is running", async () => {
++    // isServerRunning uses global fetch which is mocked in tests.
++    // Verify the function handles connection errors gracefully.
++    const result = await isServerRunning("http://127.0.0.1:19999");
++    expect(result).toBe(false);
++  });
++});
+diff --git a/test/lib/formatters/local.test.ts b/test/lib/formatters/local.test.ts
+index 89d4ef3..13106e3 100644
+--- a/test/lib/formatters/local.test.ts
++++ b/test/lib/formatters/local.test.ts
+@@ -1,5 +1,5 @@
+ /**
+- * Unit tests for local dev server formatters.
++ * Unit tests for local dev server formatters retained by the hidden profile.
+  *
+  * Note: Core invariants (never-throw, sanitization round-trips, filter
+  * emptiness) are tested via property-based tests in local.property.test.ts.
+diff --git a/test/lib/formatters/semantic-behavior.test.ts b/test/lib/formatters/semantic-behavior.test.ts
+new file mode 100644
+index 0000000..b94ac6b
+--- /dev/null
++++ b/test/lib/formatters/semantic-behavior.test.ts
+@@ -0,0 +1,170 @@
++import { describe, expect, test } from "vitest";
++import { formatTransactionItem } from "../../../src/lib/formatters/local.js";
++import { stripAnsi } from "../../../src/lib/formatters/plain-detect.js";
++
++const header = { sdk: { name: "sentry.node" } };
++
++function render(data: Record<string, unknown>, transaction = "fallback name") {
++  return stripAnsi(
++    formatTransactionItem(
++      {
++        timestamp: 1_700_000_001,
++        start_timestamp: 1_700_000_000,
++        transaction,
++        contexts: { trace: { op: "custom.transport", data } },
++      },
++      header
++    )
++  );
++}
++
++describe("OpenTelemetry semantic transaction rendering", () => {
++  test.each([
++    [
++      "GenAI",
++      {
++        "gen_ai.operation.name": "chat",
++        "gen_ai.provider.name": "anthropic",
++        "gen_ai.request.model": "claude-sonnet",
++      },
++      ["chat", "anthropic", "claude-sonnet"],
++    ],
++    [
++      "MCP",
++      {
++        "mcp.method.name": "tools/call",
++        "gen_ai.tool.name": "search_files",
++      },
++      ["tools/call", "search_files"],
++    ],
++    [
++      "HTTP",
++      {
++        "http.request.method": "POST",
++        "server.address": "api.example.com",
++        "http.response.status_code": 200,
++      },
++      ["POST", "api.example.com", "200"],
++    ],
++    [
++      "database",
++      {
++        "db.system.name": "postgresql",
++        "db.query.summary": "SELECT users",
++      },
++      ["SELECT users", "postgresql"],
++    ],
++    [
++      "GraphQL",
++      {
++        "graphql.operation.type": "query",
++        "graphql.operation.name": "TraceDetails",
++      },
++      ["query", "TraceDetails"],
++    ],
++    [
++      "RPC",
++      {
++        "rpc.system.name": "grpc",
++        "rpc.service": "TraceService",
++        "rpc.method": "FetchTrace",
++      },
++      ["TraceService", "FetchTrace", "grpc"],
++    ],
++    [
++      "messaging",
++      {
++        "messaging.system": "kafka",
++        "messaging.operation.type": "publish",
++        "messaging.destination.name": "trace-events",
++      },
++      ["publish", "trace-events", "kafka"],
++    ],
++    [
++      "FaaS",
++      {
++        "faas.trigger": "timer",
++        "faas.invoked_name": "trace-worker",
++        "faas.invoked_provider": "aws",
++        "faas.coldstart": true,
++      },
++      ["timer", "trace-worker", "aws", "coldstart"],
++    ],
++    [
++      "object store",
++      {
++        "aws.s3.bucket": "trace-artifacts",
++        "aws.s3.key": "runs/abc.json",
++        "rpc.method": "PutObject",
++      },
++      ["PutObject", "trace-artifacts", "runs/abc.json"],
++    ],
++    [
++      "CloudEvents",
++      {
++        "cloudevents.event_spec_version": "1.0",
++        "cloudevents.event_subject": "trace/e4d1",
++        "cloudevents.event_type": "com.sentry.trace.created",
++      },
++      ["com.sentry.trace.created", "trace/e4d1", "1.0"],
++    ],
++    [
++      "CICD",
++      {
++        "cicd.pipeline.action.name": "BUILD",
++        "cicd.pipeline.name": "mcp-core",
++        "cicd.pipeline.result": "success",
++      },
++      ["BUILD", "mcp-core", "success"],
++    ],
++    [
++      "feature flag",
++      {
++        "feature_flag.key": "semantic-rendering",
++        "feature_flag.provider.name": "flagsmith",
++        "feature_flag.result.variant": "on",
++      },
++      ["semantic-rendering", "on", "flagsmith"],
++    ],
++    [
++      "process",
++      { "process.command": "git", "process.exit.code": 0 },
++      ["git", "0"],
++    ],
++    [
++      "exception",
++      { "exception.type": "ValueError" },
++      ["ValueError"],
++      "job failed",
++    ],
++    [
++      "generic error",
++      { "error.type": "timeout" },
++      ["timeout"],
++      "background job",
++    ],
++  ])("renders %s attributes", (_name, data, expected, transaction) => {
++    const output = render(data as Record<string, unknown>, transaction as string | undefined);
++    for (const token of expected as string[]) {
++      expect(output).toContain(token);
++    }
++  });
++
++  test("uses semantic attributes before HTTP transport attributes", () => {
++    const output = render({
++      "mcp.method.name": "tools/call",
++      "gen_ai.tool.name": "search_files",
++      "http.request.method": "POST",
++      "url.path": "/mcp",
++    });
++    expect(output).toContain("tools/call");
++    expect(output).toContain("search_files");
++    expect(output).not.toContain("POST /mcp");
++  });
++
++  test("falls back to the existing transaction rendering", () => {
++    const output = render({}, "GET /api/users");
++    expect(output).toContain("GET /api/users");
++    expect(output).toContain("custom.transport");
++  });
++});

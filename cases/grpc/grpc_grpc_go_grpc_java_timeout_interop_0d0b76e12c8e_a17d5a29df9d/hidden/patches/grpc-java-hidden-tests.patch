@@ -1,0 +1,79 @@
+diff --git a/core/src/test/java/io/grpc/internal/AbstractClientStreamTest.java b/core/src/test/java/io/grpc/internal/AbstractClientStreamTest.java
+index 18fafe655..8f14b7403 100644
+--- a/core/src/test/java/io/grpc/internal/AbstractClientStreamTest.java
++++ b/core/src/test/java/io/grpc/internal/AbstractClientStreamTest.java
+@@ -465,6 +465,24 @@ public class AbstractClientStreamTest {
+         .isGreaterThan(TimeUnit.MILLISECONDS.toNanos(600));
+   }
+ 
++  @Test
++  public void setDeadline_thePastBecomesPositive() {
++    AbstractClientStream.Sink sink = mock(AbstractClientStream.Sink.class);
++    ClientStream stream = new BaseAbstractClientStream(
++        allocator, new BaseTransportState(statsTraceCtx, transportTracer), sink, statsTraceCtx,
++        transportTracer);
++
++    stream.setDeadline(Deadline.after(-1, TimeUnit.NANOSECONDS));
++    stream.start(mockListener);
++
++    ArgumentCaptor<Metadata> headersCaptor = ArgumentCaptor.forClass(Metadata.class);
++    verify(sink).writeHeaders(headersCaptor.capture(), ArgumentMatchers.<byte[]>any());
++
++    Metadata headers = headersCaptor.getValue();
++    assertThat(headers.get(Metadata.Key.of("grpc-timeout", Metadata.ASCII_STRING_MARSHALLER)))
++        .isEqualTo("1n");
++  }
++
+   @Test
+   public void appendTimeoutInsight() {
+     InsightBuilder insight = new InsightBuilder();
+diff --git a/core/src/test/java/io/grpc/internal/GrpcUtilTest.java b/core/src/test/java/io/grpc/internal/GrpcUtilTest.java
+index 229c593ef..c24379002 100644
+--- a/core/src/test/java/io/grpc/internal/GrpcUtilTest.java
++++ b/core/src/test/java/io/grpc/internal/GrpcUtilTest.java
+@@ -98,8 +98,8 @@ public class GrpcUtilTest {
+     GrpcUtil.TimeoutMarshaller marshaller =
+             new GrpcUtil.TimeoutMarshaller();
+     // nanos
+-    assertEquals("0n", marshaller.toAsciiString(0L));
+-    assertEquals(0L, (long) marshaller.parseAsciiString("0n"));
++    assertEquals("1n", marshaller.toAsciiString(1L));
++    assertEquals(1L, (long) marshaller.parseAsciiString("1n"));
+ 
+     assertEquals("99999999n", marshaller.toAsciiString(99999999L));
+     assertEquals(99999999L, (long) marshaller.parseAsciiString("99999999n"));
+diff --git a/core/src/test/java/io/grpc/internal/ServerImplTest.java b/core/src/test/java/io/grpc/internal/ServerImplTest.java
+index 2ddaba751..0f18efe07 100644
+--- a/core/src/test/java/io/grpc/internal/ServerImplTest.java
++++ b/core/src/test/java/io/grpc/internal/ServerImplTest.java
+@@ -53,6 +53,7 @@ import io.grpc.BinaryLog;
+ import io.grpc.Channel;
+ import io.grpc.Compressor;
+ import io.grpc.Context;
++import io.grpc.Deadline;
+ import io.grpc.Grpc;
+ import io.grpc.HandlerRegistry;
+ import io.grpc.IntegerMarshaller;
+@@ -1146,11 +1147,21 @@ public class ServerImplTest {
+   @Test
+   public void testContextExpiredBeforeStreamCreate_StreamCancelNotCalledBeforeSetListener()
+       throws Exception {
++    builder.ticker = new Deadline.Ticker() {
++      private long time;
++
++      @Override
++      public long nanoTime() {
++        time += 1000;
++        return time;
++      }
++    };
++
+     AtomicBoolean contextCancelled = new AtomicBoolean(false);
+     AtomicReference<Context> context = new AtomicReference<>();
+     AtomicReference<ServerCall<String, Integer>> callReference = new AtomicReference<>();
+ 
+-    testStreamClose_setup(callReference, context, contextCancelled, 0L);
++    testStreamClose_setup(callReference, context, contextCancelled, 1L);
+ 
+     // This assert that stream.setListener(jumpListener) is called before stream.cancel(), which
+     // prevents extremely short deadlines causing NPEs.

@@ -1,0 +1,38 @@
+task_id: laravel_boost_roster_ddab846862bf
+hidden_test_patches:
+- repo: boost
+  patch: hidden/patches/boost-hidden-tests.patch
+  test_profile: boost-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/Feature/Install/GuidelineComposerTest.php
+  - tests/Feature/Install/SkillComposerTest.php
+  - tests/Unit/Install/ThirdPartyPackageTest.php
+  hidden_file: *id001
+  semantic_changes:
+  - replace private helper and utility assertions with public scan/compose behavior
+  - remove unused fixtures and the implementation-specific Support/Npm test file
+  source: upstream test changes from laravel/boost PR(s) 566
+- repo: roster
+  patch: hidden/patches/roster-hidden-tests.patch
+  test_profile: roster-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/Unit/CheckTest.php
+  - tests/Unit/RosterTest.php
+  - tests/Unit/Scanners/ComposerTest.php
+  - tests/Unit/Scanners/PackageLockTest.php
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from laravel/roster PR(s) 42
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - boost-hidden
+    - roster-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

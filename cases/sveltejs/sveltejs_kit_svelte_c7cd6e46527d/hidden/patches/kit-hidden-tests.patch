@@ -1,0 +1,230 @@
+diff --git a/packages/kit/src/core/config/index.spec.js b/packages/kit/src/core/config/index.spec.js
+index 14ac336170..6b0e9808af 100644
+--- a/packages/kit/src/core/config/index.spec.js
++++ b/packages/kit/src/core/config/index.spec.js
+@@ -81,7 +81,8 @@ const get_defaults = (prefix = '') => ({
+ 			tracing: { server: false },
+ 			instrumentation: { server: false },
+ 			remoteFunctions: false,
+-			forkPreloads: false
++			forkPreloads: false,
++			handleRenderingErrors: false
+ 		},
+ 		files: {
+ 			src: join(prefix, 'src'),
+diff --git a/packages/kit/test/apps/async/src/hooks.client.js b/packages/kit/test/apps/async/src/hooks.client.js
+new file mode 100644
+index 0000000000..af343e2d10
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/hooks.client.js
+@@ -0,0 +1,13 @@
++import { isRedirect } from '@sveltejs/kit';
++
++/** @type {import('@sveltejs/kit').HandleClientError} */
++export const handleError = ({ error: e, event, status, message }) => {
++	// helps us catch sveltekit redirects thrown in component code
++	if (isRedirect(e)) {
++		throw new Error("Redirects shouldn't trigger the handleError hook");
++	}
++
++	const error = /** @type {Error} */ (e);
++
++	return { message: `${error.message} (${status} ${message}, on ${event.url.pathname})` };
++};
+diff --git a/packages/kit/test/apps/async/src/hooks.server.js b/packages/kit/test/apps/async/src/hooks.server.js
+index 595b33bf3e..4a1d3f5e8f 100644
+--- a/packages/kit/test/apps/async/src/hooks.server.js
++++ b/packages/kit/test/apps/async/src/hooks.server.js
+@@ -25,7 +25,7 @@ export const handleValidationError = ({ issues }) => {
+ };
+ 
+ /** @type {import('@sveltejs/kit').HandleServerError} */
+-export const handleError = ({ error: e, status, message }) => {
++export const handleError = ({ error: e, event, status, message }) => {
+ 	// helps us catch sveltekit redirects thrown in component code
+ 	if (isRedirect(e)) {
+ 		throw new Error("Redirects shouldn't trigger the handleError hook");
+@@ -33,7 +33,7 @@ export const handleError = ({ error: e, status, message }) => {
+ 
+ 	const error = /** @type {Error} */ (e);
+ 
+-	return { message: `${error.message} (${status} ${message})` };
++	return { message: `${error.message} (${status} ${message}, on ${event.url.pathname})` };
+ };
+ 
+ // @ts-ignore this doesn't exist in old Node TODO remove SvelteKit 3 (same in test-basics)
+diff --git a/packages/kit/test/apps/async/src/routes/+error.svelte b/packages/kit/test/apps/async/src/routes/+error.svelte
+index 61ad908c0b..31f3cb324e 100644
+--- a/packages/kit/test/apps/async/src/routes/+error.svelte
++++ b/packages/kit/test/apps/async/src/routes/+error.svelte
+@@ -1,14 +1,16 @@
+ <script>
+ 	import { page } from '$app/state';
++
++	let { error } = $props();
+ </script>
+ 
+ <svelte:head>
+-	<title>Custom error page: {page.error.message}</title>
++	<title>Custom error page: {error.message}</title>
+ </svelte:head>
+ 
+ <h1>{page.status}</h1>
+ 
+-<p id="message">This is your custom error page saying: "<b>{page.error.message}</b>"</p>
++<p id="message">This is your custom error page saying: "<b>{error.message}</b>"</p>
+ 
+ <style>
+ 	h1,
+diff --git a/packages/kit/test/apps/async/src/routes/+page.svelte b/packages/kit/test/apps/async/src/routes/+page.svelte
+new file mode 100644
+index 0000000000..8aa2fb04bf
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/+page.svelte
+@@ -0,0 +1 @@
++Starting point
+diff --git a/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
+index 9c4ab7aa73..a914e7646d 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
++++ b/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
+@@ -26,7 +26,7 @@
+ 
+ 				{#snippet failed(error)}
+ 					<span id="batch-result-{idx + 1}"
+-						>Error loading todo {id}: {(error as any).body.message}</span
++						>Error loading todo {id}: {(error as App.Error).message}</span
+ 					>
+ 				{/snippet}
+ 			</svelte:boundary>
+diff --git a/packages/kit/test/apps/async/src/routes/server-error-boundary/+layout.svelte b/packages/kit/test/apps/async/src/routes/server-error-boundary/+layout.svelte
+new file mode 100644
+index 0000000000..ad90e90a5f
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/server-error-boundary/+layout.svelte
+@@ -0,0 +1,8 @@
++<script>
++	let { children } = $props();
++</script>
++
++<div id="nested-layout">
++	<h2>Nested Layout</h2>
++	{@render children?.()}
++</div>
+diff --git a/packages/kit/test/apps/async/src/routes/server-error-boundary/+page.svelte b/packages/kit/test/apps/async/src/routes/server-error-boundary/+page.svelte
+new file mode 100644
+index 0000000000..ca447545de
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/server-error-boundary/+page.svelte
+@@ -0,0 +1,5 @@
++<script>
++	throw new Error('render error');
++</script>
++
++<h1>This should not be visible</h1>
+diff --git a/packages/kit/test/apps/async/src/routes/server-error-boundary/nested/+error.svelte b/packages/kit/test/apps/async/src/routes/server-error-boundary/nested/+error.svelte
+new file mode 100644
+index 0000000000..3b076932ca
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/server-error-boundary/nested/+error.svelte
+@@ -0,0 +1,10 @@
++<script>
++	import { page } from '$app/state';
++
++	let { error } = $props();
++</script>
++
++<p id="nested-error-message">
++	<!-- page.error always !== error on hydration because the former comes from the SvelteKit SSR payload and the latter from the failed boundary hydration comment -->
++	Nested error: {error.message} | {page.error.message === error.message} | {page.status}
++</p>
+diff --git a/packages/kit/test/apps/async/src/routes/server-error-boundary/nested/+page.svelte b/packages/kit/test/apps/async/src/routes/server-error-boundary/nested/+page.svelte
+new file mode 100644
+index 0000000000..298070ab3c
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/server-error-boundary/nested/+page.svelte
+@@ -0,0 +1,5 @@
++<script>
++	throw new Error('nested render error');
++</script>
++
++<h1>This nested page should not be visible</h1>
+diff --git a/packages/kit/test/apps/async/svelte.config.js b/packages/kit/test/apps/async/svelte.config.js
+index 40b80503f3..ba4230af81 100644
+--- a/packages/kit/test/apps/async/svelte.config.js
++++ b/packages/kit/test/apps/async/svelte.config.js
+@@ -9,6 +9,7 @@ const config = {
+ 	kit: {
+ 		experimental: {
+ 			remoteFunctions: true,
++			handleRenderingErrors: true,
+ 			forkPreloads: true
+ 		}
+ 	}
+diff --git a/packages/kit/test/apps/async/test/client.test.js b/packages/kit/test/apps/async/test/client.test.js
+index db55e7f9bd..63a76dc889 100644
+--- a/packages/kit/test/apps/async/test/client.test.js
++++ b/packages/kit/test/apps/async/test/client.test.js
+@@ -358,3 +358,26 @@ test.describe('remote function mutations', () => {
+ 		}
+ 	});
+ });
++
++test.describe('client error boundaries', () => {
++	test('catches client render error and shows root +error.svelte', async ({ page, app }) => {
++		await page.goto('/');
++		await app.goto('/server-error-boundary');
++		await expect(page.locator('#message')).toContainText(
++			'render error (500 Internal Error, on /server-error-boundary)'
++		);
++	});
++
++	test('catches nested server render error and shows nested +error.svelte', async ({
++		page,
++		app
++	}) => {
++		await page.goto('/');
++		await app.goto('/server-error-boundary/nested');
++		await expect(page.locator('#nested-error-message')).toContainText(
++			'nested render error (500 Internal Error, on /server-error-boundary/nested) | true | 500'
++		);
++		// The nested layout should still be visible
++		await expect(page.locator('#nested-layout')).toBeVisible();
++	});
++});
+diff --git a/packages/kit/test/apps/async/test/test.js b/packages/kit/test/apps/async/test/test.js
+index c5af41c86d..2164e75abf 100644
+--- a/packages/kit/test/apps/async/test/test.js
++++ b/packages/kit/test/apps/async/test/test.js
+@@ -132,7 +132,9 @@ test.describe('remote functions', () => {
+ 		await page.getByText('set message').click();
+ 
+ 		await page
+-			.getByText('This is your custom error page saying: "oops (500 Internal Error)"')
++			.getByText(
++				'This is your custom error page saying: "oops (500 Internal Error, on /remote/form/unexpected-error)"'
++			)
+ 			.waitFor();
+ 	});
+ 
+@@ -615,3 +617,21 @@ test.describe('remote functions', () => {
+ 		}
+ 	});
+ });
++
++test.describe('server error boundaries', () => {
++	test('catches server render error and shows root +error.svelte', async ({ page }) => {
++		await page.goto('/server-error-boundary');
++		await expect(page.locator('#message')).toContainText(
++			'render error (500 Internal Error, on /server-error-boundary)'
++		);
++	});
++
++	test('catches nested server render error and shows nested +error.svelte', async ({ page }) => {
++		await page.goto('/server-error-boundary/nested');
++		await expect(page.locator('#nested-error-message')).toContainText(
++			'nested render error (500 Internal Error, on /server-error-boundary/nested) | true | 500'
++		);
++		// The nested layout should still be visible
++		await expect(page.locator('#nested-layout')).toBeVisible();
++	});
++});

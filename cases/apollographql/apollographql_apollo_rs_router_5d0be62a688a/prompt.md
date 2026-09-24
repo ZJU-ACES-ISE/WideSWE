@@ -1,0 +1,3 @@
+When `adopt_orphan_extensions` created a type from orphan extensions (e.g., `extend type T { ... }` without a base `type T` definition), the synthesized `Node` was created via `def.into()` -> `Node::new()`, which sets `location: None`. Downstream consumers that rely on node source locations, such as apollo-federation's `HasLocations` trait for composition hints, would silently drop these types from location metadata.
+
+Adopted orphan extension types must retain source location metadata. Downstream composition hints must include locations for subgraphs that define a type only through extensions instead of silently omitting them.

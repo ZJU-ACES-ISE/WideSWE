@@ -1,0 +1,98 @@
+diff --git a/binder/src/main/java/io/grpc/binder/internal/Outbound.java b/binder/src/main/java/io/grpc/binder/internal/Outbound.java
+index f395fe170..7db5bf0fb 100644
+--- a/binder/src/main/java/io/grpc/binder/internal/Outbound.java
++++ b/binder/src/main/java/io/grpc/binder/internal/Outbound.java
+@@ -19,7 +19,6 @@ package io.grpc.binder.internal;
+ import static com.google.common.base.Preconditions.checkNotNull;
+ import static com.google.common.base.Preconditions.checkState;
+ import static io.grpc.internal.GrpcUtil.TIMEOUT_KEY;
+-import static java.lang.Math.max;
+ 
+ import android.os.Parcel;
+ import com.google.errorprone.annotations.concurrent.GuardedBy;
+@@ -397,8 +396,7 @@ abstract class Outbound {
+     @GuardedBy("this")
+     void setDeadline(Deadline deadline) {
+       headers.discardAll(TIMEOUT_KEY);
+-      long effectiveTimeoutNanos = max(0, deadline.timeRemaining(TimeUnit.NANOSECONDS));
+-      headers.put(TIMEOUT_KEY, effectiveTimeoutNanos);
++      headers.put(TIMEOUT_KEY, deadline.timeRemaining(TimeUnit.NANOSECONDS));
+     }
+   }
+ 
+diff --git a/core/src/main/java/io/grpc/internal/AbstractClientStream.java b/core/src/main/java/io/grpc/internal/AbstractClientStream.java
+index bb346657d..9718f8c51 100644
+--- a/core/src/main/java/io/grpc/internal/AbstractClientStream.java
++++ b/core/src/main/java/io/grpc/internal/AbstractClientStream.java
+@@ -21,7 +21,6 @@ import static com.google.common.base.Preconditions.checkState;
+ import static io.grpc.internal.GrpcUtil.CONTENT_ENCODING_KEY;
+ import static io.grpc.internal.GrpcUtil.MESSAGE_ENCODING_KEY;
+ import static io.grpc.internal.GrpcUtil.TIMEOUT_KEY;
+-import static java.lang.Math.max;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.base.Preconditions;
+@@ -124,8 +123,7 @@ public abstract class AbstractClientStream extends AbstractStream
+   @Override
+   public void setDeadline(Deadline deadline) {
+     headers.discardAll(TIMEOUT_KEY);
+-    long effectiveTimeout = max(0, deadline.timeRemaining(TimeUnit.NANOSECONDS));
+-    headers.put(TIMEOUT_KEY, effectiveTimeout);
++    headers.put(TIMEOUT_KEY, deadline.timeRemaining(TimeUnit.NANOSECONDS));
+   }
+ 
+   @Override
+diff --git a/core/src/main/java/io/grpc/internal/GrpcUtil.java b/core/src/main/java/io/grpc/internal/GrpcUtil.java
+index 65c083f10..095184683 100644
+--- a/core/src/main/java/io/grpc/internal/GrpcUtil.java
++++ b/core/src/main/java/io/grpc/internal/GrpcUtil.java
+@@ -219,7 +219,7 @@ public final class GrpcUtil {
+ 
+   public static final Splitter ACCEPT_ENCODING_SPLITTER = Splitter.on(',').trimResults();
+ 
+-  public static final String IMPLEMENTATION_VERSION = "1.75.0-SNAPSHOT"; // CURRENT_GRPC_VERSION
++  public static final String IMPLEMENTATION_VERSION = "1.74.0-SNAPSHOT"; // CURRENT_GRPC_VERSION
+ 
+   /**
+    * The default timeout in nanos for a keepalive ping request.
+@@ -651,12 +651,14 @@ public final class GrpcUtil {
+   static class TimeoutMarshaller implements Metadata.AsciiMarshaller<Long> {
+ 
+     @Override
+-    public String toAsciiString(Long timeoutNanos) {
++    public String toAsciiString(Long timeoutNanosObject) {
+       long cutoff = 100000000;
++      // Timeout checking is inherently racy. RPCs with timeouts in the past ideally don't even get
++      // here, but if the timeout is expired assume that happened recently and adjust it to the
++      // smallest allowed timeout
++      long timeoutNanos = Math.max(1, timeoutNanosObject);
+       TimeUnit unit = TimeUnit.NANOSECONDS;
+-      if (timeoutNanos < 0) {
+-        throw new IllegalArgumentException("Timeout too small");
+-      } else if (timeoutNanos < cutoff) {
++      if (timeoutNanos < cutoff) {
+         return timeoutNanos + "n";
+       } else if (timeoutNanos < cutoff * 1000L) {
+         return unit.toMicros(timeoutNanos) + "u";
+diff --git a/inprocess/src/main/java/io/grpc/inprocess/InProcessTransport.java b/inprocess/src/main/java/io/grpc/inprocess/InProcessTransport.java
+index e294b4eb6..e31696eb6 100644
+--- a/inprocess/src/main/java/io/grpc/inprocess/InProcessTransport.java
++++ b/inprocess/src/main/java/io/grpc/inprocess/InProcessTransport.java
+@@ -18,7 +18,6 @@ package io.grpc.inprocess;
+ 
+ import static com.google.common.base.Preconditions.checkNotNull;
+ import static io.grpc.internal.GrpcUtil.TIMEOUT_KEY;
+-import static java.lang.Math.max;
+ 
+ import com.google.common.base.MoreObjects;
+ import com.google.common.io.ByteStreams;
+@@ -939,8 +938,7 @@ final class InProcessTransport implements ServerTransport, ConnectionClientTrans
+       @Override
+       public void setDeadline(Deadline deadline) {
+         headers.discardAll(TIMEOUT_KEY);
+-        long effectiveTimeout = max(0, deadline.timeRemaining(TimeUnit.NANOSECONDS));
+-        headers.put(TIMEOUT_KEY, effectiveTimeout);
++        headers.put(TIMEOUT_KEY, deadline.timeRemaining(TimeUnit.NANOSECONDS));
+       }
+ 
+       @Override

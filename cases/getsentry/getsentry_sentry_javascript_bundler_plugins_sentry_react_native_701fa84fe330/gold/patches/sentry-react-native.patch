@@ -1,0 +1,154 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4238cc29..efa73945 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -14,6 +14,7 @@
+   - New `ready` prop. When a screen has multiple async data sources, mount one `<TimeToFullDisplay ready={...} />` per source — TTID/TTFD is recorded only when every instance reports `ready === true`.
+   - The existing `record` prop is unchanged BUT it is now deprecated in favor of `ready`.
+ - Extract text content from children of touched components as a label fallback for touch breadcrumbs ([#6106](https://github.com/getsentry/sentry-react-native/pull/6106))
++- Auto-inject `sentry-label` from static text content at build time when `annotateReactComponents` is enabled ([#6141](https://github.com/getsentry/sentry-react-native/pull/6141))
+ - Respect Replay Mask boundaries when reading `sentry-label` for touch breadcrumbs ([#6142](https://github.com/getsentry/sentry-react-native/pull/6142))
+ 
+ ### Fixes
+diff --git a/packages/core/src/js/tools/metroconfig.ts b/packages/core/src/js/tools/metroconfig.ts
+index ac5cbb46..f5057b5a 100644
+--- a/packages/core/src/js/tools/metroconfig.ts
++++ b/packages/core/src/js/tools/metroconfig.ts
+@@ -33,6 +33,14 @@ export interface SentryMetroConfigOptions {
+     | boolean
+     | {
+         ignoredComponents?: string[];
++        /**
++         * Automatically inject `sentry-label` props from static text content.
++         * When enabled, the Babel plugin extracts text from children of touchable
++         * components and injects it as a `sentry-label` prop at build time.
++         *
++         * @default true when `annotateReactComponents` is enabled
++         */
++        autoInjectSentryLabel?: boolean;
+       };
+   /**
+    * Adds the Sentry replay package for web.
+diff --git a/packages/core/src/js/tools/sentryBabelTransformerUtils.ts b/packages/core/src/js/tools/sentryBabelTransformerUtils.ts
+index e848e0c9..0626a971 100644
+--- a/packages/core/src/js/tools/sentryBabelTransformerUtils.ts
++++ b/packages/core/src/js/tools/sentryBabelTransformerUtils.ts
+@@ -4,7 +4,12 @@ import * as process from 'process';
+ 
+ import type { BabelTransformer, BabelTransformerArgs } from './vendor/metro/metroBabelTransformer';
+ 
+-export type SentryBabelTransformerOptions = { annotateReactComponents?: { ignoredComponents?: string[] } };
++export type SentryBabelTransformerOptions = {
++  annotateReactComponents?: {
++    ignoredComponents?: string[];
++    autoInjectSentryLabel?: boolean;
++  };
++};
+ 
+ export const SENTRY_DEFAULT_BABEL_TRANSFORMER_PATH = 'SENTRY_DEFAULT_BABEL_TRANSFORMER_PATH';
+ export const SENTRY_BABEL_TRANSFORMER_OPTIONS = 'SENTRY_BABEL_TRANSFORMER_OPTIONS';
+@@ -111,10 +116,10 @@ function addSentryComponentAnnotatePlugin(
+   }
+ 
+   if (!args.filename.includes('node_modules')) {
+-    if (options) {
+-      args.plugins.push([componentAnnotatePlugin, options]);
+-    } else {
+-      args.plugins.push(componentAnnotatePlugin);
+-    }
++    const pluginOptions = {
++      autoInjectSentryLabel: true,
++      ...options,
++    };
++    args.plugins.push([componentAnnotatePlugin, pluginOptions]);
+   }
+ }
+diff --git a/packages/core/test/tools/sentryBabelTransformer.test.ts b/packages/core/test/tools/sentryBabelTransformer.test.ts
+index 4dc4195d..12b8bf76 100644
+--- a/packages/core/test/tools/sentryBabelTransformer.test.ts
++++ b/packages/core/test/tools/sentryBabelTransformer.test.ts
+@@ -45,20 +45,25 @@ describe('SentryBabelTransformer', () => {
+       options: {
+         projectRoot: 'project/root',
+       },
+-      plugins: [expect.any(Function), expect.any(Function)],
++      plugins: [expect.any(Function), [expect.any(Function), expect.objectContaining({ autoInjectSentryLabel: true })]],
+     });
+-    expect(MockDefaultBabelTransformer.transform.mock.calls[0][0]['plugins'][1].name).toEqual(
++    expect(MockDefaultBabelTransformer.transform.mock.calls[0][0]['plugins'][1][0].name).toEqual(
+       'componentNameAnnotatePlugin',
+     );
+   });
+ 
+-  test('transform adds plugin', () => {
++  test('transform adds plugin with autoInjectSentryLabel enabled by default', () => {
+     createSentryBabelTransformer().transform?.(createMinimalMockedTransformOptions());
+ 
+     expect(MockDefaultBabelTransformer.transform).toHaveBeenCalledTimes(1);
+     expect(MockDefaultBabelTransformer.transform).toHaveBeenCalledWith(
+       expect.objectContaining({
+-        plugins: expect.arrayContaining([expect.objectContaining({ name: 'componentNameAnnotatePlugin' })]),
++        plugins: expect.arrayContaining([
++          [
++            expect.objectContaining({ name: 'componentNameAnnotatePlugin' }),
++            expect.objectContaining({ autoInjectSentryLabel: true }),
++          ],
++        ]),
+       }),
+     );
+   });
+@@ -79,6 +84,7 @@ describe('SentryBabelTransformer', () => {
+           [
+             expect.objectContaining({ name: 'componentNameAnnotatePlugin' }),
+             expect.objectContaining({
++              autoInjectSentryLabel: true,
+               ignoredComponents: ['MyCustomComponent'],
+             }),
+           ],
+@@ -87,7 +93,31 @@ describe('SentryBabelTransformer', () => {
+     );
+   });
+ 
+-  test('degrades gracefully if options can not be parsed, transform adds plugin without options', () => {
++  test('transform respects autoInjectSentryLabel: false override', () => {
++    process.env[SENTRY_BABEL_TRANSFORMER_OPTIONS] = JSON.stringify({
++      annotateReactComponents: {
++        autoInjectSentryLabel: false,
++      },
++    });
++
++    createSentryBabelTransformer().transform?.(createMinimalMockedTransformOptions());
++
++    expect(MockDefaultBabelTransformer.transform).toHaveBeenCalledTimes(1);
++    expect(MockDefaultBabelTransformer.transform).toHaveBeenCalledWith(
++      expect.objectContaining({
++        plugins: expect.arrayContaining([
++          [
++            expect.objectContaining({ name: 'componentNameAnnotatePlugin' }),
++            expect.objectContaining({
++              autoInjectSentryLabel: false,
++            }),
++          ],
++        ]),
++      }),
++    );
++  });
++
++  test('degrades gracefully if options can not be parsed, transform adds plugin with defaults', () => {
+     process.env[SENTRY_BABEL_TRANSFORMER_OPTIONS] = 'invalid json';
+ 
+     createSentryBabelTransformer().transform?.(createMinimalMockedTransformOptions());
+@@ -95,7 +125,12 @@ describe('SentryBabelTransformer', () => {
+     expect(MockDefaultBabelTransformer.transform).toHaveBeenCalledTimes(1);
+     expect(MockDefaultBabelTransformer.transform).toHaveBeenCalledWith(
+       expect.objectContaining({
+-        plugins: expect.arrayContaining([expect.objectContaining({ name: 'componentNameAnnotatePlugin' })]),
++        plugins: expect.arrayContaining([
++          [
++            expect.objectContaining({ name: 'componentNameAnnotatePlugin' }),
++            expect.objectContaining({ autoInjectSentryLabel: true }),
++          ],
++        ]),
+       }),
+     );
+   });

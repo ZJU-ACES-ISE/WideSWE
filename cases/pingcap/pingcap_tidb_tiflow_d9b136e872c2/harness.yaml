@@ -1,0 +1,35 @@
+task_id: pingcap_tidb_tiflow_d9b136e872c2
+hidden_test_patches:
+- repo: tidb
+  patch: hidden/patches/tidb-hidden-tests.patch
+  test_profile: tidb-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id001
+  - lightning/pkg/importinto/external_id_contract_hidden_test.go
+  hidden_file: *id001
+  semantic_changes: Replaces unrelated tests and implementation-specific assertions with
+    behavior-level coverage of the Lightning external-ID compatibility contract.
+  source: contract-aligned tests based on pingcap/tidb PR 69193 and the agent-facing
+    prompt
+- repo: tiflow
+  patch: hidden/patches/tiflow-hidden-tests.patch
+  test_profile: tiflow-hidden
+  origin: contract_alignment
+  source_file: &id002
+  - dm/loader/lightning_test.go
+  hidden_file: *id002
+  semantic_changes: Keeps only the relevant import-mode source URI contract and removes
+    assertions against private helpers and unrelated storage behavior.
+  source: contract-aligned tests based on pingcap/tiflow PR 12716 and the agent-facing
+    prompt
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - tidb-hidden
+    - tiflow-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

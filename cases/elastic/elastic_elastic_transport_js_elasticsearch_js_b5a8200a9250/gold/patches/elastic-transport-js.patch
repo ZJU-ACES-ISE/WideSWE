@@ -1,0 +1,226 @@
+diff --git a/package.json b/package.json
+index 267d84f..0552dad 100644
+--- a/package.json
++++ b/package.json
+@@ -2,43 +2,26 @@
+   "name": "@elastic/transport",
+   "version": "9.3.0",
+   "description": "Transport classes and utilities shared among Node.js Elastic client libraries",
++  "type": "commonjs",
+   "main": "./index.js",
+   "types": "index.d.ts",
+   "exports": {
+-    ".": "./index.js",
++    ".": {
++      "import": "./lib/esm/index.js",
++      "require": "./index.js",
++      "types": "./index.d.ts"
++    },
+     "./package.json": "./package.json",
+-    "./connection/BaseConnection": "./lib/connection/BaseConnection.js",
+-    "./lib/connection/BaseConnection": "./lib/connection/BaseConnection.js",
+-    "./pool/BaseConnectionPool": "./lib/pool/BaseConnectionPool.js",
+-    "./lib/pool/BaseConnectionPool": "./lib/pool/BaseConnectionPool.js",
+-    "./pool/CloudConnectionPool": "./lib/pool/CloudConnectionPool.js",
+-    "./lib/pool/CloudConnectionPool": "./lib/pool/CloudConnectionPool.js",
+-    "./pool/ClusterConnectionPool": "./lib/pool/ClusterConnectionPool.js",
+-    "./lib/pool/ClusterConnectionPool": "./lib/pool/ClusterConnectionPool.js",
+-    "./Diagnostic": "./lib/Diagnostic.js",
+-    "./lib/Diagnostic": "./lib/Diagnostic.js",
+-    "./errors": "./lib/errors.js",
+-    "./lib/errors": "./lib/errors.js",
+-    "./connection/HttpConnection": "./lib/connection/HttpConnection.js",
+-    "./lib/connection/HttpConnection": "./lib/connection/HttpConnection.js",
+-    "./connection": "./lib/connection/index.js",
+-    "./lib/connection": "./lib/connection/index.js",
+-    "./pool": "./lib/pool/index.js",
+-    "./lib/pool": "./lib/pool/index.js",
+-    "./security": "./lib/security.js",
+-    "./lib/security": "./lib/security.js",
+-    "./Serializer": "./lib/Serializer.js",
+-    "./lib/Serializer": "./lib/Serializer.js",
+-    "./symbols": "./lib/symbols.js",
+-    "./lib/symbols": "./lib/symbols.js",
+-    "./Transport": "./lib/Transport.js",
+-    "./lib/Transport": "./lib/Transport.js",
+-    "./types": "./lib/types.js",
+-    "./lib/types": "./lib/types.js",
+-    "./connection/UndiciConnection": "./lib/connection/UndiciConnection.js",
+-    "./lib/connection/UndiciConnection": "./lib/connection/UndiciConnection.js",
+-    "./pool/WeightedConnectionPool": "./lib/pool/WeightedConnectionPool.js",
+-    "./lib/pool/WeightedConnectionPool": "./lib/pool/WeightedConnectionPool.js"
++    "./lib/*": {
++      "import": "./lib/esm/*.js",
++      "require": "./lib/*.js",
++      "types": "./lib/*.d.ts"
++    },
++    "./*": {
++      "import": "./lib/esm/*.js",
++      "require": "./lib/*.js",
++      "types": "./lib/*.d.ts"
++    }
+   },
+   "scripts": {
+     "test": "npm run build && npm run lint && tap",
+@@ -53,7 +36,11 @@
+     "license-checker": "license-checker --production --onlyAllow='MIT;Apache-2.0;Apache1.1;ISC;BSD-3-Clause;BSD-2-Clause;0BSD'",
+     "license-header": "./scripts/check-spdx",
+     "prebuild": "npm run clean-build && npm run lint",
+-    "build": "tsc",
++    "build": "npm run build:cjs && npm run build:esm && npm run build:esm-fix && npm run build:esm-package",
++    "build:cjs": "tsc",
++    "build:esm": "tsc -p tsconfig.esm.json",
++    "build:esm-fix": "tsc-esm-fix --target=lib/esm && node scripts/fix-esm-require.js",
++    "build:esm-package": "echo '{\"type\":\"module\"}' > lib/esm/package.json",
+     "clean-build": "rimraf ./lib && mkdir lib",
+     "prepublishOnly": "npm run build",
+     "benchmark": "npm run build && npm run benchmark:mitata && npm run benchmark:gc",
+@@ -96,6 +83,7 @@
+     "tap": "21.1.1",
+     "ts-node": "10.9.2",
+     "ts-standard": "12.0.2",
++    "tsc-esm-fix": "^3.1.2",
+     "typescript": "5.9.3",
+     "workq": "3.0.0"
+   },
+diff --git a/scripts/fix-esm-require.js b/scripts/fix-esm-require.js
+new file mode 100755
+index 0000000..0fee4fa
+--- /dev/null
++++ b/scripts/fix-esm-require.js
+@@ -0,0 +1,43 @@
++#!/usr/bin/env node
++/*
++ * Copyright Elasticsearch B.V. and contributors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++const fs = require('fs')
++const path = require('path')
++
++// Fix the package.json require in Transport.js for ESM
++const transportPath = path.join(__dirname, '..', 'lib', 'esm', 'Transport.js')
++
++if (!fs.existsSync(transportPath)) {
++  console.log('Transport.js not found, skipping fix')
++  process.exit(0)
++}
++
++let content = fs.readFileSync(transportPath, 'utf8')
++
++// Add createRequire import and setup if not present
++if (!content.includes('createRequire') && content.includes("require('../package.json')")) {
++  // Find the last import statement
++  const lastImportIndex = content.lastIndexOf('import ')
++  const newlineAfterImport = content.indexOf('\n', lastImportIndex)
++
++  if (newlineAfterImport !== -1) {
++    const beforeImport = content.substring(0, newlineAfterImport + 1)
++    const afterImport = content.substring(newlineAfterImport + 1)
++
++    content = beforeImport + "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\n" + afterImport
++  }
++
++  // Fix the path to package.json - from lib/esm, it's ../../package.json
++  content = content.replace(
++    /require\(['"]\.\.\/package\.json['"]\)/g,
++    "require('../../package.json')"
++  )
++
++  fs.writeFileSync(transportPath, content, 'utf8')
++  console.log(`Fixed package.json loading in ${transportPath}`)
++} else {
++  console.log('No fixes needed for Transport.js')
++}
+diff --git a/src/index.ts b/src/index.ts
+new file mode 100644
+index 0000000..4c7ee9c
+--- /dev/null
++++ b/src/index.ts
+@@ -0,0 +1,71 @@
++/*
++ * Copyright Elasticsearch B.V. and contributors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import Diagnostic, { events } from './Diagnostic'
++import Transport from './Transport'
++import {
++  BaseConnection,
++  HttpConnection,
++  UndiciConnection
++} from './connection'
++import {
++  WeightedConnectionPool,
++  ClusterConnectionPool,
++  CloudConnectionPool,
++  BaseConnectionPool
++} from './pool'
++import Serializer from './Serializer'
++import * as errors from './errors'
++
++export type {
++  Connection,
++  ConnectionOptions,
++  ConnectionRequestParams,
++  ConnectionRequestOptions,
++  ConnectionRequestOptionsAsStream,
++  ConnectionRequestResponse,
++  ConnectionRequestResponseAsStream
++} from './connection'
++
++export type {
++  ConnectionPoolOptions,
++  GetConnectionOptions
++} from './pool'
++
++export type {
++  TransportOptions,
++  TransportRequestMetadata,
++  TransportRequestParams,
++  TransportRequestOptions,
++  TransportRequestOptionsWithMeta,
++  TransportRequestOptionsWithOutMeta,
++  SniffOptions
++} from './Transport'
++
++export type {
++  RequestBody,
++  RequestNDBody,
++  DiagnosticResult,
++  TransportResult,
++  HttpAgentOptions,
++  UndiciAgentOptions,
++  ApiKeyAuth,
++  BearerAuth
++} from './types'
++
++export {
++  Diagnostic,
++  Transport,
++  WeightedConnectionPool,
++  ClusterConnectionPool,
++  BaseConnectionPool,
++  CloudConnectionPool,
++  BaseConnection,
++  HttpConnection,
++  UndiciConnection,
++  Serializer,
++  errors,
++  events
++}
+diff --git a/tsconfig.esm.json b/tsconfig.esm.json
+new file mode 100644
+index 0000000..43fb681
+--- /dev/null
++++ b/tsconfig.esm.json
+@@ -0,0 +1,9 @@
++{
++  "extends": "./tsconfig.json",
++  "compilerOptions": {
++    "module": "es2022",
++    "outDir": "lib/esm",
++    "declaration": true,
++    "declarationMap": true
++  }
++}

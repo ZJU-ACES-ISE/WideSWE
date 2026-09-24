@@ -1,0 +1,37 @@
+diff --git a/railties/test/generators/ecosync_bootsnap_generator_test.rb b/railties/test/generators/ecosync_bootsnap_generator_test.rb
+new file mode 100644
+index 0000000..54aa45c
+--- /dev/null
++++ b/railties/test/generators/ecosync_bootsnap_generator_test.rb
+@@ -0,0 +1,31 @@
++# frozen_string_literal: true
++
++require "generators/generators_test_helper"
++require "rails/generators/rails/app/app_generator"
++
++class EcoSyncBootsnapGeneratorTest < Rails::Generators::TestCase
++  include GeneratorsTestHelper
++
++  tests Rails::Generators::AppGenerator
++  arguments [destination_root]
++
++  def test_generated_bootsnap_configuration
++    run_generator [destination_root, "--no-skip-bootsnap"]
++
++    assert_file "config/bootsnap.rb", /Bootsnap\.enable_frozen_string_literal\(app_only: true\)/
++    assert_file "Gemfile", /gem ["']bootsnap["'], ["']>= 1\.24["'], require: false/
++    assert_file ".rubocop.yml", /StringLiteralsFrozenByDefault: true/
++  end
++
++  def test_skipping_bootsnap_keeps_runtime_and_rubocop_consistent
++    run_generator [destination_root, "--skip-bootsnap"]
++
++    assert_no_file "config/bootsnap.rb"
++    assert_file "Gemfile" do |content|
++      assert_no_match(/gem ["']bootsnap["']/, content)
++    end
++    assert_file ".rubocop.yml" do |content|
++      assert_no_match(/StringLiteralsFrozenByDefault: true/, content)
++    end
++  end
++end

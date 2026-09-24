@@ -1,0 +1,465 @@
+diff --git a/internal/runner/runner_test.go b/internal/runner/runner_test.go
+index 179c639..0281bd0 100644
+--- a/internal/runner/runner_test.go
++++ b/internal/runner/runner_test.go
+@@ -142,6 +142,8 @@ func TestRunner_fileInput_prepareInput(t *testing.T) {
+ }
+ 
+ func TestRunner_InputWorkerStream(t *testing.T) {
++	t.Skip("requires an external ASN API key")
++
+ 	options := &Options{
+ 		Hosts: "tests/stream_input.txt",
+ 	}
+@@ -161,3 +163,30 @@ func TestRunner_InputWorkerStream(t *testing.T) {
+ 	expected = append(expected, strings.Split(strings.ReplaceAll(string(fileContent), "\r\n", "\n"), "\n")...)
+ 	require.ElementsMatch(t, expected, got, "could not match expected output")
+ }
++
++func TestCLIRejectsAutoWildcardAndWildcardDomainTogether(t *testing.T) {
++	_, err := runDNSXCLI(t, "--auto-wildcard", "--wildcard-domain", "example.com")
++	require.Error(t, err)
++}
++
++func TestCLIRejectsWildcardFilteringInStreamMode(t *testing.T) {
++	t.Run("auto wildcard", func(t *testing.T) {
++		_, err := runDNSXCLI(t, "--stream", "--auto-wildcard")
++		require.Error(t, err)
++	})
++
++	t.Run("manual wildcard", func(t *testing.T) {
++		_, err := runDNSXCLI(t, "--stream", "--wildcard-domain", "example.com")
++		require.Error(t, err)
++	})
++}
++
++func TestNewRejectsInvalidWildcardDomain(t *testing.T) {
++	for _, input := range []string{"*.", "foo bar", "example..com", "sub.*.example.com", "foo*bar.com"} {
++		t.Run(input, func(t *testing.T) {
++			runner, err := New(&Options{WildcardDomain: input})
++			require.Nil(t, runner)
++			require.Error(t, err)
++		})
++	}
++}
+diff --git a/internal/runner/wildcard_test.go b/internal/runner/wildcard_test.go
+new file mode 100644
+index 0000000..babd23c
+--- /dev/null
++++ b/internal/runner/wildcard_test.go
+@@ -0,0 +1,415 @@
++package runner
++
++import (
++	"net"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/miekg/dns"
++	"github.com/stretchr/testify/require"
++)
++
++func TestRunner_withoutWildcardFilteringOutputsAllHosts(t *testing.T) {
++	results := runWildcardTestRunner(t, &Options{})
++	require.ElementsMatch(t, []string{
++		"example.com",
++		"keep.example.com",
++		"mixed.example.com",
++		"wild1.example.com",
++		"wild2.example.com",
++		"shared.example.net",
++		"keepv6.example.org",
++		"v6wild1.example.org",
++		"v6wild2.example.org",
++	}, results)
++}
++
++func TestRunner_wildcardDomainFiltering(t *testing.T) {
++	results := runWildcardTestRunner(t, &Options{WildcardDomain: "example.com"})
++	require.ElementsMatch(t, []string{
++		"example.com",
++		"keep.example.com",
++		"shared.example.net",
++	}, results)
++	require.NotContains(t, results, "wild1.example.com")
++	require.NotContains(t, results, "wild2.example.com")
++}
++
++func TestRunner_wildcardDomainFilteringNormalizesInput(t *testing.T) {
++	results := runWildcardTestRunner(t, &Options{WildcardDomain: "*.Example.COM."})
++	require.ElementsMatch(t, []string{
++		"example.com",
++		"keep.example.com",
++		"shared.example.net",
++	}, results)
++	require.NotContains(t, results, "wild1.example.com")
++	require.NotContains(t, results, "wild2.example.com")
++}
++
++func TestRunner_autoWildcardFiltersByRoot(t *testing.T) {
++	results := runWildcardTestCLI(t, "--auto-wildcard")
++	require.ElementsMatch(t, []string{
++		"example.com",
++		"keep.example.com",
++		"shared.example.net",
++	}, results)
++	require.NotContains(t, results, "wild1.example.com")
++	require.NotContains(t, results, "wild2.example.com")
++	require.NotContains(t, results, "v6wild1.example.org")
++	require.NotContains(t, results, "v6wild2.example.org")
++}
++
++func TestRunner_autoWildcardIgnoresWildcardThreshold(t *testing.T) {
++	results := runWildcardTestCLI(t, "--auto-wildcard", "--wildcard-threshold", "100")
++	require.ElementsMatch(t, []string{
++		"example.com",
++		"keep.example.com",
++		"shared.example.net",
++	}, results)
++	require.NotContains(t, results, "wild1.example.com")
++	require.NotContains(t, results, "wild2.example.com")
++	require.NotContains(t, results, "v6wild1.example.org")
++	require.NotContains(t, results, "v6wild2.example.org")
++}
++
++func TestRunner_autoWildcardPreservesResponseOutput(t *testing.T) {
++	results := runWildcardTestCLILines(t, "--auto-wildcard", "--resp", "--a")
++	require.ElementsMatch(t, []string{
++		"example.com [A] [9.9.9.9]",
++		"keep.example.com [A] [1.1.1.1]",
++		"shared.example.net [A] [2.2.2.2]",
++	}, results)
++}
++
++func TestRunner_autoWildcardAAAAOnly(t *testing.T) {
++	results := runWildcardTestCLI(t, "--auto-wildcard", "--aaaa")
++	require.ElementsMatch(t, []string{"keepv6.example.org"}, results)
++}
++
++func TestRunner_autoWildcardCNAMEOnlyPreservesOutput(t *testing.T) {
++	resolver, shutdown := startCNAMEWildcardTestDNSServer(t)
++	defer shutdown()
++
++	results := runWildcardTestCLILinesWithResolver(t, resolver, []string{
++		"keep.example.com",
++		"wild1.example.com",
++		"wild2.example.com",
++	}, "--auto-wildcard", "--resp", "--cname")
++
++	require.ElementsMatch(t, []string{
++		"keep.example.com [CNAME] [keep-target.example.com]",
++	}, results)
++}
++
++func runWildcardTestRunner(t *testing.T, options *Options) []string {
++	output := runWildcardTestRunnerOutput(t, options)
++	return strings.Fields(output)
++}
++
++func runWildcardTestRunnerLines(t *testing.T, options *Options) []string {
++	output := runWildcardTestRunnerOutput(t, options)
++	return splitOutputLines(output)
++}
++
++func runWildcardTestRunnerLinesWithResolver(t *testing.T, resolver string, hosts []string, options *Options) []string {
++	output := runWildcardTestRunnerOutputWithResolver(t, resolver, hosts, options)
++	return splitOutputLines(output)
++}
++
++func runWildcardTestCLI(t *testing.T, args ...string) []string {
++	output := runWildcardTestCLIOutput(t, args...)
++	return strings.Fields(output)
++}
++
++func runWildcardTestCLILines(t *testing.T, args ...string) []string {
++	output := runWildcardTestCLIOutput(t, args...)
++	return splitOutputLines(output)
++}
++
++func runWildcardTestCLILinesWithResolver(t *testing.T, resolver string, hosts []string, args ...string) []string {
++	output := runWildcardTestCLIOutputWithResolver(t, resolver, hosts, args...)
++	return splitOutputLines(output)
++}
++
++func splitOutputLines(output string) []string {
++	parts := strings.Split(strings.TrimSpace(output), "\n")
++	lines := make([]string, 0, len(parts))
++	for _, part := range parts {
++		part = strings.TrimSpace(part)
++		if part != "" {
++			lines = append(lines, part)
++		}
++	}
++	return lines
++}
++
++func runWildcardTestRunnerOutput(t *testing.T, options *Options) string {
++	t.Helper()
++
++	resolver, shutdown := startWildcardTestDNSServer(t)
++	defer shutdown()
++
++	return runWildcardTestRunnerOutputWithResolver(t, resolver, defaultWildcardTestHosts(), options)
++}
++
++func runWildcardTestRunnerOutputWithResolver(t *testing.T, resolver string, hosts []string, options *Options) string {
++	t.Helper()
++
++	tempDir := t.TempDir()
++	hostsFile := filepath.Join(tempDir, "hosts.txt")
++	outputFile := filepath.Join(tempDir, "output.txt")
++
++	err := os.WriteFile(hostsFile, []byte(strings.Join(hosts, "\n")), 0644)
++	require.NoError(t, err)
++
++	testOptions := &Options{
++		Hosts:             hostsFile,
++		OutputFile:        outputFile,
++		Resolvers:         resolver,
++		Threads:           4,
++		Retries:           1,
++		Timeout:           time.Second,
++		Silent:            true,
++		NoColor:           true,
++		WildcardThreshold: 2,
++		A:                 true,
++		AAAA:              true,
++	}
++
++	if options != nil {
++		testOptions.WildcardDomain = options.WildcardDomain
++		if options.WildcardThreshold != 0 {
++			testOptions.WildcardThreshold = options.WildcardThreshold
++		}
++		if options.A || options.AAAA || options.CNAME || options.Response || options.ResponseOnly || options.JSON {
++			testOptions.A = options.A
++			testOptions.AAAA = options.AAAA
++			testOptions.CNAME = options.CNAME
++			testOptions.Response = options.Response
++			testOptions.ResponseOnly = options.ResponseOnly
++			testOptions.JSON = options.JSON
++		}
++	}
++
++	runner, err := New(testOptions)
++	require.NoError(t, err)
++	defer runner.Close()
++
++	err = runner.Run()
++	require.NoError(t, err)
++
++	output, err := os.ReadFile(outputFile)
++	require.NoError(t, err)
++
++	return string(output)
++}
++
++func runWildcardTestCLIOutput(t *testing.T, args ...string) string {
++	t.Helper()
++
++	resolver, shutdown := startWildcardTestDNSServer(t)
++	defer shutdown()
++
++	return runWildcardTestCLIOutputWithResolver(t, resolver, defaultWildcardTestHosts(), args...)
++}
++
++func runWildcardTestCLIOutputWithResolver(t *testing.T, resolver string, hosts []string, args ...string) string {
++	t.Helper()
++
++	tempDir := t.TempDir()
++	hostsFile := filepath.Join(tempDir, "hosts.txt")
++	outputFile := filepath.Join(tempDir, "output.txt")
++	require.NoError(t, os.WriteFile(hostsFile, []byte(strings.Join(hosts, "\n")), 0644))
++
++	cliArgs := []string{
++		"--list", hostsFile,
++		"--output", outputFile,
++		"--resolver", resolver,
++		"--threads", "4",
++		"--retry", "1",
++		"--timeout", "1s",
++		"--silent",
++		"--no-color",
++	}
++	cliArgs = append(cliArgs, args...)
++	output, err := runDNSXCLI(t, cliArgs...)
++	require.NoError(t, err, string(output))
++
++	contents, err := os.ReadFile(outputFile)
++	require.NoError(t, err)
++	return string(contents)
++}
++
++func runDNSXCLI(t *testing.T, args ...string) ([]byte, error) {
++	t.Helper()
++	goArgs := append([]string{"run", "../../cmd/dnsx"}, args...)
++	cmd := exec.Command("go", goArgs...)
++	return cmd.CombinedOutput()
++}
++
++func defaultWildcardTestHosts() []string {
++	return []string{
++		"example.com",
++		"keep.example.com",
++		"mixed.example.com",
++		"wild1.example.com",
++		"wild2.example.com",
++		"shared.example.net",
++		"keepv6.example.org",
++		"v6wild1.example.org",
++		"v6wild2.example.org",
++	}
++}
++
++func startWildcardTestDNSServer(t *testing.T) (string, func()) {
++	t.Helper()
++
++	packetConn, err := net.ListenPacket("udp", "127.0.0.1:0")
++	require.NoError(t, err)
++
++	server := &dns.Server{PacketConn: packetConn, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
++		msg := new(dns.Msg)
++		msg.SetReply(r)
++		msg.Authoritative = true
++
++		question := strings.TrimSuffix(r.Question[0].Name, ".")
++		switch r.Question[0].Qtype {
++		case dns.TypeA:
++			for _, record := range wildcardTestARecords(question) {
++				msg.Answer = append(msg.Answer, &dns.A{
++					Hdr: dns.RR_Header{Name: dns.Fqdn(question), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
++					A:   net.ParseIP(record),
++				})
++			}
++		case dns.TypeAAAA:
++			for _, record := range wildcardTestAAAARecords(question) {
++				msg.Answer = append(msg.Answer, &dns.AAAA{
++					Hdr:  dns.RR_Header{Name: dns.Fqdn(question), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60},
++					AAAA: net.ParseIP(record),
++				})
++			}
++		}
++
++		if len(msg.Answer) == 0 {
++			msg.Rcode = dns.RcodeNameError
++		}
++
++		_ = w.WriteMsg(msg)
++	})}
++
++	go func() {
++		_ = server.ActivateAndServe()
++	}()
++
++	return packetConn.LocalAddr().String(), func() {
++		_ = server.Shutdown()
++		_ = packetConn.Close()
++	}
++}
++
++func startCNAMEWildcardTestDNSServer(t *testing.T) (string, func()) {
++	t.Helper()
++
++	packetConn, err := net.ListenPacket("udp", "127.0.0.1:0")
++	require.NoError(t, err)
++
++	server := &dns.Server{PacketConn: packetConn, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
++		msg := new(dns.Msg)
++		msg.SetReply(r)
++		msg.Authoritative = true
++
++		question := strings.TrimSuffix(r.Question[0].Name, ".")
++		switch r.Question[0].Qtype {
++		case dns.TypeCNAME:
++			for _, target := range cnameWildcardTargets(question) {
++				msg.Answer = append(msg.Answer, &dns.CNAME{
++					Hdr:    dns.RR_Header{Name: dns.Fqdn(question), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 60},
++					Target: dns.Fqdn(target),
++				})
++			}
++		case dns.TypeA:
++			for _, record := range cnameWildcardARecords(question) {
++				msg.Answer = append(msg.Answer, &dns.A{
++					Hdr: dns.RR_Header{Name: dns.Fqdn(question), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
++					A:   net.ParseIP(record),
++				})
++			}
++		}
++
++		if len(msg.Answer) == 0 {
++			msg.Rcode = dns.RcodeNameError
++		}
++
++		_ = w.WriteMsg(msg)
++	})}
++
++	go func() {
++		_ = server.ActivateAndServe()
++	}()
++
++	return packetConn.LocalAddr().String(), func() {
++		_ = server.Shutdown()
++		_ = packetConn.Close()
++	}
++}
++
++func wildcardTestARecords(question string) []string {
++	records := map[string][]string{
++		"example.com":        {"9.9.9.9"},
++		"keep.example.com":   {"1.1.1.1"},
++		"mixed.example.com":  {"2.2.2.2", "8.8.8.8"},
++		"wild1.example.com":  {"2.2.2.2"},
++		"wild2.example.com":  {"2.2.2.2"},
++		"shared.example.net": {"2.2.2.2"},
++	}
++	if answer, ok := records[question]; ok {
++		return answer
++	}
++	if strings.HasSuffix(question, ".example.com") {
++		return []string{"2.2.2.2"}
++	}
++	return nil
++}
++
++func wildcardTestAAAARecords(question string) []string {
++	records := map[string][]string{
++		"keepv6.example.org":  {"2001:db8::2"},
++		"v6wild1.example.org": {"2001:db8::1"},
++		"v6wild2.example.org": {"2001:db8::1"},
++	}
++	if answer, ok := records[question]; ok {
++		return answer
++	}
++	if strings.HasSuffix(question, ".example.org") {
++		return []string{"2001:db8::1"}
++	}
++	return nil
++}
++
++func cnameWildcardTargets(question string) []string {
++	targets := map[string][]string{
++		"keep.example.com":  {"keep-target.example.com"},
++		"wild1.example.com": {"wildcard-target.example.com"},
++		"wild2.example.com": {"wildcard-target.example.com"},
++	}
++	return targets[question]
++}
++
++func cnameWildcardARecords(question string) []string {
++	records := map[string][]string{
++		"keep.example.com":  {"1.1.1.1"},
++		"wild1.example.com": {"2.2.2.2"},
++		"wild2.example.com": {"2.2.2.2"},
++	}
++	if answer, ok := records[question]; ok {
++		return answer
++	}
++	if strings.HasSuffix(question, ".example.com") {
++		return []string{"2.2.2.2"}
++	}
++	return nil
++}

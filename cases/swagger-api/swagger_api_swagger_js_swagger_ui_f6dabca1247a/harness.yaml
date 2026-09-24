@@ -1,0 +1,37 @@
+task_id: swagger_api_swagger_js_swagger_ui_f6dabca1247a
+hidden_test_patches:
+- repo: swagger-js
+  patch: hidden/patches/swagger-js-hidden-tests.patch
+  test_profile: swagger_js-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test/execute/openapi-3-1.js
+  - test/oas3/execute/main.js
+  - test/oas3/execute/style-explode/query.js
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from swagger-api/swagger-js PR(s) 3826
+- repo: swagger-ui
+  patch: hidden/patches/swagger-ui-hidden-tests.patch
+  test_profile: swagger_ui-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test/e2e-cypress/e2e/features/try-it-out-schema-type-array-example-type-string.cy.js
+  - test/e2e-cypress/static/documents/features/try-it-out-schema-type-array-example-type-string.yaml
+  - test/unit/core/utils.js
+  hidden_file: *id002
+  semantic_changes:
+  - Preserves the required-array validation contract without fixing the exact validation message text.
+  - The profile runner executes both unit and Cypress suites before returning their combined status so independent reports remain observable.
+  source: upstream test changes from swagger-api/swagger-ui PR(s) 10713
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - swagger_js-hidden
+    - swagger_ui-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

@@ -1,0 +1,284 @@
+diff --git a/tests/Unit/CheckTest.php b/tests/Unit/CheckTest.php
+index ddd954f..531d3e6 100644
+--- a/tests/Unit/CheckTest.php
++++ b/tests/Unit/CheckTest.php
+@@ -19,7 +19,7 @@
+     expect($roster->uses(Packages::PINT))->toBeTrue();
+     expect($roster->uses(Packages::LARAVEL))->toBeTrue();
+     expect($roster->uses(Packages::BOOST))->toBeTrue();
+-    expect($roster->uses(Packages::INERTIA))->toBeFalse();
++    expect($roster->uses(Packages::NOVA))->toBeFalse();
+ 
+     expect($roster->usesVersion(Packages::PEST, '3.8.1'))->toBeTrue();
+     expect($roster->usesVersion(Packages::PINT, '1.21.2'))->toBeTrue();
+diff --git a/tests/Unit/RosterTest.php b/tests/Unit/RosterTest.php
+index 1f8260f..3afbce3 100644
+--- a/tests/Unit/RosterTest.php
++++ b/tests/Unit/RosterTest.php
+@@ -23,7 +23,7 @@
+     $roster = (new Roster)->add($package);
+ 
+     expect($roster->uses(Packages::PEST))->toBeTrue();
+-    expect($roster->uses(Packages::INERTIA))->toBeFalse();
++    expect($roster->uses(Packages::NOVA))->toBeFalse();
+ });
+ 
+ it('knows if a specific version of a package is in use', function () {
+@@ -31,7 +31,7 @@
+     $roster = (new Roster)->add($usedPackage);
+ 
+     expect($roster->uses(Packages::PEST))->toBeTrue();
+-    expect($roster->usesVersion(Packages::INERTIA, '1.0.1'))->toBeFalse();
++    expect($roster->usesVersion(Packages::NOVA, '1.0.1'))->toBeFalse();
+     expect($roster->usesVersion(Packages::PEST, '1.0.1'))->toBeTrue();
+ 
+     expect($roster->usesVersion(Packages::PEST, '1.0.1', '='))->toBeTrue();
+@@ -65,10 +65,10 @@
+ 
+ it('can return dev packages', function () {
+     $devPackage = new Package(Packages::PEST, 'pestphp/pest', '1.0.1', true);
+-    $package = new Package(Packages::INERTIA, 'inertiajs/inertia-laravel', '2.0.0');
++    $package = new Package(Packages::LARAVEL, 'laravel/framework', '2.0.0');
+     $roster = (new Roster)->add($devPackage)->add($package);
+ 
+-    expect($roster->uses(Packages::INERTIA))->toBeTrue();
++    expect($roster->uses(Packages::LARAVEL))->toBeTrue();
+     expect($roster->uses(Packages::PEST))->toBeTrue();
+ 
+     expect($roster->packages()->dev()->toArray())->toBe([$devPackage]);
+@@ -79,7 +79,7 @@
+     $roster = (new Roster)->add($package);
+ 
+     expect($roster->package(Packages::PEST))->toBe($package);
+-    expect($roster->package(Packages::INERTIA))->toBeNull();
++    expect($roster->package(Packages::NOVA))->toBeNull();
+ });
+ 
+ it('can return raw package name', function () {
+@@ -89,6 +89,24 @@
+     expect($package->name())->toBe('PEST');
+ });
+ 
++it('has null source and path by default', function () {
++    $package = new Package(Packages::PEST, 'pestphp/pest', '1.0.1');
++
++    expect($package->source())->toBeNull();
++    expect($package->path())->toBeNull();
++});
++
++it('includes scanner source and path in json output', function () {
++    $roster = Roster::scan(__DIR__.'/../fixtures/fog/');
++    $json = json_decode($roster->json(), true, flags: JSON_THROW_ON_ERROR);
++    $packages = collect($json['packages'])->keyBy('name');
++
++    expect($packages['LARAVEL']['source'])->toBe('composer')
++        ->and($packages['LARAVEL']['path'])->toEndWith('vendor'.DIRECTORY_SEPARATOR.'laravel'.DIRECTORY_SEPARATOR.'framework')
++        ->and($packages['TAILWINDCSS']['source'])->toBe('npm')
++        ->and($packages['TAILWINDCSS']['path'])->toStartWith(DIRECTORY_SEPARATOR);
++});
++
+ describe('node package manager detection', function () {
+     beforeEach(function () {
+         $this->path = __DIR__.'/../fixtures/fog/';
+diff --git a/tests/Unit/Scanners/ComposerTest.php b/tests/Unit/Scanners/ComposerTest.php
+index 643e9fb..cbbca21 100644
+--- a/tests/Unit/Scanners/ComposerTest.php
++++ b/tests/Unit/Scanners/ComposerTest.php
+@@ -12,6 +12,9 @@
+     expect($laravel->isDev())->toBeFalse();
+     expect($laravel->direct())->toBeTrue();
+     expect($laravel->constraint())->toEqual('^11.0');
++    $source = $laravel->source();
++    expect($source instanceof BackedEnum ? $source->value : $source)->toBe('composer');
++    expect($laravel->path())->toEndWith('vendor'.DIRECTORY_SEPARATOR.'laravel'.DIRECTORY_SEPARATOR.'framework');
+ 
+     $pest = $uses->first(fn ($item) => $item->package() === Packages::PEST);
+     expect($pest->version())->toEqual('3.8.1');
+@@ -25,11 +28,11 @@
+     expect($pint->direct())->toBeTrue();
+     expect($pint->constraint())->toEqual('^1.20');
+ 
+-    $inertia = $uses->first(fn ($item) => $item->package() === Packages::INERTIA);
++    $inertia = $uses->first(fn ($item) => $item->package() === Packages::INERTIA_LARAVEL);
+     expect($inertia)->toBeNull();
+ });
+ 
+-it('adds 2 entries for inertia', function () {
++it('adds 1 entry for inertia', function () {
+     $composerLockContent = '{
+         "packages": [
+             {
+@@ -50,13 +53,6 @@
+     $laravel = $uses->first(fn ($item) => $item->package() === Packages::LARAVEL);
+     expect($laravel)->toBeNull();
+ 
+-    // INERTIA is the general package - is it using inertia at all?
+-    $inertia = $uses->first(fn ($item) => $item->package() === Packages::INERTIA);
+-    expect($inertia->version())->toEqual('123.456.789');
+-    expect($inertia->isDev())->toBeFalse();
+-    expect($inertia->direct())->toBeFalse();
+-
+-    // The specific package of Inertia
+     $inertia = $uses->first(fn ($item) => $item->package() === Packages::INERTIA_LARAVEL);
+     expect($inertia->version())->toEqual('123.456.789');
+     expect($inertia->isDev())->toBeFalse();
+@@ -74,6 +70,126 @@
+     expect($phpunit->direct())->toBeFalse();
+ });
+ 
++it('respects composer vendor-dir config', function () {
++    $tempDir = sys_get_temp_dir().DIRECTORY_SEPARATOR.'roster_vendor_dir_test_'.uniqid();
++    mkdir($tempDir, 0755, true);
++
++    $composerJson = $tempDir.DIRECTORY_SEPARATOR.'composer.json';
++    $composerLock = $tempDir.DIRECTORY_SEPARATOR.'composer.lock';
++
++    file_put_contents($composerJson, json_encode([
++        'require' => ['laravel/framework' => '^11.0'],
++        'config' => ['vendor-dir' => 'lib/packages'],
++    ]));
++
++    file_put_contents($composerLock, json_encode([
++        'packages' => [['name' => 'laravel/framework', 'version' => 'v11.0.0']],
++        'packages-dev' => [],
++    ]));
++
++    $uses = (new Composer($composerLock))->scan();
++
++    $laravel = $uses->first(fn ($item) => $item->package() === Packages::LARAVEL);
++    expect($laravel->path())->toEndWith('lib'.DIRECTORY_SEPARATOR.'packages'.DIRECTORY_SEPARATOR.'laravel'.DIRECTORY_SEPARATOR.'framework');
++    expect($laravel->path())->not()->toContain(DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR);
++
++    unlink($composerJson);
++    unlink($composerLock);
++    rmdir($tempDir);
++});
++
++it('defaults to vendor when vendor-dir is not configured', function () {
++    $tempDir = sys_get_temp_dir().DIRECTORY_SEPARATOR.'roster_vendor_dir_test_'.uniqid();
++    mkdir($tempDir, 0755, true);
++
++    $composerJson = $tempDir.DIRECTORY_SEPARATOR.'composer.json';
++    $composerLock = $tempDir.DIRECTORY_SEPARATOR.'composer.lock';
++
++    file_put_contents($composerJson, json_encode([
++        'require' => ['laravel/framework' => '^11.0'],
++    ]));
++
++    file_put_contents($composerLock, json_encode([
++        'packages' => [['name' => 'laravel/framework', 'version' => 'v11.0.0']],
++        'packages-dev' => [],
++    ]));
++
++    $uses = (new Composer($composerLock))->scan();
++
++    $laravel = $uses->first(fn ($item) => $item->package() === Packages::LARAVEL);
++    expect($laravel->path())->toEndWith('vendor'.DIRECTORY_SEPARATOR.'laravel'.DIRECTORY_SEPARATOR.'framework');
++
++    unlink($composerJson);
++    unlink($composerLock);
++    rmdir($tempDir);
++});
++
++it('handles absolute vendor-dir paths without prepending project directory', function () {
++    $tempDir = sys_get_temp_dir().DIRECTORY_SEPARATOR.'roster_vendor_dir_test_'.uniqid();
++    mkdir($tempDir, 0755, true);
++
++    $composerJson = $tempDir.DIRECTORY_SEPARATOR.'composer.json';
++    $composerLock = $tempDir.DIRECTORY_SEPARATOR.'composer.lock';
++
++    file_put_contents($composerJson, json_encode([
++        'require' => ['laravel/framework' => '^11.0'],
++        'config' => ['vendor-dir' => '/opt/vendor'],
++    ]));
++
++    file_put_contents($composerLock, json_encode([
++        'packages' => [['name' => 'laravel/framework', 'version' => 'v11.0.0']],
++        'packages-dev' => [],
++    ]));
++
++    $uses = (new Composer($composerLock))->scan();
++
++    $laravel = $uses->first(fn ($item) => $item->package() === Packages::LARAVEL);
++    expect($laravel->path())->toBe('/opt/vendor'.DIRECTORY_SEPARATOR.'laravel'.DIRECTORY_SEPARATOR.'framework');
++    expect($laravel->path())->not()->toContain($tempDir);
++
++    unlink($composerJson);
++    unlink($composerLock);
++    rmdir($tempDir);
++})->skip(DIRECTORY_SEPARATOR === '\\', 'Absolute Unix paths not applicable on Windows');
++
++it('resets vendor-dir to default when config is removed between scans', function () {
++    $tempDir = sys_get_temp_dir().DIRECTORY_SEPARATOR.'roster_vendor_dir_test_'.uniqid();
++    mkdir($tempDir, 0755, true);
++
++    $composerJson = $tempDir.DIRECTORY_SEPARATOR.'composer.json';
++    $composerLock = $tempDir.DIRECTORY_SEPARATOR.'composer.lock';
++
++    file_put_contents($composerJson, json_encode([
++        'require' => ['laravel/framework' => '^11.0'],
++        'config' => ['vendor-dir' => 'custom/libs'],
++    ]));
++
++    file_put_contents($composerLock, json_encode([
++        'packages' => [['name' => 'laravel/framework', 'version' => 'v11.0.0']],
++        'packages-dev' => [],
++    ]));
++
++    $scanner = new Composer($composerLock);
++    $uses = $scanner->scan();
++
++    $laravel = $uses->first(fn ($item) => $item->package() === Packages::LARAVEL);
++    expect($laravel->path())->toContain('custom'.DIRECTORY_SEPARATOR.'libs');
++
++    file_put_contents($composerJson, json_encode([
++        'require' => ['laravel/framework' => '^11.0'],
++    ]));
++
++    $uses = $scanner->scan();
++
++    $laravel = $uses->first(fn ($item) => $item->package() === Packages::LARAVEL);
++    expect($laravel->path())->toEndWith('vendor'.DIRECTORY_SEPARATOR.'laravel'.DIRECTORY_SEPARATOR.'framework');
++    expect($laravel->path())->not()->toContain('custom'.DIRECTORY_SEPARATOR.'libs');
++
++    unlink($composerJson);
++    unlink($composerLock);
++    rmdir($tempDir);
++});
++
+ it('marks transitive dependencies as indirect', function () {
+     $path = __DIR__.'/../../fixtures/fog/composer.lock';
+     $uses = (new Composer($path))->scan();
+diff --git a/tests/Unit/Scanners/PackageLockTest.php b/tests/Unit/Scanners/PackageLockTest.php
+index b237f11..e1371f5 100644
+--- a/tests/Unit/Scanners/PackageLockTest.php
++++ b/tests/Unit/Scanners/PackageLockTest.php
+@@ -38,6 +38,9 @@
+     $inertiaReact = $items->first(fn (Package $package) => $package->package() === Packages::INERTIA_REACT);
+ 
+     expect($tailwind->version())->toEqual('3.4.16'); // Installed version, not dependency constraint
++    $source = $tailwind->source();
++    expect($source instanceof BackedEnum ? $source->value : $source)->toBe('npm');
++    expect($tailwind->path())->toEndWith('node_modules'.DIRECTORY_SEPARATOR.'tailwindcss');
+     expect($inertiaReact)->toBeNull();
+ });
+ 
+@@ -145,6 +148,18 @@
+     expect($items)->toBeEmpty();
+ });
+ 
++it('produces absolute npm package paths from relative input', function () {
++    $path = __DIR__.'/../../fixtures/fog/';
++    $packageLock = new PackageLock($path);
++    $items = $packageLock->scan();
++
++    $tailwind = $items->first(fn (Package $package) => $package->package() === Packages::TAILWINDCSS);
++
++    expect($tailwind->path())->toStartWith(DIRECTORY_SEPARATOR);
++    expect($tailwind->path())->not()->toContain('..');
++    expect($tailwind->path())->toEndWith('node_modules'.DIRECTORY_SEPARATOR.'tailwindcss');
++});
++
+ it('scans valid bun.lock', function () use ($packageLockPath, $pnpmLockPath, $yarnLockPath, $yarnV1LockPath, $tempPackagePath, $tempPnpmPath, $tempYarnPath, $tempYarnV1Path) {
+     // Remove other lock files temporarily to test bun priority
+     if (file_exists($packageLockPath)) {

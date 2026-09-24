@@ -1,0 +1,2802 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 3f5d0ad..3c0c923 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,9 +1,26 @@
+ ## Unreleased
+ 
++### Features Added
++
++- **MCP Apps support for preview_style_tool, style_comparison_tool, geojson_preview_tool** (#62)
++  - All three panels now render inline with **Mapbox GL JS** — no inner iframes, works in Claude Desktop regardless of `frame-src` CSP restrictions
++  - **GeoJSON Preview**: renders GeoJSON (points, lines, polygons) on a GL map with auto-fit bounds. Auto-generates a short-lived scoped `pk.*` token on the customer's Mapbox account via the Token API (scopes: `styles:tiles`, `styles:read`, `fonts:read`); cached for 1 hour
++  - **Style Preview**: renders the user's style directly via `mapbox://styles/...`; shows the human-readable style name as a pill overlay (from `map.getStyle().name`)
++  - **Style Comparison**: two synced GL maps with a draggable reveal slider using `mapbox-gl-compare`; shows both style names as pills; respects initial map position from tool result hash fragment
++  - Full MCP Apps handshake: `ui/initialize` → response → `ui/notifications/initialized`; errors silently ignored for hosts that don't implement the handshake
++  - Added `↗ Open in browser` button (`ui/open-link`) to all three panels as fallback
++  - Fullscreen toggle on all panels; `map.resize()` called on display mode change
++  - Compatible with Claude Desktop, VS Code, and Goose
++
+ ### Configuration
+ 
+ - **Hosted MCP Server**: Added remote entry in `server.json` for the hosted DevKit MCP server at `https://mcp-devkit.mapbox.com/mcp` using streamable-http transport
+ 
++### Dependencies
++
++- Updated `@modelcontextprotocol/sdk` from 1.25.3 to 1.26.0
++- Updated patch file for SDK 1.26.0
++
+ ### Documentation
+ 
+ - **PR Guidelines**: Added CHANGELOG requirement to CLAUDE.md (#67)
+diff --git a/package-lock.json b/package-lock.json
+index c64ab2a..da5901a 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -11,7 +11,8 @@
+       "license": "MIT",
+       "dependencies": {
+         "@mcp-ui/server": "^5.13.1",
+-        "@modelcontextprotocol/sdk": "^1.25.3",
++        "@modelcontextprotocol/ext-apps": "^1.0.1",
++        "@modelcontextprotocol/sdk": "^1.26.0",
+         "@opentelemetry/api": "^1.9.0",
+         "@opentelemetry/auto-instrumentations-node": "^0.56.0",
+         "@opentelemetry/exporter-trace-otlp-http": "^0.56.0",
+@@ -1820,10 +1821,131 @@
+         "@modelcontextprotocol/sdk": "*"
+       }
+     },
++    "node_modules/@modelcontextprotocol/ext-apps": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/@modelcontextprotocol/ext-apps/-/ext-apps-1.0.1.tgz",
++      "integrity": "sha512-rAPzBbB5GNgYk216paQjGKUgbNXSy/yeR95c0ni6Y4uvhWI2AeF+ztEOqQFLBMQy/MPM+02pbVK1HaQmQjMwYQ==",
++      "hasInstallScript": true,
++      "license": "MIT",
++      "workspaces": [
++        "examples/*"
++      ],
++      "optionalDependencies": {
++        "@oven/bun-darwin-aarch64": "^1.2.21",
++        "@oven/bun-darwin-x64": "^1.2.21",
++        "@oven/bun-darwin-x64-baseline": "^1.2.21",
++        "@oven/bun-linux-aarch64": "^1.2.21",
++        "@oven/bun-linux-aarch64-musl": "^1.2.21",
++        "@oven/bun-linux-x64": "^1.2.21",
++        "@oven/bun-linux-x64-baseline": "^1.2.21",
++        "@oven/bun-linux-x64-musl": "^1.2.21",
++        "@oven/bun-linux-x64-musl-baseline": "^1.2.21",
++        "@oven/bun-windows-x64": "^1.2.21",
++        "@oven/bun-windows-x64-baseline": "^1.2.21",
++        "@rollup/rollup-darwin-arm64": "^4.53.3",
++        "@rollup/rollup-darwin-x64": "^4.53.3",
++        "@rollup/rollup-linux-arm64-gnu": "^4.53.3",
++        "@rollup/rollup-linux-x64-gnu": "^4.53.3",
++        "@rollup/rollup-win32-arm64-msvc": "^4.53.3",
++        "@rollup/rollup-win32-x64-msvc": "^4.53.3"
++      },
++      "peerDependencies": {
++        "@modelcontextprotocol/sdk": "^1.24.0",
++        "react": "^17.0.0 || ^18.0.0 || ^19.0.0",
++        "react-dom": "^17.0.0 || ^18.0.0 || ^19.0.0",
++        "zod": "^3.25.0 || ^4.0.0"
++      },
++      "peerDependenciesMeta": {
++        "react": {
++          "optional": true
++        },
++        "react-dom": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/@modelcontextprotocol/ext-apps/node_modules/@rollup/rollup-darwin-arm64": {
++      "version": "4.57.0",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-arm64/-/rollup-darwin-arm64-4.57.0.tgz",
++      "integrity": "sha512-/NNIj9A7yLjKdmkx5dC2XQ9DmjIECpGpwHoGmA5E1AhU0fuICSqSWScPhN1yLCkEdkCwJIDu2xIeLPs60MNIVg==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ]
++    },
++    "node_modules/@modelcontextprotocol/ext-apps/node_modules/@rollup/rollup-darwin-x64": {
++      "version": "4.57.0",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-x64/-/rollup-darwin-x64-4.57.0.tgz",
++      "integrity": "sha512-xoh8abqgPrPYPr7pTYipqnUi1V3em56JzE/HgDgitTqZBZ3yKCWI+7KUkceM6tNweyUKYru1UMi7FC060RyKwA==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ]
++    },
++    "node_modules/@modelcontextprotocol/ext-apps/node_modules/@rollup/rollup-linux-arm64-gnu": {
++      "version": "4.57.0",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-gnu/-/rollup-linux-arm64-gnu-4.57.0.tgz",
++      "integrity": "sha512-Xws2KA4CLvZmXjy46SQaXSejuKPhwVdaNinldoYfqruZBaJHqVo6hnRa8SDo9z7PBW5x84SH64+izmldCgbezw==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@modelcontextprotocol/ext-apps/node_modules/@rollup/rollup-linux-x64-gnu": {
++      "version": "4.57.0",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.57.0.tgz",
++      "integrity": "sha512-OR5p5yG5OKSxHReWmwvM0P+VTPMwoBS45PXTMYaskKQqybkS3Kmugq1W+YbNWArF8/s7jQScgzXUhArzEQ7x0A==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@modelcontextprotocol/ext-apps/node_modules/@rollup/rollup-win32-arm64-msvc": {
++      "version": "4.57.0",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-arm64-msvc/-/rollup-win32-arm64-msvc-4.57.0.tgz",
++      "integrity": "sha512-XnaaaSMGSI6Wk8F4KK3QP7GfuuhjGchElsVerCplUuxRIzdvZ7hRBpLR0omCmw+kI2RFJB80nenhOoGXlJ5TfQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
++    "node_modules/@modelcontextprotocol/ext-apps/node_modules/@rollup/rollup-win32-x64-msvc": {
++      "version": "4.57.0",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.57.0.tgz",
++      "integrity": "sha512-Zv7v6q6aV+VslnpwzqKAmrk5JdVkLUzok2208ZXGipjb+msxBr/fJPZyeEXiFgH7k62Ak0SLIfxQRZQvTuf7rQ==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
+     "node_modules/@modelcontextprotocol/sdk": {
+-      "version": "1.25.3",
+-      "resolved": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.25.3.tgz",
+-      "integrity": "sha512-vsAMBMERybvYgKbg/l4L1rhS7VXV1c0CtyJg72vwxONVX0l4ZfKVAnZEWTQixJGTzKnELjQ59e4NbdFDALRiAQ==",
++      "version": "1.26.0",
++      "resolved": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.26.0.tgz",
++      "integrity": "sha512-Y5RmPncpiDtTXDbLKswIJzTqu2hyBKxTNsgKqKclDbhIgg1wgtf1fRuvxgTnRfcnxtvvgbIEcqUOzZrJ6iSReg==",
+       "license": "MIT",
+       "dependencies": {
+         "@hono/node-server": "^1.19.9",
+@@ -1834,14 +1956,15 @@
+         "cross-spawn": "^7.0.5",
+         "eventsource": "^3.0.2",
+         "eventsource-parser": "^3.0.0",
+-        "express": "^5.0.1",
+-        "express-rate-limit": "^7.5.0",
+-        "jose": "^6.1.1",
++        "express": "^5.2.1",
++        "express-rate-limit": "^8.2.1",
++        "hono": "^4.11.4",
++        "jose": "^6.1.3",
+         "json-schema-typed": "^8.0.2",
+         "pkce-challenge": "^5.0.0",
+         "raw-body": "^3.0.0",
+         "zod": "^3.25 || ^4.0",
+-        "zod-to-json-schema": "^3.25.0"
++        "zod-to-json-schema": "^3.25.1"
+       },
+       "engines": {
+         "node": ">=18"
+@@ -5711,6 +5834,149 @@
+         "@opentelemetry/api": "^1.1.0"
+       }
+     },
++    "node_modules/@oven/bun-darwin-aarch64": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-darwin-aarch64/-/bun-darwin-aarch64-1.3.7.tgz",
++      "integrity": "sha512-Mh78f4B+vNTOhFpI7RWHRWDqSKTnFXj/MauRx7I/GmNwEfw56sUx98gWRwXyF4lkW+9VNU+33wuw6E+M22W66w==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ]
++    },
++    "node_modules/@oven/bun-darwin-x64": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-darwin-x64/-/bun-darwin-x64-1.3.7.tgz",
++      "integrity": "sha512-dFfKdSVz6Ois5zjEJboUC7igcYAVd+c//ajotd0L6WUQAKQrHMVq/+6LjOj/0zjC6VPFNGWzeF8erymNo1y0Jw==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ]
++    },
++    "node_modules/@oven/bun-darwin-x64-baseline": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-darwin-x64-baseline/-/bun-darwin-x64-baseline-1.3.7.tgz",
++      "integrity": "sha512-bUND1aQoTCfIL+idALT7FWtuX59ltOIRo954c7p/JkESbSIJ01jY06BSNVbkGk8RQM19v/7qiqZZqi4NyO4Utw==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ]
++    },
++    "node_modules/@oven/bun-linux-aarch64": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-linux-aarch64/-/bun-linux-aarch64-1.3.7.tgz",
++      "integrity": "sha512-m03OtzEs+/RkWtk6tBf8yw0GW4P8ajfzTXnTt984tQBgkMubGQYUyUnFasWgr3mD2820LhkVjhYeBf1rkz/biQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oven/bun-linux-aarch64-musl": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-linux-aarch64-musl/-/bun-linux-aarch64-musl-1.3.7.tgz",
++      "integrity": "sha512-QDxrROdUnC1d/uoilXtUeFHaLhYdRN7dRIzw/Iqj/vrrhnkA6VS+HYoCWtyyVvci/K+JrPmDwxOWlSRpmV4INA==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oven/bun-linux-x64": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-1.3.7.tgz",
++      "integrity": "sha512-uttKQ/eIRVGc4uBtLRqmQqXGf57/dmQaF0AEd37RQNRRRd1P/VYnFMiMcVaot3HJ6IFjHjGtcPO9ekT49LxBYQ==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oven/bun-linux-x64-baseline": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-linux-x64-baseline/-/bun-linux-x64-baseline-1.3.7.tgz",
++      "integrity": "sha512-Jlb/AcrIFU3QDeR3EL4UVT1CIKqnLJDgbU+R0k/+NaSWMrBEpZV+gJJT5L1cmEKTNhU/d+c7hudxkjtqA7XXqA==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oven/bun-linux-x64-musl": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-linux-x64-musl/-/bun-linux-x64-musl-1.3.7.tgz",
++      "integrity": "sha512-aK8fvkCosrHRG3CNdVqMom1C8Rj3XkqZp0ZFSBXgaXlKP22RkxlEE9tS7OmSq9yVgEk6euTB3dW4NFo/jlXqeg==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oven/bun-linux-x64-musl-baseline": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-linux-x64-musl-baseline/-/bun-linux-x64-musl-baseline-1.3.7.tgz",
++      "integrity": "sha512-lySQQ7zJJsoa5hQH+PE5bQyQaTI8G2Erszhu4iQuDtsocwy3zSxjB6TxGWTd4HmetPl9aRvg3nb2KR8RVAd7ug==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@oven/bun-windows-x64": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-windows-x64/-/bun-windows-x64-1.3.7.tgz",
++      "integrity": "sha512-3QdIGdSn3fkssCq/vPjtPLAQxo+eMUzcwJedn1c5mXDy1AoisjhoxhWnbVl8+uk+wt9N6JUPdISoe0N4OdwXfg==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
++    "node_modules/@oven/bun-windows-x64-baseline": {
++      "version": "1.3.7",
++      "resolved": "https://registry.npmjs.org/@oven/bun-windows-x64-baseline/-/bun-windows-x64-baseline-1.3.7.tgz",
++      "integrity": "sha512-wMgELfW5vFceh4qEOYb5iV5TjrjjnBJzE383ixA3kqGKzaubksSxNc11eZhS0ptcJ5a0UjN5hfbMh6sYoh+cRQ==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
+     "node_modules/@pkgjs/parseargs": {
+       "version": "0.11.0",
+       "resolved": "https://registry.npmjs.org/@pkgjs/parseargs/-/parseargs-0.11.0.tgz",
+@@ -6699,6 +6965,8 @@
+     },
+     "node_modules/accepts": {
+       "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/accepts/-/accepts-2.0.0.tgz",
++      "integrity": "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==",
+       "license": "MIT",
+       "dependencies": {
+         "mime-types": "^3.0.0",
+@@ -7027,6 +7295,8 @@
+     },
+     "node_modules/bytes": {
+       "version": "3.1.2",
++      "resolved": "https://registry.npmjs.org/bytes/-/bytes-3.1.2.tgz",
++      "integrity": "sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.8"
+@@ -7510,17 +7780,22 @@
+       }
+     },
+     "node_modules/content-disposition": {
+-      "version": "1.0.0",
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/content-disposition/-/content-disposition-1.0.1.tgz",
++      "integrity": "sha512-oIXISMynqSqm241k6kcQ5UwttDILMK4BiurCfGEREw6+X9jkkpEe5T9FZaApyLGGOnFuyMWZpdolTXMtvEJ08Q==",
+       "license": "MIT",
+-      "dependencies": {
+-        "safe-buffer": "5.2.1"
+-      },
+       "engines": {
+-        "node": ">= 0.6"
++        "node": ">=18"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/express"
+       }
+     },
+     "node_modules/content-type": {
+       "version": "1.0.5",
++      "resolved": "https://registry.npmjs.org/content-type/-/content-type-1.0.5.tgz",
++      "integrity": "sha512-nTjqfcBFEipKdXCv4YDQWCfmcLZKm81ldF0pAopTvyrFGVbcR6P/VAAd5G7N+0tTr8QqiU0tFadD6FK4NtJwOA==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.6"
+@@ -7533,6 +7808,8 @@
+     },
+     "node_modules/cookie": {
+       "version": "0.7.2",
++      "resolved": "https://registry.npmjs.org/cookie/-/cookie-0.7.2.tgz",
++      "integrity": "sha512-yki5XnKuf750l50uGTllt6kKILY4nQ1eNIQatoXEByZ5dWgnKqbnqmTrBE5B4N7lrMJKQ2ytWMiTO2o0v6Ew/w==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.6"
+@@ -7540,6 +7817,8 @@
+     },
+     "node_modules/cookie-signature": {
+       "version": "1.2.2",
++      "resolved": "https://registry.npmjs.org/cookie-signature/-/cookie-signature-1.2.2.tgz",
++      "integrity": "sha512-D76uU73ulSXrD1UXF4KE2TMxVVwhsnCgfAyTg9k8P6KGZjlXKrOLe4dJQKI3Bxi5wjesZoFXJWElNWBjPZMbhg==",
+       "license": "MIT",
+       "engines": {
+         "node": ">=6.6.0"
+@@ -7889,6 +8168,8 @@
+     },
+     "node_modules/depd": {
+       "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/depd/-/depd-2.0.0.tgz",
++      "integrity": "sha512-g7nH6P6dyDioJogAAGprGpCtVImJhpPk/roCzdb3fIh61/s/nPsfR6onyMwkCAR/OlC3yBC0lESvUoQEAssIrw==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.8"
+@@ -7945,6 +8226,8 @@
+     },
+     "node_modules/ee-first": {
+       "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/ee-first/-/ee-first-1.1.1.tgz",
++      "integrity": "sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==",
+       "license": "MIT"
+     },
+     "node_modules/electron-to-chromium": {
+@@ -7958,6 +8241,8 @@
+     },
+     "node_modules/encodeurl": {
+       "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-2.0.0.tgz",
++      "integrity": "sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.8"
+@@ -8089,6 +8374,8 @@
+     },
+     "node_modules/escape-html": {
+       "version": "1.0.3",
++      "resolved": "https://registry.npmjs.org/escape-html/-/escape-html-1.0.3.tgz",
++      "integrity": "sha512-NiSupZ4OeuGwr68lGIeym/ksIZMJodUGOSCZ/FSnTxcrekbvqrgdUxlJOMpijaKZVjAJrWrGs/6Jy8OMuyj9ow==",
+       "license": "MIT"
+     },
+     "node_modules/escape-string-regexp": {
+@@ -8468,6 +8755,8 @@
+     },
+     "node_modules/etag": {
+       "version": "1.8.1",
++      "resolved": "https://registry.npmjs.org/etag/-/etag-1.8.1.tgz",
++      "integrity": "sha512-aIL5Fx7mawVa300al2BnEE4iNvo1qETxLrPI/o05L7z6go7fCw1J6EQmbK4FmJ2AS7kgVF/KEZWufBfdClMcPg==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.6"
+@@ -8560,8 +8849,13 @@
+       }
+     },
+     "node_modules/express-rate-limit": {
+-      "version": "7.5.1",
++      "version": "8.2.1",
++      "resolved": "https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.2.1.tgz",
++      "integrity": "sha512-PCZEIEIxqwhzw4KF0n7QF4QqruVTcF73O5kFKUnGOyjbCCgizBBiFaYpd/fnBLUMPw/BWw9OsiN7GgrNYr7j6g==",
+       "license": "MIT",
++      "dependencies": {
++        "ip-address": "10.0.1"
++      },
+       "engines": {
+         "node": ">= 16"
+       },
+@@ -8680,7 +8974,9 @@
+       }
+     },
+     "node_modules/finalhandler": {
+-      "version": "2.1.0",
++      "version": "2.1.1",
++      "resolved": "https://registry.npmjs.org/finalhandler/-/finalhandler-2.1.1.tgz",
++      "integrity": "sha512-S8KoZgRZN+a5rNwqTxlZZePjT/4cnm0ROV70LedRHZ0p8u9fRID0hJUZQpkKLzro8LfmC8sx23bY6tVNxv8pQA==",
+       "license": "MIT",
+       "dependencies": {
+         "debug": "^4.4.0",
+@@ -8691,7 +8987,11 @@
+         "statuses": "^2.0.1"
+       },
+       "engines": {
+-        "node": ">= 0.8"
++        "node": ">= 18.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/express"
+       }
+     },
+     "node_modules/find-up": {
+@@ -8824,6 +9124,8 @@
+     },
+     "node_modules/forwarded": {
+       "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/forwarded/-/forwarded-0.2.0.tgz",
++      "integrity": "sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.6"
+@@ -8837,6 +9139,8 @@
+     },
+     "node_modules/fresh": {
+       "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/fresh/-/fresh-2.0.0.tgz",
++      "integrity": "sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.8"
+@@ -9290,7 +9594,6 @@
+       "resolved": "https://registry.npmjs.org/hono/-/hono-4.11.7.tgz",
+       "integrity": "sha512-l7qMiNee7t82bH3SeyUCt9UF15EVmaBvsppY2zQtrbIhl/yzBTny+YUxsVjSjQ6gaqaeVtZmGocom8TzBlA4Yw==",
+       "license": "MIT",
+-      "peer": true,
+       "engines": {
+         "node": ">=16.9.0"
+       }
+@@ -9589,8 +9892,19 @@
+         "node": ">=10.13.0"
+       }
+     },
++    "node_modules/ip-address": {
++      "version": "10.0.1",
++      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.0.1.tgz",
++      "integrity": "sha512-NWv9YLW4PoW2B7xtzaS3NCot75m6nK7Icdv0o3lfMceJVRfSoQwqD4wEH5rLwoKJwUiZ/rfpiVBhnaF0FK4HoA==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 12"
++      }
++    },
+     "node_modules/ipaddr.js": {
+       "version": "1.9.1",
++      "resolved": "https://registry.npmjs.org/ipaddr.js/-/ipaddr.js-1.9.1.tgz",
++      "integrity": "sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.10"
+@@ -9714,6 +10028,8 @@
+     },
+     "node_modules/is-promise": {
+       "version": "4.0.0",
++      "resolved": "https://registry.npmjs.org/is-promise/-/is-promise-4.0.0.tgz",
++      "integrity": "sha512-hvpoI6korhJMnej285dSg6nu1+e6uxs7zG3BYAm5byqDsgJNWwxzM6z6iZiAgQR4TJ30JmBTOwqZUw3WlyH3AQ==",
+       "license": "MIT"
+     },
+     "node_modules/is-relative": {
+@@ -10496,6 +10812,8 @@
+     },
+     "node_modules/merge-descriptors": {
+       "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/merge-descriptors/-/merge-descriptors-2.0.0.tgz",
++      "integrity": "sha512-Snk314V5ayFLhp3fkUREub6WtjBfPdCPY1Ln8/8munuLuiYhsABgBVWsozAG+MWMbVEvcdcpbi9R7ww22l9Q3g==",
+       "license": "MIT",
+       "engines": {
+         "node": ">=18"
+@@ -10526,19 +10844,27 @@
+     },
+     "node_modules/mime-db": {
+       "version": "1.54.0",
++      "resolved": "https://registry.npmjs.org/mime-db/-/mime-db-1.54.0.tgz",
++      "integrity": "sha512-aU5EJuIN2WDemCcAp2vFBfp/m4EAhWJnUNSSw0ixs7/kXbd6Pg64EmwJkNdFhB8aWt1sH2CTXrLxo/iAGV3oPQ==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.6"
+       }
+     },
+     "node_modules/mime-types": {
+-      "version": "3.0.1",
++      "version": "3.0.2",
++      "resolved": "https://registry.npmjs.org/mime-types/-/mime-types-3.0.2.tgz",
++      "integrity": "sha512-Lbgzdk0h4juoQ9fCKXW4by0UJqj+nOOrI9MJ1sSj4nI8aI2eo1qmvQEie4VD1glsS250n15LsWsYtCugiStS5A==",
+       "license": "MIT",
+       "dependencies": {
+         "mime-db": "^1.54.0"
+       },
+       "engines": {
+-        "node": ">= 0.6"
++        "node": ">=18"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/express"
+       }
+     },
+     "node_modules/mimic-fn": {
+@@ -10661,6 +10987,8 @@
+     },
+     "node_modules/negotiator": {
+       "version": "1.0.0",
++      "resolved": "https://registry.npmjs.org/negotiator/-/negotiator-1.0.0.tgz",
++      "integrity": "sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.6"
+@@ -10796,6 +11124,8 @@
+     },
+     "node_modules/on-finished": {
+       "version": "2.4.1",
++      "resolved": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.1.tgz",
++      "integrity": "sha512-oVlzkg3ENAhCk2zdv7IJwd/QUD4z2RxRwpkcGY8psCVcCYZNq4wYnVWALHM+brtuJjePWiYF/ClmuDr8Ch5+kg==",
+       "license": "MIT",
+       "dependencies": {
+         "ee-first": "1.1.1"
+@@ -11029,6 +11359,8 @@
+     },
+     "node_modules/parseurl": {
+       "version": "1.3.3",
++      "resolved": "https://registry.npmjs.org/parseurl/-/parseurl-1.3.3.tgz",
++      "integrity": "sha512-CiyeOxFT/JZyN5m0z9PfXw4SCBJ6Sygz1Dpl0wqjlhDEGGBP1GnsUVEL0p63hoG1fcj3fHynXi9NYO4nWOL+qQ==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.8"
+@@ -11166,10 +11498,13 @@
+       }
+     },
+     "node_modules/path-to-regexp": {
+-      "version": "8.2.0",
++      "version": "8.3.0",
++      "resolved": "https://registry.npmjs.org/path-to-regexp/-/path-to-regexp-8.3.0.tgz",
++      "integrity": "sha512-7jdwVIRtsP8MYpdXSwOS0YdD0Du+qOoF/AEPIt88PcCFrZCzx41oxku1jD88hZBwbNUIEfpqvuhjFaMAqMTWnA==",
+       "license": "MIT",
+-      "engines": {
+-        "node": ">=16"
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/express"
+       }
+     },
+     "node_modules/path-type": {
+@@ -11436,6 +11771,8 @@
+     },
+     "node_modules/proxy-addr": {
+       "version": "2.0.7",
++      "resolved": "https://registry.npmjs.org/proxy-addr/-/proxy-addr-2.0.7.tgz",
++      "integrity": "sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==",
+       "license": "MIT",
+       "dependencies": {
+         "forwarded": "0.2.0",
+@@ -11454,9 +11791,9 @@
+       }
+     },
+     "node_modules/qs": {
+-      "version": "6.14.1",
+-      "resolved": "https://registry.npmjs.org/qs/-/qs-6.14.1.tgz",
+-      "integrity": "sha512-4EK3+xJl8Ts67nLYNwqw/dsFVnCf+qR7RgXSK9jEEm9unao3njwMDdmsdvoKBKHzxd7tCYz5e5M+SnMjdtXGQQ==",
++      "version": "6.15.0",
++      "resolved": "https://registry.npmjs.org/qs/-/qs-6.15.0.tgz",
++      "integrity": "sha512-mAZTtNCeetKMH+pSjrb76NAM8V9a05I9aBZOHztWy/UqcJdQYNsf59vrRKWnojAT9Y+GbIvoTBC++CPHqpDBhQ==",
+       "license": "BSD-3-Clause",
+       "dependencies": {
+         "side-channel": "^1.1.0"
+@@ -11489,6 +11826,8 @@
+     },
+     "node_modules/range-parser": {
+       "version": "1.2.1",
++      "resolved": "https://registry.npmjs.org/range-parser/-/range-parser-1.2.1.tgz",
++      "integrity": "sha512-Hrgsx+orqoygnmhFbKaHE6c296J+HTAQXoxEF6gNupROmmGJRoyzfG3ccAveqCBrwr/2yxQ5BVd/GTl5agOwSg==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.6"
+@@ -11811,6 +12150,8 @@
+     },
+     "node_modules/router": {
+       "version": "2.2.0",
++      "resolved": "https://registry.npmjs.org/router/-/router-2.2.0.tgz",
++      "integrity": "sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==",
+       "license": "MIT",
+       "dependencies": {
+         "debug": "^4.4.0",
+@@ -11863,6 +12204,7 @@
+     },
+     "node_modules/safe-buffer": {
+       "version": "5.2.1",
++      "dev": true,
+       "funding": [
+         {
+           "type": "github",
+@@ -11894,23 +12236,29 @@
+       }
+     },
+     "node_modules/send": {
+-      "version": "1.2.0",
++      "version": "1.2.1",
++      "resolved": "https://registry.npmjs.org/send/-/send-1.2.1.tgz",
++      "integrity": "sha512-1gnZf7DFcoIcajTjTwjwuDjzuz4PPcY2StKPlsGAQ1+YH20IRVrBaXSWmdjowTJ6u8Rc01PoYOGHXfP1mYcZNQ==",
+       "license": "MIT",
+       "dependencies": {
+-        "debug": "^4.3.5",
++        "debug": "^4.4.3",
+         "encodeurl": "^2.0.0",
+         "escape-html": "^1.0.3",
+         "etag": "^1.8.1",
+         "fresh": "^2.0.0",
+-        "http-errors": "^2.0.0",
+-        "mime-types": "^3.0.1",
++        "http-errors": "^2.0.1",
++        "mime-types": "^3.0.2",
+         "ms": "^2.1.3",
+         "on-finished": "^2.4.1",
+         "range-parser": "^1.2.1",
+-        "statuses": "^2.0.1"
++        "statuses": "^2.0.2"
+       },
+       "engines": {
+         "node": ">= 18"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/express"
+       }
+     },
+     "node_modules/sentence-case": {
+@@ -11924,7 +12272,9 @@
+       }
+     },
+     "node_modules/serve-static": {
+-      "version": "2.2.0",
++      "version": "2.2.1",
++      "resolved": "https://registry.npmjs.org/serve-static/-/serve-static-2.2.1.tgz",
++      "integrity": "sha512-xRXBn0pPqQTVQiC8wyQrKs2MOlX24zQ0POGaj0kultvoOCstBQM5yvOhAVSUwOMjQtTvsPWoNCHfPGwaaQJhTw==",
+       "license": "MIT",
+       "dependencies": {
+         "encodeurl": "^2.0.0",
+@@ -11934,6 +12284,10 @@
+       },
+       "engines": {
+         "node": ">= 18"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/express"
+       }
+     },
+     "node_modules/set-function-length": {
+@@ -11956,6 +12310,8 @@
+     },
+     "node_modules/setprototypeof": {
+       "version": "1.2.0",
++      "resolved": "https://registry.npmjs.org/setprototypeof/-/setprototypeof-1.2.0.tgz",
++      "integrity": "sha512-E5LDX7Wrp85Kil5bhZv46j8jOeboKq5JMmYM3gVGdGH8xFpPWXUMsNrlODCrkoxMEeNi/XZIwuRvY4XNwYMJpw==",
+       "license": "ISC"
+     },
+     "node_modules/shebang-command": {
+@@ -12161,6 +12517,8 @@
+     },
+     "node_modules/statuses": {
+       "version": "2.0.2",
++      "resolved": "https://registry.npmjs.org/statuses/-/statuses-2.0.2.tgz",
++      "integrity": "sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.8"
+@@ -12546,6 +12904,8 @@
+     },
+     "node_modules/toidentifier": {
+       "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/toidentifier/-/toidentifier-1.0.1.tgz",
++      "integrity": "sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==",
+       "license": "MIT",
+       "engines": {
+         "node": ">=0.6"
+@@ -12834,6 +13194,8 @@
+     },
+     "node_modules/unpipe": {
+       "version": "1.0.0",
++      "resolved": "https://registry.npmjs.org/unpipe/-/unpipe-1.0.0.tgz",
++      "integrity": "sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.8"
+diff --git a/package.json b/package.json
+index 24a69dd..4275864 100644
+--- a/package.json
++++ b/package.json
+@@ -21,7 +21,7 @@
+     "lint": "eslint \"./src/**/*.{ts,tsx}\" \"./test/**/*.{ts,tsx}\"",
+     "lint:fix": "eslint \"./src/**/*.{ts,tsx}\" \"./test/**/*.{ts,tsx}\" --fix",
+     "prepare": "husky && node .husky/setup-hooks.js",
+-    "spellcheck": "cspell \"*.md\" \"src/**/*.ts\" \"test/**/*.ts\"",
++    "spellcheck": "cspell \"*.md\" \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\"",
+     "sync-manifest": "node scripts/sync-manifest-version.cjs",
+     "test": "vitest",
+     "tracing:jaeger:start": "docker run --rm -d --name jaeger -p 16686:16686 -p 14250:14250 -p 4317:4317 -p 4318:4318 jaegertracing/all-in-one:latest",
+@@ -50,7 +50,8 @@
+   ],
+   "dependencies": {
+     "@mcp-ui/server": "^5.13.1",
+-    "@modelcontextprotocol/sdk": "^1.25.3",
++    "@modelcontextprotocol/ext-apps": "^1.0.1",
++    "@modelcontextprotocol/sdk": "^1.26.0",
+     "@opentelemetry/api": "^1.9.0",
+     "@opentelemetry/auto-instrumentations-node": "^0.56.0",
+     "@opentelemetry/exporter-trace-otlp-http": "^0.56.0",
+@@ -92,7 +93,11 @@
+   "tshy": {
+     "project": "./tsconfig.src.json",
+     "exports": {
+-      ".": "./src/index.ts"
++      ".": "./src/index.ts",
++      "./tools": "./src/tools/index.ts",
++      "./resources": "./src/resources/index.ts",
++      "./prompts": "./src/prompts/index.ts",
++      "./utils": "./src/utils/index.ts"
+     },
+     "dialects": [
+       "esm",
+@@ -110,6 +115,46 @@
+         "types": "./dist/commonjs/index.d.ts",
+         "default": "./dist/commonjs/index.js"
+       }
++    },
++    "./tools": {
++      "import": {
++        "types": "./dist/esm/tools/index.d.ts",
++        "default": "./dist/esm/tools/index.js"
++      },
++      "require": {
++        "types": "./dist/commonjs/tools/index.d.ts",
++        "default": "./dist/commonjs/tools/index.js"
++      }
++    },
++    "./resources": {
++      "import": {
++        "types": "./dist/esm/resources/index.d.ts",
++        "default": "./dist/esm/resources/index.js"
++      },
++      "require": {
++        "types": "./dist/commonjs/resources/index.d.ts",
++        "default": "./dist/commonjs/resources/index.js"
++      }
++    },
++    "./prompts": {
++      "import": {
++        "types": "./dist/esm/prompts/index.d.ts",
++        "default": "./dist/esm/prompts/index.js"
++      },
++      "require": {
++        "types": "./dist/commonjs/prompts/index.d.ts",
++        "default": "./dist/commonjs/prompts/index.js"
++      }
++    },
++    "./utils": {
++      "import": {
++        "types": "./dist/esm/utils/index.d.ts",
++        "default": "./dist/esm/utils/index.js"
++      },
++      "require": {
++        "types": "./dist/commonjs/utils/index.d.ts",
++        "default": "./dist/commonjs/utils/index.js"
++      }
+     }
+   },
+   "types": "./dist/commonjs/index.d.ts"
+diff --git a/patches/@modelcontextprotocol+sdk+1.26.0.patch b/patches/@modelcontextprotocol+sdk+1.26.0.patch
+new file mode 100644
+index 0000000..b12031b
+--- /dev/null
++++ b/patches/@modelcontextprotocol+sdk+1.26.0.patch
+@@ -0,0 +1,66 @@
++diff --git a/node_modules/@modelcontextprotocol/sdk/dist/cjs/server/mcp.js b/node_modules/@modelcontextprotocol/sdk/dist/cjs/server/mcp.js
++index e10bb3d..2e99bee 100644
++--- a/node_modules/@modelcontextprotocol/sdk/dist/cjs/server/mcp.js
+++++ b/node_modules/@modelcontextprotocol/sdk/dist/cjs/server/mcp.js
++@@ -197,15 +197,20 @@ class McpServer {
++             return;
++         }
++         if (!result.structuredContent) {
++-            throw new types_js_1.McpError(types_js_1.ErrorCode.InvalidParams, `Output validation error: Tool ${toolName} has an output schema but no structured content was provided`);
+++            // Log warning but don't throw - allow tools to omit structured content
+++            console.warn(`[MCP SDK Patch] Output validation warning: Tool ${toolName} has an output schema but no structured content was provided`);
++         }
++-        // if the tool has an output schema, validate structured content
++-        const outputObj = (0, zod_compat_js_1.normalizeObjectSchema)(tool.outputSchema);
++-        const parseResult = await (0, zod_compat_js_1.safeParseAsync)(outputObj, result.structuredContent);
++-        if (!parseResult.success) {
++-            const error = 'error' in parseResult ? parseResult.error : 'Unknown error';
++-            const errorMessage = (0, zod_compat_js_1.getParseErrorMessage)(error);
++-            throw new types_js_1.McpError(types_js_1.ErrorCode.InvalidParams, `Output validation error: Invalid structured content for tool ${toolName}: ${errorMessage}`);
+++        else {
+++            // if the tool has an output schema, validate structured content
+++            const outputObj = (0, zod_compat_js_1.normalizeObjectSchema)(tool.outputSchema);
+++            const parseResult = await (0, zod_compat_js_1.safeParseAsync)(outputObj, result.structuredContent);
+++            if (!parseResult.success) {
+++                const error = 'error' in parseResult ? parseResult.error : 'Unknown error';
+++                const errorMessage = (0, zod_compat_js_1.getParseErrorMessage)(error);
+++                // Log warning but don't throw - allow schema mismatches
+++                console.warn(`[MCP SDK Patch] Output validation warning: Invalid structured content for tool ${toolName}: ${errorMessage}`);
+++                // Keep the structuredContent despite validation failure
+++            }
++         }
++     }
++     /**
++diff --git a/node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js b/node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js
++index 23639ce..7b8a325 100644
++--- a/node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js
+++++ b/node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js
++@@ -194,15 +194,20 @@ export class McpServer {
++             return;
++         }
++         if (!result.structuredContent) {
++-            throw new McpError(ErrorCode.InvalidParams, `Output validation error: Tool ${toolName} has an output schema but no structured content was provided`);
+++            // Log warning but don't throw - allow tools to omit structured content
+++            console.warn(`[MCP SDK Patch] Output validation warning: Tool ${toolName} has an output schema but no structured content was provided`);
++         }
++-        // if the tool has an output schema, validate structured content
++-        const outputObj = normalizeObjectSchema(tool.outputSchema);
++-        const parseResult = await safeParseAsync(outputObj, result.structuredContent);
++-        if (!parseResult.success) {
++-            const error = 'error' in parseResult ? parseResult.error : 'Unknown error';
++-            const errorMessage = getParseErrorMessage(error);
++-            throw new McpError(ErrorCode.InvalidParams, `Output validation error: Invalid structured content for tool ${toolName}: ${errorMessage}`);
+++        else {
+++            // if the tool has an output schema, validate structured content
+++            const outputObj = normalizeObjectSchema(tool.outputSchema);
+++            const parseResult = await safeParseAsync(outputObj, result.structuredContent);
+++            if (!parseResult.success) {
+++                const error = 'error' in parseResult ? parseResult.error : 'Unknown error';
+++                const errorMessage = getParseErrorMessage(error);
+++                // Log warning but don't throw - allow schema mismatches
+++                console.warn(`[MCP SDK Patch] Output validation warning: Invalid structured content for tool ${toolName}: ${errorMessage}`);
+++                // Keep the structuredContent despite validation failure
+++            }
++         }
++     }
++     /**
+diff --git a/src/index.ts b/src/index.ts
+index 627b1a1..0f44562 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -11,6 +11,10 @@ import { SpanStatusCode } from '@opentelemetry/api';
+ 
+ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
++import {
++  registerAppResource,
++  RESOURCE_MIME_TYPE
++} from '@modelcontextprotocol/ext-apps/server';
+ import { z } from 'zod';
+ import { parseToolConfigFromArgs, filterTools } from './config/toolConfig.js';
+ import {
+@@ -92,7 +96,29 @@ enabledCoreTools.forEach((tool) => {
+ 
+ // Register resources to the server
+ const resources = getAllResources();
+-resources.forEach((resource) => {
++
++// Separate MCP Apps UI resources from regular resources
++const uiResources = resources.filter((r) => r.uri.startsWith('ui://'));
++const regularResources = resources.filter((r) => !r.uri.startsWith('ui://'));
++
++// Register MCP Apps UI resources using registerAppResource
++// IMPORTANT: Use RESOURCE_MIME_TYPE which is "text/html;profile=mcp-app"
++// This tells clients (like Claude Desktop) that this is an MCP App
++uiResources.forEach((resource) => {
++  registerAppResource(
++    server as any,
++    resource.name,
++    resource.uri,
++    { mimeType: RESOURCE_MIME_TYPE, description: resource.description },
++    async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      return await resource.readCallback(new URL(resource.uri), {} as any);
++    }
++  );
++});
++
++// Register regular resources using standard registration
++regularResources.forEach((resource) => {
+   resource.installTo(server);
+ });
+ 
+diff --git a/src/prompts/index.ts b/src/prompts/index.ts
+new file mode 100644
+index 0000000..0c6fdca
+--- /dev/null
++++ b/src/prompts/index.ts
+@@ -0,0 +1,73 @@
++// Copyright (c) Mapbox, Inc.
++// Licensed under the MIT License.
++
++/**
++ * @module prompts
++ *
++ * Public API for Mapbox MCP Devkit prompts. This module exports:
++ * - Prompt classes for custom instantiation
++ * - Pre-configured prompt instances ready to use
++ * - Registry functions for batch access
++ *
++ * @example Simple usage with pre-configured instances
++ * ```typescript
++ * import { createAndPreviewStyle } from '@mapbox/mcp-devkit-server/prompts';
++ *
++ * // Use directly
++ * const result = await createAndPreviewStyle.execute({ ... });
++ * ```
++ *
++ * @example Advanced usage with custom instantiation
++ * ```typescript
++ * import { CreateAndPreviewStylePrompt } from '@mapbox/mcp-devkit-server/prompts';
++ *
++ * const customPrompt = new CreateAndPreviewStylePrompt();
++ * ```
++ */
++
++// Export all prompt classes
++export { CreateAndPreviewStylePrompt } from './CreateAndPreviewStylePrompt.js';
++export { BuildCustomMapPrompt } from './BuildCustomMapPrompt.js';
++export { AnalyzeGeojsonPrompt } from './AnalyzeGeojsonPrompt.js';
++export { SetupMapboxProjectPrompt } from './SetupMapboxProjectPrompt.js';
++export { DebugMapboxIntegrationPrompt } from './DebugMapboxIntegrationPrompt.js';
++export { DesignDataDrivenStylePrompt } from './DesignDataDrivenStylePrompt.js';
++export { PrepareStyleForProductionPrompt } from './PrepareStyleForProductionPrompt.js';
++
++// Import prompt classes for instantiation
++import { CreateAndPreviewStylePrompt } from './CreateAndPreviewStylePrompt.js';
++import { BuildCustomMapPrompt } from './BuildCustomMapPrompt.js';
++import { AnalyzeGeojsonPrompt } from './AnalyzeGeojsonPrompt.js';
++import { SetupMapboxProjectPrompt } from './SetupMapboxProjectPrompt.js';
++import { DebugMapboxIntegrationPrompt } from './DebugMapboxIntegrationPrompt.js';
++import { DesignDataDrivenStylePrompt } from './DesignDataDrivenStylePrompt.js';
++import { PrepareStyleForProductionPrompt } from './PrepareStyleForProductionPrompt.js';
++
++// Export pre-configured prompt instances with short, clean names
++/** Create and preview a new Mapbox style */
++export const createAndPreviewStyle = new CreateAndPreviewStylePrompt();
++
++/** Build a custom map */
++export const buildCustomMap = new BuildCustomMapPrompt();
++
++/** Analyze GeoJSON data */
++export const analyzeGeojson = new AnalyzeGeojsonPrompt();
++
++/** Setup a Mapbox project */
++export const setupMapboxProject = new SetupMapboxProjectPrompt();
++
++/** Debug Mapbox integration issues */
++export const debugMapboxIntegration = new DebugMapboxIntegrationPrompt();
++
++/** Design data-driven styles */
++export const designDataDrivenStyle = new DesignDataDrivenStylePrompt();
++
++/** Prepare style for production */
++export const prepareStyleForProduction = new PrepareStyleForProductionPrompt();
++
++// Export registry functions for batch access
++export {
++  getAllPrompts,
++  getPromptByName,
++  type PromptInstance
++} from './promptRegistry.js';
+diff --git a/src/resources/index.ts b/src/resources/index.ts
+new file mode 100644
+index 0000000..a0e0c56
+--- /dev/null
++++ b/src/resources/index.ts
+@@ -0,0 +1,83 @@
++// Copyright (c) Mapbox, Inc.
++// Licensed under the MIT License.
++
++/**
++ * @module resources
++ *
++ * Public API for Mapbox MCP Devkit resources. This module exports:
++ * - Resource classes for custom instantiation
++ * - Pre-configured resource instances ready to use
++ * - Registry functions for batch access
++ *
++ * @example Simple usage with pre-configured instances
++ * ```typescript
++ * import { mapboxStyleLayers } from '@mapbox/mcp-devkit-server/resources';
++ *
++ * // Use directly - httpRequest already configured
++ * const result = await mapboxStyleLayers.read();
++ * ```
++ *
++ * @example Advanced usage with custom pipeline
++ * ```typescript
++ * import { MapboxDocumentationResource } from '@mapbox/mcp-devkit-server/resources';
++ * import { httpRequest } from '@mapbox/mcp-devkit-server/utils';
++ *
++ * const customResource = new MapboxDocumentationResource({ httpRequest });
++ * ```
++ */
++
++import { httpRequest } from '../utils/httpPipeline.js';
++
++// Export all resource classes
++export { MapboxStyleLayersResource } from './mapbox-style-layers-resource/MapboxStyleLayersResource.js';
++export { MapboxStreetsV8FieldsResource } from './mapbox-streets-v8-fields-resource/MapboxStreetsV8FieldsResource.js';
++export { MapboxTokenScopesResource } from './mapbox-token-scopes-resource/MapboxTokenScopesResource.js';
++export { MapboxLayerTypeMappingResource } from './mapbox-layer-type-mapping-resource/MapboxLayerTypeMappingResource.js';
++export { MapboxDocumentationResource } from './mapbox-documentation-resource/MapboxDocumentationResource.js';
++export { PreviewStyleUIResource } from './ui-apps/PreviewStyleUIResource.js';
++export { StyleComparisonUIResource } from './ui-apps/StyleComparisonUIResource.js';
++export { GeojsonPreviewUIResource } from './ui-apps/GeojsonPreviewUIResource.js';
++
++// Import resource classes for instantiation
++import { MapboxStyleLayersResource } from './mapbox-style-layers-resource/MapboxStyleLayersResource.js';
++import { MapboxStreetsV8FieldsResource } from './mapbox-streets-v8-fields-resource/MapboxStreetsV8FieldsResource.js';
++import { MapboxTokenScopesResource } from './mapbox-token-scopes-resource/MapboxTokenScopesResource.js';
++import { MapboxLayerTypeMappingResource } from './mapbox-layer-type-mapping-resource/MapboxLayerTypeMappingResource.js';
++import { MapboxDocumentationResource } from './mapbox-documentation-resource/MapboxDocumentationResource.js';
++import { PreviewStyleUIResource } from './ui-apps/PreviewStyleUIResource.js';
++import { StyleComparisonUIResource } from './ui-apps/StyleComparisonUIResource.js';
++import { GeojsonPreviewUIResource } from './ui-apps/GeojsonPreviewUIResource.js';
++
++// Export pre-configured resource instances with short, clean names
++/** Mapbox style layers reference */
++export const mapboxStyleLayers = new MapboxStyleLayersResource();
++
++/** Mapbox Streets v8 fields reference */
++export const mapboxStreetsV8Fields = new MapboxStreetsV8FieldsResource();
++
++/** Mapbox token scopes reference */
++export const mapboxTokenScopes = new MapboxTokenScopesResource();
++
++/** Mapbox layer type mapping reference */
++export const mapboxLayerTypeMapping = new MapboxLayerTypeMappingResource();
++
++/** Mapbox documentation */
++export const mapboxDocumentation = new MapboxDocumentationResource({
++  httpRequest
++});
++
++/** Preview style UI resource */
++export const previewStyleUI = new PreviewStyleUIResource();
++
++/** Style comparison UI resource */
++export const styleComparisonUI = new StyleComparisonUIResource();
++
++/** GeoJSON preview UI resource */
++export const geojsonPreviewUI = new GeojsonPreviewUIResource();
++
++// Export registry functions for batch access
++export {
++  getAllResources,
++  getResourceByUri,
++  type ResourceInstance
++} from './resourceRegistry.js';
+diff --git a/src/resources/resourceRegistry.ts b/src/resources/resourceRegistry.ts
+index 5288bd8..4786a97 100644
+--- a/src/resources/resourceRegistry.ts
++++ b/src/resources/resourceRegistry.ts
+@@ -6,6 +6,9 @@ import { MapboxStreetsV8FieldsResource } from './mapbox-streets-v8-fields-resour
+ import { MapboxTokenScopesResource } from './mapbox-token-scopes-resource/MapboxTokenScopesResource.js';
+ import { MapboxLayerTypeMappingResource } from './mapbox-layer-type-mapping-resource/MapboxLayerTypeMappingResource.js';
+ import { MapboxDocumentationResource } from './mapbox-documentation-resource/MapboxDocumentationResource.js';
++import { PreviewStyleUIResource } from './ui-apps/PreviewStyleUIResource.js';
++import { StyleComparisonUIResource } from './ui-apps/StyleComparisonUIResource.js';
++import { GeojsonPreviewUIResource } from './ui-apps/GeojsonPreviewUIResource.js';
+ import { httpRequest } from '../utils/httpPipeline.js';
+ 
+ // Central registry of all resources
+@@ -14,7 +17,11 @@ export const ALL_RESOURCES = [
+   new MapboxStreetsV8FieldsResource(),
+   new MapboxTokenScopesResource(),
+   new MapboxLayerTypeMappingResource(),
+-  new MapboxDocumentationResource({ httpRequest })
++  new MapboxDocumentationResource({ httpRequest }),
++  // MCP Apps UI resources (ui:// scheme)
++  new PreviewStyleUIResource(),
++  new StyleComparisonUIResource(),
++  new GeojsonPreviewUIResource()
+ ] as const;
+ 
+ export type ResourceInstance = (typeof ALL_RESOURCES)[number];
+diff --git a/src/resources/ui-apps/GeojsonPreviewUIResource.ts b/src/resources/ui-apps/GeojsonPreviewUIResource.ts
+new file mode 100644
+index 0000000..0b442bf
+--- /dev/null
++++ b/src/resources/ui-apps/GeojsonPreviewUIResource.ts
+@@ -0,0 +1,403 @@
++// Copyright (c) Mapbox, Inc.
++// Licensed under the MIT License.
++
++import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
++import type {
++  ReadResourceResult,
++  ServerNotification,
++  ServerRequest
++} from '@modelcontextprotocol/sdk/types.js';
++import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
++import { BaseResource } from '../BaseResource.js';
++import {
++  getUserNameFromToken,
++  mapboxApiEndpoint
++} from '../../utils/jwtUtils.js';
++
++const MAPBOX_GL_VERSION = '3.12.0';
++
++// GL JS requires a public (pk.*) token. We create a short-lived one from the
++// sk.* server token and cache it until it's close to expiry.
++interface CachedToken {
++  token: string;
++  expiresAt: number; // ms since epoch
++}
++let cachedPublicToken: CachedToken | null = null;
++
++async function getPublicToken(skToken: string): Promise<string> {
++  const now = Date.now();
++  // Re-use cached token if it has more than 5 minutes left
++  if (cachedPublicToken && cachedPublicToken.expiresAt - now > 5 * 60 * 1000) {
++    return cachedPublicToken.token;
++  }
++
++  const username = getUserNameFromToken(skToken);
++  const expires = new Date(now + 60 * 60 * 1000).toISOString(); // 1 hour
++  const url = `${mapboxApiEndpoint()}tokens/v2/${username}?access_token=${skToken}`;
++
++  const response = await fetch(url, {
++    method: 'POST',
++    headers: { 'Content-Type': 'application/json' },
++    body: JSON.stringify({
++      note: 'GeoJSON Preview (auto-generated, expires in 1h)',
++      scopes: ['styles:tiles', 'styles:read', 'fonts:read'],
++      expires
++    })
++  });
++
++  if (!response.ok) {
++    throw new Error(`Token API ${response.status}: ${await response.text()}`);
++  }
++
++  const data = (await response.json()) as { token: string };
++  cachedPublicToken = { token: data.token, expiresAt: now + 60 * 60 * 1000 };
++  return data.token;
++}
++
++/**
++ * Serves UI App HTML for GeoJSON Preview using Mapbox GL JS directly.
++ * Renders GeoJSON inline — no inner iframe needed, so frame-src CSP is not an issue.
++ * Implements MCP Apps pattern with ui:// scheme.
++ */
++export class GeojsonPreviewUIResource extends BaseResource {
++  readonly name = 'GeoJSON Preview UI';
++  readonly uri = 'ui://mapbox/geojson-preview/index.html';
++  readonly description =
++    'Interactive UI for previewing GeoJSON data rendered inline with Mapbox GL JS (MCP Apps)';
++  readonly mimeType = RESOURCE_MIME_TYPE;
++
++  public async readCallback(
++    _uri: URL,
++    _extra: RequestHandlerExtra<ServerRequest, ServerNotification>
++  ): Promise<ReadResourceResult> {
++    // GL JS requires a public (pk.*) token. Create a short-lived one on the
++    // customer's account using their sk.* token so we're not exposing any
++    // Mapbox-owned credentials. Falls back gracefully if no sk.* is configured.
++    const skToken =
++      (_extra.authInfo?.token as string | undefined) ||
++      process.env.MAPBOX_ACCESS_TOKEN ||
++      '';
++    let accessToken = '';
++    if (skToken.startsWith('sk.')) {
++      try {
++        accessToken = await getPublicToken(skToken);
++      } catch {
++        // Non-fatal — map won't render but the link button still works
++      }
++    } else if (skToken.startsWith('pk.')) {
++      accessToken = skToken; // Already a public token
++    }
++
++    const html = `<!DOCTYPE html>
++<html>
++<head>
++  <meta charset="UTF-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1.0">
++  <title>GeoJSON Preview</title>
++  <link href="https://api.mapbox.com/mapbox-gl-js/v${MAPBOX_GL_VERSION}/mapbox-gl.css" rel="stylesheet">
++  <script src="https://api.mapbox.com/mapbox-gl-js/v${MAPBOX_GL_VERSION}/mapbox-gl.js"></script>
++  <style>
++    * { margin: 0; padding: 0; box-sizing: border-box; }
++    html, body { width: 100%; height: 100%; overflow: hidden;
++      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
++    #map { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
++    #loading {
++      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
++      color: #666; font-size: 16px; z-index: 10; pointer-events: none;
++    }
++    #error {
++      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
++      color: #d32f2f; background: #ffebee; border-radius: 8px;
++      padding: 20px; max-width: 400px; text-align: center; z-index: 10;
++    }
++    #open-btn {
++      position: absolute; bottom: 12px; right: 12px; z-index: 10;
++      display: none;
++      color: #fff; background: rgba(0,0,0,0.6);
++      font-size: 13px; padding: 5px 12px;
++      border: 1px solid rgba(255,255,255,0.4); border-radius: 4px;
++      cursor: pointer; font-family: inherit;
++    }
++    #open-btn:hover { background: rgba(0,0,0,0.8); }
++    #fullscreen-btn {
++      position: absolute; top: 10px; right: 10px; z-index: 10;
++      display: none;
++      width: 36px; height: 36px; border: none; border-radius: 8px;
++      background: rgba(255,255,255,0.92);
++      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
++      cursor: pointer; align-items: center; justify-content: center;
++      font-size: 16px;
++    }
++    #fullscreen-btn.visible { display: flex; }
++    #fullscreen-btn:hover { background: rgba(240,240,240,0.95); }
++  </style>
++</head>
++<body>
++  <div id="map"></div>
++  <div id="loading">Loading GeoJSON preview...</div>
++  <div id="error" style="display:none"></div>
++  <button id="open-btn">↗ Open in browser</button>
++  <button id="fullscreen-btn" title="Toggle fullscreen">⛶</button>
++
++  <script>
++    var TOKEN = '${accessToken}';
++    var map = null;
++    var mapLoaded = false;
++    var pendingGeoJSON = null;
++    var currentPreviewUrl = '';
++    var currentDisplayMode = 'inline';
++    var canFullscreen = false;
++
++    var loadingEl = document.getElementById('loading');
++    var errorEl = document.getElementById('error');
++    var openBtn = document.getElementById('open-btn');
++    var fullscreenBtn = document.getElementById('fullscreen-btn');
++
++    var messageId = 0;
++    var pendingRequests = new Map();
++
++    function sendRequest(method, params) {
++      var id = ++messageId;
++      window.parent.postMessage({ jsonrpc: '2.0', id: id, method: method, params: params || {} }, '*');
++      return new Promise(function(resolve, reject) {
++        pendingRequests.set(id, { resolve: resolve, reject: reject });
++      });
++    }
++
++    function sendNotification(method, params) {
++      window.parent.postMessage({ jsonrpc: '2.0', method: method, params: params || {} }, '*');
++    }
++
++    function requestSizeToFit() {
++      if (currentDisplayMode !== 'inline') return;
++      sendNotification('ui/notifications/size-changed', { height: 600 });
++    }
++
++    fullscreenBtn.addEventListener('click', function() {
++      var newMode = currentDisplayMode === 'fullscreen' ? 'inline' : 'fullscreen';
++      sendRequest('ui/request-display-mode', { mode: newMode }).then(function(result) {
++        currentDisplayMode = (result && result.mode) ? result.mode : newMode;
++        fullscreenBtn.textContent = currentDisplayMode === 'fullscreen' ? '⊟' : '⛶';
++        if (map) setTimeout(function() { map.resize(); }, 100);
++        if (currentDisplayMode === 'inline') requestSizeToFit();
++      }).catch(function() {});
++    });
++
++    openBtn.addEventListener('click', function() {
++      if (!currentPreviewUrl) return;
++      sendRequest('ui/open-link', { url: currentPreviewUrl }).catch(function() {
++        try {
++          var ta = document.createElement('textarea');
++          ta.value = currentPreviewUrl;
++          ta.style.cssText = 'position:fixed;opacity:0';
++          document.body.appendChild(ta);
++          ta.select();
++          document.execCommand('copy');
++          document.body.removeChild(ta);
++          openBtn.textContent = '✓ URL copied';
++          setTimeout(function() { openBtn.textContent = '↗ Open in browser'; }, 2000);
++        } catch (err) {}
++      });
++    });
++
++    window.addEventListener('message', function(event) {
++      var message = event.data;
++      if (!message || typeof message !== 'object') return;
++
++      if (message.id !== undefined && pendingRequests.has(message.id)) {
++        var handlers = pendingRequests.get(message.id);
++        pendingRequests.delete(message.id);
++        if (message.error) handlers.reject(new Error(message.error.message));
++        else handlers.resolve(message.result);
++        return;
++      }
++
++      if (message.method === 'ui/notifications/tool-result') {
++        if (message.params) handleToolResult(message.params);
++      }
++
++      if (message.method === 'ui/notifications/host-context-changed') {
++        var ctx = message.params;
++        if (ctx && ctx.displayMode) {
++          currentDisplayMode = ctx.displayMode;
++          fullscreenBtn.textContent = currentDisplayMode === 'fullscreen' ? '⊟' : '⛶';
++          if (map) setTimeout(function() { map.resize(); }, 100);
++        }
++        if (ctx && ctx.capabilities && ctx.capabilities.supportedDisplayModes &&
++            ctx.capabilities.supportedDisplayModes.indexOf('fullscreen') !== -1) {
++          canFullscreen = true;
++          fullscreenBtn.classList.add('visible');
++        }
++      }
++    });
++
++    sendRequest('ui/initialize', {
++      protocolVersion: '2026-01-26',
++      appCapabilities: {},
++      clientInfo: { name: 'GeoJSON Preview', version: '1.0.0' }
++    }).then(function() {
++      sendNotification('ui/notifications/initialized', {});
++    }, function() {
++      sendNotification('ui/notifications/initialized', {});
++    });
++
++    // ---------------------------------------------------------------------------
++    // Map initialisation
++    // ---------------------------------------------------------------------------
++
++    function getGeojsonBounds(geojson) {
++      var minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
++      function extendCoord(c) {
++        if (c[0] < minLng) minLng = c[0];
++        if (c[1] < minLat) minLat = c[1];
++        if (c[0] > maxLng) maxLng = c[0];
++        if (c[1] > maxLat) maxLat = c[1];
++      }
++      function processGeom(g) {
++        if (!g) return;
++        var t = g.type, c = g.coordinates;
++        if (t === 'Point') { extendCoord(c); }
++        else if (t === 'MultiPoint' || t === 'LineString') { c.forEach(extendCoord); }
++        else if (t === 'MultiLineString' || t === 'Polygon') { c.forEach(function(r) { r.forEach(extendCoord); }); }
++        else if (t === 'MultiPolygon') { c.forEach(function(p) { p.forEach(function(r) { r.forEach(extendCoord); }); }); }
++        else if (t === 'GeometryCollection') { g.geometries.forEach(processGeom); }
++      }
++      var fc = geojson.type === 'FeatureCollection' ? geojson.features
++             : geojson.type === 'Feature' ? [geojson] : [{ geometry: geojson }];
++      fc.forEach(function(f) { processGeom(f.geometry || f); });
++      if (!isFinite(minLng)) return null;
++      return [[minLng, minLat], [maxLng, maxLat]];
++    }
++
++    function addGeoJSONToMap(geojson) {
++      ['geojson-fill', 'geojson-line', 'geojson-points'].forEach(function(id) {
++        if (map.getLayer(id)) map.removeLayer(id);
++      });
++      if (map.getSource('geojson')) map.removeSource('geojson');
++
++      map.addSource('geojson', { type: 'geojson', data: geojson });
++
++      map.addLayer({
++        id: 'geojson-fill', type: 'fill', source: 'geojson',
++        slot: 'top',
++        filter: ['==', '$type', 'Polygon'],
++        paint: { 'fill-color': '#3fb1ce', 'fill-opacity': 0.35 }
++      });
++      map.addLayer({
++        id: 'geojson-line', type: 'line', source: 'geojson',
++        slot: 'top',
++        filter: ['any', ['==', '$type', 'LineString'], ['==', '$type', 'Polygon']],
++        paint: { 'line-color': '#3fb1ce', 'line-width': 2 }
++      });
++      map.addLayer({
++        id: 'geojson-points', type: 'circle', source: 'geojson',
++        slot: 'top',
++        filter: ['==', '$type', 'Point'],
++        paint: { 'circle-color': '#3fb1ce', 'circle-radius': 6,
++                 'circle-stroke-width': 2, 'circle-stroke-color': '#fff' }
++      });
++
++      var bounds = getGeojsonBounds(geojson);
++      if (bounds) {
++        if (bounds[0][0] === bounds[1][0] && bounds[0][1] === bounds[1][1]) {
++          map.flyTo({ center: bounds[0], zoom: 13 });
++        } else {
++          map.fitBounds(bounds, { padding: 60, maxZoom: 14, duration: 600 });
++        }
++      }
++    }
++
++    if (TOKEN && typeof mapboxgl !== 'undefined') {
++      mapboxgl.accessToken = TOKEN;
++      map = new mapboxgl.Map({
++        container: 'map',
++        style: 'mapbox://styles/mapbox/standard',
++        center: [0, 20],
++        zoom: 1.5
++      });
++      map.addControl(new mapboxgl.NavigationControl(), 'top-left');
++      map.on('load', function() {
++        mapLoaded = true;
++        loadingEl.style.display = 'none';
++        requestSizeToFit();
++        if (pendingGeoJSON) {
++          addGeoJSONToMap(pendingGeoJSON);
++          pendingGeoJSON = null;
++        }
++      });
++    } else {
++      // No token or GL JS failed to load — wait for tool result to show link
++      loadingEl.textContent = 'Waiting for GeoJSON data...';
++    }
++
++    // ---------------------------------------------------------------------------
++    // Tool result handler
++    // ---------------------------------------------------------------------------
++
++    function handleToolResult(result) {
++      const textContent = result.content?.find(c => c.type === 'text');
++      if (!textContent?.text) {
++        loadingEl.style.display = 'none';
++        errorEl.textContent = 'No data found in tool result';
++        errorEl.style.display = 'block';
++        return;
++      }
++
++      const url = textContent.text;
++      currentPreviewUrl = url;
++      openBtn.style.display = 'block';
++
++      // Parse GeoJSON from the geojson.io/next URL
++      try {
++        const dataParam = new URL(url).searchParams.get('data');
++        if (!dataParam || !dataParam.startsWith('data:application/json,')) throw new Error('Unexpected URL format');
++        const geojson = JSON.parse(decodeURIComponent(dataParam.replace('data:application/json,', '')));
++
++        if (map) {
++          if (mapLoaded) {
++            addGeoJSONToMap(geojson);
++            loadingEl.style.display = 'none';
++          } else {
++            pendingGeoJSON = geojson;
++          }
++        } else {
++          // No GL map (no token) — just show the link button
++          loadingEl.style.display = 'none';
++        }
++      } catch (e) {
++        loadingEl.style.display = 'none';
++        errorEl.textContent = 'Could not parse GeoJSON from tool result';
++        errorEl.style.display = 'block';
++      }
++    }
++  </script>
++</body>
++</html>`;
++
++    return {
++      contents: [
++        {
++          uri: this.uri,
++          mimeType: RESOURCE_MIME_TYPE,
++          text: html,
++          _meta: {
++            ui: {
++              csp: {
++                connectDomains: [
++                  'https://*.mapbox.com',
++                  'https://events.mapbox.com'
++                ],
++                resourceDomains: ['https://api.mapbox.com'],
++                workerDomains: ['blob:']
++              },
++              preferredSize: {
++                width: 1000,
++                height: 600
++              }
++            }
++          }
++        }
++      ]
++    };
++  }
++}
+diff --git a/src/resources/ui-apps/PreviewStyleUIResource.ts b/src/resources/ui-apps/PreviewStyleUIResource.ts
+new file mode 100644
+index 0000000..ae6932b
+--- /dev/null
++++ b/src/resources/ui-apps/PreviewStyleUIResource.ts
+@@ -0,0 +1,268 @@
++// Copyright (c) Mapbox, Inc.
++// Licensed under the MIT License.
++
++import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
++import type {
++  ReadResourceResult,
++  ServerNotification,
++  ServerRequest
++} from '@modelcontextprotocol/sdk/types.js';
++import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
++import { BaseResource } from '../BaseResource.js';
++
++const MAPBOX_GL_VERSION = '3.12.0';
++
++/**
++ * Serves UI App HTML for Mapbox Style Preview using Mapbox GL JS directly.
++ * Renders the style inline — no inner iframe needed, so frame-src CSP is not an issue.
++ * The pk.* token is parsed from the tool result URL (supplied by the user to the tool).
++ * Implements MCP Apps pattern with ui:// scheme.
++ */
++export class PreviewStyleUIResource extends BaseResource {
++  readonly name = 'Mapbox Style Preview UI';
++  readonly uri = 'ui://mapbox/preview-style/index.html';
++  readonly description =
++    'Interactive UI for previewing Mapbox styles rendered inline with Mapbox GL JS (MCP Apps)';
++  readonly mimeType = RESOURCE_MIME_TYPE;
++
++  public async readCallback(
++    _uri: URL,
++    _extra: RequestHandlerExtra<ServerRequest, ServerNotification>
++  ): Promise<ReadResourceResult> {
++    const html = `<!DOCTYPE html>
++<html>
++<head>
++  <meta charset="UTF-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1.0">
++  <title>Mapbox Style Preview</title>
++  <link href="https://api.mapbox.com/mapbox-gl-js/v${MAPBOX_GL_VERSION}/mapbox-gl.css" rel="stylesheet">
++  <script src="https://api.mapbox.com/mapbox-gl-js/v${MAPBOX_GL_VERSION}/mapbox-gl.js"></script>
++  <style>
++    * { margin: 0; padding: 0; box-sizing: border-box; }
++    html, body { width: 100%; height: 100%; overflow: hidden;
++      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
++    #map { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
++    #loading {
++      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
++      color: #aaa; font-size: 16px; z-index: 10; pointer-events: none;
++    }
++    #error {
++      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
++      color: #ff6b6b; background: rgba(0,0,0,0.7); border-radius: 8px;
++      padding: 20px; max-width: 400px; text-align: center; z-index: 10;
++    }
++    #style-name {
++      position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
++      background: rgba(0,0,0,0.55); color: #fff;
++      padding: 5px 14px; border-radius: 12px;
++      font-size: 13px; font-weight: 500;
++      display: none; z-index: 10;
++      white-space: nowrap; max-width: 70%; overflow: hidden; text-overflow: ellipsis;
++    }
++    #open-btn {
++      position: absolute; bottom: 12px; right: 12px; z-index: 10;
++      display: none;
++      color: #fff; background: rgba(0,0,0,0.6);
++      font-size: 13px; padding: 5px 12px;
++      border: 1px solid rgba(255,255,255,0.4); border-radius: 4px;
++      cursor: pointer; font-family: inherit;
++    }
++    #open-btn:hover { background: rgba(0,0,0,0.8); }
++    #fullscreen-btn {
++      position: absolute; top: 10px; right: 10px; z-index: 10;
++      display: none;
++      width: 36px; height: 36px; border: none; border-radius: 8px;
++      background: rgba(255,255,255,0.92);
++      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
++      cursor: pointer; align-items: center; justify-content: center;
++      font-size: 16px;
++    }
++    #fullscreen-btn.visible { display: flex; }
++    #fullscreen-btn:hover { background: rgba(240,240,240,0.95); }
++  </style>
++</head>
++<body>
++  <div id="map"></div>
++  <div id="loading">Loading style preview...</div>
++  <div id="error" style="display:none"></div>
++  <div id="style-name"></div>
++  <button id="open-btn">↗ Open in browser</button>
++  <button id="fullscreen-btn" title="Toggle fullscreen">⛶</button>
++
++  <script>
++    var map = null;
++    var currentPreviewUrl = '';
++    var currentDisplayMode = 'inline';
++
++    var loadingEl = document.getElementById('loading');
++    var errorEl = document.getElementById('error');
++    var styleNameEl = document.getElementById('style-name');
++    var openBtn = document.getElementById('open-btn');
++    var fullscreenBtn = document.getElementById('fullscreen-btn');
++
++    var messageId = 0;
++    var pendingRequests = new Map();
++
++    function sendRequest(method, params) {
++      var id = ++messageId;
++      window.parent.postMessage({ jsonrpc: '2.0', id: id, method: method, params: params || {} }, '*');
++      return new Promise(function(resolve, reject) {
++        pendingRequests.set(id, { resolve: resolve, reject: reject });
++      });
++    }
++
++    function sendNotification(method, params) {
++      window.parent.postMessage({ jsonrpc: '2.0', method: method, params: params || {} }, '*');
++    }
++
++    function requestSizeToFit() {
++      if (currentDisplayMode !== 'inline') return;
++      sendNotification('ui/notifications/size-changed', { height: 600 });
++    }
++
++    fullscreenBtn.addEventListener('click', function() {
++      var newMode = currentDisplayMode === 'fullscreen' ? 'inline' : 'fullscreen';
++      sendRequest('ui/request-display-mode', { mode: newMode }).then(function(result) {
++        currentDisplayMode = (result && result.mode) ? result.mode : newMode;
++        fullscreenBtn.textContent = currentDisplayMode === 'fullscreen' ? '⊟' : '⛶';
++        if (map) setTimeout(function() { map.resize(); }, 100);
++        if (currentDisplayMode === 'inline') requestSizeToFit();
++      }).catch(function() {});
++    });
++
++    openBtn.addEventListener('click', function() {
++      if (!currentPreviewUrl) return;
++      sendRequest('ui/open-link', { url: currentPreviewUrl }).catch(function() {
++        try {
++          var ta = document.createElement('textarea');
++          ta.value = currentPreviewUrl;
++          ta.style.cssText = 'position:fixed;opacity:0';
++          document.body.appendChild(ta);
++          ta.select();
++          document.execCommand('copy');
++          document.body.removeChild(ta);
++          openBtn.textContent = '✓ URL copied';
++          setTimeout(function() { openBtn.textContent = '↗ Open in browser'; }, 2000);
++        } catch (err) {}
++      });
++    });
++
++    window.addEventListener('message', function(event) {
++      var message = event.data;
++      if (!message || typeof message !== 'object') return;
++
++      if (message.id !== undefined && pendingRequests.has(message.id)) {
++        var handlers = pendingRequests.get(message.id);
++        pendingRequests.delete(message.id);
++        if (message.error) handlers.reject(new Error(message.error.message));
++        else handlers.resolve(message.result);
++        return;
++      }
++
++      if (message.method === 'ui/notifications/tool-result') {
++        if (message.params) handleToolResult(message.params);
++      }
++
++      if (message.method === 'ui/notifications/host-context-changed') {
++        var ctx = message.params;
++        if (ctx && ctx.displayMode) {
++          currentDisplayMode = ctx.displayMode;
++          fullscreenBtn.textContent = currentDisplayMode === 'fullscreen' ? '⊟' : '⛶';
++          if (map) setTimeout(function() { map.resize(); }, 100);
++        }
++        if (ctx && ctx.capabilities && ctx.capabilities.supportedDisplayModes &&
++            ctx.capabilities.supportedDisplayModes.indexOf('fullscreen') !== -1) {
++          fullscreenBtn.classList.add('visible');
++        }
++      }
++    });
++
++    sendRequest('ui/initialize', {
++      protocolVersion: '2026-01-26',
++      appCapabilities: {},
++      clientInfo: { name: 'Mapbox Style Preview', version: '1.0.0' }
++    }).then(function() {
++      sendNotification('ui/notifications/initialized', {});
++    }, function() {
++      sendNotification('ui/notifications/initialized', {});
++    });
++
++    function handleToolResult(result) {
++      const textContent = result.content?.find(c => c.type === 'text');
++      if (!textContent?.text) {
++        loadingEl.style.display = 'none';
++        errorEl.textContent = 'No URL found in tool result';
++        errorEl.style.display = 'block';
++        return;
++      }
++
++      const url = textContent.text;
++      currentPreviewUrl = url;
++      openBtn.style.display = 'block';
++
++      if (typeof mapboxgl === 'undefined') {
++        loadingEl.style.display = 'none';
++        return;
++      }
++
++      try {
++        const parsed = new URL(url);
++        const token = parsed.searchParams.get('access_token');
++        const match = parsed.pathname.match(/\\/styles\\/v1\\/([^\\/]+)\\/([^.]+)\\.html/);
++        if (!match || !token) throw new Error('Could not parse style URL');
++
++        const username = match[1];
++        const styleId = match[2];
++
++        mapboxgl.accessToken = token;
++        map = new mapboxgl.Map({
++          container: 'map',
++          style: 'mapbox://styles/' + username + '/' + styleId,
++          center: [0, 20],
++          zoom: 1.5
++        });
++        map.addControl(new mapboxgl.NavigationControl(), 'top-left');
++
++        map.on('style.load', function() {
++          loadingEl.style.display = 'none';
++          var style = map.getStyle();
++          if (style && style.name) {
++            styleNameEl.textContent = style.name;
++            styleNameEl.style.display = 'block';
++          }
++          requestSizeToFit();
++        });
++      } catch (e) {
++        loadingEl.style.display = 'none';
++        errorEl.textContent = 'Could not load style';
++        errorEl.style.display = 'block';
++      }
++    }
++  </script>
++</body>
++</html>`;
++
++    return {
++      contents: [
++        {
++          uri: this.uri,
++          mimeType: RESOURCE_MIME_TYPE,
++          text: html,
++          _meta: {
++            ui: {
++              csp: {
++                connectDomains: ['https://*.mapbox.com'],
++                resourceDomains: ['https://api.mapbox.com'],
++                workerDomains: ['blob:']
++              },
++              preferredSize: {
++                width: 1000,
++                height: 600
++              }
++            }
++          }
++        }
++      ]
++    };
++  }
++}
+diff --git a/src/resources/ui-apps/StyleComparisonUIResource.ts b/src/resources/ui-apps/StyleComparisonUIResource.ts
+new file mode 100644
+index 0000000..af9de78
+--- /dev/null
++++ b/src/resources/ui-apps/StyleComparisonUIResource.ts
+@@ -0,0 +1,307 @@
++// Copyright (c) Mapbox, Inc.
++// Licensed under the MIT License.
++
++import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
++import type {
++  ReadResourceResult,
++  ServerNotification,
++  ServerRequest
++} from '@modelcontextprotocol/sdk/types.js';
++import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
++import { BaseResource } from '../BaseResource.js';
++
++const MAPBOX_GL_VERSION = '3.12.0';
++const COMPARE_VERSION = '0.4.0';
++
++/**
++ * Serves UI App HTML for Mapbox Style Comparison using mapbox-gl-compare.
++ * Renders two synced GL maps with a draggable reveal slider inline —
++ * no inner iframe needed, so frame-src CSP is not an issue.
++ * Implements MCP Apps pattern with ui:// scheme.
++ */
++export class StyleComparisonUIResource extends BaseResource {
++  readonly name = 'Mapbox Style Comparison UI';
++  readonly uri = 'ui://mapbox/style-comparison/index.html';
++  readonly description =
++    'Interactive UI for comparing two Mapbox styles with a draggable slider (MCP Apps)';
++  readonly mimeType = RESOURCE_MIME_TYPE;
++
++  public async readCallback(
++    _uri: URL,
++    _extra: RequestHandlerExtra<ServerRequest, ServerNotification>
++  ): Promise<ReadResourceResult> {
++    const html = `<!DOCTYPE html>
++<html>
++<head>
++  <meta charset="UTF-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1.0">
++  <title>Mapbox Style Comparison</title>
++  <link href="https://api.mapbox.com/mapbox-gl-js/v${MAPBOX_GL_VERSION}/mapbox-gl.css" rel="stylesheet">
++  <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v${COMPARE_VERSION}/mapbox-gl-compare.css" rel="stylesheet">
++  <script src="https://api.mapbox.com/mapbox-gl-js/v${MAPBOX_GL_VERSION}/mapbox-gl.js"></script>
++  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-compare/v${COMPARE_VERSION}/mapbox-gl-compare.js"></script>
++  <style>
++    * { margin: 0; padding: 0; box-sizing: border-box; }
++    html, body { width: 100%; height: 100%; overflow: hidden;
++      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
++    #comparison-container { position: relative; width: 100%; height: 100%; }
++    .map { position: absolute; top: 0; bottom: 0; width: 100%; }
++    #loading {
++      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
++      color: #aaa; font-size: 16px; z-index: 10; pointer-events: none;
++    }
++    #error {
++      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
++      color: #ff6b6b; background: rgba(0,0,0,0.7); border-radius: 8px;
++      padding: 20px; max-width: 400px; text-align: center; z-index: 10;
++    }
++    .style-label {
++      position: absolute; bottom: 30px; z-index: 10;
++      background: rgba(0,0,0,0.55); color: #fff;
++      padding: 5px 14px; border-radius: 12px;
++      font-size: 13px; font-weight: 500;
++      max-width: 35%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
++      display: none;
++    }
++    #before-label { left: 12px; }
++    #after-label { right: 12px; }
++    #open-btn {
++      position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
++      z-index: 10; display: none;
++      color: #fff; background: rgba(0,0,0,0.6);
++      font-size: 13px; padding: 5px 12px;
++      border: 1px solid rgba(255,255,255,0.4); border-radius: 4px;
++      cursor: pointer; font-family: inherit;
++    }
++    #open-btn:hover { background: rgba(0,0,0,0.8); }
++    #fullscreen-btn {
++      position: absolute; top: 10px; right: 10px; z-index: 10;
++      display: none;
++      width: 36px; height: 36px; border: none; border-radius: 8px;
++      background: rgba(255,255,255,0.92);
++      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
++      cursor: pointer; align-items: center; justify-content: center;
++      font-size: 16px;
++    }
++    #fullscreen-btn.visible { display: flex; }
++    #fullscreen-btn:hover { background: rgba(240,240,240,0.95); }
++  </style>
++</head>
++<body>
++  <div id="comparison-container">
++    <div id="before" class="map"></div>
++    <div id="after" class="map"></div>
++  </div>
++  <div id="loading">Loading style comparison...</div>
++  <div id="error" style="display:none"></div>
++  <div id="before-label" class="style-label"></div>
++  <div id="after-label" class="style-label"></div>
++  <button id="open-btn">↗ Open in browser</button>
++  <button id="fullscreen-btn" title="Toggle fullscreen">⛶</button>
++
++  <script>
++    var beforeMap = null;
++    var afterMap = null;
++    var compare = null;
++    var currentPreviewUrl = '';
++    var currentDisplayMode = 'inline';
++
++    var loadingEl = document.getElementById('loading');
++    var errorEl = document.getElementById('error');
++    var beforeLabel = document.getElementById('before-label');
++    var afterLabel = document.getElementById('after-label');
++    var openBtn = document.getElementById('open-btn');
++    var fullscreenBtn = document.getElementById('fullscreen-btn');
++
++    var messageId = 0;
++    var pendingRequests = new Map();
++
++    function sendRequest(method, params) {
++      var id = ++messageId;
++      window.parent.postMessage({ jsonrpc: '2.0', id: id, method: method, params: params || {} }, '*');
++      return new Promise(function(resolve, reject) {
++        pendingRequests.set(id, { resolve: resolve, reject: reject });
++      });
++    }
++
++    function sendNotification(method, params) {
++      window.parent.postMessage({ jsonrpc: '2.0', method: method, params: params || {} }, '*');
++    }
++
++    function requestSizeToFit() {
++      if (currentDisplayMode !== 'inline') return;
++      sendNotification('ui/notifications/size-changed', { height: 600 });
++    }
++
++    fullscreenBtn.addEventListener('click', function() {
++      var newMode = currentDisplayMode === 'fullscreen' ? 'inline' : 'fullscreen';
++      sendRequest('ui/request-display-mode', { mode: newMode }).then(function(result) {
++        currentDisplayMode = (result && result.mode) ? result.mode : newMode;
++        fullscreenBtn.textContent = currentDisplayMode === 'fullscreen' ? '⊟' : '⛶';
++        if (beforeMap) setTimeout(function() { beforeMap.resize(); afterMap.resize(); }, 100);
++        if (currentDisplayMode === 'inline') requestSizeToFit();
++      }).catch(function() {});
++    });
++
++    openBtn.addEventListener('click', function() {
++      if (!currentPreviewUrl) return;
++      sendRequest('ui/open-link', { url: currentPreviewUrl }).catch(function() {
++        try {
++          var ta = document.createElement('textarea');
++          ta.value = currentPreviewUrl;
++          ta.style.cssText = 'position:fixed;opacity:0';
++          document.body.appendChild(ta);
++          ta.select();
++          document.execCommand('copy');
++          document.body.removeChild(ta);
++          openBtn.textContent = '✓ URL copied';
++          setTimeout(function() { openBtn.textContent = '↗ Open in browser'; }, 2000);
++        } catch (err) {}
++      });
++    });
++
++    window.addEventListener('message', function(event) {
++      var message = event.data;
++      if (!message || typeof message !== 'object') return;
++
++      if (message.id !== undefined && pendingRequests.has(message.id)) {
++        var handlers = pendingRequests.get(message.id);
++        pendingRequests.delete(message.id);
++        if (message.error) handlers.reject(new Error(message.error.message));
++        else handlers.resolve(message.result);
++        return;
++      }
++
++      if (message.method === 'ui/notifications/tool-result') {
++        if (message.params) handleToolResult(message.params);
++      }
++
++      if (message.method === 'ui/notifications/host-context-changed') {
++        var ctx = message.params;
++        if (ctx && ctx.displayMode) {
++          currentDisplayMode = ctx.displayMode;
++          fullscreenBtn.textContent = currentDisplayMode === 'fullscreen' ? '⊟' : '⛶';
++          if (beforeMap) setTimeout(function() { beforeMap.resize(); afterMap.resize(); }, 100);
++        }
++        if (ctx && ctx.capabilities && ctx.capabilities.supportedDisplayModes &&
++            ctx.capabilities.supportedDisplayModes.indexOf('fullscreen') !== -1) {
++          fullscreenBtn.classList.add('visible');
++        }
++      }
++    });
++
++    sendRequest('ui/initialize', {
++      protocolVersion: '2026-01-26',
++      appCapabilities: {},
++      clientInfo: { name: 'Mapbox Style Comparison', version: '1.0.0' }
++    }).then(function() {
++      sendNotification('ui/notifications/initialized', {});
++    }, function() {
++      sendNotification('ui/notifications/initialized', {});
++    });
++
++    function handleToolResult(result) {
++      const textContent = result.content?.find(c => c.type === 'text');
++      if (!textContent?.text) {
++        loadingEl.style.display = 'none';
++        errorEl.textContent = 'No URL found in tool result';
++        errorEl.style.display = 'block';
++        return;
++      }
++
++      const url = textContent.text;
++      currentPreviewUrl = url;
++      openBtn.style.display = 'block';
++
++      if (typeof mapboxgl === 'undefined') {
++        loadingEl.style.display = 'none';
++        return;
++      }
++
++      try {
++        const parsed = new URL(url);
++        const token = parsed.searchParams.get('access_token');
++        const before = parsed.searchParams.get('before');
++        const after = parsed.searchParams.get('after');
++        if (!token || !before || !after) throw new Error('Missing required params');
++
++        // Parse optional initial position from hash (#zoom/lat/lng)
++        var center = [0, 20];
++        var zoom = 1.5;
++        if (parsed.hash) {
++          var parts = parsed.hash.replace('#', '').split('/');
++          if (parts.length >= 3) {
++            zoom = parseFloat(parts[0]) || 1.5;
++            center = [parseFloat(parts[2]) || 0, parseFloat(parts[1]) || 20];
++          }
++        }
++
++        mapboxgl.accessToken = token;
++
++        beforeMap = new mapboxgl.Map({
++          container: 'before',
++          style: 'mapbox://styles/' + before,
++          center: center,
++          zoom: zoom
++        });
++
++        afterMap = new mapboxgl.Map({
++          container: 'after',
++          style: 'mapbox://styles/' + after,
++          center: center,
++          zoom: zoom
++        });
++
++        // Show style names once both styles have loaded
++        var loadedCount = 0;
++        function onStyleLoad(map, labelEl) {
++          var style = map.getStyle();
++          if (style && style.name) {
++            labelEl.textContent = style.name;
++            labelEl.style.display = 'block';
++          }
++          loadedCount++;
++          if (loadedCount === 2) {
++            loadingEl.style.display = 'none';
++            compare = new mapboxgl.Compare(beforeMap, afterMap, '#comparison-container', {});
++            requestSizeToFit();
++          }
++        }
++
++        beforeMap.on('style.load', function() { onStyleLoad(beforeMap, beforeLabel); });
++        afterMap.on('style.load', function() { onStyleLoad(afterMap, afterLabel); });
++
++      } catch (e) {
++        loadingEl.style.display = 'none';
++        errorEl.textContent = 'Could not load style comparison';
++        errorEl.style.display = 'block';
++      }
++    }
++  </script>
++</body>
++</html>`;
++
++    return {
++      contents: [
++        {
++          uri: this.uri,
++          mimeType: RESOURCE_MIME_TYPE,
++          text: html,
++          _meta: {
++            ui: {
++              csp: {
++                connectDomains: ['https://*.mapbox.com'],
++                resourceDomains: ['https://api.mapbox.com'],
++                workerDomains: ['blob:']
++              },
++              preferredSize: {
++                width: 1000,
++                height: 600
++              }
++            }
++          }
++        }
++      ]
++    };
++  }
++}
+diff --git a/src/tools/BaseTool.ts b/src/tools/BaseTool.ts
+index eb0e389..e91b367 100644
+--- a/src/tools/BaseTool.ts
++++ b/src/tools/BaseTool.ts
+@@ -23,6 +23,16 @@ export abstract class BaseTool<
+ 
+   readonly inputSchema: InputSchema;
+   readonly outputSchema?: OutputSchema;
++  readonly meta?: {
++    ui?: {
++      resourceUri?: string;
++      csp?: {
++        connectDomains?: string[];
++        resourceDomains?: string[];
++        frameDomains?: string[];
++      };
++    };
++  };
+   protected server: McpServer | null = null;
+ 
+   constructor(params: {
+@@ -74,6 +84,16 @@ export abstract class BaseTool<
+       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       outputSchema?: any;
+       annotations?: ToolAnnotations;
++      _meta?: {
++        ui?: {
++          resourceUri?: string;
++          csp?: {
++            connectDomains?: string[];
++            resourceDomains?: string[];
++            frameDomains?: string[];
++          };
++        };
++      };
+     } = {
+       title: this.annotations.title,
+       description: this.description,
+@@ -91,6 +111,11 @@ export abstract class BaseTool<
+         (this.outputSchema as unknown as z.ZodObject<any>).shape;
+     }
+ 
++    // Add _meta for MCP Apps support if provided (includes CSP configuration)
++    if (this.meta) {
++      config._meta = this.meta;
++    }
++
+     return server.registerTool(
+       this.name,
+       config,
+diff --git a/src/tools/geojson-preview-tool/GeojsonPreviewTool.ts b/src/tools/geojson-preview-tool/GeojsonPreviewTool.ts
+index c8ecf6f..0710d1c 100644
+--- a/src/tools/geojson-preview-tool/GeojsonPreviewTool.ts
++++ b/src/tools/geojson-preview-tool/GeojsonPreviewTool.ts
+@@ -3,19 +3,18 @@
+ 
+ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+ import { createUIResource } from '@mcp-ui/server';
+-import { createHash } from 'node:crypto';
++import { createHash, randomUUID } from 'node:crypto';
+ import { GeoJSON } from 'geojson';
+ import { BaseTool } from '../BaseTool.js';
+ import {
+   GeojsonPreviewSchema,
+   GeojsonPreviewInput
+ } from './GeojsonPreviewTool.input.schema.js';
+-import { isMcpUiEnabled } from '../../config/toolConfig.js';
+ 
+ export class GeojsonPreviewTool extends BaseTool<typeof GeojsonPreviewSchema> {
+   name = 'geojson_preview_tool';
+   description =
+-    'Generate a geojson.io URL to visualize GeoJSON data. Returns only the URL link.';
++    'Generate a geojson.io/next URL to visualize GeoJSON data. Returns only the URL link.';
+   readonly annotations = {
+     readOnlyHint: true,
+     destructiveHint: false,
+@@ -24,6 +23,15 @@ export class GeojsonPreviewTool extends BaseTool<typeof GeojsonPreviewSchema> {
+     title: 'Preview GeoJSON Data Tool'
+   };
+ 
++  readonly meta = {
++    ui: {
++      resourceUri: 'ui://mapbox/geojson-preview/index.html',
++      csp: {
++        frameDomains: ['https://geojson.io']
++      }
++    }
++  };
++
+   constructor() {
+     super({ inputSchema: GeojsonPreviewSchema });
+   }
+@@ -52,36 +60,6 @@ export class GeojsonPreviewTool extends BaseTool<typeof GeojsonPreviewSchema> {
+     );
+   }
+ 
+-  /**
+-   * Generate a Mapbox Static Images API URL for the GeoJSON data
+-   * @see https://docs.mapbox.com/api/maps/static-images/
+-   */
+-  private generateStaticImageUrl(geojsonData: GeoJSON): string | null {
+-    const accessToken = process.env.MAPBOX_ACCESS_TOKEN;
+-    if (!accessToken) {
+-      return null; // Fallback to geojson.io if no token available
+-    }
+-
+-    // Create a simplified GeoJSON for the overlay
+-    // The Static API requires specific format for GeoJSON overlays
+-    const geojsonString = JSON.stringify(geojsonData);
+-    const encodedGeoJSON = encodeURIComponent(geojsonString);
+-
+-    // Use Mapbox Streets style with auto-bounds fitting
+-    // Format: /styles/v1/{username}/{style_id}/static/geojson({geojson})/auto/{width}x{height}@2x
+-    const staticImageUrl =
+-      `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/` +
+-      `geojson(${encodedGeoJSON})/auto/1000x700@2x` +
+-      `?access_token=${accessToken}`;
+-
+-    // Check if URL is too long (browsers typically limit to ~8192 chars)
+-    if (staticImageUrl.length > 8000) {
+-      return null; // Fallback to geojson.io for large GeoJSON
+-    }
+-
+-    return staticImageUrl;
+-  }
+-
+   protected async execute(input: GeojsonPreviewInput): Promise<CallToolResult> {
+     try {
+       // Parse and validate JSON format
+@@ -100,66 +78,51 @@ export class GeojsonPreviewTool extends BaseTool<typeof GeojsonPreviewSchema> {
+         };
+       }
+ 
+-      // Generate geojson.io URL
++      // Generate geojson.io/next URL
++      // Note: geojson.io/next uses query params (?data=) not hash params (#data=)
+       const geojsonString = JSON.stringify(geojsonData);
+       const encodedGeoJSON = encodeURIComponent(geojsonString);
+-      const geojsonIOUrl = `https://geojson.io/#data=data:application/json,${encodedGeoJSON}`;
++      const geojsonIOUrl = `https://geojson.io/next/?data=data:application/json,${encodedGeoJSON}`;
++
++      // Use geojson.io/next as the display URL
++      const displayUrl = geojsonIOUrl;
+ 
+       // Build content array with URL
+       const content: CallToolResult['content'] = [
+         {
+           type: 'text',
+-          text: geojsonIOUrl
++          text: displayUrl
+         }
+       ];
+ 
+-      // Conditionally add MCP-UI resource if enabled
+-      if (isMcpUiEnabled()) {
+-        // Create content-addressable URI using hash of GeoJSON
+-        // This enables client-side caching - same GeoJSON = same URI
+-        const contentHash = createHash('md5')
+-          .update(geojsonString)
+-          .digest('hex')
+-          .substring(0, 16); // Use first 16 chars for brevity
+-
+-        // Try to generate a Mapbox Static Image URL
+-        const staticImageUrl = this.generateStaticImageUrl(geojsonData);
+-
+-        if (staticImageUrl) {
+-          // Use Mapbox Static Images API - embeds as an image
+-          const uiResource = createUIResource({
+-            uri: `ui://mapbox/geojson-preview/${contentHash}`,
+-            content: {
+-              type: 'externalUrl',
+-              iframeUrl: staticImageUrl
+-            },
+-            encoding: 'text',
+-            uiMetadata: {
+-              'preferred-frame-size': ['1000px', '700px']
+-            }
+-          });
+-          content.push(uiResource);
+-        } else {
+-          // Fallback to geojson.io URL (for large GeoJSON or when no token)
+-          // Note: geojson.io may not work in iframes due to X-Frame-Options
+-          const uiResource = createUIResource({
+-            uri: `ui://mapbox/geojson-preview/${contentHash}`,
+-            content: {
+-              type: 'externalUrl',
+-              iframeUrl: geojsonIOUrl
+-            },
+-            encoding: 'text',
+-            uiMetadata: {
+-              'preferred-frame-size': ['1000px', '700px']
+-            }
+-          });
+-          content.push(uiResource);
++      // Add MCP-UI resource (for legacy MCP-UI clients)
++      // Create content-addressable URI using hash of GeoJSON
++      // This enables client-side caching - same GeoJSON = same URI
++      const contentHash = createHash('md5')
++        .update(geojsonString)
++        .digest('hex')
++        .substring(0, 16); // Use first 16 chars for brevity
++
++      // Use the same URL for MCP-UI as we returned in text content
++      const uiResource = createUIResource({
++        uri: `ui://mapbox/geojson-preview/${contentHash}`,
++        content: {
++          type: 'externalUrl',
++          iframeUrl: displayUrl
++        },
++        encoding: 'text',
++        uiMetadata: {
++          'preferred-frame-size': ['1000px', '700px']
+         }
+-      }
++      });
++      content.push(uiResource);
+ 
+       return {
++        content,
+         isError: false,
+-        content
++        _meta: {
++          viewUUID: randomUUID()
++        }
+       };
+     } catch (error) {
+       const errorMessage =
+diff --git a/src/tools/index.ts b/src/tools/index.ts
+new file mode 100644
+index 0000000..d7a2505
+--- /dev/null
++++ b/src/tools/index.ts
+@@ -0,0 +1,170 @@
++// Copyright (c) Mapbox, Inc.
++// Licensed under the MIT License.
++
++/**
++ * @module tools
++ *
++ * Public API for Mapbox MCP Devkit tools. This module exports:
++ * - Tool classes for custom instantiation
++ * - Pre-configured tool instances ready to use
++ * - Registry functions for batch access
++ *
++ * @example Simple usage with pre-configured instances
++ * ```typescript
++ * import { listStyles, createStyle, previewStyle } from '@mapbox/mcp-devkit-server/tools';
++ *
++ * // Use directly - httpRequest already configured
++ * const styles = await listStyles.run(args, extra);
++ * ```
++ *
++ * @example Advanced usage with custom pipeline
++ * ```typescript
++ * import { ListStylesTool } from '@mapbox/mcp-devkit-server/tools';
++ * import { httpRequest } from '@mapbox/mcp-devkit-server/utils';
++ *
++ * const customTool = new ListStylesTool({ httpRequest });
++ * ```
++ */
++
++import { httpRequest } from '../utils/httpPipeline.js';
++
++// Export all tool classes
++export { BoundingBoxTool } from './bounding-box-tool/BoundingBoxTool.js';
++export { CheckColorContrastTool } from './check-color-contrast-tool/CheckColorContrastTool.js';
++export { CompareStylesTool } from './compare-styles-tool/CompareStylesTool.js';
++export { CountryBoundingBoxTool } from './bounding-box-tool/CountryBoundingBoxTool.js';
++export { CoordinateConversionTool } from './coordinate-conversion-tool/CoordinateConversionTool.js';
++export { CreateStyleTool } from './create-style-tool/CreateStyleTool.js';
++export { CreateTokenTool } from './create-token-tool/CreateTokenTool.js';
++export { DeleteStyleTool } from './delete-style-tool/DeleteStyleTool.js';
++export { GetFeedbackTool } from './get-feedback-tool/GetFeedbackTool.js';
++export { ListFeedbackTool } from './list-feedback-tool/ListFeedbackTool.js';
++export { GeojsonPreviewTool } from './geojson-preview-tool/GeojsonPreviewTool.js';
++export { GetMapboxDocSourceTool } from './get-mapbox-doc-source-tool/GetMapboxDocSourceTool.js';
++export { GetReferenceTool } from './get-reference-tool/GetReferenceTool.js';
++export { ListStylesTool } from './list-styles-tool/ListStylesTool.js';
++export { ListTokensTool } from './list-tokens-tool/ListTokensTool.js';
++export { OptimizeStyleTool } from './optimize-style-tool/OptimizeStyleTool.js';
++export { PreviewStyleTool } from './preview-style-tool/PreviewStyleTool.js';
++export { RetrieveStyleTool } from './retrieve-style-tool/RetrieveStyleTool.js';
++export { StyleBuilderTool } from './style-builder-tool/StyleBuilderTool.js';
++export { StyleComparisonTool } from './style-comparison-tool/StyleComparisonTool.js';
++export { TilequeryTool } from './tilequery-tool/TilequeryTool.js';
++export { UpdateStyleTool } from './update-style-tool/UpdateStyleTool.js';
++export { ValidateExpressionTool } from './validate-expression-tool/ValidateExpressionTool.js';
++export { ValidateGeojsonTool } from './validate-geojson-tool/ValidateGeojsonTool.js';
++export { ValidateStyleTool } from './validate-style-tool/ValidateStyleTool.js';
++
++// Import tool classes for instantiation
++import { BoundingBoxTool } from './bounding-box-tool/BoundingBoxTool.js';
++import { CheckColorContrastTool } from './check-color-contrast-tool/CheckColorContrastTool.js';
++import { CompareStylesTool } from './compare-styles-tool/CompareStylesTool.js';
++import { CountryBoundingBoxTool } from './bounding-box-tool/CountryBoundingBoxTool.js';
++import { CoordinateConversionTool } from './coordinate-conversion-tool/CoordinateConversionTool.js';
++import { CreateStyleTool } from './create-style-tool/CreateStyleTool.js';
++import { CreateTokenTool } from './create-token-tool/CreateTokenTool.js';
++import { DeleteStyleTool } from './delete-style-tool/DeleteStyleTool.js';
++import { GetFeedbackTool } from './get-feedback-tool/GetFeedbackTool.js';
++import { ListFeedbackTool } from './list-feedback-tool/ListFeedbackTool.js';
++import { GeojsonPreviewTool } from './geojson-preview-tool/GeojsonPreviewTool.js';
++import { GetMapboxDocSourceTool } from './get-mapbox-doc-source-tool/GetMapboxDocSourceTool.js';
++import { GetReferenceTool } from './get-reference-tool/GetReferenceTool.js';
++import { ListStylesTool } from './list-styles-tool/ListStylesTool.js';
++import { ListTokensTool } from './list-tokens-tool/ListTokensTool.js';
++import { OptimizeStyleTool } from './optimize-style-tool/OptimizeStyleTool.js';
++import { PreviewStyleTool } from './preview-style-tool/PreviewStyleTool.js';
++import { RetrieveStyleTool } from './retrieve-style-tool/RetrieveStyleTool.js';
++import { StyleBuilderTool } from './style-builder-tool/StyleBuilderTool.js';
++import { StyleComparisonTool } from './style-comparison-tool/StyleComparisonTool.js';
++import { TilequeryTool } from './tilequery-tool/TilequeryTool.js';
++import { UpdateStyleTool } from './update-style-tool/UpdateStyleTool.js';
++import { ValidateExpressionTool } from './validate-expression-tool/ValidateExpressionTool.js';
++import { ValidateGeojsonTool } from './validate-geojson-tool/ValidateGeojsonTool.js';
++import { ValidateStyleTool } from './validate-style-tool/ValidateStyleTool.js';
++
++// Export pre-configured tool instances with short, clean names
++// Note: Import path already indicates these are tools, so we omit the "Tool" suffix
++
++/** Calculate bounding boxes for geometries */
++export const boundingBox = new BoundingBoxTool();
++
++/** Check color contrast ratios for accessibility */
++export const checkColorContrast = new CheckColorContrastTool();
++
++/** Compare two Mapbox styles */
++export const compareStyles = new CompareStylesTool();
++
++/** Get country bounding boxes */
++export const countryBoundingBox = new CountryBoundingBoxTool();
++
++/** Convert between coordinate systems */
++export const coordinateConversion = new CoordinateConversionTool();
++
++/** Create a new Mapbox style */
++export const createStyle = new CreateStyleTool({ httpRequest });
++
++/** Create a new Mapbox access token */
++export const createToken = new CreateTokenTool({ httpRequest });
++
++/** Delete a Mapbox style */
++export const deleteStyle = new DeleteStyleTool({ httpRequest });
++
++/** Get feedback for a location */
++export const getFeedback = new GetFeedbackTool({ httpRequest });
++
++/** List feedback items */
++export const listFeedback = new ListFeedbackTool({ httpRequest });
++
++/** Preview GeoJSON on a map */
++export const geojsonPreview = new GeojsonPreviewTool();
++
++/** Get Mapbox documentation source */
++export const getMapboxDocSource = new GetMapboxDocSourceTool({ httpRequest });
++
++/** Get reference documentation */
++export const getReference = new GetReferenceTool();
++
++/** List Mapbox styles */
++export const listStyles = new ListStylesTool({ httpRequest });
++
++/** List Mapbox access tokens */
++export const listTokens = new ListTokensTool({ httpRequest });
++
++/** Optimize a Mapbox style */
++export const optimizeStyle = new OptimizeStyleTool();
++
++/** Preview a Mapbox style */
++export const previewStyle = new PreviewStyleTool();
++
++/** Retrieve a Mapbox style */
++export const retrieveStyle = new RetrieveStyleTool({ httpRequest });
++
++/** Build a Mapbox style */
++export const styleBuilder = new StyleBuilderTool();
++
++/** Compare styles side-by-side */
++export const styleComparison = new StyleComparisonTool();
++
++/** Query tiles at a location */
++export const tilequery = new TilequeryTool({ httpRequest });
++
++/** Update a Mapbox style */
++export const updateStyle = new UpdateStyleTool({ httpRequest });
++
++/** Validate a Mapbox expression */
++export const validateExpression = new ValidateExpressionTool();
++
++/** Validate GeoJSON */
++export const validateGeojson = new ValidateGeojsonTool();
++
++/** Validate a Mapbox style */
++export const validateStyle = new ValidateStyleTool();
++
++// Export registry functions for batch access
++export {
++  getCoreTools,
++  getElicitationTools,
++  getResourceFallbackTools,
++  getToolByName,
++  type ToolInstance
++} from './toolRegistry.js';
+diff --git a/src/tools/preview-style-tool/PreviewStyleTool.ts b/src/tools/preview-style-tool/PreviewStyleTool.ts
+index cf028cf..26070f3 100644
+--- a/src/tools/preview-style-tool/PreviewStyleTool.ts
++++ b/src/tools/preview-style-tool/PreviewStyleTool.ts
+@@ -1,3 +1,4 @@
++import { randomUUID } from 'node:crypto';
+ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+ import { createUIResource } from '@mcp-ui/server';
+ import { BaseTool } from '../BaseTool.js';
+@@ -7,7 +8,6 @@ import {
+   PreviewStyleInput
+ } from './PreviewStyleTool.input.schema.js';
+ import { getUserNameFromToken } from '../../utils/jwtUtils.js';
+-import { isMcpUiEnabled } from '../../config/toolConfig.js';
+ 
+ export class PreviewStyleTool extends BaseTool<typeof PreviewStyleSchema> {
+   readonly name = 'preview_style_tool';
+@@ -21,6 +21,17 @@ export class PreviewStyleTool extends BaseTool<typeof PreviewStyleSchema> {
+     title: 'Preview Mapbox Style Tool'
+   };
+ 
++  readonly meta = {
++    ui: {
++      resourceUri: 'ui://mapbox/preview-style/index.html',
++      csp: {
++        connectDomains: ['https://*.mapbox.com'],
++        resourceDomains: ['https://*.mapbox.com'],
++        frameDomains: ['https://*.mapbox.com']
++      }
++    }
++  };
++
+   constructor() {
+     super({ inputSchema: PreviewStyleSchema });
+   }
+@@ -73,25 +84,26 @@ export class PreviewStyleTool extends BaseTool<typeof PreviewStyleSchema> {
+       }
+     ];
+ 
+-    // Conditionally add MCP-UI resource if enabled
+-    if (isMcpUiEnabled()) {
+-      const uiResource = createUIResource({
+-        uri: `ui://mapbox/preview-style/${userName}/${input.styleId}`,
+-        content: {
+-          type: 'externalUrl',
+-          iframeUrl: url
+-        },
+-        encoding: 'text',
+-        uiMetadata: {
+-          'preferred-frame-size': ['1000px', '700px']
+-        }
+-      });
+-      content.push(uiResource);
+-    }
++    // Add MCP-UI resource (for legacy MCP-UI clients)
++    const uiResource = createUIResource({
++      uri: `ui://mapbox/preview-style/${userName}/${input.styleId}`,
++      content: {
++        type: 'externalUrl',
++        iframeUrl: url
++      },
++      encoding: 'text',
++      uiMetadata: {
++        'preferred-frame-size': ['1000px', '700px']
++      }
++    });
++    content.push(uiResource);
+ 
+     return {
+       content,
+-      isError: false
++      isError: false,
++      _meta: {
++        viewUUID: randomUUID()
++      }
+     };
+   }
+ }
+diff --git a/src/tools/style-comparison-tool/StyleComparisonTool.ts b/src/tools/style-comparison-tool/StyleComparisonTool.ts
+index f9ce238..82f7638 100644
+--- a/src/tools/style-comparison-tool/StyleComparisonTool.ts
++++ b/src/tools/style-comparison-tool/StyleComparisonTool.ts
+@@ -1,6 +1,7 @@
+ // Copyright (c) Mapbox, Inc.
+ // Licensed under the MIT License.
+ 
++import { randomUUID } from 'node:crypto';
+ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+ import { createUIResource } from '@mcp-ui/server';
+ import { BaseTool } from '../BaseTool.js';
+@@ -9,7 +10,6 @@ import {
+   StyleComparisonInput
+ } from './StyleComparisonTool.schema.js';
+ import { getUserNameFromToken } from '../../utils/jwtUtils.js';
+-import { isMcpUiEnabled } from '../../config/toolConfig.js';
+ 
+ export class StyleComparisonTool extends BaseTool<
+   typeof StyleComparisonSchema
+@@ -25,6 +25,17 @@ export class StyleComparisonTool extends BaseTool<
+     title: 'Compare Mapbox Styles Tool'
+   };
+ 
++  readonly meta = {
++    ui: {
++      resourceUri: 'ui://mapbox/style-comparison/index.html',
++      csp: {
++        connectDomains: ['https://*.mapbox.com'],
++        resourceDomains: ['https://*.mapbox.com'],
++        frameDomains: ['https://*.mapbox.com']
++      }
++    }
++  };
++
+   constructor() {
+     super({ inputSchema: StyleComparisonSchema });
+   }
+@@ -109,25 +120,26 @@ export class StyleComparisonTool extends BaseTool<
+       }
+     ];
+ 
+-    // Conditionally add MCP-UI resource if enabled
+-    if (isMcpUiEnabled()) {
+-      const uiResource = createUIResource({
+-        uri: `ui://mapbox/style-comparison/${beforeStyleId}/${afterStyleId}`,
+-        content: {
+-          type: 'externalUrl',
+-          iframeUrl: url
+-        },
+-        encoding: 'text',
+-        uiMetadata: {
+-          'preferred-frame-size': ['1000px', '700px']
+-        }
+-      });
+-      content.push(uiResource);
+-    }
++    // Add MCP-UI resource (for legacy MCP-UI clients)
++    const uiResource = createUIResource({
++      uri: `ui://mapbox/style-comparison/${beforeStyleId}/${afterStyleId}`,
++      content: {
++        type: 'externalUrl',
++        iframeUrl: url
++      },
++      encoding: 'text',
++      uiMetadata: {
++        'preferred-frame-size': ['1000px', '700px']
++      }
++    });
++    content.push(uiResource);
+ 
+     return {
+       content,
+-      isError: false
++      isError: false,
++      _meta: {
++        viewUUID: randomUUID()
++      }
+     };
+   }
+ }
+diff --git a/src/utils/index.ts b/src/utils/index.ts
+new file mode 100644
+index 0000000..1b653a2
+--- /dev/null
++++ b/src/utils/index.ts
+@@ -0,0 +1,46 @@
++// Copyright (c) Mapbox, Inc.
++// Licensed under the MIT License.
++
++/**
++ * @module utils
++ *
++ * Public API for Mapbox MCP Devkit utilities. This module exports the HTTP pipeline
++ * system for making requests to Mapbox APIs with built-in policies like
++ * User-Agent and Retry.
++ *
++ * @example Using the default pipeline
++ * ```typescript
++ * import { httpRequest } from '@mapbox/mcp-devkit-server/utils';
++ * import { ListStylesTool } from '@mapbox/mcp-devkit-server/tools';
++ *
++ * // Use the pre-configured default pipeline
++ * const tool = new ListStylesTool({ httpRequest });
++ * ```
++ *
++ * @example Creating a custom pipeline
++ * ```typescript
++ * import { HttpPipeline, UserAgentPolicy, RetryPolicy } from '@mapbox/mcp-devkit-server/utils';
++ * import { ListStylesTool } from '@mapbox/mcp-devkit-server/tools';
++ *
++ * // Create a custom pipeline with your own policies
++ * const pipeline = new HttpPipeline();
++ * pipeline.usePolicy(new UserAgentPolicy('MyApp/1.0.0'));
++ * pipeline.usePolicy(new RetryPolicy(5, 300, 3000)); // More aggressive retry
++ *
++ * const tool = new ListStylesTool({ httpRequest: pipeline.execute.bind(pipeline) });
++ * ```
++ */
++
++// Export the pre-configured default HTTP pipeline
++export { httpRequest, systemHttpPipeline } from './httpPipeline.js';
++
++// Export HTTP pipeline classes and interfaces for custom pipelines
++export {
++  HttpPipeline,
++  UserAgentPolicy,
++  RetryPolicy,
++  type HttpPolicy
++} from './httpPipeline.js';
++
++// Export types
++export type { HttpRequest } from './types.js';
+diff --git a/tsconfig.examples.json b/tsconfig.examples.json
+new file mode 100644
+index 0000000..cdc6217
+--- /dev/null
++++ b/tsconfig.examples.json
+@@ -0,0 +1,13 @@
++{
++  "extends": "./tsconfig.base.json",
++  "compilerOptions": {
++    "composite": true,
++    "noEmit": true
++  },
++  "include": ["examples"],
++  "references": [
++    {
++      "path": "./tsconfig.src.json"
++    }
++  ]
++}

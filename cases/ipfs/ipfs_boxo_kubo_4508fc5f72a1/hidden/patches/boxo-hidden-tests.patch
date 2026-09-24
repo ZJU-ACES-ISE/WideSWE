@@ -1,0 +1,79 @@
+diff --git a/routing/http/client/providerinfofunc_test/provider_info_func_test.go b/routing/http/client/providerinfofunc_test/provider_info_func_test.go
+new file mode 100644
+index 0000000..79a3609
+--- /dev/null
++++ b/routing/http/client/providerinfofunc_test/provider_info_func_test.go
+@@ -0,0 +1,73 @@
++package providerinfofunc_test
++
++import (
++	"context"
++	"crypto/rand"
++	"net/http/httptest"
++	"testing"
++	"time"
++
++	client "github.com/ipfs/boxo/routing/http/client"
++	drserver "github.com/ipfs/boxo/routing/http/server"
++	blocks "github.com/ipfs/go-block-format"
++	"github.com/ipfs/go-cid"
++	"github.com/libp2p/go-libp2p/core/crypto"
++	"github.com/libp2p/go-libp2p/core/peer"
++	ma "github.com/multiformats/go-multiaddr"
++	"github.com/stretchr/testify/require"
++)
++
++type recordingProviderRouter struct {
++	drserver.DelegatedRouter
++	requests []*drserver.BitswapWriteProvideRequest
++}
++
++func (r *recordingProviderRouter) ProvideBitswap(_ context.Context, req *drserver.BitswapWriteProvideRequest) (time.Duration, error) {
++	r.requests = append(r.requests, req)
++	return time.Hour, nil
++}
++
++func mustMultiaddr(t *testing.T, value string) ma.Multiaddr {
++	t.Helper()
++	addr, err := ma.NewMultiaddr(value)
++	require.NoError(t, err)
++	return addr
++}
++
++func TestWithProviderInfoFuncProvidesCurrentAddresses(t *testing.T) {
++	privateKey, publicKey, err := crypto.GenerateEd25519Key(rand.Reader)
++	require.NoError(t, err)
++	peerID, err := peer.IDFromPublicKey(publicKey)
++	require.NoError(t, err)
++
++	provider := &recordingProviderRouter{}
++	server := httptest.NewServer(drserver.Handler(provider))
++	t.Cleanup(server.Close)
++
++	first := mustMultiaddr(t, "/ip4/203.0.113.1/tcp/4001")
++	second := mustMultiaddr(t, "/ip4/203.0.113.2/tcp/4001")
++	current := []ma.Multiaddr{first}
++	callbackCalls := 0
++	routingClient, err := client.New(
++		server.URL,
++		client.WithIdentity(privateKey),
++		client.WithProviderInfoFunc(peerID, func() []ma.Multiaddr {
++			callbackCalls++
++			return current
++		}),
++	)
++	require.NoError(t, err)
++
++	for index, expected := range []ma.Multiaddr{first, second} {
++		_, err := routingClient.ProvideBitswap(
++			context.Background(),
++			[]cid.Cid{blocks.NewBlock([]byte(time.Now().String())).Cid()},
++			5*time.Minute,
++		)
++		require.NoError(t, err)
++		require.Len(t, provider.requests, index+1)
++		require.Equal(t, []ma.Multiaddr{expected}, provider.requests[index].Addrs)
++		current = []ma.Multiaddr{second}
++	}
++	require.Equal(t, 2, callbackCalls)
++}

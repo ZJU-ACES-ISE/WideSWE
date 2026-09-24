@@ -1,0 +1,131 @@
+diff --git a/examples/flyout_system/public/components/_flyout_with_overlays.tsx b/examples/flyout_system/public/components/_flyout_with_overlays.tsx
+index 7c9a9d03991..71d3b551b0e 100644
+--- a/examples/flyout_system/public/components/_flyout_with_overlays.tsx
++++ b/examples/flyout_system/public/components/_flyout_with_overlays.tsx
+@@ -260,17 +260,6 @@ const SessionFlyout: React.FC<SessionFlyoutProps> = React.memo((props) => {
+   }, [title]);
+ 
+   const handleCloseFlyout = useCallback(() => {
+-    // Close child flyout first if it's open
+-    if (childFlyoutRefA.current) {
+-      childFlyoutRefA.current.close();
+-      childFlyoutRefA.current = null;
+-    }
+-    if (childFlyoutRefB.current) {
+-      childFlyoutRefB.current.close();
+-      childFlyoutRefB.current = null;
+-    }
+-
+-    // Then close main flyout
+     if (flyoutRef.current) {
+       flyoutRef.current.close();
+       flyoutRef.current = null;
+diff --git a/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_ref.ts b/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_ref.ts
+index 7035671e960..b4a14e881aa 100644
+--- a/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_ref.ts
++++ b/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_ref.ts
+@@ -7,7 +7,7 @@
+  * License v3.0 only", or the "Server Side Public License, v 1".
+  */
+ 
+-import { Subject } from 'rxjs';
++import { Subject, firstValueFrom } from 'rxjs';
+ import { unmountComponentAtNode } from 'react-dom';
+ import type { OverlayRef } from '@kbn/core-mount-utils-browser';
+ 
+@@ -17,18 +17,22 @@ import type { OverlayRef } from '@kbn/core-mount-utils-browser';
+  */
+ export class SystemFlyoutRef implements OverlayRef {
+   public readonly onClose: Promise<void>;
++  private _isClosed = false;
+   private closeSubject = new Subject<void>();
+   private container: HTMLElement;
+-  private isClosed = false;
+ 
+   constructor(container: HTMLElement) {
+     this.container = container;
+-    this.onClose = this.closeSubject.toPromise();
++    this.onClose = firstValueFrom(this.closeSubject);
++  }
++
++  public get isClosed(): boolean {
++    return this._isClosed;
+   }
+ 
+   public close(): Promise<void> {
+-    if (!this.isClosed) {
+-      this.isClosed = true;
++    if (!this._isClosed) {
++      this._isClosed = true;
+       unmountComponentAtNode(this.container);
+       this.container.remove();
+ 
+diff --git a/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.tsx b/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.tsx
+index 966f94646ee..46fcf35dea9 100644
+--- a/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.tsx
++++ b/src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.tsx
+@@ -8,19 +8,20 @@
+  */
+ 
+ import React from 'react';
+-import { v4 as uuidV4 } from 'uuid';
+ import { render } from 'react-dom';
++import { v4 as uuidV4 } from 'uuid';
++
++import { EuiFlyout, getFlyoutManagerStore, type EuiFlyoutMenuProps } from '@elastic/eui';
+ import type { AnalyticsServiceStart } from '@kbn/core-analytics-browser';
+-import type { ThemeServiceStart } from '@kbn/core-theme-browser';
+-import type { UserProfileService } from '@kbn/core-user-profile-browser';
+ import type { I18nStart } from '@kbn/core-i18n-browser';
+ import type { OverlayRef } from '@kbn/core-mount-utils-browser';
+ import type {
+   OverlaySystemFlyoutOpenOptions,
+   OverlaySystemFlyoutStart,
+ } from '@kbn/core-overlays-browser';
++import type { ThemeServiceStart } from '@kbn/core-theme-browser';
++import type { UserProfileService } from '@kbn/core-user-profile-browser';
+ import { KibanaRenderContextProvider } from '@kbn/react-kibana-context-render';
+-import { EuiFlyout, type EuiFlyoutMenuProps } from '@elastic/eui';
+ import { SystemFlyoutRef } from './system_flyout_ref';
+ 
+ interface SystemFlyoutStartDeps {
+@@ -82,8 +83,37 @@ export class SystemFlyoutService {
+           mergedFlyoutMenuProps = { title, ...flyoutMenuProps };
+         }
+ 
+-        // Render the flyout content using EuiFlyout with session="start"
+-        // This ensures full EUI Flyout System integration as a new MAIN flyout.
++        // Subscribe to EUI flyout manager store to detect cascade closes
++        // This ensures child flyouts close when their parent closes, even across separate React roots
++        if (session !== 'never') {
++          // Use the EUI flyout ID (from options.id) for store lookups, not our internal container ID
++          const euiFlyoutId = options.id || flyoutId;
++
++          const { subscribeToEvents } = getFlyoutManagerStore();
++
++          const unsubscribe = subscribeToEvents((event) => {
++            if (event.type !== 'CLOSE_SESSION') {
++              return;
++            }
++
++            const { mainFlyoutId, childFlyoutId } = event.session;
++            const shouldClose = euiFlyoutId === mainFlyoutId || euiFlyoutId === childFlyoutId;
++
++            if (shouldClose && !flyoutRef.isClosed) {
++              flyoutRef.close();
++              unsubscribe();
++              this.activeFlyouts.delete(flyoutId);
++            }
++          });
++
++          // Clean up subscription when flyout closes normally
++          flyoutRef.onClose.then(() => {
++            unsubscribe();
++          });
++        }
++
++        // Render the flyout content using EuiFlyout with session management
++        // This ensures full EUI Flyout System integration
+         render(
+           <KibanaRenderContextProvider
+             analytics={analytics}

@@ -1,0 +1,353 @@
+diff --git a/dispatcherd/cli.py b/dispatcherd/cli.py
+index 43acd94..c559be5 100644
+--- a/dispatcherd/cli.py
++++ b/dispatcherd/cli.py
+@@ -1,7 +1,9 @@
+ import argparse
++import inspect
+ import logging
+ import os
+ import sys
++import textwrap
+ 
+ import yaml
+ 
+@@ -14,23 +16,122 @@ logger = logging.getLogger(__name__)
+ 
+ 
+ DEFAULT_CONFIG_FILE = 'dispatcher.yml'
++CONTROL_ARGS_MARKER = 'Control Args:'
++CONTROL_ARG_SCHEMAS = {}
++TYPE_CASTERS = {'str': str, 'int': int, 'float': float}
+ 
+ 
+-def get_parser() -> argparse.ArgumentParser:
+-    parser = argparse.ArgumentParser(description="CLI entrypoint for dispatcherd, mainly intended for testing.")
+-    parser.add_argument(
++def _base_cli_parent() -> argparse.ArgumentParser:
++    parent = argparse.ArgumentParser(add_help=False)
++    parent.add_argument(
+         '--log-level',
+         type=str,
+         default='DEBUG',
+         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+-        help='Python log level to standard out. If you want to log to file you are in the wrong place.',
++        help='Python log level to standard out for the CLI command itself. If you want to log to file you are in the wrong place.',
+     )
+-    parser.add_argument(
++    parent.add_argument(
+         '--config',
+         type=os.path.abspath,
+         default=DEFAULT_CONFIG_FILE,
+         help='Path to dispatcherd config.',
+     )
++    return parent
++
++
++def _control_common_parent() -> argparse.ArgumentParser:
++    parent = argparse.ArgumentParser(add_help=False)
++    parent.add_argument(
++        '--expected-replies',
++        type=int,
++        default=1,
++        help='Expected number of replies, in case you have more than 1 service running.',
++    )
++    return parent
++
++
++def _extract_control_args_yaml(doc: str) -> str | None:
++    marker_index = doc.find(CONTROL_ARGS_MARKER)
++    if marker_index == -1:
++        return None
++    block_lines = []
++    after = doc[marker_index + len(CONTROL_ARGS_MARKER) :].splitlines()  # NOQA: E203 black and flake8 conflict
++    collecting = False
++    for line in after:
++        if not collecting:
++            if not line.strip():
++                continue
++            if line.startswith((' ', '\t')):
++                collecting = True
++            else:
++                break
++        if collecting:
++            if line.startswith((' ', '\t')):
++                block_lines.append(line)
++            elif not line.strip():
++                break
++            else:
++                break
++    if not block_lines:
++        return None
++    return textwrap.dedent('\n'.join(block_lines))
++
++
++def _load_control_arg_schema(func) -> dict:
++    doc = inspect.getdoc(func) or ''
++    yaml_blob = _extract_control_args_yaml(doc)
++    if not yaml_blob:
++        return {}
++    data = yaml.safe_load(yaml_blob)
++    if not isinstance(data, dict):
++        return {}
++    return data
++
++
++for _command in control_tasks.__all__:
++    CONTROL_ARG_SCHEMAS[_command] = _load_control_arg_schema(getattr(control_tasks, _command, lambda: None))
++
++
++def get_control_arg_schemas() -> dict[str, dict]:
++    """Expose control argument schema for testing."""
++    return CONTROL_ARG_SCHEMAS
++
++
++def _register_control_arguments(parser: argparse.ArgumentParser, schema: dict | None) -> None:
++    if not schema:
++        return
++    for arg_name, metadata in schema.items():
++        option = f'--{arg_name.replace("_", "-")}'
++        arg_kwargs: dict = {'dest': arg_name, 'help': metadata.get('help')}
++        arg_type = metadata.get('type', 'str')
++        if arg_type == 'bool':
++            arg_kwargs['action'] = 'store_true'
++            arg_kwargs['default'] = metadata.get('default', False)
++        else:
++            arg_kwargs['type'] = TYPE_CASTERS.get(arg_type, str)
++            arg_kwargs['default'] = metadata.get('default')
++            if metadata.get('required'):
++                arg_kwargs['required'] = True
++        if 'choices' in metadata:
++            arg_kwargs['choices'] = metadata['choices']
++        parser.add_argument(option, **arg_kwargs)
++
++
++def _build_command_data_from_args(args: argparse.Namespace, command: str) -> dict:
++    schema = CONTROL_ARG_SCHEMAS.get(command, {})
++    data = {}
++    for field in schema.keys():
++        value = getattr(args, field, None)
++        if value is not None:
++            data[field] = value
++    return data
++
++
++def get_parser(extra_parents: list[argparse.ArgumentParser] | None = None) -> argparse.ArgumentParser:
++    parents = [_base_cli_parent()]
++    if extra_parents:
++        parents.extend(extra_parents)
++    parser = argparse.ArgumentParser(description="CLI entrypoint for dispatcherd, mainly intended for testing.", parents=parents)
+     return parser
+ 
+ 
+@@ -55,32 +156,18 @@ def standalone() -> None:
+ 
+ 
+ def control() -> None:
+-    parser = get_parser()
+-    parser.add_argument('command', choices=[cmd for cmd in control_tasks.__all__], help='The control action to run.')
+-    parser.add_argument(
+-        '--task',
+-        type=str,
+-        default=None,
+-        help='Task name to filter on.',
+-    )
+-    parser.add_argument(
+-        '--uuid',
+-        type=str,
+-        default=None,
+-        help='Task uuid to filter on.',
+-    )
+-    parser.add_argument(
+-        '--expected-replies',
+-        type=int,
+-        default=1,
+-        help='Expected number of replies, in case you are have more than 1 service running.',
+-    )
++    parser = get_parser(extra_parents=[_control_common_parent()])
++    subparsers = parser.add_subparsers(dest='command', metavar='command')
++    subparsers.required = True
++    shared_command_parents = [_base_cli_parent(), _control_common_parent()]
++    for command in control_tasks.__all__:
++        func = getattr(control_tasks, command)
++        doc = inspect.getdoc(func) or ''
++        summary = doc.splitlines()[0] if doc else None
++        command_parser = subparsers.add_parser(command, help=summary, description=doc, parents=shared_command_parents)
++        _register_control_arguments(command_parser, CONTROL_ARG_SCHEMAS.get(command))
+     args = setup_from_parser(parser)
+-    data = {}
+-    for field in ('task', 'uuid'):
+-        val = getattr(args, field)
+-        if val:
+-            data[field] = val
++    data = _build_command_data_from_args(args, args.command)
+     ctl = get_control_from_settings()
+     returned = ctl.control_with_reply(args.command, data=data, expected_replies=args.expected_replies)
+     print(yaml.dump(returned, default_flow_style=False))
+diff --git a/dispatcherd/service/control_tasks.py b/dispatcherd/service/control_tasks.py
+index b1e33d1..fe515be 100644
+--- a/dispatcherd/service/control_tasks.py
++++ b/dispatcherd/service/control_tasks.py
+@@ -4,10 +4,12 @@ import logging
+ 
+ from ..protocols import DispatcherMain
+ 
+-__all__ = ['running', 'cancel', 'alive', 'aio_tasks', 'workers', 'producers', 'main', 'status', 'chunks']
++__all__ = ['running', 'cancel', 'alive', 'aio_tasks', 'workers', 'producers', 'main', 'status', 'chunks', 'set_log_level']
+ 
+ 
+ logger = logging.getLogger(__name__)
++DISPATCHER_LOGGER_NAME = 'dispatcherd'
++dispatcherd_logger = logging.getLogger(DISPATCHER_LOGGER_NAME)
+ 
+ 
+ def task_filter_match(pool_task: dict, msg_data: dict) -> bool:
+@@ -60,6 +62,14 @@ async def running(dispatcher: DispatcherMain, data: dict) -> dict[str, dict]:
+     Data may be used to filter the tasks of interest.
+     Keys and values in data correspond to expected key-values in the message,
+     but are limited to task, kwargs, args, and uuid.
++
++    Control Args:
++        task:
++            type: str
++            help: Limit the results to a task name (exact match).
++        uuid:
++            type: str
++            help: Limit the results to a specific task uuid.
+     """
+     async with dispatcher.pool.workers.management_lock:
+         return await _find_tasks(dispatcher=dispatcher, data=data)
+@@ -69,6 +79,14 @@ async def cancel(dispatcher: DispatcherMain, data: dict) -> dict[str, dict]:
+     """Cancel all tasks that match the filter given by data
+ 
+     The protocol for the data filtering is the same as the running command.
++
++    Control Args:
++        task:
++            type: str
++            help: Cancel only tasks matching this task name.
++        uuid:
++            type: str
++            help: Cancel only tasks with this uuid.
+     """
+     async with dispatcher.pool.workers.management_lock:
+         return await _find_tasks(dispatcher=dispatcher, cancel=True, data=data)
+@@ -81,7 +99,13 @@ def _stack_from_task(task: asyncio.Task, limit: int = 6) -> str:
+ 
+ 
+ async def aio_tasks(dispatcher: DispatcherMain, data: dict) -> dict[str, dict]:
+-    """Information on the asyncio tasks running in the dispatcher main process"""
++    """Information on the asyncio tasks running in the dispatcher main process
++
++    Control Args:
++        limit:
++            type: int
++            help: Optional stack depth when printing asyncio task traces.
++    """
+     ret = {}
+     extra = {}
+     if 'limit' in data:
+@@ -153,8 +177,59 @@ async def status(dispatcher: DispatcherMain, data: dict) -> dict:
+     """Information from all other non-destructive commands nested in a sub-dictionary"""
+     ret = {}
+     for command in __all__:
+-        if command in ('cancel', 'alive', 'status', 'run'):
++        if command in ('cancel', 'alive', 'status', 'run', 'set_log_level'):
+             continue
+         control_method = globals()[command]
+         ret[command] = await control_method(dispatcher=dispatcher, data={})
+     return ret
++
++
++def _coerce_log_level(level_name: str | None) -> int | None:
++    """Normalize level string into (level value, normalized name)."""
++    if not level_name:
++        return None
++    normalized = level_name.strip().upper()
++    if not normalized:
++        return None
++
++    # newer python API - get mapping
++    level_map = logging.getLevelNamesMapping()
++    resolved_level = level_map.get(normalized)
++    if resolved_level is None:
++        return None
++
++    return resolved_level
++
++
++async def set_log_level(dispatcher: DispatcherMain, data: dict) -> dict[str, str]:
++    """Set the active log level for the `dispatcherd` logger in the main process.
++
++    Control Args:
++        level:
++            type: str
++            required: true
++            choices: [DEBUG, INFO, WARNING, ERROR, CRITICAL]
++            help: Desired log level for the dispatcherd logger.
++    """
++    requested_level = data.get('level')
++    level_value: int | None
++    if type(requested_level) is int:
++        # booleans are technically integers and we do not want to accept those
++        level_value = requested_level
++    elif isinstance(requested_level, str):
++        level_value = _coerce_log_level(requested_level)
++        if level_value is None:
++            return {'error': f"Unknown log level '{requested_level}'."}
++    else:
++        return {'error': 'Log level must be provided as a string or int via the "level" key.'}
++
++    previous_level = logging.getLevelName(dispatcherd_logger.level)
++    dispatcherd_logger.setLevel(level_value)
++    new_level = logging.getLevelName(dispatcherd_logger.level)
++    logger.info("Changed %s logger level from %s to %s", DISPATCHER_LOGGER_NAME, previous_level, new_level)
++
++    return {
++        'logger': DISPATCHER_LOGGER_NAME,
++        'level': new_level,
++        'previous_level': previous_level,
++    }
+diff --git a/run_demo.py b/run_demo.py
+index 53f4555..7867f7d 100755
+--- a/run_demo.py
++++ b/run_demo.py
+@@ -38,6 +38,10 @@ except ValueError:
+ 
+ def main():
+     ctl = get_control_from_settings()
++    print('setting service log level to INFO to start demo')
++    info_response = ctl.control_with_reply('set_log_level', data={'level': 'INFO'}, expected_replies=expected_count)
++    print(json.dumps(info_response, indent=2))
++
+     print('writing some basic test messages')
+     for channel, message in TEST_MSGS:
+         broker.publish_message(channel=channel, message=message)
+@@ -49,6 +53,7 @@ def main():
+         broker.publish_message(message=f'lambda: {i}')
+ 
+     print('')
++    print(' -------- Demonstrating incomplete chunking ---------')
+     print('sending an intentionally incomplete chunked message to watch cleanup logs')
+     large_task = json.dumps({'task': 'lambda: "chunk me"', 'uuid': 'demo-chunk', 'data': 'y' * 5000})
+     chunk = split_message(large_task, max_bytes=200)[0]
+@@ -58,6 +63,19 @@ def main():
+     chunk_snapshot = ctl.control_with_reply('chunks', expected_replies=expected_count)
+     print(json.dumps(chunk_snapshot, indent=2))
+ 
++    print(' -------- Demonstrating dynamic service log levels ---------')
++    print('Setting service log level to DEBUG for the next burst of tasks (see dispatcherd logs)')
++    debug_response = ctl.control_with_reply('set_log_level', data={'level': 'debug'}, expected_replies=expected_count)
++    print(json.dumps(debug_response, indent=2))
++    try:
++        print('publishing 5 quick messages while DEBUG logging is enabled')
++        for i in range(5):
++            broker.publish_message(message=f'lambda: {i} + 5000')
++    finally:
++        print('restoring service log level back to INFO')
++        info_response = ctl.control_with_reply('set_log_level', data={'level': 'INFO'}, expected_replies=expected_count)
++        print(json.dumps(info_response, indent=2))
++
+     print('')
+     print(' -------- Actions involving control-and-reply ---------')
+ 

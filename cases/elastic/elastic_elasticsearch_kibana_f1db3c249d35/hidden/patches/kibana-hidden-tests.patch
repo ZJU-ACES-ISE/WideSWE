@@ -1,0 +1,103 @@
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.test.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.test.ts
+index 8e60950a9e7a..dbeb69e8b6b6 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.test.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/definitions/utils/expressions.test.ts
+@@ -311,6 +311,20 @@ describe('getExpressionType', () => {
+       expect(getExpressionType(getASTForExpression('COUNT(*)'))).toBe<SupportedDataType>('long');
+     });
+ 
++    it.each(['IN', 'NOT IN'])('returns boolean for %s subquery expressions', (operator) => {
++      const { root, errors } = Parser.parse(`FROM index | WHERE field ${operator} (FROM other)`);
++
++      if (errors.length > 0) {
++        throw new Error(
++          `Failed to parse expression "field ${operator} (FROM other)": ${errors
++            .map((e) => e.message)
++            .join(', ')}`
++        );
++      }
++
++      expect(getExpressionType(root.commands[1].args[0])).toBe('boolean');
++    });
++
+     it('accounts for the "any" parameter type', () => {
+       setTestFunctions([
+         {
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/eval/autocomplete.test.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/eval/autocomplete.test.ts
+index bcde77dfed20..6306b421db21 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/eval/autocomplete.test.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/eval/autocomplete.test.ts
+@@ -171,6 +171,11 @@ describe('EVAL Autocomplete', () => {
+     ]);
+   });
+ 
++  test('does not suggest subqueries after IN', async () => {
++    await evalExpectSuggestions('from a | eval col = doubleField in ', ['($0)']);
++    await evalExpectSuggestions('from a | eval col = doubleField not in ', ['($0)']);
++  });
++
+   test('after column after assignment', async () => {
+     await evalExpectSuggestions('from a | eval col = doubleField ', [
+       ', ',
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.test.ts b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.test.ts
+index f1b0ce1a3533..9561734c9398 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.test.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/commands/registry/where/autocomplete.test.ts
+@@ -32,6 +32,11 @@ const allEvalFns = getFunctionSignaturesByReturnType(Location.WHERE, 'any', {
+   scalar: true,
+ });
+ 
++const whereContext = {
++  ...mockContext,
++  subquerySupport: true,
++};
++
+ export const EMPTY_WHERE_SUGGESTIONS = [...getFieldNamesByType('any'), ...allEvalFns];
+ 
+ export const EXPECTED_COMPARISON_WITH_TEXT_FIELD_SUGGESTIONS = [
+@@ -45,7 +50,7 @@ const whereExpectSuggestions = (
+   query: string,
+   expectedSuggestions: string[],
+   mockCallbacks?: ICommandCallbacks,
+-  context = mockContext,
++  context = whereContext,
+   offset?: number
+ ) => {
+   return expectSuggestions(
+@@ -297,8 +302,18 @@ describe('WHERE Autocomplete', () => {
+     });
+ 
+     test('suggestions after IN', async () => {
+-      await whereExpectSuggestions('from index | WHERE doubleField in ', ['($0)']);
+-      await whereExpectSuggestions('from index | WHERE doubleField not in ', ['($0)']);
++      await whereExpectSuggestions('from index | WHERE doubleField in ', ['($0)', '(FROM $0)']);
++      await whereExpectSuggestions('from index | WHERE doubleField not in ', ['($0)', '(FROM $0)']);
++
++      await whereExpectSuggestions(
++        'from index | WHERE doubleField in (FROM index | KEEP doubleField) ',
++        [...getOperatorSuggestions(logicalOperators), '| ']
++      );
++      await whereExpectSuggestions(
++        'from index | WHERE doubleField not in (FROM index | KEEP doubleField) ',
++        [...getOperatorSuggestions(logicalOperators), '| ']
++      );
++
+       const expectedFields = getFieldNamesByType(['double']);
+       mockFieldsWithTypes(mockCallbacks, expectedFields);
+       await whereExpectSuggestions(
+diff --git a/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.test.ts b/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.test.ts
+index e7eb91bcb396..e066d85780c4 100644
+--- a/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.test.ts
++++ b/src/platform/packages/shared/kbn-esql-language/src/language/autocomplete/autocomplete.test.ts
+@@ -1144,6 +1144,11 @@ describe('autocomplete', () => {
+ 
+   describe('IN operator with lists', () => {
+     testSuggestions('FROM a | WHERE integerField IN (doubleField /', [{ text: ',' }]);
++
++    testSuggestions(
++      'FROM kibana_sample_data_logs | WHERE agent NOT IN (FROM kibana_sample_data_logs)/',
++      ['AND $0', 'OR $0', '| ']
++    );
+   });
+ 
+   describe('Replacement ranges are attached when needed', () => {

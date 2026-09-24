@@ -1,0 +1,33 @@
+task_id: ansible_awx_dispatcherd_6056e1231c04
+hidden_test_patches:
+- repo: awx
+  patch: hidden/patches/awx-hidden-tests.patch
+  test_profile: awx-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - awx/main/tests/functional/tasks/test_tasks_system.py
+  - awx/main/tests/live/tests/conftest.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from ansible/awx PR(s) 16200
+- repo: dispatcherd
+  patch: hidden/patches/dispatcherd-hidden-tests.patch
+  test_profile: dispatcherd-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/unit/test_cli_control_args.py
+  - tests/unit/test_control_tasks.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from ansible/dispatcherd PR(s) 197
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - awx-hidden
+    - dispatcherd-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

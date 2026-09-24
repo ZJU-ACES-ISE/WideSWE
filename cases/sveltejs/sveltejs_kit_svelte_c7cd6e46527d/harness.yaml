@@ -1,0 +1,73 @@
+task_id: sveltejs_kit_svelte_c7cd6e46527d
+hidden_test_patches:
+- repo: kit
+  patch: hidden/patches/kit-hidden-tests.patch
+  test_profile: kit-hidden
+  origin: upstream_test_diff
+  clean_overlay: true
+  source_file: &id001
+  - packages/kit/src/core/config/index.spec.js
+  - packages/kit/test/apps/async/src/hooks.client.js
+  - packages/kit/test/apps/async/src/hooks.server.js
+  - packages/kit/test/apps/async/src/routes/+error.svelte
+  - packages/kit/test/apps/async/src/routes/+page.svelte
+  - packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
+  - packages/kit/test/apps/async/src/routes/server-error-boundary/+layout.svelte
+  - packages/kit/test/apps/async/src/routes/server-error-boundary/+page.svelte
+  - packages/kit/test/apps/async/src/routes/server-error-boundary/nested/+error.svelte
+  - packages/kit/test/apps/async/src/routes/server-error-boundary/nested/+page.svelte
+  - packages/kit/test/apps/async/svelte.config.js
+  - packages/kit/test/apps/async/test/client.test.js
+  - packages/kit/test/apps/async/test/test.js
+  hidden_file: *id001
+  semantic_changes:
+  - Runs only the Prompt-relevant server and client rendering error-boundary scenarios from the upstream application tests.
+  - Keeps the experimental option defaults and validation tests unchanged.
+  source: prompt-visible behavior from sveltejs/kit PR 15308
+- repo: svelte
+  patch: hidden/patches/svelte-contract-tests.patch
+  test_profile: svelte-hidden
+  origin: upstream_test_diff
+  clean_overlay: true
+  source_file: &id002
+  - packages/svelte/tests/runtime-legacy/shared.ts
+  - packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/_config.js
+  - packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/child.svelte
+  - packages/svelte/tests/runtime-runes/samples/async-error-boundary-2/main.svelte
+  - packages/svelte/tests/runtime-runes/samples/async-error-boundary/_config.js
+  - packages/svelte/tests/runtime-runes/samples/async-error-boundary/main.svelte
+  - packages/svelte/tests/runtime-runes/samples/error-boundary-26/_config.js
+  - packages/svelte/tests/runtime-runes/samples/error-boundary-26/main.svelte
+  - packages/svelte/tests/runtime-runes/samples/error-boundary-27/_config.js
+  - packages/svelte/tests/runtime-runes/samples/error-boundary-27/child.svelte
+  - packages/svelte/tests/runtime-runes/samples/error-boundary-27/main.svelte
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/_config.js
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/_expected.html
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-failed-prop/main.svelte
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-no-failed-snippet/_config.js
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-no-failed-snippet/main.svelte
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-no-onerror/_config.js
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-no-onerror/main.svelte
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/_config.js
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/_expected.html
+  - packages/svelte/tests/server-side-rendering/samples/boundary-error-with-onerror/main.svelte
+  - packages/svelte/tests/server-side-rendering/test.ts
+  - packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/_config.js
+  - packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/child.svelte
+  - packages/svelte/tests/runtime-runes/samples/async-error-boundary-3/main.svelte
+  hidden_file: *id002
+  semantic_changes:
+  - Preserves the upstream boundary and transformError runtime/SSR tests.
+  - Removes an unrelated compiler snapshot that fixed the exact grouping of generated renderer push calls.
+  source: prompt-visible behavior from sveltejs/svelte PRs 17672 and 17799
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - kit-hidden
+    - svelte-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

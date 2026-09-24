@@ -1,0 +1,154 @@
+diff --git a/receivers/stackdriver/ecosync_contract_test.go b/receivers/stackdriver/ecosync_contract_test.go
+new file mode 100644
+index 0000000..5c77649
+--- /dev/null
++++ b/receivers/stackdriver/ecosync_contract_test.go
+@@ -0,0 +1,148 @@
++// Copyright 2026 The Prometheus Authors
++// Licensed under the Apache License, Version 2.0.
++
++package otelcollector
++
++import (
++	"context"
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"io/fs"
++	"path"
++	"strconv"
++	"strings"
++	"testing"
++
++	prombridge "github.com/prometheus/opentelemetry-collector-bridge"
++	"go.opentelemetry.io/collector/consumer/consumertest"
++	"go.opentelemetry.io/collector/receiver/receivertest"
++)
++
++func TestEcoSyncSnakeCaseConfigurationBehavior(t *testing.T) {
++	factory := NewFactory()
++	cfg := factory.CreateDefaultConfig().(*prombridge.ReceiverConfig)
++	cfg.ExporterConfig = map[string]interface{}{
++		"project_ids":                  []string{"project-a"},
++		"projects_filter":              "parent.type:folder parent.id:123",
++		"universe_domain":              "example.com",
++		"max_retries":                  2,
++		"http_timeout":                 "30s",
++		"max_backoff":                  "8s",
++		"backoff_jitter":               "1s",
++		"retry_statuses":               []int{429, 503},
++		"metrics_prefixes":             []string{"compute.googleapis.com/instance"},
++		"metrics_interval":             "10m",
++		"metrics_offset":               "1m",
++		"metrics_ingest_delay":         true,
++		"fill_missing_labels":          false,
++		"drop_delegated_projects":      true,
++		"filters":                      []string{"compute.googleapis.com/instance:resource.labels.zone=us-central1-a"},
++		"aggregate_deltas":             true,
++		"aggregate_deltas_ttl":         "1h",
++		"descriptor_cache_ttl":         "15m",
++		"descriptor_cache_only_google": false,
++	}
++	settings := receivertest.NewNopSettings(factory.Type())
++	receiver, err := factory.CreateMetrics(context.Background(), settings, cfg, consumertest.NewNop())
++	if err != nil {
++		t.Fatalf("valid snake_case exporter configuration was rejected: %v", err)
++	}
++	if receiver == nil {
++		t.Fatal("factory returned a nil metrics receiver")
++	}
++
++	cfg = factory.CreateDefaultConfig().(*prombridge.ReceiverConfig)
++	cfg.ExporterConfig["unrecognized_setting"] = true
++	if _, err := factory.CreateMetrics(context.Background(), settings, cfg, consumertest.NewNop()); err == nil {
++		t.Fatal("unknown exporter YAML key was accepted")
++	}
++}
++
++func TestEcoSyncDirectConfigDecodeContract(t *testing.T) {
++	features := scanProductionFeatures(t)
++	if !features.directExporterConfig {
++		t.Error("receiver does not decode directly into stackdriver_exporter/config.Config")
++	}
++	if !features.mapstructureMatchName {
++		t.Error("receiver decoder does not provide mapstructure MatchName")
++	}
++}
++
++func TestEcoSyncRuntimeRegistryAssembly(t *testing.T) {
++	features := scanProductionFeatures(t)
++	if !features.newRuntime {
++		t.Error("receiver lifecycle does not assemble stackdriver_exporter through collectors.NewRuntime")
++	}
++	if !features.collectors {
++		t.Error("receiver lifecycle does not obtain collectors through Runtime.Collectors")
++	}
++	if !features.newRegistry || !features.register {
++		t.Error("receiver lifecycle does not register runtime collectors on a Prometheus registry")
++	}
++}
++
++type productionFeatures struct {
++	directExporterConfig bool
++	mapstructureMatchName bool
++	newRuntime            bool
++	collectors            bool
++	newRegistry           bool
++	register              bool
++}
++
++func scanProductionFeatures(t *testing.T) productionFeatures {
++	t.Helper()
++	fset := token.NewFileSet()
++	packages, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool {
++		return strings.HasSuffix(info.Name(), ".go") && !strings.HasSuffix(info.Name(), "_test.go")
++	}, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var result productionFeatures
++	for _, pkg := range packages {
++		for _, file := range pkg.Files {
++			imports := map[string]string{}
++			for _, spec := range file.Imports {
++				importPath, err := strconv.Unquote(spec.Path.Value)
++				if err != nil {
++					continue
++				}
++				alias := path.Base(importPath)
++				if spec.Name != nil {
++					alias = spec.Name.Name
++				}
++				imports[alias] = importPath
++			}
++			ast.Inspect(file, func(node ast.Node) bool {
++				switch n := node.(type) {
++				case *ast.KeyValueExpr:
++					if ident, ok := n.Key.(*ast.Ident); ok && ident.Name == "MatchName" {
++						result.mapstructureMatchName = true
++					}
++				case *ast.SelectorExpr:
++					if ident, ok := n.X.(*ast.Ident); ok {
++						importPath := imports[ident.Name]
++						switch {
++						case (importPath == "github.com/prometheus-community/stackdriver_exporter/config" || importPath == "github.com/prometheus-community/stackdriver_exporter/collectors") && n.Sel.Name == "Config":
++							result.directExporterConfig = true
++						case importPath == "github.com/prometheus-community/stackdriver_exporter/collectors" && n.Sel.Name == "NewRuntime":
++							result.newRuntime = true
++						case importPath == "github.com/prometheus/client_golang/prometheus" && n.Sel.Name == "NewRegistry":
++							result.newRegistry = true
++						}
++					}
++					if n.Sel.Name == "Collectors" {
++						result.collectors = true
++					}
++					if n.Sel.Name == "Register" || n.Sel.Name == "MustRegister" {
++						result.register = true
++					}
++				}
++				return true
++			})
++		}
++	}
++	return result
++}

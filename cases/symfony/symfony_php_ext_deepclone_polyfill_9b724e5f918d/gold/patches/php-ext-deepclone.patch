@@ -1,0 +1,184 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 735e097..c4da062 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- `deepclone_from_array()` now rejects a malformed payload whose serialized
++  class-name blob (a string whose second byte is `:`) decodes to a non-object
++  via `unserialize()`, instead of storing the scalar/array result and later
++  dereferencing it as a `zend_object*`. Such a payload now throws the documented
++  `\ValueError`.
++- `deepclone_from_array()` no longer negates a `PHP_INT_MIN` reference id while
++  resolving the object-reference, named-closure, and top-level `prepared`
++  paths. Negating `ZEND_LONG_MIN` is signed-overflow undefined behaviour; the
++  guard already present on the hard-ref path is now applied to the three sibling
++  sites, which reject the malformed id with a `\ValueError`.
+ - Numeric property names (e.g. `$o->{'999'}`) now round-trip through
+   `deepclone_to_array()` / `deepclone_from_array()`, matching
+   `serialize()`/`unserialize()` (symfony/symfony#64548). `deepclone_to_array()`
+diff --git a/deepclone.c b/deepclone.c
+index 926b81e..d6ca65d 100644
+--- a/deepclone.c
++++ b/deepclone.c
+@@ -2165,6 +2165,11 @@ static void dc_resolve(zval *value, zval *mask, zval *objects, uint32_t num_obje
+ 			}
+ 			target = &objects[id];
+ 		} else {
++			/* Guard against ZEND_LONG_MIN — negating it is signed-overflow UB. */
++			if (UNEXPECTED(id <= ZEND_LONG_MIN)) {
++				zend_value_error("deepclone_from_array(): malformed payload, ref id out of range");
++				return;
++			}
+ 			target = zend_hash_index_find(refs, -id);
+ 			if (UNEXPECTED(!target)) {
+ 				zend_value_error("deepclone_from_array(): malformed payload, unknown ref id " ZEND_LONG_FMT, -id);
+@@ -2253,6 +2258,11 @@ static void dc_resolve(zval *value, zval *mask, zval *objects, uint32_t num_obje
+ 				}
+ 				target = &objects[id];
+ 			} else {
++				/* Guard against ZEND_LONG_MIN — negating it is signed-overflow UB. */
++				if (UNEXPECTED(id <= ZEND_LONG_MIN)) {
++					zend_value_error("deepclone_from_array(): malformed payload, named-closure references unknown id " ZEND_LONG_FMT, id);
++					return;
++				}
+ 				target = zend_hash_index_find(refs, -id);
+ 				if (!target) {
+ 					zend_value_error("deepclone_from_array(): malformed payload, named-closure references unknown id " ZEND_LONG_FMT, id);
+@@ -2670,6 +2680,14 @@ PHP_FUNCTION(deepclone_from_array)
+ 				DC_INVALID("deepclone_from_array(): Argument #1 ($data) failed to unserialize object %u", id);
+ 			}
+ 			PHP_VAR_UNSERIALIZE_DESTROY(var_hash);
++			/* The result is later dereferenced as a zend_object*; a malformed
++			 * payload can carry any serialize form (i:…, s:…, a:…), so reject
++			 * anything that did not decode to an object before storing it. */
++			if (UNEXPECTED(Z_TYPE(obj_zval) != IS_OBJECT)) {
++				const char *got = zend_zval_value_name(&obj_zval);
++				zval_ptr_dtor(&obj_zval);
++				DC_INVALID("deepclone_from_array(): Argument #1 ($data) object %u did not unserialize to an object, %s given", id, got);
++			}
+ 		} else {
+ 			/* class_ces is lazily populated — fill on miss. */
+ 			zend_class_entry *ce = class_ces[cid];
+@@ -3009,6 +3027,10 @@ PHP_FUNCTION(deepclone_from_array)
+ 			zval *obj = &objects[id];
+ 			ZVAL_COPY(return_value, obj);
+ 		} else {
++			/* Guard against ZEND_LONG_MIN — negating it is signed-overflow UB. */
++			if (UNEXPECTED(id <= ZEND_LONG_MIN)) {
++				DC_INVALID("deepclone_from_array(): Argument #1 ($data) \"prepared\" references unknown ref id out of range");
++			}
+ 			zval *ref = zend_hash_index_find(&refs, -id);
+ 			if (!ref) {
+ 				DC_INVALID("deepclone_from_array(): Argument #1 ($data) \"prepared\" references unknown ref id " ZEND_LONG_FMT, -id);
+diff --git a/tests/deepclone_from_array_refid_overflow.phpt b/tests/deepclone_from_array_refid_overflow.phpt
+new file mode 100644
+index 0000000..ae5b5e7
+--- /dev/null
++++ b/tests/deepclone_from_array_refid_overflow.phpt
+@@ -0,0 +1,58 @@
++--TEST--
++deepclone_from_array() rejects ZEND_LONG_MIN ref ids instead of negating them (signed-overflow UB)
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++function check(string $label, array $payload): void {
++    try {
++        deepclone_from_array($payload);
++        echo "$label: NO EXCEPTION\n";
++    } catch (\ValueError $e) {
++        echo "$label: ValueError: ", $e->getMessage(), "\n";
++    } catch (\Throwable $e) {
++        echo "$label: ", $e::class, ": ", $e->getMessage(), "\n";
++    }
++}
++
++// Negating PHP_INT_MIN is not representable in a signed long; each ref-id
++// resolution site must reject it before the negation rather than wrap around.
++
++// Top-level "prepared" ref id.
++check('prepared min',
++    ['classes' => '', 'objectMeta' => 0, 'prepared' => PHP_INT_MIN]);
++
++// dc_resolve() object-reference path (mask marker true, nested under a mask array).
++check('object-ref min',
++    ['classes' => '', 'objectMeta' => 0,
++     'prepared' => [0 => PHP_INT_MIN], 'mask' => [0 => true]]);
++
++// dc_resolve() named-closure path (mask marker int 0, value is [obj_id, method]).
++// The reported id is PHP_INT_MIN, whose width is word-size dependent, so the
++// --EXPECTF-- line matches it with %i.
++check('named-closure min',
++    ['classes' => '', 'objectMeta' => 0,
++     'prepared' => [PHP_INT_MIN, 'method'], 'mask' => 0]);
++
++// A non-overflowing negative id still produces the ordinary "unknown ref id"
++// error, confirming only the ZEND_LONG_MIN wraparound is special-cased.
++check('prepared -1',
++    ['classes' => '', 'objectMeta' => 0, 'prepared' => -1]);
++check('object-ref -1',
++    ['classes' => '', 'objectMeta' => 0,
++     'prepared' => [0 => -1], 'mask' => [0 => true]]);
++check('named-closure -1',
++    ['classes' => '', 'objectMeta' => 0,
++     'prepared' => [-1, 'method'], 'mask' => 0]);
++
++echo "Done\n";
++?>
++--EXPECTF--
++prepared min: ValueError: deepclone_from_array(): Argument #1 ($data) "prepared" references unknown ref id out of range
++object-ref min: ValueError: deepclone_from_array(): malformed payload, ref id out of range
++named-closure min: ValueError: deepclone_from_array(): malformed payload, named-closure references unknown id %i
++prepared -1: ValueError: deepclone_from_array(): Argument #1 ($data) "prepared" references unknown ref id 1
++object-ref -1: ValueError: deepclone_from_array(): malformed payload, unknown ref id 1
++named-closure -1: ValueError: deepclone_from_array(): malformed payload, named-closure references unknown id -1
++Done
+diff --git a/tests/deepclone_from_array_unserialize_nonobject.phpt b/tests/deepclone_from_array_unserialize_nonobject.phpt
+new file mode 100644
+index 0000000..dd020a4
+--- /dev/null
++++ b/tests/deepclone_from_array_unserialize_nonobject.phpt
+@@ -0,0 +1,39 @@
++--TEST--
++deepclone_from_array() rejects unserialize results that are not objects (type confusion)
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++function check(string $label, array $payload): void {
++    try {
++        deepclone_from_array($payload);
++        echo "$label: NO EXCEPTION\n";
++    } catch (\ValueError $e) {
++        echo "$label: ValueError: ", $e->getMessage(), "\n";
++    } catch (\Throwable $e) {
++        echo "$label: ", $e::class, ": ", $e->getMessage(), "\n";
++    }
++}
++
++// A class-name string whose second byte is ':' is replayed through
++// unserialize(). The decoder later dereferences the result as a zend_object*,
++// so a scalar/array serialize form (i:, b:, d:, s:, a:) must be rejected
++// rather than treated as an object pointer.
++check('int',    ['classes' => 'i:1234;',        'objectMeta' => 1, 'prepared' => 0]);
++// bool uses %s in --EXPECTF--: zend_zval_value_name() reports "bool" on PHP 8.2
++// but "true"/"false" on 8.3+.
++check('bool',   ['classes' => 'b:1;',           'objectMeta' => 1, 'prepared' => 0]);
++check('float',  ['classes' => 'd:1.5;',         'objectMeta' => 1, 'prepared' => 0]);
++check('string', ['classes' => 's:3:"abc";',     'objectMeta' => 1, 'prepared' => 0]);
++check('array',  ['classes' => 'a:1:{i:0;i:0;}', 'objectMeta' => 1, 'prepared' => 0]);
++
++echo "Done\n";
++?>
++--EXPECTF--
++int: ValueError: deepclone_from_array(): Argument #1 ($data) object 0 did not unserialize to an object, int given
++bool: ValueError: deepclone_from_array(): Argument #1 ($data) object 0 did not unserialize to an object, %s given
++float: ValueError: deepclone_from_array(): Argument #1 ($data) object 0 did not unserialize to an object, float given
++string: ValueError: deepclone_from_array(): Argument #1 ($data) object 0 did not unserialize to an object, string given
++array: ValueError: deepclone_from_array(): Argument #1 ($data) object 0 did not unserialize to an object, array given
++Done

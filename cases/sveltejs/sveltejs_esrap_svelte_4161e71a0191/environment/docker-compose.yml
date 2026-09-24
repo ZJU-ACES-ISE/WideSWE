@@ -1,0 +1,35 @@
+services:
+  esrap-hidden:
+    image: ecosyncbench/deps/sveltejs-esrap-pnpm:4161e71a0191
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/node-pnpm-workspace-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/node:22-bookworm
+        ECOSYNC_TASK_ID: sveltejs_esrap_svelte_4161e71a0191
+        ECOSYNC_REPO: sveltejs/esrap
+        ECOSYNC_REPO_PATH: repos/sveltejs/esrap
+        ECOSYNC_BASE_COMMIT: 4c305011b9536f60df4d0983ec50f46293b9ab8c
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 4161e71a0191-esrap
+        ECOSYNC_PNPM_VERSION: 9.8.0
+    working_dir: /workspace/repos/sveltejs/esrap
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-sveltejs-vitest.sh esrap-hidden test/ecosync-contract.test.js'
+  svelte-hidden:
+    image: ecosyncbench/deps/sveltejs-svelte-pnpm:4161e71a0191
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/node-pnpm-workspace-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/node:22-bookworm
+        ECOSYNC_TASK_ID: sveltejs_esrap_svelte_4161e71a0191
+        ECOSYNC_REPO: sveltejs/svelte
+        ECOSYNC_REPO_PATH: repos/sveltejs/svelte
+        ECOSYNC_BASE_COMMIT: 99362b029bdaae0abba8f0f223615bf62cac7858
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 4161e71a0191-svelte
+        ECOSYNC_PNPM_VERSION: 10.4.0
+    working_dir: /workspace/repos/sveltejs/svelte
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-sveltejs-vitest.sh svelte-hidden packages/svelte/tests/parser-modern/test.ts packages/svelte/tests/print/ecosync-contract.test.ts'

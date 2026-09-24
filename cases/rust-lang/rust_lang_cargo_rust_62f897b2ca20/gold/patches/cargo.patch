@@ -1,0 +1,177 @@
+diff --git a/src/cargo/core/compiler/compilation.rs b/src/cargo/core/compiler/compilation.rs
+index 68b59ba0c..96c01a245 100644
+--- a/src/cargo/core/compiler/compilation.rs
++++ b/src/cargo/core/compiler/compilation.rs
+@@ -123,8 +123,8 @@ pub struct Compilation<'gctx> {
+     /// The linker to use for each host or target.
+     target_linkers: HashMap<CompileKind, Option<PathBuf>>,
+ 
+-    /// The total number of warnings emitted by the compilation.
+-    pub warning_count: usize,
++    /// The total number of lint warnings emitted by the compilation.
++    pub lint_warning_count: usize,
+ }
+ 
+ impl<'gctx> Compilation<'gctx> {
+@@ -162,7 +162,7 @@ impl<'gctx> Compilation<'gctx> {
+                 .chain(Some(&CompileKind::Host))
+                 .map(|kind| Ok((*kind, target_linker(bcx, *kind)?)))
+                 .collect::<CargoResult<HashMap<_, _>>>()?,
+-            warning_count: 0,
++            lint_warning_count: 0,
+         })
+     }
+ 
+diff --git a/src/cargo/core/compiler/job_queue/job_state.rs b/src/cargo/core/compiler/job_queue/job_state.rs
+index a2febe8f3..66ccff0bd 100644
+--- a/src/cargo/core/compiler/job_queue/job_state.rs
++++ b/src/cargo/core/compiler/job_queue/job_state.rs
+@@ -93,12 +93,19 @@ impl<'a, 'gctx> JobState<'a, 'gctx> {
+     }
+ 
+     /// See [`Message::Diagnostic`] and [`Message::WarningCount`].
+-    pub fn emit_diag(&self, level: &str, diag: String, fixable: bool) -> CargoResult<()> {
++    pub fn emit_diag(
++        &self,
++        level: &str,
++        diag: String,
++        lint: bool,
++        fixable: bool,
++    ) -> CargoResult<()> {
+         if let Some(dedupe) = self.output {
+             let emitted = dedupe.emit_diag(&diag)?;
+             if level == "warning" {
+                 self.messages.push(Message::WarningCount {
+                     id: self.id,
++                    lint,
+                     emitted,
+                     fixable,
+                 });
+@@ -108,6 +115,7 @@ impl<'a, 'gctx> JobState<'a, 'gctx> {
+                 id: self.id,
+                 level: level.to_string(),
+                 diag,
++                lint,
+                 fixable,
+             });
+         }
+diff --git a/src/cargo/core/compiler/job_queue/mod.rs b/src/cargo/core/compiler/job_queue/mod.rs
+index de9332c91..76efa68dd 100644
+--- a/src/cargo/core/compiler/job_queue/mod.rs
++++ b/src/cargo/core/compiler/job_queue/mod.rs
+@@ -207,6 +207,8 @@ struct DrainState<'gctx> {
+ pub struct WarningCount {
+     /// total number of warnings
+     pub total: usize,
++    /// number of lint warnings
++    pub lints: usize,
+     /// number of warnings that were suppressed because they
+     /// were duplicates of a previous warning
+     pub duplicates: usize,
+@@ -350,12 +352,14 @@ enum Message {
+         id: JobId,
+         level: String,
+         diag: String,
++        lint: bool,
+         fixable: bool,
+     },
+     // This handles duplicate output that is suppressed, for showing
+     // only a count of duplicate messages instead
+     WarningCount {
+         id: JobId,
++        lint: bool,
+         emitted: bool,
+         fixable: bool,
+     },
+@@ -616,11 +620,12 @@ impl<'gctx> DrainState<'gctx> {
+                 id,
+                 level,
+                 diag,
++                lint,
+                 fixable,
+             } => {
+                 let emitted = self.diag_dedupe.emit_diag(&diag)?;
+                 if level == "warning" {
+-                    self.bump_warning_count(id, emitted, fixable);
++                    self.bump_warning_count(id, lint, emitted, fixable);
+                 }
+                 if level == "error" {
+                     let cnts = self.warning_count.entry(id).or_default();
+@@ -632,14 +637,18 @@ impl<'gctx> DrainState<'gctx> {
+                 if warning_handling != WarningHandling::Allow {
+                     build_runner.bcx.gctx.shell().warn(warning)?;
+                 }
+-                self.bump_warning_count(id, true, false);
++                let lint = false;
++                let emitted = true;
++                let fixable = false;
++                self.bump_warning_count(id, lint, emitted, fixable);
+             }
+             Message::WarningCount {
+                 id,
++                lint,
+                 emitted,
+                 fixable,
+             } => {
+-                self.bump_warning_count(id, emitted, fixable);
++                self.bump_warning_count(id, lint, emitted, fixable);
+             }
+             Message::FixDiagnostic(msg) => {
+                 self.print.print(&msg)?;
+@@ -1002,9 +1011,12 @@ impl<'gctx> DrainState<'gctx> {
+         Ok(())
+     }
+ 
+-    fn bump_warning_count(&mut self, id: JobId, emitted: bool, fixable: bool) {
++    fn bump_warning_count(&mut self, id: JobId, lint: bool, emitted: bool, fixable: bool) {
+         let cnts = self.warning_count.entry(id).or_default();
+         cnts.total += 1;
++        if lint {
++            cnts.lints += 1;
++        }
+         if !emitted {
+             cnts.duplicates += 1;
+         // Don't add to fixable if it's already been emitted
+@@ -1037,7 +1049,7 @@ impl<'gctx> DrainState<'gctx> {
+             Some(count) if count.total > 0 => count,
+             None | Some(_) => return,
+         };
+-        runner.compilation.warning_count += count.total;
++        runner.compilation.lint_warning_count += count.lints;
+         let unit = &self.active[&id];
+         let mut message = descriptive_pkg_name(&unit.pkg.name(), &unit.target, &unit.mode);
+         message.push_str(" generated ");
+diff --git a/src/cargo/core/compiler/mod.rs b/src/cargo/core/compiler/mod.rs
+index 2b74735c4..908ad6aeb 100644
+--- a/src/cargo/core/compiler/mod.rs
++++ b/src/cargo/core/compiler/mod.rs
+@@ -2162,12 +2162,14 @@ fn on_stderr_line_inner(
+                     count_diagnostic(&msg.level, options);
+                     if msg
+                         .code
++                        .as_ref()
+                         .is_some_and(|c| c.code == "exported_private_dependencies")
+                         && options.format != MessageFormat::Short
+                     {
+                         add_pub_in_priv_diagnostic(&mut rendered);
+                     }
+-                    state.emit_diag(&msg.level, rendered, machine_applicable)?;
++                    let lint = msg.code.is_some();
++                    state.emit_diag(&msg.level, rendered, lint, machine_applicable)?;
+                 }
+                 return Ok(true);
+             }
+diff --git a/src/cargo/ops/cargo_compile/mod.rs b/src/cargo/ops/cargo_compile/mod.rs
+index e4e4b830b..f95e907e6 100644
+--- a/src/cargo/ops/cargo_compile/mod.rs
++++ b/src/cargo/ops/cargo_compile/mod.rs
+@@ -143,7 +143,8 @@ pub fn compile_with_exec<'a>(
+ ) -> CargoResult<Compilation<'a>> {
+     ws.emit_warnings()?;
+     let compilation = compile_ws(ws, options, exec)?;
+-    if ws.gctx().warning_handling()? == WarningHandling::Deny && compilation.warning_count > 0 {
++    if ws.gctx().warning_handling()? == WarningHandling::Deny && compilation.lint_warning_count > 0
++    {
+         anyhow::bail!("warnings are denied by `build.warnings` configuration")
+     }
+     Ok(compilation)

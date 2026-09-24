@@ -1,0 +1,897 @@
+diff --git a/packages/kit/src/utils/css.spec.js b/packages/kit/src/utils/css.spec.js
+new file mode 100644
+index 000000000..c84018793
+--- /dev/null
++++ b/packages/kit/src/utils/css.spec.js
+@@ -0,0 +1,268 @@
++import { assert, describe, test } from 'vitest';
++import { fix_css_urls, tippex_comments_and_strings } from './css.js';
++
++describe('fix_css_urls', () => {
++	const cdn_assets = 'https://cdn.example.com/_app/immutable/assets';
++	const cdn_base = 'https://cdn.example.com';
++	const local_assets = './_app/immutable/assets';
++	const local_base = '.';
++
++	test.each([
++		{
++			name: 'uses paths.assets for assets processed by Vite',
++			css: 'div { background: url(./image.png); }',
++			expected: `div { background: url(${cdn_assets}/image.png); }`,
++			vite_assets: ['image.png'],
++			paths_assets: cdn_assets,
++			base: cdn_base
++		},
++		{
++			name: 'uses paths.base for static asset',
++			css: 'div { background: url(../../../image.png); }',
++			expected: `div { background: url(${cdn_base}/image.png); }`,
++			static_assets: ['image.png'],
++			paths_assets: cdn_assets,
++			base: cdn_base
++		},
++		{
++			name: 'keeps single quotes',
++			css: "div { background: url('../../../image.png'); }",
++			expected: `div { background: url('${cdn_base}/image.png'); }`,
++			static_assets: ['image.png'],
++			paths_assets: cdn_assets,
++			base: cdn_base
++		},
++		{
++			name: 'keeps double-quotes',
++			css: 'div { background: url("./image.png"); }',
++			expected: `div { background: url("${cdn_assets}/image.png"); }`,
++			vite_assets: ['image.png'],
++			paths_assets: cdn_assets,
++			base: cdn_base
++		},
++		{
++			name: 'works with case-insensitive URL function',
++			css: 'div { background: uRl(./image.png); }',
++			expected: `div { background: uRl(${cdn_assets}/image.png); }`,
++			vite_assets: ['image.png'],
++			paths_assets: cdn_assets,
++			base: cdn_base
++		},
++		{
++			name: 'works with multiple declarations',
++			css: `
++				div {
++					background: url(./bg.png);
++					border-image: url(./border.svg);
++					mask: url(./mask.png);
++				}
++			`,
++			expected: `
++				div {
++					background: url(${local_assets}/bg.png);
++					border-image: url(${local_assets}/border.svg);
++					mask: url(${local_assets}/mask.png);
++				}
++			`,
++			vite_assets: ['bg.png', 'border.svg', 'mask.png']
++		},
++		{
++			name: 'ignores URL with leading slash',
++			css: 'div { background: url(/absolute/image.png); }',
++			expected: 'div { background: url(/absolute/image.png); }'
++		},
++		{
++			name: 'ignores URL with protocol',
++			css: `div { background: url(${cdn_base}/image.png); }`,
++			expected: `div { background: url(${cdn_base}/image.png); }`
++		},
++		{
++			name: 'ignores data URL',
++			css: 'div { background: url(data:image/png;base64,abc); }',
++			expected: 'div { background: url(data:image/png;base64,abc); }'
++		},
++		{
++			name: 'ignores URL prefixed with ./ but from the static directory',
++			css: 'div { background: url(./image.png); }',
++			expected: 'div { background: url(./image.png); }',
++			static_assets: ['image.png']
++		},
++		{
++			name: 'ignores URL prefixed with ../../../ but imported',
++			css: 'div { background: url(../../../image.png); }',
++			expected: 'div { background: url(../../../image.png); }',
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'ignores URL prefixed with ../../../ but navigates to deeper levels',
++			css: 'div { background: url(../../../../image.png); }',
++			expected: 'div { background: url(../../../../image.png); }'
++		},
++		{
++			name: 'handles whitespace after opening parenthesis',
++			css: 'div { background: url( ./image.png); }',
++			expected: `div { background: url( ${local_assets}/image.png); }`,
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'handles multiple spaces before quoted path',
++			css: 'div { background: url(  "./image.png"); }',
++			expected: `div { background: url(  "${local_assets}/image.png"); }`,
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'handles tab before single-quoted path',
++			css: "div { background: url(\t'./image.png'); }",
++			expected: `div { background: url(\t'${local_assets}/image.png'); }`,
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'handles url with query string',
++			css: 'div { background: url(./image.png?v=123); }',
++			expected: `div { background: url(${local_assets}/image.png?v=123); }`,
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'handles url with hash fragment',
++			css: "div { background: url('./image.png#section'); }",
++			expected: `div { background: url('${local_assets}/image.png#section'); }`,
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'handles url with both query string and fragment',
++			css: 'div { background: url("./image.png?a=1&b=2#anchor"); }',
++			expected: `div { background: url("${local_assets}/image.png?a=1&b=2#anchor"); }`,
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'handles multiple URLs in a single declaration',
++			css: 'div { background: image-set(url(./a.png) 1x, url(./b.png) 2x); }',
++			expected: `div { background: image-set(url(${local_assets}/a.png) 1x, url(${local_assets}/b.png) 2x); }`,
++			vite_assets: ['a.png', 'b.png']
++		},
++		{
++			name: 'ignores relative url without ./ prefix',
++			css: 'div { background: url(image.png); }',
++			expected: 'div { background: url(image.png); }',
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'handles escaped quotes',
++			css: "div::after { content: \"'\\\"\"; } div { background: url('./image.png?\\''); }",
++			expected: `div::after { content: "'\\""; } div { background: url('${local_assets}/image.png?\\''); }`,
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'handles escaped parenthesis',
++			css: "div { background: url('./image.png?\\)'); }",
++			expected: `div { background: url('${local_assets}/image.png?\\)'); }`,
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'ignores url(...) inside a string',
++			css: "div::after { content: 'url(./image.png)'; }",
++			expected: "div::after { content: 'url(./image.png)'; }",
++			vite_assets: ['image.png']
++		},
++		{
++			name: 'ignores url(...) inside a comment',
++			css: 'div::before { content: "/*"; } div { background: blue /* url(./image.png) */; }',
++			expected: 'div::before { content: "/*"; } div { background: blue /* url(./image.png) */; }',
++			vite_assets: ['image.png']
++		}
++	])(
++		'$name',
++		({
++			css,
++			expected,
++			vite_assets = [],
++			static_assets = [],
++			paths_assets = local_assets,
++			base = local_base
++		}) => {
++			assert.equal(
++				fix_css_urls({
++					css,
++					vite_assets: new Set(vite_assets),
++					static_assets: new Set(static_assets),
++					paths_assets,
++					base,
++					static_asset_prefix: '../../../'
++				}),
++				expected
++			);
++		}
++	);
++});
++
++describe('tippex_comments_and_strings', () => {
++	test.each([
++		// Basic string handling
++		["'hello'", "'     '"],
++		['"hello"', '"     "'],
++		["''", "''"],
++		['""', '""'],
++		["before 'inside' after", "before '      ' after"],
++
++		// Basic comment handling
++		['/* comment */', '/*         */'],
++		['/**/', '/**/'],
++		['/* * */', '/*   */'],
++		['before /* inside */ after', 'before /*        */ after'],
++
++		// Escape sequences inside strings
++		["'it\\'s'", "'     '"],
++		['"say \\"hi\\""', '"          "'],
++		["'test\\\\'", "'      '"],
++		["'a\\\\'", "'   '"], // escaped backslash does not escape following quote
++		["'a\\\\b'", "'    '"], // escaped backslash followed by more content
++
++		// Mixed quotes (no escaping needed)
++		['\'say "hi"\'', "'        '"],
++		['"it\'s"', '"    "'],
++
++		// Comment-like patterns inside strings (should not start comment)
++		["'/* not a comment */'", "'                   '"],
++		['"/* also not */"', '"              "'],
++
++		// String-like patterns inside comments (should not start string)
++		["/* 'not a string' */", '/*                */'],
++		['/* "also not" */', '/*            */'],
++
++		// Multiple constructs
++		["'a' and 'b'", "' ' and ' '"],
++		['/* a */ and /* b */', '/*   */ and /*   */'],
++		["'str' /* comment */", "'   ' /*         */"],
++		["/* comment */ 'string'", "/*         */ '      '"],
++
++		// Real CSS patterns
++		['url(./image.png)', 'url(./image.png)'],
++		["content: 'url(./fake.png)'", "content: '               '"],
++		['/* url(./x.png) */ url(./y.png)', '/*              */ url(./y.png)'],
++		[
++			"background: url('./a.png') /* fallback */, url('./b.png')",
++			"background: url('       ') /*          */, url('       ')"
++		],
++
++		// Edge cases
++		['a \\/* comment */', 'a \\/*         */'], // backslash outside string should not affect comment detection
++		["'unterminated", "'            "], // unterminated single-quoted string
++		['"unterminated', '"            '], // unterminated double-quoted string
++		['/* unterminated', '/*             '], // unterminated comment
++		['/* start */', '/*       */'], // comment at start
++		["'start'", "'     '"], // string at start
++		['   ', '   '], // whitespace preserved
++		['', ''], // empty input
++		["'\\\\\\\\'", "'    '"], // consecutive escape sequences (two escaped backslashes)
++		["'test\\", "'     "] // escape at end of unterminated string
++	])('%s → %s', (input, expected) => {
++		const result = tippex_comments_and_strings(input);
++		assert.equal(result, expected);
++		assert.equal(
++			input.length,
++			expected.length,
++			'test is correctly formed (input and expected lengths should always match)'
++		);
++		assert.equal(result.length, input.length, 'output length must equal input length');
++	});
++});
+diff --git a/packages/kit/test/apps/options/package.json b/packages/kit/test/apps/options/package.json
+index f522875e5..04ce65e2a 100644
+--- a/packages/kit/test/apps/options/package.json
++++ b/packages/kit/test/apps/options/package.json
+@@ -9,8 +9,8 @@
+ 		"prepare": "svelte-kit sync",
+ 		"check": "svelte-kit sync && tsc && svelte-check",
+ 		"test": "pnpm test:dev && pnpm test:build",
+-		"test:dev": "DEV=true playwright test",
+-		"test:build": "playwright test",
++		"test:dev": "DEV=true playwright test && DEV=true PATHS_ASSETS=https://cdn.example.com/stuff playwright test",
++		"test:build": "playwright test && PATHS_ASSETS=https://cdn.example.com/stuff playwright test",
+ 		"test:server-side-route-resolution:dev": "rm -rf test/errors.json && DEV=true ROUTER_RESOLUTION=server playwright test",
+ 		"test:server-side-route-resolution:build": "rm -rf test/errors.json && ROUTER_RESOLUTION=server playwright test"
+ 	},
+diff --git a/packages/kit/test/apps/options/playwright.config.js b/packages/kit/test/apps/options/playwright.config.js
+index 2122f9ef8..cdb691f21 100644
+--- a/packages/kit/test/apps/options/playwright.config.js
++++ b/packages/kit/test/apps/options/playwright.config.js
+@@ -8,7 +8,8 @@ export default defineConfig({
+ 		...config.webServer,
+ 		command: process.env.DEV ? `pnpm dev` : `pnpm build && pnpm preview`,
+ 		env: {
+-			ROUTER_RESOLUTION: process.env.ROUTER_RESOLUTION ?? 'client'
++			ROUTER_RESOLUTION: process.env.ROUTER_RESOLUTION ?? 'client',
++			PATHS_ASSETS: process.env.PATHS_ASSETS ?? ''
+ 		}
+ 	}
+ });
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/+page.server.js b/packages/kit/test/apps/options/source/pages/inline-style/+page.server.js
+new file mode 100644
+index 000000000..661546f24
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/+page.server.js
+@@ -0,0 +1,4 @@
++// test that the server-client stylesheet map is constructed correctly when
++// a page is imported. Importing a page causes Vite to associate the css with
++// a separate chunk instead of the page component itself
++import.meta.glob('./import-meta/+page.svelte', { eager: true });
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/+page.svelte b/packages/kit/test/apps/options/source/pages/inline-style/+page.svelte
+new file mode 100644
+index 000000000..c0a95f45f
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/+page.svelte
+@@ -0,0 +1,16 @@
++<script>
++	import SharedCSS from '$lib/SharedCSS.svelte';
++	import '@fontsource/libre-barcode-128-text';
++</script>
++
++<p>
++	Test that the fontsource is referenced correctly, while the shared CSS in SharedCSS doesn't cause
++	problems
++</p>
++<SharedCSS />
++
++<style>
++	p {
++		font-family: 'Libre Barcode 128 Text', sans-serif;
++	}
++</style>
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/conditional-rendering/+page.svelte b/packages/kit/test/apps/options/source/pages/inline-style/conditional-rendering/+page.svelte
+new file mode 100644
+index 000000000..5d6236bc2
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/conditional-rendering/+page.svelte
+@@ -0,0 +1,19 @@
++<script>
++	import Component from './Component.svelte';
++
++	let show = false;
++</script>
++
++<h1 id="always">This is always rendered</h1>
++
++<button on:click={() => (show = !show)}>show component</button>
++
++{#if show}
++	<Component />
++{/if}
++
++<style>
++	h1 {
++		color: red;
++	}
++</style>
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/conditional-rendering/Component.svelte b/packages/kit/test/apps/options/source/pages/inline-style/conditional-rendering/Component.svelte
+new file mode 100644
+index 000000000..4c4b86b21
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/conditional-rendering/Component.svelte
+@@ -0,0 +1,7 @@
++<p id="conditionally">This is conditionally rendered</p>
++
++<style>
++	p {
++		color: blue;
++	}
++</style>
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/dynamic-import/+page.js b/packages/kit/test/apps/options/source/pages/inline-style/dynamic-import/+page.js
+new file mode 100644
+index 000000000..6b6f8e045
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/dynamic-import/+page.js
+@@ -0,0 +1,5 @@
++export async function load() {
++	return {
++		Thing: (await import('./Thing.svelte')).default
++	};
++}
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/dynamic-import/+page.svelte b/packages/kit/test/apps/options/source/pages/inline-style/dynamic-import/+page.svelte
+new file mode 100644
+index 000000000..d2a75179b
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/dynamic-import/+page.svelte
+@@ -0,0 +1,5 @@
++<script>
++	export let data;
++</script>
++
++<svelte:component this={data.Thing} />
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/dynamic-import/Thing.svelte b/packages/kit/test/apps/options/source/pages/inline-style/dynamic-import/Thing.svelte
+new file mode 100644
+index 000000000..747598bce
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/dynamic-import/Thing.svelte
+@@ -0,0 +1,8 @@
++<p>I'm dynamically imported</p>
++
++<style>
++	p {
++		color: blue;
++		font-size: 20px;
++	}
++</style>
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/import-meta/+page.svelte b/packages/kit/test/apps/options/source/pages/inline-style/import-meta/+page.svelte
+new file mode 100644
+index 000000000..fb14331c1
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/import-meta/+page.svelte
+@@ -0,0 +1,7 @@
++<div>this page is being imported so its css is associated with a separate chunk</div>
++
++<style>
++	div {
++		color: pink;
++	}
++</style>
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/static-dir/+page.svelte b/packages/kit/test/apps/options/source/pages/inline-style/static-dir/+page.svelte
+new file mode 100644
+index 000000000..1f540d6d6
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/static-dir/+page.svelte
+@@ -0,0 +1,14 @@
++<div></div>
++
++<p>
++	Assets located in the static directory have their URL path transformed to '../../../asset.png'
++	instead of './asset.png' like most assets that go through Vite's static asset handling
++</p>
++
++<style>
++	div {
++		background: url(/favicon.png?v=1);
++		height: 128px;
++		width: 128px;
++	}
++</style>
+diff --git a/packages/kit/test/apps/options/source/pages/inline-style/url-encoded/+page.svelte b/packages/kit/test/apps/options/source/pages/inline-style/url-encoded/+page.svelte
+new file mode 100644
+index 000000000..57adf41b0
+--- /dev/null
++++ b/packages/kit/test/apps/options/source/pages/inline-style/url-encoded/+page.svelte
+@@ -0,0 +1,9 @@
++<p>testing if we correctly fix the asset URL in the CSS if it has URL encoded characters</p>
++
++<style>
++	p {
++		background: url('./愛.png');
++		height: 128px;
++		width: 128px;
++	}
++</style>
+diff --git "a/packages/kit/test/apps/options/source/pages/inline-style/url-encoded/\346\204\233.png" "b/packages/kit/test/apps/options/source/pages/inline-style/url-encoded/\346\204\233.png"
+new file mode 100644
+index 0000000000000000000000000000000000000000..825b9e65af7c104cfb07089bb28659393b4f2097
+GIT binary patch
+literal 1571
+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
+VHuiSbmk|H}002ovPDHLkV1f%e^4kCa
+
+literal 0
+HcmV?d00001
+
+diff --git a/packages/kit/test/apps/options/svelte.config.js b/packages/kit/test/apps/options/svelte.config.js
+index d2e4c2c45..4852cc715 100644
+--- a/packages/kit/test/apps/options/svelte.config.js
++++ b/packages/kit/test/apps/options/svelte.config.js
+@@ -23,7 +23,7 @@ const config = {
+ 			// while we specify a path for the service worker, we expect it to not exist in the test
+ 			serviceWorker: 'source/service-worker'
+ 		},
+-		appDir: '_wheee',
++		appDir: '_wheee/nested',
+ 		inlineStyleThreshold: 1024,
+ 		outDir: '.custom-out-dir',
+ 		output: {
+@@ -31,7 +31,8 @@ const config = {
+ 		},
+ 		paths: {
+ 			base: '/path-base',
+-			assets: 'https://cdn.example.com/stuff'
++			// @ts-expect-error our env var string can't match the https template literal
++			assets: process.env.PATHS_ASSETS || ''
+ 		},
+ 		env: {
+ 			dir: './env-dir',
+diff --git a/packages/kit/test/apps/options/test/paths-assets.test.js b/packages/kit/test/apps/options/test/paths-assets.test.js
+new file mode 100644
+index 000000000..91d3045fa
+--- /dev/null
++++ b/packages/kit/test/apps/options/test/paths-assets.test.js
+@@ -0,0 +1,187 @@
++import process from 'node:process';
++import { expect } from '@playwright/test';
++import { test } from '../../../utils.js';
++
++test.describe.configure({ mode: 'parallel' });
++
++test.describe('base path', () => {
++	test.skip(!process.env.PATHS_ASSETS);
++
++	test('serves a useful 404 when visiting unprefixed path', async ({ request }) => {
++		const html = await request.get('/slash/', { headers: { Accept: 'text/html' } });
++		expect(html.status()).toBe(404);
++		expect(await html.text()).toBe(
++			'The server is configured with a public base URL of /path-base - did you mean to visit <a href="/path-base/slash/">/path-base/slash/</a> instead?'
++		);
++
++		const plain = await request.get('/slash/');
++		expect(plain.status()).toBe(404);
++		expect(await plain.text()).toBe(
++			'The server is configured with a public base URL of /path-base - did you mean to visit /path-base/slash/ instead?'
++		);
++	});
++
++	test('serves /', async ({ page, javaScriptEnabled }) => {
++		await page.goto('/path-base/');
++
++		expect(await page.textContent('h1')).toBe('I am in the template');
++		expect(await page.textContent('h2')).toBe("We're on index.svelte");
++
++		const mode = process.env.DEV ? 'dev' : 'prod';
++		expect(await page.textContent('p')).toBe(
++			`Hello from the ${javaScriptEnabled ? 'client' : 'server'} in ${mode} mode!`
++		);
++	});
++
++	test('serves files in source directory', async ({ request, javaScriptEnabled }) => {
++		test.skip(!process.env.DEV || !javaScriptEnabled);
++
++		const response = await request.get('/path-base/source/pages/test.txt');
++		expect(response.ok()).toBe(true);
++		expect(await response.text()).toBe('hello there world\n');
++	});
++
++	test('paths available on server side', async ({ page }) => {
++		await page.goto('/path-base/base/');
++		expect(await page.textContent('[data-source="base"]')).toBe('/path-base');
++		expect(await page.textContent('[data-source="assets"]')).toBe('/_svelte_kit_assets');
++	});
++
++	test('loads javascript', async ({ page, javaScriptEnabled }) => {
++		await page.goto('/path-base/base/');
++		expect(await page.textContent('button')).toBe('clicks: 0');
++
++		if (javaScriptEnabled) {
++			await page.click('button');
++			expect(await page.innerHTML('h2')).toBe('button has been clicked 1 time');
++		}
++	});
++
++	test('loads CSS', async ({ page, get_computed_style }) => {
++		await page.goto('/path-base/base/');
++		expect(await get_computed_style('p', 'color')).toBe('rgb(255, 0, 0)');
++	});
++
++	test('sets params correctly', async ({ page, clicknav }) => {
++		await page.goto('/path-base/base/one');
++
++		expect(await page.textContent('h2')).toBe('one');
++
++		await clicknav('[href="/path-base/base/two"]');
++		expect(await page.textContent('h2')).toBe('two');
++	});
++
++	test('resolveRoute accounts for base path', async ({ baseURL, page, clicknav }) => {
++		await page.goto('/path-base/resolve-route');
++		await clicknav('[data-id=target]');
++		expect(page.url()).toBe(`${baseURL}/path-base/resolve-route/resolved/`);
++		expect(await page.textContent('h2')).toBe('resolved');
++	});
++});
++
++test.describe('assets path', () => {
++	test.skip(!process.env.PATHS_ASSETS);
++
++	test('serves static assets with correct prefix', async ({ page, request }) => {
++		await page.goto('/path-base/');
++		const href = await page.locator('link[rel="icon"]').getAttribute('href');
++
++		const response = await request.get(href ?? '');
++		expect(response.status()).toBe(200);
++	});
++});
++
++test.describe('inlineStyleThreshold', () => {
++	test('inlines CSS', async ({ page, javaScriptEnabled }) => {
++		await page.goto('/path-base/base/');
++		if (process.env.DEV) {
++			const ssr_style = await page.$('style[data-sveltekit]');
++
++			if (javaScriptEnabled) {
++				// <style data-sveltekit> is removed upon hydration
++				expect(ssr_style).toBeNull();
++			} else {
++				expect(ssr_style).not.toBeNull();
++			}
++
++			expect(await page.$('link[rel="stylesheet"]')).toBeNull();
++		} else {
++			expect(await page.$('style')).not.toBeNull();
++			expect(await page.$('link[rel="stylesheet"][disabled]')).not.toBeNull();
++			expect(await page.$('link[rel="stylesheet"]:not([disabled])')).not.toBeNull();
++		}
++	});
++
++	test('loads assets', async ({ page, javaScriptEnabled }) => {
++		test.skip(!!process.env.DEV || javaScriptEnabled);
++
++		let font_loaded = false;
++		page.on('response', (response) => {
++			if (response.url().endsWith('.woff2') || response.url().endsWith('.woff')) {
++				font_loaded = response.ok();
++			}
++		});
++		await page.goto('/path-base/inline-style');
++		expect(font_loaded).toBeTruthy();
++	});
++
++	test('loads assets located in static directory', async ({ page, javaScriptEnabled }) => {
++		test.skip(!!process.env.DEV || javaScriptEnabled);
++
++		let image_loaded = false;
++		page.on('response', (response) => {
++			if (response.url().endsWith('favicon.png?v=1')) {
++				image_loaded = response.ok();
++			}
++		});
++		await page.goto('/path-base/inline-style/static-dir');
++		expect(image_loaded).toBeTruthy();
++	});
++
++	test('loads assets with URL encoded characters', async ({ page, javaScriptEnabled }) => {
++		test.skip(!!process.env.DEV || javaScriptEnabled);
++
++		let image_loaded = false;
++		page.on('response', (response) => {
++			if (response.url().match(/%E6%84%9B\.\w+\.png$/)) {
++				image_loaded = response.ok();
++			}
++		});
++		await page.goto('/path-base/inline-style/url-encoded');
++		expect(image_loaded).toBeTruthy();
++	});
++
++	test('includes components dynamically imported in universal load', async ({
++		page,
++		get_computed_style
++	}) => {
++		test.skip(!!process.env.DEV);
++
++		let loaded_css = false;
++		page.on('response', (response) => {
++			if (response.url().endsWith('.css')) {
++				loaded_css = true;
++			}
++		});
++		await page.goto('/path-base/inline-style/dynamic-import');
++		await expect(page.locator('p')).toHaveText("I'm dynamically imported");
++		expect(loaded_css).toBe(false);
++		expect(await get_computed_style('p', 'color')).toEqual('rgb(0, 0, 255)');
++	});
++
++	test('includes conditionally rendered component styles', async ({
++		page,
++		get_computed_style,
++		javaScriptEnabled
++	}) => {
++		test.skip(!!process.env.DEV || !javaScriptEnabled);
++
++		await page.goto('/path-base/inline-style/conditional-rendering');
++		await expect(page.locator('#always')).toBeVisible();
++		expect(await get_computed_style('#always', 'color')).toBe('rgb(255, 0, 0)');
++
++		await page.locator('button', { hasText: 'show component' }).click();
++		await expect(page.locator('#conditionally')).toBeVisible();
++		expect(await get_computed_style('#conditionally', 'color')).toBe('rgb(0, 0, 255)');
++	});
++});
+diff --git a/packages/kit/test/apps/options/test/test.js b/packages/kit/test/apps/options/test/test.js
+index 8148bf7ed..0e14aa421 100644
+--- a/packages/kit/test/apps/options/test/test.js
++++ b/packages/kit/test/apps/options/test/test.js
+@@ -3,114 +3,9 @@ import process from 'node:process';
+ import { expect } from '@playwright/test';
+ import { test } from '../../../utils.js';
+ 
+-/** @typedef {import('@playwright/test').Response} Response */
+-
+ test.describe.configure({ mode: 'parallel' });
+ 
+-test.describe('base path', () => {
+-	test('serves a useful 404 when visiting unprefixed path', async ({ request }) => {
+-		const html = await request.get('/slash/', { headers: { Accept: 'text/html' } });
+-		expect(html.status()).toBe(404);
+-		expect(await html.text()).toBe(
+-			'The server is configured with a public base URL of /path-base - did you mean to visit <a href="/path-base/slash/">/path-base/slash/</a> instead?'
+-		);
+-
+-		const plain = await request.get('/slash/');
+-		expect(plain.status()).toBe(404);
+-		expect(await plain.text()).toBe(
+-			'The server is configured with a public base URL of /path-base - did you mean to visit /path-base/slash/ instead?'
+-		);
+-	});
+-
+-	test('serves /', async ({ page, javaScriptEnabled }) => {
+-		await page.goto('/path-base/');
+-
+-		expect(await page.textContent('h1')).toBe('I am in the template');
+-		expect(await page.textContent('h2')).toBe("We're on index.svelte");
+-
+-		const mode = process.env.DEV ? 'dev' : 'prod';
+-		expect(await page.textContent('p')).toBe(
+-			`Hello from the ${javaScriptEnabled ? 'client' : 'server'} in ${mode} mode!`
+-		);
+-	});
+-
+-	if (process.env.DEV) {
+-		test('serves files in source directory', async ({ request, javaScriptEnabled }) => {
+-			if (!javaScriptEnabled) return;
+-
+-			const response = await request.get('/path-base/source/pages/test.txt');
+-			expect(response.ok()).toBe(true);
+-			expect(await response.text()).toBe('hello there world\n');
+-		});
+-	}
+-
+-	test('paths available on server side', async ({ page }) => {
+-		await page.goto('/path-base/base/');
+-		expect(await page.textContent('[data-source="base"]')).toBe('/path-base');
+-		expect(await page.textContent('[data-source="assets"]')).toBe('/_svelte_kit_assets');
+-	});
+-
+-	test('loads javascript', async ({ page, javaScriptEnabled }) => {
+-		await page.goto('/path-base/base/');
+-		expect(await page.textContent('button')).toBe('clicks: 0');
+-
+-		if (javaScriptEnabled) {
+-			await page.click('button');
+-			expect(await page.innerHTML('h2')).toBe('button has been clicked 1 time');
+-		}
+-	});
+-
+-	test('loads CSS', async ({ page, get_computed_style }) => {
+-		await page.goto('/path-base/base/');
+-		expect(await get_computed_style('p', 'color')).toBe('rgb(255, 0, 0)');
+-	});
+-
+-	test('inlines CSS', async ({ page, javaScriptEnabled }) => {
+-		await page.goto('/path-base/base/');
+-		if (process.env.DEV) {
+-			const ssr_style = await page.$('style[data-sveltekit]');
+-
+-			if (javaScriptEnabled) {
+-				// <style data-sveltekit> is removed upon hydration
+-				expect(ssr_style).toBeNull();
+-			} else {
+-				expect(ssr_style).not.toBeNull();
+-			}
+-
+-			expect(await page.$('link[rel="stylesheet"]')).toBeNull();
+-		} else {
+-			expect(await page.$('style')).not.toBeNull();
+-			expect(await page.$('link[rel="stylesheet"][disabled]')).not.toBeNull();
+-			expect(await page.$('link[rel="stylesheet"]:not([disabled])')).not.toBeNull();
+-		}
+-	});
+-
+-	test('sets params correctly', async ({ page, clicknav }) => {
+-		await page.goto('/path-base/base/one');
+-
+-		expect(await page.textContent('h2')).toBe('one');
+-
+-		await clicknav('[href="/path-base/base/two"]');
+-		expect(await page.textContent('h2')).toBe('two');
+-	});
+-
+-	test('resolveRoute accounts for base path', async ({ baseURL, page, clicknav }) => {
+-		await page.goto('/path-base/resolve-route');
+-		await clicknav('[data-id=target]');
+-		expect(page.url()).toBe(`${baseURL}/path-base/resolve-route/resolved/`);
+-		expect(await page.textContent('h2')).toBe('resolved');
+-	});
+-});
+-
+-test.describe('assets path', () => {
+-	test('serves static assets with correct prefix', async ({ page, request }) => {
+-		await page.goto('/path-base/');
+-		const href = await page.locator('link[rel="icon"]').getAttribute('href');
+-
+-		const response = await request.get(href ?? '');
+-		expect(response.status()).toBe(200);
+-	});
+-});
++test.skip(!!process.env.PATHS_ASSETS);
+ 
+ test.describe('CSP', () => {
+ 	test('blocks script from external site', async ({ page, start_server }) => {
+@@ -296,43 +191,14 @@ test.describe('trailingSlash', () => {
+ 	});
+ });
+ 
+-if (!process.env.DEV) {
+-	test.describe('serviceWorker', () => {
+-		test('does not register service worker if none created', async ({ page }) => {
+-			await page.goto('/path-base/');
+-			expect(await page.content()).not.toMatch('navigator.serviceWorker');
+-		});
+-	});
++test.describe('serviceWorker', () => {
++	test.skip(!!process.env.DEV);
+ 
+-	test.describe('inlineStyleThreshold', () => {
+-		test('loads assets', async ({ page }) => {
+-			let fontLoaded = false;
+-			page.on('response', (response) => {
+-				if (response.url().endsWith('.woff2') || response.url().endsWith('.woff')) {
+-					fontLoaded = response.ok();
+-				}
+-			});
+-			await page.goto('/path-base/inline-assets');
+-			expect(fontLoaded).toBeTruthy();
+-		});
+-
+-		test('includes components dynamically imported in universal load', async ({
+-			page,
+-			get_computed_style
+-		}) => {
+-			let loaded_css = false;
+-			page.on('response', (response) => {
+-				if (response.url().endsWith('.css')) {
+-					loaded_css = true;
+-				}
+-			});
+-			await page.goto('/path-base/inline-assets/dynamic-import');
+-			await expect(page.locator('p')).toHaveText("I'm dynamically imported");
+-			expect(loaded_css).toBe(false);
+-			expect(await get_computed_style('p', 'color')).toEqual('rgb(0, 0, 255)');
+-		});
++	test('does not register service worker if none created', async ({ page }) => {
++		await page.goto('/path-base/');
++		expect(await page.content()).not.toMatch('navigator.serviceWorker');
+ 	});
+-}
++});
+ 
+ test.describe('Vite options', () => {
+ 	test('Respects --mode', async ({ page }) => {
+diff --git a/packages/kit/test/apps/options/vite.custom.config.js b/packages/kit/test/apps/options/vite.custom.config.js
+index 69200cdb7..74a16f7f1 100644
+--- a/packages/kit/test/apps/options/vite.custom.config.js
++++ b/packages/kit/test/apps/options/vite.custom.config.js
+@@ -4,7 +4,8 @@ import { sveltekit } from '@sveltejs/kit/vite';
+ /** @type {import('vite').UserConfig} */
+ const config = {
+ 	build: {
+-		minify: false
++		minify: false,
++		assetsInlineLimit: 0
+ 	},
+ 	clearScreen: false,
+ 	plugins: [sveltekit()],

@@ -1,0 +1,67 @@
+task_id: elastic_kibana_package_spec_6d8e6ac7b3a4
+hidden_test_patches:
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.test.tsx
+  - x-pack/platform/plugins/shared/fleet/server/services/agent_policies/__snapshots__/full_agent_policy.test.ts.snap
+  - x-pack/platform/plugins/shared/fleet/server/services/agent_policies/full_agent_policy.test.ts
+  - x-pack/platform/plugins/shared/fleet/server/services/agent_policies/otel_collector.test.ts
+  - x-pack/platform/plugins/shared/fleet/server/services/epm/packages/input_type_packages.test.ts
+  hidden_file: *id001
+  semantic_changes: Excluded one Gold-specific cache-argument test and duplicate JUnit scoring; UI behavior is exercised through the parent policy panel rather than a Gold-specific child boundary, transform checks validate signal-specific statements and pipeline wiring without fixing processor names/layout, and index-template checks validate the combined type/dataset set without fixing batching or call counts.
+  source: upstream test changes from elastic/kibana PR(s) 250081
+- repo: package-spec
+  patch: hidden/patches/package-spec-hidden-tests.patch
+  test_profile: package_spec-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - code/go/pkg/validator/validator_test.go
+  - test/packages/bad_input_dynamic_signal_types_non_otel/LICENSE.txt
+  - test/packages/bad_input_dynamic_signal_types_non_otel/_dev/build/docs/README.md
+  - test/packages/bad_input_dynamic_signal_types_non_otel/agent/input/input.yml.hbs
+  - test/packages/bad_input_dynamic_signal_types_non_otel/changelog.yml
+  - test/packages/bad_input_dynamic_signal_types_non_otel/docs/README.md
+  - test/packages/bad_input_dynamic_signal_types_non_otel/fields/base-fields.yml
+  - test/packages/bad_input_dynamic_signal_types_non_otel/img/sample-logo.svg
+  - test/packages/bad_input_dynamic_signal_types_non_otel/manifest.yml
+  - test/packages/bad_input_dynamic_signal_types_old_version/LICENSE.txt
+  - test/packages/bad_input_dynamic_signal_types_old_version/agent/input/input.yml.hbs
+  - test/packages/bad_input_dynamic_signal_types_old_version/changelog.yml
+  - test/packages/bad_input_dynamic_signal_types_old_version/docs/README.md
+  - test/packages/bad_input_dynamic_signal_types_old_version/fields/base-fields.yml
+  - test/packages/bad_input_dynamic_signal_types_old_version/img/sample-logo.svg
+  - test/packages/bad_input_dynamic_signal_types_old_version/manifest.yml
+  - test/packages/bad_integration_dynamic_signal_types/LICENSE.txt
+  - test/packages/bad_integration_dynamic_signal_types/changelog.yml
+  - test/packages/bad_integration_dynamic_signal_types/data_stream/sample/agent/stream/stream.yml.hbs
+  - test/packages/bad_integration_dynamic_signal_types/data_stream/sample/elasticsearch/ingest_pipeline/default.yml
+  - test/packages/bad_integration_dynamic_signal_types/data_stream/sample/fields/base-fields.yml
+  - test/packages/bad_integration_dynamic_signal_types/data_stream/sample/manifest.yml
+  - test/packages/bad_integration_dynamic_signal_types/docs/README.md
+  - test/packages/bad_integration_dynamic_signal_types/img/sample-logo.svg
+  - test/packages/bad_integration_dynamic_signal_types/manifest.yml
+  - test/packages/good_input_dynamic_signal_type/LICENSE.txt
+  - test/packages/good_input_dynamic_signal_type/_dev/build/docs/README.md
+  - test/packages/good_input_dynamic_signal_type/agent/input/input.yml.hbs
+  - test/packages/good_input_dynamic_signal_type/changelog.yml
+  - test/packages/good_input_dynamic_signal_type/docs/README.md
+  - test/packages/good_input_dynamic_signal_type/fields/base-fields.yml
+  - test/packages/good_input_dynamic_signal_type/img/sample-logo.svg
+  - test/packages/good_input_dynamic_signal_type/manifest.yml
+  hidden_file: *id002
+  semantic_changes: Excluded the Gold-private semantic validator unit test; public ValidateFile fixtures validate format availability and valid/invalid package combinations without requiring Gold's exact diagnostic wording or error count.
+  source: upstream test changes from elastic/package-spec PR(s) 1067
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - kibana-hidden
+    - package_spec-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

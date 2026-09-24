@@ -1,0 +1,181 @@
+diff --git a/transport/httpcommon/httpcommon.go b/transport/httpcommon/httpcommon.go
+index cf8c3f8..3ef5498 100644
+--- a/transport/httpcommon/httpcommon.go
++++ b/transport/httpcommon/httpcommon.go
+@@ -185,7 +185,8 @@ func (settings *HTTPTransportSettings) Unpack(cfg *config.C) error {
+ 		return err
+ 	}
+ 
+-	_, err := tlscommon.LoadTLSConfig(tmp.TLS)
++	// TODO: use local logger here
++	_, err := tlscommon.LoadTLSConfig(tmp.TLS, logp.NewLogger(""))
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -213,6 +214,11 @@ func (settings *HTTPTransportSettings) RoundTripper(opts ...TransportOption) (ht
+ 		}
+ 	}
+ 
++	logger := logp.NewLogger("")
++	if log := extra.logger; log != nil {
++		logger = log
++	}
++
+ 	for _, opt := range opts {
+ 		if dialOpt, ok := opt.(dialerOption); ok {
+ 			dialer = dialOpt.baseDialer()
+@@ -223,7 +229,7 @@ func (settings *HTTPTransportSettings) RoundTripper(opts ...TransportOption) (ht
+ 		dialer = transport.NetDialer(settings.Timeout)
+ 	}
+ 
+-	tls, err := tlscommon.LoadTLSConfig(settings.TLS)
++	tls, err := tlscommon.LoadTLSConfig(settings.TLS, logger)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/transport/tlscommon/config.go b/transport/tlscommon/config.go
+index c5dc5e8..1dd9de5 100644
+--- a/transport/tlscommon/config.go
++++ b/transport/tlscommon/config.go
+@@ -20,6 +20,8 @@ package tlscommon
+ import (
+ 	"crypto/tls"
+ 	"errors"
++
++	"github.com/elastic/elastic-agent-libs/logp"
+ )
+ 
+ // Config defines the user configurable options in the yaml file.
+@@ -40,7 +42,7 @@ type Config struct {
+ // defined. If Certificate and CertificateKey are configured, client authentication
+ // will be configured. If no CAs are configured, the host CA will be used by go
+ // built-in TLS support.
+-func LoadTLSConfig(config *Config) (*TLSConfig, error) {
++func LoadTLSConfig(config *Config, logger *logp.Logger) (*TLSConfig, error) {
+ 	if !config.IsEnabled() {
+ 		return nil, nil
+ 	}
+@@ -86,6 +88,7 @@ func LoadTLSConfig(config *Config) (*TLSConfig, error) {
+ 		Renegotiation:        tls.RenegotiationSupport(config.Renegotiation),
+ 		CASha256:             config.CASha256,
+ 		CATrustedFingerprint: config.CATrustedFingerprint,
++		logger:               logger,
+ 	}, nil
+ }
+ 
+diff --git a/transport/tlscommon/server_config.go b/transport/tlscommon/server_config.go
+index 14efd34..e258d63 100644
+--- a/transport/tlscommon/server_config.go
++++ b/transport/tlscommon/server_config.go
+@@ -23,6 +23,7 @@ import (
+ 	"fmt"
+ 
+ 	"github.com/elastic/elastic-agent-libs/config"
++	"github.com/elastic/elastic-agent-libs/logp"
+ )
+ 
+ // ServerConfig defines the user configurable tls options for any TCP based service.
+@@ -40,7 +41,7 @@ type ServerConfig struct {
+ 
+ // LoadTLSServerConfig tranforms a ServerConfig into a `tls.Config` to be used directly with golang
+ // network types.
+-func LoadTLSServerConfig(config *ServerConfig) (*TLSConfig, error) {
++func LoadTLSServerConfig(config *ServerConfig, logger *logp.Logger) (*TLSConfig, error) {
+ 	if !config.IsEnabled() {
+ 		return nil, nil
+ 	}
+@@ -95,6 +96,7 @@ func LoadTLSServerConfig(config *ServerConfig) (*TLSConfig, error) {
+ 		CurvePreferences: curves,
+ 		ClientAuth:       tls.ClientAuthType(clientAuth),
+ 		CASha256:         config.CASha256,
++		logger:           logger,
+ 	}, nil
+ }
+ 
+diff --git a/transport/tlscommon/tls_config.go b/transport/tlscommon/tls_config.go
+index 98a1b32..4790242 100644
+--- a/transport/tlscommon/tls_config.go
++++ b/transport/tlscommon/tls_config.go
+@@ -86,6 +86,8 @@ type TLSConfig struct {
+ 	// time returns the current time as the number of seconds since the epoch.
+ 	// If time is nil, TLS uses time.Now.
+ 	time func() time.Time
++
++	logger *logp.Logger
+ }
+ 
+ var (
+@@ -104,7 +106,7 @@ func (c *TLSConfig) ToConfig() *tls.Config {
+ 
+ 	insecure := c.Verification != VerifyStrict
+ 	if c.Verification == VerifyNone {
+-		logp.NewLogger("tls").Warn("SSL/TLS verifications disabled.")
++		c.logger.Named("tls").Warn("SSL/TLS verifications disabled.")
+ 	}
+ 
+ 	return &tls.Config{
+@@ -119,7 +121,7 @@ func (c *TLSConfig) ToConfig() *tls.Config {
+ 		Renegotiation:      c.Renegotiation,
+ 		ClientAuth:         c.ClientAuth,
+ 		Time:               c.time,
+-		VerifyConnection:   makeVerifyConnection(c),
++		VerifyConnection:   makeVerifyConnection(c, c.logger),
+ 	}
+ }
+ 
+@@ -133,7 +135,7 @@ func (c *TLSConfig) BuildModuleClientConfig(host string) *tls.Config {
+ 			VerifyConnection: makeVerifyConnection(&TLSConfig{
+ 				Verification: VerifyFull,
+ 				ServerName:   host,
+-			}),
++			}, logp.NewLogger("tls")),
+ 		}
+ 	}
+ 
+@@ -175,8 +177,8 @@ func (c *TLSConfig) BuildServerConfig(host string) *tls.Config {
+ 	return config
+ }
+ 
+-func trustRootCA(cfg *TLSConfig, peerCerts []*x509.Certificate) error {
+-	logger := logp.NewLogger("tls")
++func trustRootCA(cfg *TLSConfig, peerCerts []*x509.Certificate, logger *logp.Logger) error {
++	logger = logger.Named("tls")
+ 	logger.Info("'ca_trusted_fingerprint' set, looking for matching fingerprints")
+ 	fingerprint, err := hex.DecodeString(cfg.CATrustedFingerprint)
+ 	if err != nil {
+@@ -223,7 +225,7 @@ func trustRootCA(cfg *TLSConfig, peerCerts []*x509.Certificate) error {
+ 	return nil
+ }
+ 
+-func makeVerifyConnection(cfg *TLSConfig) func(tls.ConnectionState) error {
++func makeVerifyConnection(cfg *TLSConfig, logger *logp.Logger) func(tls.ConnectionState) error {
+ 	serverName := cfg.ServerName
+ 
+ 	switch cfg.Verification {
+@@ -233,7 +235,7 @@ func makeVerifyConnection(cfg *TLSConfig) func(tls.ConnectionState) error {
+ 		// tls.Config.InsecureSkipVerify  is set to true
+ 		return func(cs tls.ConnectionState) error {
+ 			if cfg.CATrustedFingerprint != "" {
+-				if err := trustRootCA(cfg, cs.PeerCertificates); err != nil {
++				if err := trustRootCA(cfg, cs.PeerCertificates, logger); err != nil {
+ 					return err
+ 				}
+ 			}
+@@ -259,7 +261,7 @@ func makeVerifyConnection(cfg *TLSConfig) func(tls.ConnectionState) error {
+ 		// tls.Config.InsecureSkipVerify is set to true
+ 		return func(cs tls.ConnectionState) error {
+ 			if cfg.CATrustedFingerprint != "" {
+-				if err := trustRootCA(cfg, cs.PeerCertificates); err != nil {
++				if err := trustRootCA(cfg, cs.PeerCertificates, logger); err != nil {
+ 					return err
+ 				}
+ 			}
+@@ -284,7 +286,7 @@ func makeVerifyConnection(cfg *TLSConfig) func(tls.ConnectionState) error {
+ 		if len(cfg.CASha256) > 0 {
+ 			return func(cs tls.ConnectionState) error {
+ 				if cfg.CATrustedFingerprint != "" {
+-					if err := trustRootCA(cfg, cs.PeerCertificates); err != nil {
++					if err := trustRootCA(cfg, cs.PeerCertificates, logger); err != nil {
+ 						return err
+ 					}
+ 				}

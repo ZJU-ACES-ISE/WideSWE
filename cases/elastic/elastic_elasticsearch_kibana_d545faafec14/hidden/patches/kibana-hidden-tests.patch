@@ -1,0 +1,76 @@
+diff --git a/x-pack/platform/plugins/shared/fleet/server/tasks/auto_install_content_packages_task.test.ts b/x-pack/platform/plugins/shared/fleet/server/tasks/auto_install_content_packages_task.test.ts
+index 3da6692ef18..91dc742f324 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/tasks/auto_install_content_packages_task.test.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/tasks/auto_install_content_packages_task.test.ts
+@@ -34,6 +34,9 @@ jest.mock('../services/epm/registry');
+ jest.mock('../services/epm/packages', () => ({
+   getInstalledPackages: jest.fn(),
+ }));
++jest.mock('../services/epm/packages/get_prerelease_setting', () => ({
++  getPrereleaseFromSettings: jest.fn().mockReturnValue(false),
++}));
+ 
+ const MockRegistry = jest.mocked(Registry);
+ 
+@@ -53,6 +56,28 @@ const MOCK_TASK_INSTANCE = {
+ 
+ const mockGetInstalledPackages = getInstalledPackages as jest.Mock;
+ 
++const expectDatasetQueryWithoutGlobalTruncation = (
++  request: { query: string; [key: string]: unknown },
++  expectedDatasets: string[]
++) => {
++  const normalizedQuery = request.query.replace(/\s+/g, ' ').trim();
++  expect(normalizedQuery).toContain('FROM logs-*,metrics-*,traces-*');
++
++  const limitMatch = /\|\s*LIMIT\s+(\d+)/i.exec(normalizedQuery);
++  if (!limitMatch || limitMatch.index === undefined) {
++    return;
++  }
++
++  const queryBeforeLimit = normalizedQuery.slice(0, limitMatch.index);
++  expect(queryBeforeLimit).toMatch(/data_stream\.dataset\s+IN\s*\(/i);
++
++  const serializedRequest = JSON.stringify(request);
++  for (const dataset of expectedDatasets) {
++    expect(serializedRequest).toContain(dataset);
++  }
++  expect(Number(limitMatch[1])).toBeGreaterThanOrEqual(expectedDatasets.length);
++};
++
+ describe('AutoInstallContentPackagesTask', () => {
+   const { createSetup: coreSetupMock } = coreMock;
+   const { createSetup: tmSetupMock, createStart: tmStartMock } = taskManagerMock;
+@@ -169,10 +194,12 @@ describe('AutoInstallContentPackagesTask', () => {
+         automaticInstall: true,
+       });
+       expect(packageClientMock.installPackage).toHaveBeenCalledTimes(2);
+-      expect(esClient.esql.query).toHaveBeenCalledWith({
+-        query:
+-          'FROM logs-*,metrics-*,traces-* | KEEP @timestamp, data_stream.dataset | WHERE @timestamp > NOW() - 10 minutes | STATS COUNT(*) BY data_stream.dataset | LIMIT 100 ',
+-      });
++      expect(esClient.esql.query).toHaveBeenCalledTimes(1);
++      expectDatasetQueryWithoutGlobalTruncation(esClient.esql.query.mock.calls[0][0] as any, [
++        'system.cpu',
++        'system.memory',
++        'system.test',
++      ]);
+     });
+ 
+     it('should install content packages and filter out installed datasets', async () => {
+@@ -194,10 +221,11 @@ describe('AutoInstallContentPackagesTask', () => {
+         automaticInstall: true,
+       });
+       expect(packageClientMock.installPackage).toHaveBeenCalledTimes(1);
+-      expect(esClient.esql.query).toHaveBeenCalledWith({
+-        query:
+-          'FROM logs-*,metrics-*,traces-* | KEEP @timestamp, data_stream.dataset | WHERE @timestamp > NOW() - 10 minutes | STATS COUNT(*) BY data_stream.dataset | LIMIT 100 | WHERE data_stream.dataset NOT IN ("system.test")',
+-      });
++      expect(esClient.esql.query).toHaveBeenCalledTimes(1);
++      expectDatasetQueryWithoutGlobalTruncation(esClient.esql.query.mock.calls[0][0] as any, [
++        'system.cpu',
++        'system.memory',
++      ]);
+     });
+ 
+     it('should not call registry if cached', async () => {

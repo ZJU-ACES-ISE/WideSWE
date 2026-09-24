@@ -1,0 +1,33 @@
+services:
+  boxo-hidden:
+    image: ecosyncbench/deps/ipfs-boxo-go:75f413c3fb9f
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/go-mod-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/go:1.26-bookworm
+        ECOSYNC_TASK_ID: ipfs_boxo_kubo_75f413c3fb9f
+        ECOSYNC_REPO: ipfs/boxo
+        ECOSYNC_REPO_PATH: repos/ipfs/boxo
+        ECOSYNC_BASE_COMMIT: 956010c62ded13a86198e9d1f4d2e83fc0c7ccf6
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 75f413c3fb9f-boxo
+    working_dir: /workspace/repos/ipfs/boxo
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-go-test.sh boxo-hidden ./pinning/pinner/dspinner'
+  kubo-hidden:
+    image: ecosyncbench/deps/ipfs-kubo-go:75f413c3fb9f
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/go-mod-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/go:1.26-bookworm
+        ECOSYNC_TASK_ID: ipfs_boxo_kubo_75f413c3fb9f
+        ECOSYNC_REPO: ipfs/kubo
+        ECOSYNC_REPO_PATH: repos/ipfs/kubo
+        ECOSYNC_BASE_COMMIT: d62ee27df49af17644bd231ce54596bdacee1514
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 75f413c3fb9f-kubo
+    working_dir: /workspace/repos/ipfs/kubo
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'export GOWORK=off GOMODCACHE="${GOMODCACHE:-/opt/ecosync/gomodcache}" GOPATH="${GOPATH:-/opt/ecosync/gopath}" GOCACHE="${GOCACHE:-/tmp/ecosync-gocache}" PATH="/usr/local/go/bin:$PATH"; go build -buildvcs=false -o cmd/ipfs/ipfs ./cmd/ipfs && bash /opt/ecosync/run-go-test.sh kubo-hidden -buildvcs=false ./test/cli -run "^TestProviderKeystoreSyncShutdownQuiet$"'

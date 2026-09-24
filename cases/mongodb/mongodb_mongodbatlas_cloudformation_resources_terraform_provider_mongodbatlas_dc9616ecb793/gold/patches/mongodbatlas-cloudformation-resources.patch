@@ -1,0 +1,138 @@
+diff --git a/cfn-resources/alert-configuration/cmd/resource/resource.go b/cfn-resources/alert-configuration/cmd/resource/resource.go
+index ab50784f..88cef238 100644
+--- a/cfn-resources/alert-configuration/cmd/resource/resource.go
++++ b/cfn-resources/alert-configuration/cmd/resource/resource.go
+@@ -175,10 +175,11 @@ func Update(req handler.Request, prevModel *Model, currentModel *Model) (handler
+ 	// server returns an error 500
+ 	projectID := *currentModel.ProjectId
+ 	id := *currentModel.Id
+-	alertReq, res, err := atlasV2.AlertConfigurationsApi.GetAlertConfig(context.Background(), projectID, id).Execute()
++	alertReq, getResp, err := atlasV2.AlertConfigurationsApi.GetAlertConfig(context.Background(), projectID, id).Execute()
+ 	if err != nil {
+-		return progressevents.GetFailedEventByResponse(err.Error(), res), nil
++		return progressevents.GetFailedEventByResponse(err.Error(), getResp), nil
+ 	}
++	defer getResp.Body.Close()
+ 
+ 	alertReq = convertToMongoModel(alertReq, currentModel)
+ 
+@@ -186,21 +187,22 @@ func Update(req handler.Request, prevModel *Model, currentModel *Model) (handler
+ 	alertReq.Created = nil
+ 	alertReq.Updated = nil
+ 	var alertModel *admin.GroupAlertsConfig
++	var updateResp *http.Response
+ 
+ 	// Cannot enable/disable ONLY via update (if only send enable as changed field server returns a 500 error)
+ 	// so have to use different method to change enabled.
+ 	if reflect.DeepEqual(alertReq, &admin.GroupAlertsConfig{Enabled: aws.Bool(true)}) ||
+ 		reflect.DeepEqual(alertReq, &admin.GroupAlertsConfig{Enabled: aws.Bool(false)}) {
+-		alertModel, res, err = atlasV2.AlertConfigurationsApi.ToggleAlertConfig(context.Background(), projectID, id, &admin.AlertsToggle{Enabled: alertReq.Enabled}).Execute()
++		alertModel, updateResp, err = atlasV2.AlertConfigurationsApi.ToggleAlertConfig(context.Background(), projectID, id, &admin.AlertsToggle{Enabled: alertReq.Enabled}).Execute()
+ 	} else {
+-		alertModel, res, err = atlasV2.AlertConfigurationsApi.UpdateAlertConfig(context.Background(), projectID, id, alertReq).Execute()
++		alertModel, updateResp, err = atlasV2.AlertConfigurationsApi.UpdateAlertConfig(context.Background(), projectID, id, alertReq).Execute()
+ 	}
+ 
+ 	if err != nil {
+ 		_, _ = logger.Warnf("Update - error: %+v", err)
+-		return progressevents.GetFailedEventByResponse(err.Error(), res), nil
++		return progressevents.GetFailedEventByResponse(err.Error(), updateResp), nil
+ 	}
+-	defer res.Body.Close()
++	defer updateResp.Body.Close()
+ 
+ 	currentModel = convertToUIModel(alertModel, currentModel)
+ 
+@@ -356,12 +358,8 @@ func convertToMongoModel(reqModel *admin.GroupAlertsConfig, currentModel *Model)
+ 	if currentModel.Matchers != nil {
+ 		reqModel.Matchers = expandAlertConfigurationMatchers(currentModel.Matchers)
+ 	}
+-	if currentModel.MetricThreshold != nil {
+-		reqModel.MetricThreshold = expandAlertConfigurationMetricThresholdConfig(currentModel)
+-	}
+-	if currentModel.Threshold != nil {
+-		reqModel.Threshold = expandAlertConfigurationThreshold(currentModel.Threshold)
+-	}
++	reqModel.MetricThreshold = expandAlertConfigurationMetricThresholdConfig(currentModel)
++	reqModel.Threshold = expandAlertConfigurationThreshold(currentModel.Threshold)
+ 	if currentModel.Notifications != nil {
+ 		reqModel.Notifications, _ = expandAlertConfigurationNotification(currentModel.Notifications)
+ 	}
+diff --git a/cfn-resources/alert-configuration/cmd/resource/resource_test.go b/cfn-resources/alert-configuration/cmd/resource/resource_test.go
+new file mode 100644
+index 00000000..4248e814
+--- /dev/null
++++ b/cfn-resources/alert-configuration/cmd/resource/resource_test.go
+@@ -0,0 +1,56 @@
++// Copyright 2026 MongoDB Inc
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//      http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package resource
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"go.mongodb.org/atlas-sdk/v20250312013/admin"
++)
++
++func TestConvertToMongoModel_ClearsAtlasReturnedThreshold(t *testing.T) {
++	metricThresholdName := "NORMALIZED_SYSTEM_CPU_USER"
++	eventTypeName := "OUTSIDE_STREAM_PROCESSOR_METRIC_THRESHOLD"
++
++	t.Run("only MetricThreshold in model clears Threshold", func(t *testing.T) {
++		atlasReq := &admin.GroupAlertsConfig{
++			MetricThreshold: &admin.FlexClusterMetricThreshold{MetricName: metricThresholdName},
++			Threshold:       &admin.StreamProcessorMetricThreshold{},
++		}
++		model := &Model{
++			EventTypeName:   &eventTypeName,
++			MetricThreshold: &MetricThresholdView{MetricName: &metricThresholdName},
++		}
++		result := convertToMongoModel(atlasReq, model)
++		assert.NotNil(t, result.MetricThreshold)
++		assert.Nil(t, result.Threshold)
++	})
++
++	t.Run("only Threshold in model clears MetricThreshold", func(t *testing.T) {
++		thresholdMetricName := "STREAM_PROCESSOR_KAFKA_LAG"
++		atlasReq := &admin.GroupAlertsConfig{
++			MetricThreshold: &admin.FlexClusterMetricThreshold{MetricName: metricThresholdName},
++			Threshold:       &admin.StreamProcessorMetricThreshold{},
++		}
++		model := &Model{
++			EventTypeName: &eventTypeName,
++			Threshold:     &IntegerThresholdView{MetricName: &thresholdMetricName},
++		}
++		result := convertToMongoModel(atlasReq, model)
++		assert.Nil(t, result.MetricThreshold)
++		assert.NotNil(t, result.Threshold)
++	})
++}
+diff --git a/cfn-resources/alert-configuration/test/cfn-test-create-inputs.sh b/cfn-resources/alert-configuration/test/cfn-test-create-inputs.sh
+index d691a908..33ebe3e6 100755
+--- a/cfn-resources/alert-configuration/test/cfn-test-create-inputs.sh
++++ b/cfn-resources/alert-configuration/test/cfn-test-create-inputs.sh
+@@ -11,9 +11,10 @@ set -o pipefail
+ function usage {
+ 	echo "usage:$0 <project_name>"
+ 	echo "Creates a new project"
++	exit 1
+ }
+ 
+-if [ "$#" -ne 2 ]; then usage; fi
++if [ "$#" -ne 1 ]; then usage; fi
+ if [[ "$*" == help ]]; then usage; fi
+ 
+ #set profile - relevant for contract tests which define a custom profile

@@ -1,0 +1,371 @@
+diff --git a/__tests__/buildx/build.test.ts b/__tests__/buildx/build.test.ts
+index 9566bf5..cbefa78 100644
+--- a/__tests__/buildx/build.test.ts
++++ b/__tests__/buildx/build.test.ts
+@@ -22,6 +22,8 @@ import * as rimraf from 'rimraf';
+ 
+ import {Context} from '../../src/context.js';
+ import {Build} from '../../src/buildx/build.js';
++import {Buildx} from '../../src/buildx/buildx.js';
++import {GitHub} from '../../src/github/github.js';
+ 
+ const fixturesDir = path.join(__dirname, '..', '.fixtures');
+ const tmpDir = fs.mkdtempSync(path.join(process.env.TEMP || os.tmpdir(), 'buildx-build-'));
+@@ -41,6 +43,105 @@ afterEach(() => {
+   rimraf.sync(tmpDir);
+ });
+ 
++describe('gitContext', () => {
++  const originalEnv = process.env;
++  beforeEach(() => {
++    vi.resetModules();
++    process.env = {
++      ...originalEnv,
++      DOCKER_DEFAULT_GIT_CONTEXT_PR_HEAD_REF: '',
++      BUILDX_SEND_GIT_QUERY_AS_INPUT: ''
++    };
++  });
++  afterEach(() => {
++    process.env = originalEnv;
++  });
++
++  type GitContextTestCase = {
++    ref: string;
++    format: 'fragment' | 'query' | undefined;
++    prHeadRef: boolean;
++    sendGitQueryAsInput: boolean;
++    buildxQuerySupport: boolean;
++  };
++
++  type GitContextMethod = (...args: unknown[]) => string | Promise<string>;
++
++  async function invokeGitContext(input: GitContextTestCase, sha: string, expected: string): Promise<string> {
++    const {ref, format, buildxQuerySupport} = input;
++    const githubContext = GitHub.context;
++    const versionSpy = vi.spyOn(Buildx.prototype, 'versionSatisfies').mockResolvedValue(buildxQuerySupport);
++    const contextSpy = vi.spyOn(GitHub, 'context', 'get').mockReturnValue({...githubContext, ref, sha});
++    try {
++      const build = new Build({buildx: new Buildx()});
++      const methods: [GitContextMethod | undefined, unknown][] = [
++        [(build as unknown as {gitContext?: GitContextMethod}).gitContext, build],
++        [(Build as unknown as {gitContext?: GitContextMethod}).gitContext, Build]
++      ];
++      const callShapes: unknown[][] = [
++        [ref, sha, format],
++        [format, ref, sha],
++        [format]
++      ];
++      let firstResult: string | undefined;
++      for (const [method, receiver] of methods) {
++        if (typeof method !== 'function') {
++          continue;
++        }
++        for (const args of callShapes) {
++          try {
++            const result = await method.call(receiver, ...args);
++            firstResult ??= result;
++            if (result === expected) {
++              return result;
++            }
++          } catch {
++            // Try another common public call shape.
++          }
++        }
++      }
++      return firstResult ?? '';
++    } finally {
++      contextSpy.mockRestore();
++      versionSpy.mockRestore();
++    }
++  }
++
++  // prettier-ignore
++  const gitContextCases: [GitContextTestCase, string][] = [
++    // no format set (defaults to fragment)
++    [{ref: 'refs/heads/master', format: undefined, prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'master', format: undefined, prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/pull/15/merge', format: undefined, prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#refs/pull/15/merge'],
++    [{ref: 'refs/tags/v1.0.0', format: undefined, prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/pull/15/merge', format: undefined, prHeadRef: true, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#refs/pull/15/head'],
++    // no format set (defaults to query only when client-side query resolution is enabled and supported)
++    [{ref: 'refs/heads/master', format: undefined, prHeadRef: false, sendGitQueryAsInput: true, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git?ref=refs/heads/master&checksum=860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/pull/15/merge', format: undefined, prHeadRef: false, sendGitQueryAsInput: true, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git?ref=refs/pull/15/merge&checksum=860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/pull/15/merge', format: undefined, prHeadRef: true, sendGitQueryAsInput: true, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git?ref=refs/pull/15/head&checksum=860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/heads/master', format: undefined, prHeadRef: false, sendGitQueryAsInput: true, buildxQuerySupport: false}, 'https://github.com/docker/actions-toolkit.git#860c1904a1ce19322e91ac35af1ab07466440c37'],
++    // query format
++    [{ref: 'refs/heads/master', format: 'query', prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git?ref=refs/heads/master&checksum=860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'master', format: 'query', prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git?ref=refs/heads/master&checksum=860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/pull/15/merge', format: 'query', prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git?ref=refs/pull/15/merge&checksum=860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/tags/v1.0.0', format: 'query', prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git?ref=refs/tags/v1.0.0&checksum=860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/pull/15/merge', format: 'query', prHeadRef: true, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git?ref=refs/pull/15/head&checksum=860c1904a1ce19322e91ac35af1ab07466440c37'],
++    // fragment format
++    [{ref: 'refs/heads/master', format: 'fragment', prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'master', format: 'fragment', prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/pull/15/merge', format: 'fragment', prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#refs/pull/15/merge'],
++    [{ref: 'refs/tags/v1.0.0', format: 'fragment', prHeadRef: false, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#860c1904a1ce19322e91ac35af1ab07466440c37'],
++    [{ref: 'refs/pull/15/merge', format: 'fragment', prHeadRef: true, sendGitQueryAsInput: false, buildxQuerySupport: true}, 'https://github.com/docker/actions-toolkit.git#refs/pull/15/head'],
++  ];
++
++  test.each(gitContextCases)('given %o should return %o', async (input: GitContextTestCase, expected: string) => {
++    const {ref, format, prHeadRef, sendGitQueryAsInput, buildxQuerySupport} = input;
++    process.env.DOCKER_DEFAULT_GIT_CONTEXT_PR_HEAD_REF = prHeadRef ? 'true' : '';
++    process.env.BUILDX_SEND_GIT_QUERY_AS_INPUT = sendGitQueryAsInput ? 'true' : '';
++    expect(await invokeGitContext(input, '860c1904a1ce19322e91ac35af1ab07466440c37', expected)).toEqual(expected);
++  });
++});
++
+ describe('resolveImageID', () => {
+   it('matches', async () => {
+     const imageID = 'sha256:bfb45ab72e46908183546477a08f8867fc40cebadd00af54b071b097aed127a9';
+diff --git a/__tests__/context.test.ts b/__tests__/context.test.ts
+index 1d23fd9..d1b452b 100644
+--- a/__tests__/context.test.ts
++++ b/__tests__/context.test.ts
+@@ -14,7 +14,7 @@
+  * limitations under the License.
+  */
+ 
+-import {describe, expect, vi, it, afterEach, beforeEach, test} from 'vitest';
++import {describe, expect, it, afterEach} from 'vitest';
+ import fs from 'fs';
+ import os from 'os';
+ import path from 'path';
+@@ -23,57 +23,35 @@ import * as rimraf from 'rimraf';
+ import {Context} from '../src/context.js';
+ 
+ const tmpDir = fs.mkdtempSync(path.join(process.env.TEMP || os.tmpdir(), 'context-'));
+-const tmpName = path.join(tmpDir, '.tmpname-vi');
+-
+-vi.spyOn(Context, 'tmpDir').mockImplementation((): string => {
+-  fs.mkdirSync(tmpDir, {recursive: true});
+-  return tmpDir;
+-});
+-
+-vi.spyOn(Context, 'tmpName').mockImplementation((): string => {
+-  return tmpName;
+-});
+ 
+ afterEach(() => {
+   rimraf.sync(tmpDir);
++  fs.mkdirSync(tmpDir, {recursive: true});
+ });
+ 
+-describe('gitRef', () => {
+-  it('returns refs/heads/master', async () => {
+-    expect(Context.gitRef()).toEqual('refs/heads/master');
++describe('tmpDir', () => {
++  it('returns an existing directory and keeps it stable', () => {
++    const dir = Context.tmpDir();
++    expect(fs.existsSync(dir)).toBe(true);
++    expect(fs.statSync(dir).isDirectory()).toBe(true);
++    expect(Context.tmpDir()).toEqual(dir);
+   });
+ });
+ 
+-describe('parseGitRef', () => {
+-  const originalEnv = process.env;
+-  beforeEach(() => {
+-    vi.resetModules();
+-    process.env = {
+-      ...originalEnv,
+-      DOCKER_GIT_CONTEXT_PR_HEAD_REF: ''
+-    };
+-  });
+-  afterEach(() => {
+-    process.env = originalEnv;
++describe('tmpName', () => {
++  it('returns a path for the provided tmpdir and template', () => {
++    const name = Context.tmpName({
++      tmpdir: tmpDir,
++      template: '.tmpname-XXXXXX'
++    });
++    expect(path.dirname(name)).toEqual(tmpDir);
++    expect(path.basename(name)).toMatch(/^\.tmpname-/);
++    expect(fs.existsSync(name)).toBe(false);
+   });
+-  // prettier-ignore
+-  test.each([
+-    ['refs/heads/master', '860c1904a1ce19322e91ac35af1ab07466440c37', false, '860c1904a1ce19322e91ac35af1ab07466440c37'],
+-    ['master', '860c1904a1ce19322e91ac35af1ab07466440c37', false, '860c1904a1ce19322e91ac35af1ab07466440c37'],
+-    ['refs/pull/15/merge', '860c1904a1ce19322e91ac35af1ab07466440c37', false, 'refs/pull/15/merge'],
+-    ['refs/heads/master', '', false, 'refs/heads/master'],
+-    ['master', '', false, 'master'],
+-    ['refs/tags/v1.0.0', '', false, 'refs/tags/v1.0.0'],
+-    ['refs/pull/15/merge', '', false, 'refs/pull/15/merge'],
+-    ['refs/pull/15/merge', '', true, 'refs/pull/15/head'],
+-  ])('given %o and %o, should return %o', async (ref: string, sha: string, prHeadRef: boolean, expected: string) => {
+-    process.env.DOCKER_DEFAULT_GIT_CONTEXT_PR_HEAD_REF = prHeadRef ? 'true' : '';
+-    expect(Context.parseGitRef(ref, sha)).toEqual(expected);
+-  });
+-});
+ 
+-describe('gitContext', () => {
+-  it('returns refs/heads/master', async () => {
+-    expect(Context.gitContext()).toEqual('https://github.com/docker/actions-toolkit.git#refs/heads/master');
++  it('returns different paths on consecutive calls', () => {
++    const first = Context.tmpName({tmpdir: tmpDir, template: '.tmpname-XXXXXX'});
++    const second = Context.tmpName({tmpdir: tmpDir, template: '.tmpname-XXXXXX'});
++    expect(first).not.toEqual(second);
+   });
+ });
+diff --git a/__tests__/util.test.ts b/__tests__/util.test.ts
+index 18c3f62..09c9567 100644
+--- a/__tests__/util.test.ts
++++ b/__tests__/util.test.ts
+@@ -342,6 +342,17 @@ describe('parseBool', () => {
+   });
+ });
+ 
++describe('parseBoolOrDefault', () => {
++  it('returns the explicit default value when input is unset', () => {
++    expect(Util.parseBoolOrDefault(undefined, false)).toBe(false);
++  });
++
++  it('returns the explicit default value when input is invalid', () => {
++    expect(Util.parseBoolOrDefault('asdf', false)).toBe(false);
++    expect(Util.parseBoolOrDefault('asdf', true)).toBe(true);
++  });
++});
++
+ describe('formatFileSize', () => {
+   test('should return "0 Bytes" when given 0 bytes', () => {
+     expect(Util.formatFileSize(0)).toBe('0 Bytes');
+diff --git a/src/buildx/build.ts b/src/buildx/build.ts
+index 4de6cea..a3a6097 100644
+--- a/src/buildx/build.ts
++++ b/src/buildx/build.ts
+@@ -17,6 +17,7 @@
+ import fs from 'fs';
+ import path from 'path';
+ import * as core from '@actions/core';
++import * as github from '@actions/github';
+ import {parse} from 'csv-parse/sync';
+ 
+ import {Buildx} from './buildx.js';
+@@ -24,7 +25,7 @@ import {Context} from '../context.js';
+ import {GitHub} from '../github/github.js';
+ import {Util} from '../util.js';
+ 
+-import {BuildMetadata} from '../types/buildx/build.js';
++import {BuildMetadata, GitContextFormat} from '../types/buildx/build.js';
+ import {VertexWarning} from '../types/buildkit/client.js';
+ import {ProvenancePredicate} from '../types/intoto/slsa_provenance/v0.2/provenance.js';
+ 
+@@ -48,6 +49,33 @@ export class Build {
+     this.metadataFilename = `build-metadata-${Util.generateRandomString()}.json`;
+   }
+ 
++  public async gitContext(ref?: string, sha?: string, format?: GitContextFormat): Promise<string> {
++    const setPullRequestHeadRef = Util.parseBoolOrDefault(process.env.DOCKER_DEFAULT_GIT_CONTEXT_PR_HEAD_REF);
++    ref = ref || github.context.ref;
++    sha = sha || github.context.sha;
++    if (!ref.startsWith('refs/')) {
++      ref = `refs/heads/${ref}`;
++    } else if (ref.startsWith(`refs/pull/`) && setPullRequestHeadRef) {
++      ref = ref.replace(/\/merge$/g, '/head');
++    }
++    const baseURL = `${GitHub.serverURL}/${github.context.repo.owner}/${github.context.repo.repo}.git`;
++    if (!format) {
++      const sendGitQueryAsInput = Util.parseBoolOrDefault(process.env.BUILDX_SEND_GIT_QUERY_AS_INPUT);
++      if (sendGitQueryAsInput && (await this.buildx.versionSatisfies('>=0.29.0'))) {
++        format = 'query';
++      } else {
++        format = 'fragment';
++      }
++    }
++    if (format === 'query') {
++      return `${baseURL}?ref=${ref}${sha ? `&checksum=${sha}` : ''}`;
++    }
++    if (sha && !ref.startsWith(`refs/pull/`)) {
++      return `${baseURL}#${sha}`;
++    }
++    return `${baseURL}#${ref}`;
++  }
++
+   public getImageIDFilePath(): string {
+     return path.join(Context.tmpDir(), this.iidFilename);
+   }
+diff --git a/src/context.ts b/src/context.ts
+index 85d90a4..8b583cd 100644
+--- a/src/context.ts
++++ b/src/context.ts
+@@ -18,9 +18,6 @@ import fs from 'fs';
+ import os from 'os';
+ import path from 'path';
+ import * as tmp from 'tmp';
+-import * as github from '@actions/github';
+-
+-import {GitHub} from './github/github.js';
+ 
+ export class Context {
+   private static readonly _tmpDir = fs.mkdtempSync(path.join(Context.ensureDirExists(process.env.RUNNER_TEMP || os.tmpdir()), 'docker-actions-toolkit-'));
+@@ -37,25 +34,4 @@ export class Context {
+   public static tmpName(options?: tmp.TmpNameOptions): string {
+     return tmp.tmpNameSync(options);
+   }
+-
+-  public static gitRef(): string {
+-    return Context.parseGitRef(github.context.ref, github.context.sha);
+-  }
+-
+-  public static parseGitRef(ref: string, sha: string): string {
+-    const setPullRequestHeadRef: boolean = !!(process.env.DOCKER_DEFAULT_GIT_CONTEXT_PR_HEAD_REF && process.env.DOCKER_DEFAULT_GIT_CONTEXT_PR_HEAD_REF === 'true');
+-    if (sha && ref && !ref.startsWith('refs/')) {
+-      ref = `refs/heads/${ref}`;
+-    }
+-    if (sha && !ref.startsWith(`refs/pull/`)) {
+-      ref = sha;
+-    } else if (ref.startsWith(`refs/pull/`) && setPullRequestHeadRef) {
+-      ref = ref.replace(/\/merge$/g, '/head');
+-    }
+-    return ref;
+-  }
+-
+-  public static gitContext(): string {
+-    return `${GitHub.serverURL}/${github.context.repo.owner}/${github.context.repo.repo}.git#${Context.gitRef()}`;
+-  }
+ }
+diff --git a/src/types/buildx/build.ts b/src/types/buildx/build.ts
+index e31470c..d12214e 100644
+--- a/src/types/buildx/build.ts
++++ b/src/types/buildx/build.ts
+@@ -14,6 +14,8 @@
+  * limitations under the License.
+  */
+ 
++export type GitContextFormat = 'fragment' | 'query';
++
+ export type BuildMetadata = {
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   [key: string]: any;
+diff --git a/src/util.ts b/src/util.ts
+index c35e882..25bb098 100644
+--- a/src/util.ts
++++ b/src/util.ts
+@@ -157,7 +157,10 @@ export class Util {
+   }
+ 
+   // https://github.com/golang/go/blob/f6b93a4c358b28b350dd8fe1780c1f78e520c09c/src/strconv/atob.go#L7-L18
+-  public static parseBool(str: string): boolean {
++  public static parseBool(str: string | undefined): boolean {
++    if (str === undefined) {
++      return false;
++    }
+     switch (str) {
+       case '1':
+       case 't':
+@@ -178,6 +181,14 @@ export class Util {
+     }
+   }
+ 
++  public static parseBoolOrDefault(str: string | undefined, defaultValue = false): boolean {
++    try {
++      return this.parseBool(str);
++    } catch {
++      return defaultValue;
++    }
++  }
++
+   public static formatFileSize(bytes: number): string {
+     if (bytes === 0) return '0 Bytes';
+     const k = 1024;

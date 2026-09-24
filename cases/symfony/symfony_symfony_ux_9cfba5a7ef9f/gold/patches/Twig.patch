@@ -1,0 +1,106 @@
+diff --git a/src/Extension/EscaperExtension.php b/src/Extension/EscaperExtension.php
+index c5625fa6..6d9d1ce2 100644
+--- a/src/Extension/EscaperExtension.php
++++ b/src/Extension/EscaperExtension.php
+@@ -76,7 +76,7 @@ final class EscaperExtension extends AbstractExtension
+         }
+ 
+         $this->environment = $environment;
+-        $this->escaper = $environment->getRuntime(EscaperRuntime::class);
++        $this->escaper = null;
+     }
+ 
+     /**
+@@ -140,16 +140,14 @@ final class EscaperExtension extends AbstractExtension
+     {
+         trigger_deprecation('twig/twig', '3.10', 'The "%s()" method is deprecated, use the "Twig\Runtime\EscaperRuntime::setEscaper()" method instead (be warned that Environment is not passed anymore to the callable).', __METHOD__);
+ 
+-        if (!isset($this->environment)) {
+-            throw new \LogicException(\sprintf('You must call "setEnvironment()" before calling "%s()".', __METHOD__));
+-        }
++        $escaper = $this->getEscaper(__METHOD__);
+ 
+         $this->escapers[$strategy] = $callable;
+         $callable = function ($string, $charset) use ($callable) {
+             return $callable($this->environment, $string, $charset);
+         };
+ 
+-        $this->escaper->setEscaper($strategy, $callable);
++        $escaper->setEscaper($strategy, $callable);
+     }
+ 
+     /**
+@@ -175,11 +173,7 @@ final class EscaperExtension extends AbstractExtension
+     {
+         trigger_deprecation('twig/twig', '3.10', 'The "%s()" method is deprecated, use the "Twig\Runtime\EscaperRuntime::setSafeClasses()" method instead.', __METHOD__);
+ 
+-        if (!isset($this->escaper)) {
+-            throw new \LogicException(\sprintf('You must call "setEnvironment()" before calling "%s()".', __METHOD__));
+-        }
+-
+-        $this->escaper->setSafeClasses($safeClasses);
++        $this->getEscaper(__METHOD__)->setSafeClasses($safeClasses);
+     }
+ 
+     /**
+@@ -191,11 +185,20 @@ final class EscaperExtension extends AbstractExtension
+     {
+         trigger_deprecation('twig/twig', '3.10', 'The "%s()" method is deprecated, use the "Twig\Runtime\EscaperRuntime::addSafeClass()" method instead.', __METHOD__);
+ 
+-        if (!isset($this->escaper)) {
+-            throw new \LogicException(\sprintf('You must call "setEnvironment()" before calling "%s()".', __METHOD__));
++        $this->getEscaper(__METHOD__)->addSafeClass($class, $strategies);
++    }
++
++    private function getEscaper(string $fromMethod): EscaperRuntime
++    {
++        if (isset($this->escaper)) {
++            return $this->escaper;
++        }
++
++        if (isset($this->environment)) {
++            return $this->escaper = $this->environment->getRuntime(EscaperRuntime::class);
+         }
+ 
+-        $this->escaper->addSafeClass($class, $strategies);
++        throw new \LogicException(\sprintf('You must call "setEnvironment()" before calling "%s()".', $fromMethod));
+     }
+ 
+     /**
+diff --git a/tests/Extension/EscaperTest.php b/tests/Extension/EscaperTest.php
+index 52f06950..09aa4ca7 100644
+--- a/tests/Extension/EscaperTest.php
++++ b/tests/Extension/EscaperTest.php
+@@ -25,6 +25,7 @@ use Twig\Environment;
+ use Twig\Extension\EscaperExtension;
+ use Twig\Loader\ArrayLoader;
+ use Twig\Runtime\EscaperRuntime;
++use Twig\RuntimeLoader\FactoryRuntimeLoader;
+ 
+ class EscaperTest extends TestCase
+ {
+@@ -80,6 +81,24 @@ class EscaperTest extends TestCase
+         $this->assertSame('foo**ISO-8859-1**UTF-8**again', $env2->getRuntime(EscaperRuntime::class)->escape('foo', 'foo', 'ISO-8859-1'));
+     }
+ 
++    /**
++     * @group legacy
++     */
++    public function testSafeClassesUseCustomRuntimeLoader()
++    {
++        $runtime = new EscaperRuntime();
++        $twig = new Environment(new ArrayLoader());
++        $twig->addRuntimeLoader(new FactoryRuntimeLoader([
++            EscaperRuntime::class => static fn () => $runtime,
++        ]));
++
++        $escaperExt = $twig->getExtension(EscaperExtension::class);
++        $escaperExt->addSafeClass('ThisClassIsSafe', ['html']);
++
++        $this->assertSame($runtime, $twig->getRuntime(EscaperRuntime::class));
++        $this->assertArrayHasKey('ThisClassIsSafe', $runtime->safeClasses);
++    }
++
+     public function testLastModified()
+     {
+         $this->assertGreaterThan(1000000000, (new EscaperExtension())->getLastModified());

@@ -1,0 +1,2732 @@
+diff --git a/docs/source/en/_toctree.yml b/docs/source/en/_toctree.yml
+index 92b526c2b9..a2f530b83a 100644
+--- a/docs/source/en/_toctree.yml
++++ b/docs/source/en/_toctree.yml
+@@ -1002,6 +1002,8 @@
+         title: Bark
+       - local: model_doc/clap
+         title: CLAP
++      - local: model_doc/cohere_asr
++        title: Cohere ASR
+       - local: model_doc/csm
+         title: CSM
+       - local: model_doc/dac
+diff --git a/docs/source/en/model_doc/cohere_asr.md b/docs/source/en/model_doc/cohere_asr.md
+new file mode 100644
+index 0000000000..191e47b5f5
+--- /dev/null
++++ b/docs/source/en/model_doc/cohere_asr.md
+@@ -0,0 +1,153 @@
++<!--Copyright 2026 the HuggingFace Team. All rights reserved.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++
++⚠️ Note that this file is in Markdown but contain specific syntax for our doc-builder (similar to MDX) that may not be rendered properly in your Markdown viewer.
++
++-->
++*This model was released on {release_date} and added to Hugging Face Transformers on 2026-03-26.*
++
++# CohereAsr
++
++## Overview
++
++Cohere ASR, [released](https://cohere.com/blog/transcribe) by Cohere on March 26th, 2026, is a 2B parameter Conformer-based encoder-decoder speech recognition model.
++
++This model was contributed by [Eustache Le Bihan](https://huggingface.co/eustlb).
++
++## Usage
++
++### Short-form transcription
++
++```python
++from transformers import AutoProcessor, CohereAsrForConditionalGeneration
++from transformers.audio_utils import load_audio
++
++revision = "refs/pr/6"
++processor = AutoProcessor.from_pretrained("CohereLabs/cohere-transcribe-03-2026", revision=revision)
++model = CohereAsrForConditionalGeneration.from_pretrained("CohereLabs/cohere-transcribe-03-2026", device_map="auto", revision=revision)
++
++audio = load_audio(
++    "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/bcn_weather.mp3",
++    sampling_rate=16000,
++)
++
++inputs = processor(audio, sampling_rate=16000, return_tensors="pt", language="en")
++inputs.to(model.device, dtype=model.dtype)
++
++outputs = model.generate(**inputs, max_new_tokens=256)
++text = processor.decode(outputs, skip_special_tokens=True)
++print(text)
++```
++
++### Punctuation control
++
++Pass `punctuation=False` to obtain lower-cased output without punctuation marks.
++
++```python
++inputs_pnc = processor(audio, sampling_rate=16000, return_tensors="pt", language="en", punctuation=True)
++inputs_nopnc = processor(audio, sampling_rate=16000, return_tensors="pt", language="en", punctuation=False)
++```
++
++### Long-form transcription
++
++For audio longer than the feature extractor's `max_audio_clip_s`, the feature extractor automatically splits the waveform into chunks.
++The processor reassembles the per-chunk transcriptions using the returned `audio_chunk_index`.
++
++```python
++audio_long = load_audio(
++    "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/obama_first_45_secs.mp3",
++    sampling_rate=16000,
++)
++
++inputs = processor(audio=audio_long, return_tensors="pt", language="en", sampling_rate=16000)
++audio_chunk_index = inputs.get("audio_chunk_index")
++inputs.to(model.device, dtype=model.dtype)
++
++outputs = model.generate(**inputs, max_new_tokens=256)
++text = processor.decode(outputs, skip_special_tokens=True, audio_chunk_index=audio_chunk_index, language="en")
++print(text)
++```
++
++### Batched inference
++
++Multiple audio files can be processed in a single call. When the batch mixes short-form and long-form audio, the
++processor handles chunking and reassembly.
++
++```python
++audio_short = load_audio(
++    "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/bcn_weather.mp3",
++    sampling_rate=16000,
++)
++audio_long = load_audio(
++    "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/obama_first_45_secs.mp3",
++    sampling_rate=16000,
++)
++
++inputs = processor([audio_short, audio_long], sampling_rate=16000, return_tensors="pt", language="en")
++audio_chunk_index = inputs.get("audio_chunk_index")
++inputs.to(model.device, dtype=model.dtype)
++
++outputs = model.generate(**inputs, max_new_tokens=256)
++text = processor.decode(
++    outputs, skip_special_tokens=True, audio_chunk_index=audio_chunk_index, language="en"
++)
++print(text)
++```
++
++### Non-English transcription
++
++Specify the language code to transcribe in any of the 14 supported languages.
++
++```python
++audio_es = load_audio(
++    "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/fleur_es_sample.wav",
++    sampling_rate=16000,
++)
++
++inputs = processor(audio_es, sampling_rate=16000, return_tensors="pt", language="es", punctuation=True)
++inputs.to(model.device, dtype=model.dtype)
++
++outputs = model.generate(**inputs, max_new_tokens=256)
++text = processor.decode(outputs, skip_special_tokens=True)
++print(text)
++```
++
++## CohereAsrConfig
++
++[[autodoc]] CohereAsrConfig
++
++## CohereAsrFeatureExtractor
++
++[[autodoc]] CohereAsrFeatureExtractor
++    - __call__
++
++## CohereAsrProcessor
++
++[[autodoc]] CohereAsrProcessor
++    - __call__
++
++## CohereAsrPreTrainedModel
++
++[[autodoc]] CohereAsrPreTrainedModel
++    - forward
++
++## CohereAsrModel
++
++[[autodoc]] CohereAsrModel
++    - forward
++
++## CohereAsrForConditionalGeneration
++
++[[autodoc]] CohereAsrForConditionalGeneration
++    - forward
+diff --git a/src/transformers/conversion_mapping.py b/src/transformers/conversion_mapping.py
+index 04bcc7e101..e96a6457bf 100755
+--- a/src/transformers/conversion_mapping.py
++++ b/src/transformers/conversion_mapping.py
+@@ -498,6 +498,39 @@ def _build_checkpoint_conversion_mapping():
+     mapping["qwen3_5_moe_text"] = mapping["qwen3_5_text"].copy()
+     mapping["qwen3_5_moe_text"] += mapping["qwen2_moe"].copy()
+ 
++    mapping["cohere_asr"] = [
++        WeightRenaming(r"encoder\.pre_encode\.conv\.", r"encoder.subsampling.layers."),
++        WeightRenaming(r"encoder\.pre_encode\.out\.", r"encoder.subsampling.linear."),
++        WeightRenaming(r"transf_decoder\._embedding\.position_embedding\.pos_enc", r"decoder.pos_emb.weight"),
++        WeightRenaming(r"transf_decoder\._embedding\.token_embedding", r"decoder.embed_tokens"),
++        WeightRenaming(r"transf_decoder\._embedding\.layer_norm", r"decoder.embedding_layernorm"),
++        WeightRenaming(r"transf_decoder\._decoder\.final_layer_norm", r"decoder.norm"),
++        WeightRenaming(r"transf_decoder\._decoder\.layers", r"decoder.layers"),
++        WeightRenaming(r"encoder_decoder_proj\.", r"decoder.proj."),
++        WeightRenaming(r"encoder\.(.+)\.self_attn\.linear_q", r"encoder.(.+).self_attn.q_proj"),
++        WeightRenaming(r"encoder\.(.+)\.self_attn\.linear_k", r"encoder.(.+).self_attn.k_proj"),
++        WeightRenaming(r"encoder\.(.+)\.self_attn\.linear_v", r"encoder.(.+).self_attn.v_proj"),
++        WeightRenaming(r"encoder\.(.+)\.self_attn\.linear_out", r"encoder.(.+).self_attn.o_proj"),
++        WeightRenaming(r"encoder\.(.+)\.self_attn\.linear_pos", r"encoder.(.+).self_attn.relative_k_proj"),
++        WeightRenaming(r"encoder\.(.+)\.self_attn\.pos_bias_u", r"encoder.(.+).self_attn.bias_u"),
++        WeightRenaming(r"encoder\.(.+)\.self_attn\.pos_bias_v", r"encoder.(.+).self_attn.bias_v"),
++        WeightRenaming(r"\.first_sub_layer\.query_net", r".self_attn.q_proj"),
++        WeightRenaming(r"\.first_sub_layer\.key_net", r".self_attn.k_proj"),
++        WeightRenaming(r"\.first_sub_layer\.value_net", r".self_attn.v_proj"),
++        WeightRenaming(r"\.first_sub_layer\.out_projection", r".self_attn.o_proj"),
++        WeightRenaming(r"\.second_sub_layer\.query_net", r".encoder_attn.q_proj"),
++        WeightRenaming(r"\.second_sub_layer\.key_net", r".encoder_attn.k_proj"),
++        WeightRenaming(r"\.second_sub_layer\.value_net", r".encoder_attn.v_proj"),
++        WeightRenaming(r"\.second_sub_layer\.out_projection", r".encoder_attn.o_proj"),
++        WeightRenaming(r"\.third_sub_layer\.dense_in", r".mlp.fc1"),
++        WeightRenaming(r"\.third_sub_layer\.dense_out", r".mlp.fc2"),
++        WeightRenaming(r"\.layer_norm_1\.", r".input_layernorm."),
++        WeightRenaming(r"\.layer_norm_2\.", r".post_attention_layernorm."),
++        WeightRenaming(r"\.layer_norm_3\.", r".final_layernorm."),
++        WeightRenaming(r"\.conv\.batch_norm", r".conv.norm"),
++        WeightRenaming(r"log_softmax\.mlp\.layer0", r"proj_out"),
++    ]
++
+     for model_type, base_pattern in _MODEL_TO_CONVERSION_PATTERN.items():
+         if model_type in mapping:
+             continue
+diff --git a/src/transformers/models/__init__.py b/src/transformers/models/__init__.py
+index 35c66a904a..ebffc5ee10 100644
+--- a/src/transformers/models/__init__.py
++++ b/src/transformers/models/__init__.py
+@@ -69,6 +69,7 @@ if TYPE_CHECKING:
+     from .cohere import *
+     from .cohere2 import *
+     from .cohere2_vision import *
++    from .cohere_asr import *
+     from .colmodernvbert import *
+     from .colpali import *
+     from .colqwen2 import *
+diff --git a/src/transformers/models/auto/configuration_auto.py b/src/transformers/models/auto/configuration_auto.py
+index f78c491c4c..2413e53dee 100644
+--- a/src/transformers/models/auto/configuration_auto.py
++++ b/src/transformers/models/auto/configuration_auto.py
+@@ -86,6 +86,7 @@ CONFIG_MAPPING_NAMES = OrderedDict[str, str](
+         ("cohere", "CohereConfig"),
+         ("cohere2", "Cohere2Config"),
+         ("cohere2_vision", "Cohere2VisionConfig"),
++        ("cohere_asr", "CohereAsrConfig"),
+         ("colmodernvbert", "ColModernVBertConfig"),
+         ("colpali", "ColPaliConfig"),
+         ("colqwen2", "ColQwen2Config"),
+@@ -589,6 +590,7 @@ MODEL_NAMES_MAPPING = OrderedDict[str, str](
+         ("cohere", "Cohere"),
+         ("cohere2", "Cohere2"),
+         ("cohere2_vision", "Cohere2Vision"),
++        ("cohere_asr", "CohereASR"),
+         ("colmodernvbert", "ColModernVBert"),
+         ("colpali", "ColPali"),
+         ("colqwen2", "ColQwen2"),
+diff --git a/src/transformers/models/auto/feature_extraction_auto.py b/src/transformers/models/auto/feature_extraction_auto.py
+index 68d335b8a7..475328188b 100644
+--- a/src/transformers/models/auto/feature_extraction_auto.py
++++ b/src/transformers/models/auto/feature_extraction_auto.py
+@@ -39,6 +39,7 @@ FEATURE_EXTRACTOR_MAPPING_NAMES = OrderedDict(
+         ("audioflamingo3", "WhisperFeatureExtractor"),
+         ("clap", "ClapFeatureExtractor"),
+         ("clvp", "ClvpFeatureExtractor"),
++        ("cohere_asr", "CohereAsrFeatureExtractor"),
+         ("csm", "EncodecFeatureExtractor"),
+         ("dac", "DacFeatureExtractor"),
+         ("data2vec-audio", "Wav2Vec2FeatureExtractor"),
+diff --git a/src/transformers/models/auto/modeling_auto.py b/src/transformers/models/auto/modeling_auto.py
+index 402ad232b6..fe466544c9 100644
+--- a/src/transformers/models/auto/modeling_auto.py
++++ b/src/transformers/models/auto/modeling_auto.py
+@@ -92,6 +92,7 @@ MODEL_MAPPING_NAMES = OrderedDict(
+         ("cohere", "CohereModel"),
+         ("cohere2", "Cohere2Model"),
+         ("cohere2_vision", "Cohere2VisionModel"),
++        ("cohere_asr", "CohereAsrModel"),
+         ("conditional_detr", "ConditionalDetrModel"),
+         ("convbert", "ConvBertModel"),
+         ("convnext", "ConvNextModel"),
+@@ -1186,6 +1187,7 @@ MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING_NAMES = OrderedDict(
+ 
+ MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES = OrderedDict(
+     [
++        ("cohere_asr", "CohereAsrForConditionalGeneration"),
+         ("dia", "DiaForConditionalGeneration"),
+         ("granite_speech", "GraniteSpeechForConditionalGeneration"),
+         ("kyutai_speech_to_text", "KyutaiSpeechToTextForConditionalGeneration"),
+diff --git a/src/transformers/models/auto/processing_auto.py b/src/transformers/models/auto/processing_auto.py
+index 769e8080df..ab34dfad8e 100644
+--- a/src/transformers/models/auto/processing_auto.py
++++ b/src/transformers/models/auto/processing_auto.py
+@@ -65,6 +65,7 @@ else:
+             ("clipseg", "CLIPSegProcessor"),
+             ("clvp", "ClvpProcessor"),
+             ("cohere2_vision", "Cohere2VisionProcessor"),
++            ("cohere_asr", "CohereAsrProcessor"),
+             ("colmodernvbert", "ColModernVBertProcessor"),
+             ("colpali", "ColPaliProcessor"),
+             ("colqwen2", "ColQwen2Processor"),
+diff --git a/src/transformers/models/auto/tokenization_auto.py b/src/transformers/models/auto/tokenization_auto.py
+index 95af883922..8a199d4487 100644
+--- a/src/transformers/models/auto/tokenization_auto.py
++++ b/src/transformers/models/auto/tokenization_auto.py
+@@ -374,6 +374,7 @@ MODELS_WITH_INCORRECT_HUB_TOKENIZER_CLASS: set[str] = {
+     "phimoe",
+     "step3p5",
+     "vipllava",
++    "cohere_asr",
+ }
+ 
+ for model_type in MODELS_WITH_INCORRECT_HUB_TOKENIZER_CLASS:
+diff --git a/src/transformers/models/cohere_asr/__init__.py b/src/transformers/models/cohere_asr/__init__.py
+new file mode 100644
+index 0000000000..64734198de
+--- /dev/null
++++ b/src/transformers/models/cohere_asr/__init__.py
+@@ -0,0 +1,30 @@
++# Copyright 2026 the HuggingFace Team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from typing import TYPE_CHECKING
++
++from ...utils import _LazyModule
++from ...utils.import_utils import define_import_structure
++
++
++if TYPE_CHECKING:
++    from .configuration_cohere_asr import *
++    from .feature_extraction_cohere_asr import *
++    from .modeling_cohere_asr import *
++    from .processing_cohere_asr import *
++else:
++    import sys
++
++    _file = globals()["__file__"]
++    sys.modules[__name__] = _LazyModule(__name__, _file, define_import_structure(_file), module_spec=__spec__)
+diff --git a/src/transformers/models/cohere_asr/configuration_cohere_asr.py b/src/transformers/models/cohere_asr/configuration_cohere_asr.py
+new file mode 100644
+index 0000000000..15b759ec06
+--- /dev/null
++++ b/src/transformers/models/cohere_asr/configuration_cohere_asr.py
+@@ -0,0 +1,101 @@
++# Copyright 2026 the HuggingFace Team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from huggingface_hub.dataclasses import strict
++
++from ...configuration_utils import PreTrainedConfig
++from ...utils import auto_docstring
++from ..auto import CONFIG_MAPPING
++from ..parakeet.configuration_parakeet import ParakeetEncoderConfig
++
++
++@auto_docstring(checkpoint="CohereLabs/cohere-transcribe-03-2026")
++@strict
++class CohereAsrConfig(PreTrainedConfig):
++    r"""
++    Example:
++
++    ```python
++    >>> from transformers import CohereAsrForConditionalGeneration, CohereAsrConfig
++
++    >>> configuration = CohereAsrConfig()
++    >>> model = CohereAsrForConditionalGeneration(configuration)
++    >>> configuration = model.config
++    ```"""
++
++    model_type = "cohere_asr"
++    sub_configs = {"encoder_config": ParakeetEncoderConfig}
++
++    _default_encoder_config_kwargs = {
++        "hidden_size": 1280,
++        "num_hidden_layers": 48,
++        "num_attention_heads": 8,
++        "intermediate_size": 5120,
++        "hidden_act": "silu",
++        "attention_bias": True,
++        "convolution_bias": True,
++        "conv_kernel_size": 9,
++        "subsampling_factor": 8,
++        "subsampling_conv_channels": 256,
++        "num_mel_bins": 128,
++        "subsampling_conv_kernel_size": 3,
++        "subsampling_conv_stride": 2,
++        "dropout": 0.0,
++        "dropout_positions": 0.0,
++        "layerdrop": 0.0,
++        "activation_dropout": 0.0,
++        "attention_dropout": 0.0,
++        "max_position_embeddings": 5000,
++        "scale_input": False,
++        "initializer_range": 0.02,
++    }
++
++    encoder_config: dict | PreTrainedConfig | None = None
++    vocab_size: int = 16384
++    hidden_size: int = 1024
++    num_hidden_layers: int = 8
++    num_attention_heads: int = 8
++    num_key_value_heads: int | None = None
++    intermediate_size: int = 4096
++    hidden_act: str = "relu"
++    max_position_embeddings: int = 1024
++    pad_token_id: int | None = 2
++    eos_token_id: int | None = 3
++    bos_token_id: int | None = 4
++    is_encoder_decoder: bool = True
++    initializer_range: float = 0.02
++    attention_dropout: float | int = 0.0
++    attention_bias: bool = True
++    decoder_start_token_id: int | None = None
++    tie_word_embeddings: bool = False
++    head_dim: int | None = None
++
++    def __post_init__(self, **kwargs):
++        if self.head_dim is None:
++            self.head_dim = self.hidden_size // self.num_attention_heads
++        if self.num_key_value_heads is None:
++            self.num_key_value_heads = self.num_attention_heads
++
++        if isinstance(self.encoder_config, dict):
++            self.encoder_config["model_type"] = self.encoder_config.get("model_type", "parakeet_encoder")
++            self.encoder_config = CONFIG_MAPPING[self.encoder_config["model_type"]](
++                **{**self._default_encoder_config_kwargs, **self.encoder_config}
++            )
++        elif self.encoder_config is None:
++            self.encoder_config = CONFIG_MAPPING["parakeet_encoder"](**self._default_encoder_config_kwargs)
++
++        super().__post_init__(**kwargs)
++
++
++__all__ = ["CohereAsrConfig"]
+diff --git a/src/transformers/models/cohere_asr/feature_extraction_cohere_asr.py b/src/transformers/models/cohere_asr/feature_extraction_cohere_asr.py
+new file mode 100644
+index 0000000000..1192be1060
+--- /dev/null
++++ b/src/transformers/models/cohere_asr/feature_extraction_cohere_asr.py
+@@ -0,0 +1,374 @@
++# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import numpy as np
++import torch
++
++from ...feature_extraction_sequence_utils import SequenceFeatureExtractor
++from ...feature_extraction_utils import BatchFeature
++from ...utils import TensorType, is_librosa_available, logging
++from ...utils.import_utils import requires
++
++
++if is_librosa_available():
++    import librosa
++
++
++EPSILON = 1e-5
++LOG_ZERO_GUARD_VALUE = 2**-24
++
++
++logger = logging.get_logger(__name__)
++
++
++@requires(backends=("torch", "librosa"))
++class CohereAsrFeatureExtractor(SequenceFeatureExtractor):
++    r"""
++    Constructs a CohereAsr feature extractor.
++
++    This feature extractor inherits from [`~feature_extraction_sequence_utils.SequenceFeatureExtractor`] which contains
++    most of the main methods. Users should refer to this superclass for more information regarding those methods.
++
++    This class extracts mel-filter bank features from raw speech using a custom numpy implementation of the `Short Time
++    Fourier Transform` which should match pytorch's `torch.stft` equivalent.
++
++    Args:
++        feature_size (`int`, *optional*, defaults to 128):
++            The feature dimension of the extracted features.
++        sampling_rate (`int`, *optional*, defaults to 16000):
++            The sampling rate at which the audio files should be digitalized expressed in hertz (Hz).
++        hop_length (`int`, *optional*, defaults to 160):
++            Length of the overlapping windows for the STFT used to obtain the Mel Frequency coefficients.
++        n_fft (`int`, *optional*, defaults to 512):
++            Size of the Fourier transform.
++        win_length (`int`, *optional*, defaults to 400):
++            The window length for the STFT computation.
++        preemphasis (`float`, *optional*, defaults to 0.97):
++            A preemphasis filter coefficient. 0.0 means no preemphasis filter.
++        padding_value (`float`, *optional*, defaults to 0.0):
++            Padding value used to pad the audio. Should correspond to silences.
++        dither (`float`, *optional*, defaults to 1e-05):
++            Amount of deterministic dither noise to add before feature extraction. Each sample is seeded by its
++            valid waveform length so that dither is batch-composition invariant. Set to 0.0 to disable.
++        max_audio_clip_s (`float`, *optional*, defaults to 35.0):
++            Maximum duration in seconds for a single audio chunk. Audio longer than
++            `max_audio_clip_s - overlap_chunk_second` is split at energy-based boundaries.
++        overlap_chunk_second (`float`, *optional*, defaults to 5.0):
++            Size in seconds of the boundary search window used when splitting long audio. This is not actual
++            overlap between chunks — it defines how far back from the chunk boundary to search for a quiet
++            split point.
++        min_energy_window_samples (`int`, *optional*, defaults to 1600):
++            Size in samples of the sliding window used to find the quietest point when splitting audio chunks.
++    """
++
++    model_input_names = ["input_features", "attention_mask"]
++
++    def __init__(
++        self,
++        feature_size=128,
++        sampling_rate=16000,
++        hop_length=160,
++        n_fft=512,
++        win_length=400,
++        preemphasis=0.97,
++        padding_value=0.0,
++        dither=1e-5,
++        max_audio_clip_s=35.0,
++        overlap_chunk_second=5.0,
++        min_energy_window_samples=1600,
++        **kwargs,
++    ):
++        super().__init__(feature_size=feature_size, sampling_rate=sampling_rate, padding_value=padding_value, **kwargs)
++
++        self.hop_length = hop_length
++        self.n_fft = n_fft
++        self.win_length = win_length
++        self.preemphasis = preemphasis
++        self.dither = dither
++        self.max_audio_clip_s = max_audio_clip_s
++        self.overlap_chunk_second = overlap_chunk_second
++        self.min_energy_window_samples = min_energy_window_samples
++
++        # TODO: @eustlb, for now we use librosa to compute the mel filters
++        # indeed mel_filter_bank uses np.float64 (while librosa uses np.float32), giving numerical differences
++        mel_filters = librosa.filters.mel(
++            sr=sampling_rate, n_fft=n_fft, n_mels=feature_size, fmin=0.0, fmax=sampling_rate / 2, norm="slaney"
++        )
++        self.mel_filters = torch.from_numpy(mel_filters).to(torch.float32)
++
++    def _find_split_point_energy(self, waveform: torch.Tensor, start_idx: int, end_idx: int) -> int:
++        segment = waveform[start_idx:end_idx]
++        if segment.shape[0] <= self.min_energy_window_samples:
++            return (start_idx + end_idx) // 2
++
++        min_energy = float("inf")
++        quietest_idx = start_idx
++        upper = segment.shape[0] - self.min_energy_window_samples
++        for i in range(0, upper, self.min_energy_window_samples):
++            window = segment[i : i + self.min_energy_window_samples]
++            energy = torch.sqrt(torch.mean(window * window)).item()
++            if energy < min_energy:
++                min_energy = energy
++                quietest_idx = start_idx + i
++        return quietest_idx
++
++    def _split_audio_chunks_energy(self, waveform: torch.Tensor) -> list[torch.Tensor]:
++        chunk_size = max(1, int(round(self.max_audio_clip_s * self.sampling_rate)))
++        boundary_context_size = max(1, int(round(self.overlap_chunk_second * self.sampling_rate)))
++        total_samples = waveform.shape[0]
++
++        if total_samples <= chunk_size:
++            return [waveform]
++
++        chunks_meta: list[tuple[int, int]] = []
++        idx = 0
++        while idx < total_samples:
++            if idx + chunk_size >= total_samples:
++                chunks_meta.append((idx, total_samples))
++                break
++
++            search_start = max(idx, idx + chunk_size - boundary_context_size)
++            search_end = min(idx + chunk_size, total_samples)
++            if search_end <= search_start:
++                split_point = idx + chunk_size
++            else:
++                split_point = self._find_split_point_energy(waveform, search_start, search_end)
++
++            split_point = max(idx + 1, min(split_point, total_samples))
++            chunks_meta.append((idx, split_point))
++            idx = split_point
++
++        return [waveform[start:end] for start, end in chunks_meta if end > start]
++
++    def _apply_dither(self, waveform: torch.Tensor, audio_lengths: torch.Tensor) -> torch.Tensor:
++        if self.dither <= 0:
++            return waveform
++        generator = torch.Generator(device=waveform.device)
++        for i in range(waveform.shape[0]):
++            valid_samples = min(int(audio_lengths[i].item()), waveform.shape[1])
++            if valid_samples <= 0:
++                continue
++            generator.manual_seed(valid_samples)
++            noise = torch.randn(valid_samples, dtype=waveform.dtype, device=waveform.device, generator=generator)
++            waveform[i, :valid_samples] += self.dither * noise
++        return waveform
++
++    def _torch_extract_fbank_features(self, waveform, device="cpu"):
++        # spectrogram
++        window = torch.hann_window(self.win_length, periodic=False, device=device)
++        stft = torch.stft(
++            waveform,
++            self.n_fft,
++            hop_length=self.hop_length,
++            win_length=self.win_length,
++            window=window,
++            return_complex=True,
++            pad_mode="constant",
++        )
++        # Let's match original implementation
++        magnitudes = torch.view_as_real(stft)
++        magnitudes = torch.sqrt(magnitudes.pow(2).sum(-1))
++        magnitudes = magnitudes.pow(2)
++
++        # log mel spectrogram
++        mel_filters = self.mel_filters.to(device)
++        mel_spec = mel_filters @ magnitudes
++        mel_spec = torch.log(mel_spec + LOG_ZERO_GUARD_VALUE)
++
++        # (batch_size, num_mel_filters, num_frames) -> (batch_size, num_frames, num_mel_filters)
++        mel_spec = mel_spec.permute(0, 2, 1)
++
++        return mel_spec
++
++    def __call__(
++        self,
++        raw_speech: np.ndarray | list[float] | list[np.ndarray] | list[list[float]],
++        truncation: bool = False,
++        pad_to_multiple_of: int | None = None,
++        return_tensors: str | TensorType | None = None,
++        return_attention_mask: bool | None = None,
++        padding: str | None = "longest",
++        max_length: int | None = None,
++        sampling_rate: int | None = None,
++        do_normalize: bool | None = None,
++        device: str | None = "cpu",
++        return_token_timestamps: bool | None = None,
++        **kwargs,
++    ) -> BatchFeature:
++        """
++        Main method to featurize and prepare for the model one or several sequence(s). Implementation uses PyTorch for
++        the STFT computation if available, otherwise a slower NumPy based one.
++
++        Args:
++            raw_speech (`np.ndarray`, `list[float]`, `list[np.ndarray]`, `list[list[float]]`):
++                The sequence or batch of sequences to be padded. Each sequence can be a numpy array, a list of float
++                values, a list of numpy arrays or a list of list of float values. Must be mono channel audio, not
++                stereo, i.e. single float per timestep.
++            truncation (`bool`, *optional*, default to `True`):
++                Activates truncation to cut input sequences longer than *max_length* to *max_length*.
++            pad_to_multiple_of (`int`, *optional*, defaults to None):
++                If set will pad the sequence to a multiple of the provided value.
++
++                This is especially useful to enable the use of Tensor Cores on NVIDIA hardware with compute capability
++                `>= 7.5` (Volta), or on TPUs which benefit from having sequence lengths be a multiple of 128.
++            return_attention_mask (`bool`, *optional*):
++                Whether to return the attention mask. If left to the default, will return the attention mask according
++                to the specific feature_extractor's default.
++
++                [What are attention masks?](../glossary#attention-mask)
++
++                <Tip>
++
++                For CohereAsr models, `attention_mask` should always be passed for batched inference, to avoid subtle
++                bugs.
++
++                </Tip>
++
++            return_tensors (`str` or [`~utils.TensorType`], *optional*):
++                If set, will return tensors instead of list of python integers. Acceptable values are:
++
++                - `'tf'`: Return TensorFlow `tf.constant` objects.
++                - `'pt'`: Return PyTorch `torch.Tensor` objects.
++                - `'np'`: Return Numpy `np.ndarray` objects.
++            sampling_rate (`int`, *optional*):
++                The sampling rate at which the `raw_speech` input was sampled. It is strongly recommended to pass
++                `sampling_rate` at the forward call to prevent silent errors and allow automatic speech recognition
++                pipeline.
++            padding_value (`float`, *optional*, defaults to 0.0):
++                The value that is used to fill the padding values / vectors.
++            do_normalize (`bool`, *optional*, defaults to `False`):
++                Whether or not to zero-mean unit-variance normalize the input. Normalizing can help to significantly
++                improve the performance of the model.
++            device (`str`, *optional*, defaults to `'cpu'`):
++                Specifies the device for computation of the log-mel spectrogram of audio signals in the
++                `_torch_extract_fbank_features` method. (e.g., "cpu", "cuda")
++            return_token_timestamps (`bool`, *optional*, defaults to `None`):
++                Deprecated. Use `return_attention_mask` instead from which the number of frames can be inferred.
++
++                Whether or not to return the number of frames of the input raw_speech.
++                These num_frames can be used by the model to compute word level timestamps.
++        """
++        if sampling_rate is not None:
++            if sampling_rate != self.sampling_rate:
++                raise ValueError(
++                    f"The model corresponding to this feature extractor: {self.__class__.__name__} was trained using a"
++                    f" sampling rate of {self.sampling_rate}. Please make sure that the provided `raw_speech` input"
++                    f" was sampled with {self.sampling_rate} and not {sampling_rate}."
++                )
++        else:
++            logger.warning(
++                f"It is strongly recommended to pass the `sampling_rate` argument to `{self.__class__.__name__}()`. "
++                "Failing to do so can result in silent errors that might be hard to debug."
++            )
++
++        # Convert to torch tensor
++        if isinstance(raw_speech, np.ndarray):
++            raw_speech = torch.tensor(raw_speech)
++        elif isinstance(raw_speech, (list, tuple)) and isinstance(raw_speech[0], np.ndarray):
++            raw_speech = [torch.tensor(speech) for speech in raw_speech]
++
++        is_batched_torch = isinstance(raw_speech, torch.Tensor) and len(raw_speech.shape) > 1
++        if is_batched_torch and len(raw_speech.shape) > 2:
++            logger.warning(
++                f"Only mono-channel audio is supported for input to {self.__class__.__name__}. "
++                "We will take the mean of the channels to convert to mono."
++            )
++            raw_speech = raw_speech.mean(-1)
++
++        is_batched_sequence = isinstance(raw_speech, (list, tuple))
++        if is_batched_sequence:
++            for speech in raw_speech:
++                if len(speech.shape) > 1:
++                    logger.warning(
++                        f"Only mono-channel audio is supported for input to {self.__class__.__name__}. "
++                        "We will take the mean of the channels to convert to mono."
++                    )
++                    speech = speech.mean(-1)
++
++        if is_batched_torch or is_batched_sequence:
++            raw_speech = [speech.to(torch.float32) for speech in raw_speech]
++        else:
++            raw_speech = [raw_speech.to(torch.float32)]
++
++        # Chunk long audio at energy-based boundaries
++        fast_path_threshold_s = max(0.0, self.max_audio_clip_s - self.overlap_chunk_second)
++        audio_chunk_index: list[tuple[int, int | None]] = []
++        chunked_speech: list[torch.Tensor] = []
++        for sample_idx, speech in enumerate(raw_speech):
++            duration_s = speech.shape[0] / self.sampling_rate
++            if duration_s <= fast_path_threshold_s:
++                chunked_speech.append(speech)
++                audio_chunk_index.append((sample_idx, None))
++            else:
++                chunks = self._split_audio_chunks_energy(speech)
++                for chunk_idx, chunk in enumerate(chunks):
++                    chunked_speech.append(chunk)
++                    audio_chunk_index.append((sample_idx, chunk_idx))
++
++        raw_speech = [speech[:, None] for speech in chunked_speech]
++
++        audio_lengths = [len(speech) for speech in raw_speech]
++        batched_speech = BatchFeature({"input_features": raw_speech, "audio_lengths": audio_lengths})
++
++        padded_inputs = self.pad(
++            batched_speech,
++            padding=padding,
++            max_length=max_length,
++            truncation=truncation,
++            pad_to_multiple_of=pad_to_multiple_of,
++            return_tensors="pt",
++        )
++        input_features = padded_inputs.input_features.squeeze(-1)
++
++        # dithering
++        input_features = self._apply_dither(input_features, padded_inputs.audio_lengths)
++
++        # preemphasis
++        if self.preemphasis is not None:
++            timemask = torch.arange(input_features.shape[1], device=input_features.device).unsqueeze(
++                0
++            ) < padded_inputs.audio_lengths.unsqueeze(1)
++            input_features = torch.cat(
++                [input_features[:, :1], input_features[:, 1:] - self.preemphasis * input_features[:, :-1]], dim=1
++            )
++            input_features = input_features.masked_fill(~timemask, 0.0)
++
++        input_features = self._torch_extract_fbank_features(input_features, device)
++        features_lengths = torch.floor_divide(
++            padded_inputs.audio_lengths + self.n_fft // 2 * 2 - self.n_fft, self.hop_length
++        )
++        attention_mask = torch.arange(input_features.shape[1], device=device)[None, :] < features_lengths[:, None]
++
++        # normalize mel features, ignoring padding
++        mask = attention_mask.unsqueeze(-1)
++        input_features_masked = input_features * mask
++        mean = input_features_masked.sum(dim=1) / features_lengths.unsqueeze(-1)
++        mean = mean.unsqueeze(1)
++        variance = ((input_features_masked - mean) ** 2 * mask).sum(dim=1) / (features_lengths - 1).unsqueeze(-1)
++        std = torch.sqrt(variance).unsqueeze(1)
++        input_features = (input_features - mean) / (std + EPSILON)
++        input_features *= mask
++
++        result = BatchFeature(
++            data={
++                "input_features": input_features,
++                "attention_mask": attention_mask,
++            },
++            tensor_type=return_tensors,
++        )
++        result["audio_chunk_index"] = audio_chunk_index
++        return result
++
++
++__all__ = ["CohereAsrFeatureExtractor"]
+diff --git a/src/transformers/models/cohere_asr/modeling_cohere_asr.py b/src/transformers/models/cohere_asr/modeling_cohere_asr.py
+new file mode 100644
+index 0000000000..3ec5d7cde5
+--- /dev/null
++++ b/src/transformers/models/cohere_asr/modeling_cohere_asr.py
+@@ -0,0 +1,658 @@
++#                🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
++#           This file was automatically generated from src/transformers/models/cohere_asr/modular_cohere_asr.py.
++#               Do NOT edit this file manually as any edits will be overwritten by the generation of
++#             the file from the modular. If any change should be done, please apply the change to the
++#                          modular_cohere_asr.py file directly. One of our CI enforces this.
++#                🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
++# Copyright 2026 the HuggingFace Team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from collections.abc import Callable
++
++import torch
++import torch.nn as nn
++
++from ...activations import ACT2FN
++from ...cache_utils import Cache, DynamicCache, EncoderDecoderCache
++from ...generation import GenerationMixin
++from ...masking_utils import create_bidirectional_mask, create_causal_mask
++from ...modeling_layers import GradientCheckpointingLayer
++from ...modeling_outputs import (
++    BaseModelOutput,
++    BaseModelOutputWithPastAndCrossAttentions,
++    Seq2SeqLMOutput,
++    Seq2SeqModelOutput,
++)
++from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
++from ...processing_utils import Unpack
++from ...utils import TransformersKwargs, auto_docstring
++from ...utils.generic import can_return_tuple, merge_with_config_defaults
++from ...utils.output_capturing import OutputRecorder, capture_outputs
++from ..auto.modeling_auto import AutoModel
++from .configuration_cohere_asr import CohereAsrConfig
++
++
++class CohereAsrDecoderMLP(nn.Module):
++    def __init__(self, config):
++        super().__init__()
++        self.config = config
++        self.activation_fn = ACT2FN[config.hidden_act]
++        self.fc1 = nn.Linear(config.hidden_size, config.intermediate_size)
++        self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)
++
++    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
++        hidden_states = self.fc1(hidden_states)
++        hidden_states = self.activation_fn(hidden_states)
++        hidden_states = self.fc2(hidden_states)
++        return hidden_states
++
++
++def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
++    """
++    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
++    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
++    """
++    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
++    if n_rep == 1:
++        return hidden_states
++    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
++    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
++
++
++def eager_attention_forward(
++    module: nn.Module,
++    query: torch.Tensor,
++    key: torch.Tensor,
++    value: torch.Tensor,
++    attention_mask: torch.Tensor | None,
++    scaling: float,
++    dropout: float = 0.0,
++    **kwargs: Unpack[TransformersKwargs],
++):
++    key_states = repeat_kv(key, module.num_key_value_groups)
++    value_states = repeat_kv(value, module.num_key_value_groups)
++
++    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
++    if attention_mask is not None:
++        attn_weights = attn_weights + attention_mask
++
++    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
++    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
++    attn_output = torch.matmul(attn_weights, value_states)
++    attn_output = attn_output.transpose(1, 2).contiguous()
++
++    return attn_output, attn_weights
++
++
++# Modular automatically inherits RoPE, hence no inheritance for now
++class CohereAsrSelfAttention(nn.Module):
++    def __init__(self, config: CohereAsrConfig, layer_idx: int):
++        super().__init__()
++        self.config = config
++        self.layer_idx = layer_idx
++        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
++        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
++        self.scaling = self.head_dim**-0.5
++        self.attention_dropout = config.attention_dropout
++        self.is_causal = True
++
++        self.q_proj = nn.Linear(
++            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.k_proj = nn.Linear(
++            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.v_proj = nn.Linear(
++            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.o_proj = nn.Linear(
++            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
++        )
++
++    def forward(
++        self,
++        hidden_states: torch.Tensor,
++        attention_mask: torch.Tensor,
++        past_key_values: Cache | None = None,
++        **kwargs,
++    ):
++        input_shape = hidden_states.shape[:-1]
++        hidden_shape = (*input_shape, -1, self.head_dim)
++
++        query_states = self.q_proj(hidden_states)
++        key_states = self.k_proj(hidden_states)
++        value_states = self.v_proj(hidden_states)
++
++        query_states = query_states.view(hidden_shape).transpose(1, 2)
++        key_states = key_states.view(hidden_shape).transpose(1, 2)
++        value_states = value_states.view(hidden_shape).transpose(1, 2)
++
++        if past_key_values is not None:
++            past_key_values = past_key_values.self_attention_cache
++            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
++
++        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
++            self.config._attn_implementation, eager_attention_forward
++        )
++
++        attn_output, attn_weights = attention_interface(
++            self,
++            query_states,
++            key_states,
++            value_states,
++            attention_mask,
++            dropout=0.0 if not self.training else self.attention_dropout,
++            scaling=self.scaling,
++            **kwargs,
++        )
++
++        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
++        attn_output = self.o_proj(attn_output)
++        return attn_output, attn_weights
++
++
++# Modular automatically inherits RoPE, hence no inheritance for now
++class CohereAsrCrossAttention(nn.Module):
++    def __init__(self, config: CohereAsrConfig, layer_idx: int):
++        super().__init__()
++        self.config = config
++        self.layer_idx = layer_idx
++        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
++        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
++        self.scaling = self.head_dim**-0.5
++        self.attention_dropout = config.attention_dropout
++        self.is_causal = False
++
++        self.q_proj = nn.Linear(
++            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.k_proj = nn.Linear(
++            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.v_proj = nn.Linear(
++            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.o_proj = nn.Linear(
++            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
++        )
++
++    def forward(
++        self,
++        hidden_states: torch.Tensor,
++        encoder_hidden_states: torch.Tensor | None = None,
++        attention_mask: torch.Tensor | None = None,
++        past_key_values: Cache | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ):
++        # determine input shapes
++        bsz, tgt_len = hidden_states.shape[:-1]
++        src_len = encoder_hidden_states.shape[1]
++
++        q_input_shape = (bsz, tgt_len, -1, self.head_dim)
++        kv_input_shape = (bsz, src_len, -1, self.head_dim)
++
++        # get query proj
++        query_states = self.q_proj(hidden_states).view(*q_input_shape).transpose(1, 2)
++
++        is_updated = past_key_values.is_updated.get(self.layer_idx) if past_key_values is not None else False
++        if past_key_values is not None and is_updated:
++            # reuse k,v, cross_attentions
++            key_states = past_key_values.cross_attention_cache.layers[self.layer_idx].keys
++            value_states = past_key_values.cross_attention_cache.layers[self.layer_idx].values
++        else:
++            key_states = self.k_proj(encoder_hidden_states).view(*kv_input_shape).transpose(1, 2)
++            value_states = self.v_proj(encoder_hidden_states).view(*kv_input_shape).transpose(1, 2)
++
++            if past_key_values is not None:
++                # save all states to the cache
++                key_states, value_states = past_key_values.cross_attention_cache.update(
++                    key_states, value_states, self.layer_idx
++                )
++                # set flag that curr layer for cross-attn is already updated so we can re-use in subsequent calls
++                past_key_values.is_updated[self.layer_idx] = True
++
++        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
++            self.config._attn_implementation, eager_attention_forward
++        )
++
++        attn_output, attn_weights = attention_interface(
++            self,
++            query_states,
++            key_states,
++            value_states,
++            attention_mask,
++            dropout=0.0 if not self.training else self.attention_dropout,
++            scaling=self.scaling,
++            **kwargs,
++        )
++        attn_output = attn_output.reshape(bsz, tgt_len, -1).contiguous()
++        attn_output = self.o_proj(attn_output)
++        return attn_output, attn_weights
++
++
++class CohereAsrDecoderLayer(GradientCheckpointingLayer):
++    def __init__(self, config, layer_idx=None):
++        super().__init__()
++        self.self_attn = CohereAsrSelfAttention(config=config, layer_idx=layer_idx)
++        self.encoder_attn = CohereAsrCrossAttention(config=config, layer_idx=layer_idx)
++
++        self.mlp = CohereAsrDecoderMLP(config)
++        self.input_layernorm = nn.LayerNorm(config.hidden_size)
++        self.post_attention_layernorm = nn.LayerNorm(config.hidden_size)
++        self.final_layernorm = nn.LayerNorm(config.hidden_size)
++
++    def forward(
++        self,
++        hidden_states: torch.Tensor,
++        attention_mask: torch.Tensor | None = None,
++        encoder_hidden_states: torch.Tensor | None = None,
++        encoder_attention_mask: torch.Tensor | None = None,
++        position_ids: torch.LongTensor | None = None,
++        encoder_position_ids: torch.LongTensor | None = None,
++        past_key_values: Cache | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
++        residual = hidden_states
++        hidden_states = self.input_layernorm(hidden_states)
++
++        hidden_states, _ = self.self_attn(
++            hidden_states=hidden_states,
++            attention_mask=attention_mask,
++            position_ids=position_ids,
++            past_key_values=past_key_values,
++            **kwargs,
++        )
++        hidden_states = residual + hidden_states
++
++        if encoder_hidden_states is not None:
++            residual = hidden_states
++            hidden_states = self.post_attention_layernorm(hidden_states)
++            hidden_states, _ = self.encoder_attn(
++                hidden_states=hidden_states,
++                encoder_hidden_states=encoder_hidden_states,
++                attention_mask=encoder_attention_mask,
++                past_key_values=past_key_values,
++            )
++            hidden_states = residual + hidden_states
++
++        residual = hidden_states
++        hidden_states = self.final_layernorm(hidden_states)
++        hidden_states = self.mlp(hidden_states)
++        hidden_states = residual + hidden_states
++        return hidden_states
++
++
++@auto_docstring
++class CohereAsrPreTrainedModel(PreTrainedModel):
++    config: CohereAsrConfig
++    base_model_prefix = "model"
++    main_input_name = "input_features"
++    input_modalities = "audio"
++    supports_gradient_checkpointing = True
++    _no_split_modules = ["CohereAsrEncoderLayer", "CohereAsrDecoderLayer"]
++    _supports_flash_attn = True
++    _supports_sdpa = True
++
++    _can_compile_fullgraph = True
++    _keys_to_ignore_on_load_unexpected = [r"preprocessor\.featurizer\..*"]
++    # TODO arthur, how do we separate when it cross / self coming from different layer?
++
++    def _get_feat_extract_output_lengths(self, input_lengths: torch.LongTensor):
++        """
++        Computes the output length of the convolutional layers
++        """
++        output_conv1_length = int((input_lengths - 127) / 64 + 1)
++        output_conv2_length = int((output_conv1_length - 7) / 3 + 1)
++        output_conv3_length = int((output_conv2_length - 3) / 2 + 1)
++
++        return output_conv3_length
++
++
++@auto_docstring
++class CohereAsrDecoder(CohereAsrPreTrainedModel):
++    main_input_name = "input_ids"
++    _can_record_outputs = {
++        "attentions": OutputRecorder(CohereAsrSelfAttention, index=1, layer_name="self_attn"),
++        "hidden_states": CohereAsrDecoderLayer,
++        "cross_attentions": OutputRecorder(CohereAsrCrossAttention, index=1, layer_name="encoder_attn"),
++    }
++
++    def __init__(self, config):
++        super().__init__(config)
++        self.padding_idx = config.pad_token_id
++        self.vocab_size = config.vocab_size
++
++        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
++        self.layers = nn.ModuleList([CohereAsrDecoderLayer(config, idx) for idx in range(config.num_hidden_layers)])
++        self.norm = nn.LayerNorm(config.hidden_size)
++        self.gradient_checkpointing = False
++        self.pos_emb = nn.Embedding(config.max_position_embeddings, config.hidden_size)
++        self.embedding_layernorm = nn.LayerNorm(config.hidden_size)
++        self.proj = nn.Linear(config.encoder_config.hidden_size, config.hidden_size, bias=True)
++
++        # Initialize weights and apply final processing
++        self.post_init()
++
++    @merge_with_config_defaults
++    @capture_outputs
++    def forward(
++        self,
++        input_ids: torch.LongTensor | None = None,
++        attention_mask: torch.Tensor | None = None,
++        position_ids: torch.LongTensor | None = None,
++        past_key_values: Cache | None = None,
++        inputs_embeds: torch.FloatTensor | None = None,
++        use_cache: bool | None = None,
++        encoder_hidden_states: torch.FloatTensor | None = None,
++        encoder_attention_mask: torch.Tensor | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ) -> tuple | BaseModelOutputWithPastAndCrossAttentions:
++        r"""
++        encoder_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
++            Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention
++            of the decoder.
++        encoder_attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
++            Mask to avoid performing attention on padding indices in `encoder_hidden_states`. Mask values selected in `[0, 1]`:
++            - 1 for tokens that are **not masked**,
++            - 0 for tokens that are **masked**.
++            [What are attention masks?](../glossary#attention-mask)
++        """
++        encoder_hidden_states = self.proj(encoder_hidden_states)
++        if (input_ids is None) ^ (inputs_embeds is not None):
++            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
++
++        if inputs_embeds is None:
++            inputs_embeds = self.embed_tokens(input_ids)
++
++        if use_cache and past_key_values is None:
++            past_key_values = EncoderDecoderCache(DynamicCache(config=self.config), DynamicCache(config=self.config))
++
++        if position_ids is None:
++            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
++            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device) + past_seen_tokens
++            position_ids = position_ids.unsqueeze(0)
++
++        # Fixed sinusoidal position embedding added to token embeddings, then layernorm
++        pos_emb = self.pos_emb(position_ids.squeeze(0))
++        inputs_embeds = self.embedding_layernorm(inputs_embeds + pos_emb)
++
++        causal_mask = create_causal_mask(
++            config=self.config,
++            inputs_embeds=inputs_embeds,
++            attention_mask=attention_mask,
++            past_key_values=past_key_values,
++            position_ids=position_ids,
++        )
++        encoder_attention_mask = create_bidirectional_mask(
++            config=self.config,
++            inputs_embeds=inputs_embeds,
++            attention_mask=encoder_attention_mask,
++            encoder_hidden_states=encoder_hidden_states,
++        )
++
++        hidden_states = inputs_embeds
++        for decoder_layer in self.layers:
++            hidden_states = decoder_layer(
++                hidden_states,
++                causal_mask,
++                encoder_hidden_states,  # as a positional argument for gradient checkpointing
++                encoder_attention_mask=encoder_attention_mask,
++                position_ids=position_ids,
++                past_key_values=past_key_values,
++                **kwargs,
++            )
++
++        hidden_states = self.norm(hidden_states)
++
++        return BaseModelOutputWithPastAndCrossAttentions(
++            last_hidden_state=hidden_states,
++            past_key_values=past_key_values if use_cache else None,
++        )
++
++
++@auto_docstring
++class CohereAsrModel(CohereAsrPreTrainedModel):
++    def __init__(self, config):
++        super().__init__(config)
++        self.encoder = AutoModel.from_config(config.encoder_config)
++        self.decoder = CohereAsrDecoder(config)
++        # Initialize weights and apply final processing
++        self.post_init()
++
++    def get_input_embeddings(self):
++        return self.decoder.embed_tokens
++
++    def set_input_embeddings(self, value):
++        self.decoder.embed_tokens = value
++
++    def freeze_encoder(self):
++        """
++        Calling this function will disable the gradient computation for the CohereAsr encoder so that its parameters will
++        not be updated during training.
++        """
++        self.encoder._freeze_parameters()
++
++    def _mask_input_features(self):
++        """
++        Masks extracted features along time axis and/or along feature axis according to
++        [SpecAugment](https://huggingface.co/papers/1904.08779).
++        """
++        raise AttributeError("Not needed for CohereAsr")
++
++    @can_return_tuple
++    @auto_docstring
++    def forward(
++        self,
++        input_features: torch.FloatTensor | None = None,
++        attention_mask: torch.LongTensor | None = None,
++        decoder_input_ids: torch.LongTensor | None = None,
++        decoder_attention_mask: torch.LongTensor | None = None,
++        encoder_outputs: tuple[tuple[torch.FloatTensor]] | None = None,
++        past_key_values: EncoderDecoderCache | None = None,
++        decoder_inputs_embeds: tuple[torch.FloatTensor] | None = None,
++        decoder_position_ids: tuple[torch.LongTensor] | None = None,
++        use_cache: bool | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ) -> Seq2SeqModelOutput:
++        r"""
++        input_features (`torch.FloatTensor` of shape `(batch_size, audio_length)`):
++            Float values of the raw speech waveform. Raw speech waveform can be
++            obtained by loading a `.flac` or `.wav` audio file into an array of type `list[float]`, a
++            `numpy.ndarray` or a `torch.Tensor`, *e.g.* via the torchcodec library (`pip install torchcodec`) or
++            the soundfile library (`pip install soundfile`). To prepare the array into
++            `input_features`, the [`AutoFeatureExtractor`] should be used for padding
++            and conversion into a tensor of type `torch.FloatTensor`.
++        decoder_position_ids (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`):
++            Indices of positions of each input sequence tokens in the position embeddings.
++            Used to calculate the position embeddings up to `config.decoder_config.max_position_embeddings`
++
++        Example:
++
++        ```python
++        >>> import torch
++        >>> from transformers import AutoFeatureExtractor, CohereAsrModel
++        >>> from datasets import load_dataset
++
++        >>> model = CohereAsrModel.from_pretrained("UsefulSensors/cohere_asr-tiny")
++        >>> feature_extractor = AutoFeatureExtractor.from_pretrained("UsefulSensors/cohere_asr-tiny")
++        >>> ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
++        >>> inputs = feature_extractor(ds[0]["audio"]["array"], return_tensors="pt")
++        >>> input_features = inputs.input_features
++        >>> decoder_input_ids = torch.tensor([[1, 1]]) * model.config.decoder_start_token_id
++        >>> last_hidden_state = model(input_features, decoder_input_ids=decoder_input_ids).last_hidden_state
++        >>> list(last_hidden_state.shape)
++        [1, 2, 288]
++        ```
++        """
++        # Main difference: uses `input_features` instead of `input_values`
++        if encoder_outputs is None:
++            encoder_outputs: BaseModelOutput = self.encoder(input_features, attention_mask=attention_mask, **kwargs)
++
++        decoder_outputs: BaseModelOutputWithPastAndCrossAttentions = self.decoder(
++            input_ids=decoder_input_ids,
++            attention_mask=decoder_attention_mask,
++            encoder_hidden_states=encoder_outputs.last_hidden_state,
++            encoder_attention_mask=encoder_outputs.attention_mask,
++            past_key_values=past_key_values,
++            inputs_embeds=decoder_inputs_embeds,
++            position_ids=decoder_position_ids,
++            use_cache=use_cache,
++            **kwargs,
++        )
++
++        return Seq2SeqModelOutput(
++            last_hidden_state=decoder_outputs.last_hidden_state,
++            past_key_values=decoder_outputs.past_key_values,
++            decoder_hidden_states=decoder_outputs.hidden_states,
++            decoder_attentions=decoder_outputs.attentions,
++            cross_attentions=decoder_outputs.cross_attentions,
++            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
++            encoder_hidden_states=encoder_outputs.hidden_states,
++            encoder_attentions=encoder_outputs.attentions,
++        )
++
++
++def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start_token_id: int):
++    """
++    Shift input ids one token to the right.
++    """
++    shifted_input_ids = input_ids.new_zeros(input_ids.shape)
++    shifted_input_ids[:, 1:] = input_ids[:, :-1].clone()
++    shifted_input_ids[:, 0] = decoder_start_token_id
++
++    if pad_token_id is None:
++        raise ValueError("self.model.config.pad_token_id has to be defined.")
++    # replace possible -100 values in labels by `pad_token_id`
++    shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
++
++    return shifted_input_ids
++
++
++@auto_docstring(
++    custom_intro="""
++    The CohereAsr Model with a language modeling head. Can be used for automatic speech recognition.
++    """
++)
++class CohereAsrForConditionalGeneration(CohereAsrPreTrainedModel, GenerationMixin):
++    _tied_weights_keys = {"proj_out.weight": "model.decoder.embed_tokens.weight"}
++
++    def __init__(self, config):
++        super().__init__(config)
++        self.model = CohereAsrModel(config)
++        self.proj_out = nn.Linear(config.hidden_size, config.vocab_size, bias=True)
++
++        # Initialize weights and apply final processing
++        self.post_init()
++
++    def get_output_embeddings(self):
++        return self.proj_out
++
++    def set_output_embeddings(self, new_embeddings):
++        self.proj_out = new_embeddings
++
++    def get_input_embeddings(self) -> nn.Module:
++        return self.model.get_input_embeddings()
++
++    @can_return_tuple
++    @auto_docstring
++    def forward(
++        self,
++        input_features: torch.FloatTensor | None = None,
++        attention_mask: torch.LongTensor | None = None,
++        decoder_input_ids: torch.LongTensor | None = None,
++        decoder_attention_mask: torch.LongTensor | None = None,
++        encoder_outputs: tuple[tuple[torch.FloatTensor]] | None = None,
++        past_key_values: EncoderDecoderCache | None = None,
++        decoder_inputs_embeds: tuple[torch.FloatTensor] | None = None,
++        decoder_position_ids: tuple[torch.LongTensor] | None = None,
++        use_cache: bool | None = None,
++        labels: torch.LongTensor | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ) -> Seq2SeqLMOutput:
++        r"""
++        input_features (`torch.FloatTensor` of shape `(batch_size, audio_length)`):
++            Float values of the raw speech waveform. Raw speech waveform can be
++            obtained by loading a `.flac` or `.wav` audio file into an array of type `list[float]`, a
++            `numpy.ndarray` or a `torch.Tensor`, *e.g.* via the torchcodec library (`pip install torchcodec`) or
++            the soundfile library (`pip install soundfile`). To prepare the array into
++            `input_features`, the [`AutoFeatureExtractor`] should be used for padding
++            and conversion into a tensor of type `torch.FloatTensor`.
++        decoder_position_ids (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`):
++            Indices of positions of each input sequence tokens in the position embeddings.
++            Used to calculate the position embeddings up to `config.decoder_config.max_position_embeddings`
++
++        Example:
++
++        ```python
++        >>> import torch
++        >>> from transformers import AutoProcessor, CohereAsrForConditionalGeneration
++        >>> from datasets import load_dataset
++
++        >>> processor = AutoProcessor.from_pretrained("UsefulSensors/cohere_asr-tiny")
++        >>> model = CohereAsrForConditionalGeneration.from_pretrained("UsefulSensors/cohere_asr-tiny")
++
++        >>> ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
++
++        >>> inputs = processor(ds[0]["audio"]["array"], return_tensors="pt")
++        >>> input_features = inputs.input_features
++
++        >>> generated_ids = model.generate(input_features, max_new_tokens=100)
++
++        >>> transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
++        >>> transcription
++        'Mr. Quilter is the apostle of the middle classes, and we are glad to welcome his gospel.'
++        ```"""
++        # Main difference: uses `input_features` instead of `input_values`
++        if labels is not None:
++            if decoder_input_ids is None and decoder_inputs_embeds is None:
++                decoder_input_ids = shift_tokens_right(
++                    labels, self.config.pad_token_id, self.config.decoder_start_token_id
++                )
++
++        outputs: Seq2SeqModelOutput = self.model(
++            input_features,
++            attention_mask=attention_mask,
++            decoder_input_ids=decoder_input_ids,
++            encoder_outputs=encoder_outputs,
++            decoder_attention_mask=decoder_attention_mask,
++            past_key_values=past_key_values,
++            decoder_inputs_embeds=decoder_inputs_embeds,
++            decoder_position_ids=decoder_position_ids,
++            use_cache=use_cache,
++            **kwargs,
++        )
++        logits = self.proj_out(outputs.last_hidden_state)
++
++        loss = None
++        if labels is not None:
++            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size)
++
++        return Seq2SeqLMOutput(
++            loss=loss,
++            logits=logits,
++            past_key_values=outputs.past_key_values,
++            decoder_hidden_states=outputs.decoder_hidden_states,
++            decoder_attentions=outputs.decoder_attentions,
++            cross_attentions=outputs.cross_attentions,
++            encoder_last_hidden_state=outputs.encoder_last_hidden_state,
++            encoder_hidden_states=outputs.encoder_hidden_states,
++            encoder_attentions=outputs.encoder_attentions,
++        )
++
++    def prepare_inputs_for_generation(self, *args, audio_chunk_index=None, **kwargs):
++        # audio_chunk_index is returned by the processor but not used by the model, absorb it here
++        return super().prepare_inputs_for_generation(*args, **kwargs)
++
++
++__all__ = ["CohereAsrPreTrainedModel", "CohereAsrModel", "CohereAsrForConditionalGeneration"]
+diff --git a/src/transformers/models/cohere_asr/modular_cohere_asr.py b/src/transformers/models/cohere_asr/modular_cohere_asr.py
+new file mode 100644
+index 0000000000..e6303b24bd
+--- /dev/null
++++ b/src/transformers/models/cohere_asr/modular_cohere_asr.py
+@@ -0,0 +1,525 @@
++# Copyright 2026 the HuggingFace Team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from collections.abc import Callable
++
++import torch
++import torch.nn as nn
++
++from ...cache_utils import Cache, DynamicCache, EncoderDecoderCache
++from ...generation import GenerationMixin
++from ...masking_utils import create_bidirectional_mask, create_causal_mask
++from ...modeling_layers import GradientCheckpointingLayer
++from ...modeling_outputs import (
++    BaseModelOutput,
++    BaseModelOutputWithPastAndCrossAttentions,
++    Seq2SeqLMOutput,
++    Seq2SeqModelOutput,
++)
++from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
++from ...processing_utils import Unpack
++from ...utils import TransformersKwargs, auto_docstring
++from ...utils.generic import can_return_tuple
++from ...utils.output_capturing import OutputRecorder
++from ..auto.modeling_auto import AutoModel
++from ..clip.modeling_clip import CLIPMLP
++from ..moonshine.modeling_moonshine import (
++    MoonshineDecoder,
++    MoonshineForConditionalGeneration,
++    MoonshineModel,
++    MoonshinePreTrainedModel,
++    eager_attention_forward,
++    shift_tokens_right,
++)
++from .configuration_cohere_asr import CohereAsrConfig
++
++
++class CohereAsrDecoderMLP(CLIPMLP):
++    pass
++
++
++# Modular automatically inherits RoPE, hence no inheritance for now
++class CohereAsrSelfAttention(nn.Module):
++    def __init__(self, config: CohereAsrConfig, layer_idx: int):
++        super().__init__()
++        self.config = config
++        self.layer_idx = layer_idx
++        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
++        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
++        self.scaling = self.head_dim**-0.5
++        self.attention_dropout = config.attention_dropout
++        self.is_causal = True
++
++        self.q_proj = nn.Linear(
++            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.k_proj = nn.Linear(
++            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.v_proj = nn.Linear(
++            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.o_proj = nn.Linear(
++            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
++        )
++
++    def forward(
++        self,
++        hidden_states: torch.Tensor,
++        attention_mask: torch.Tensor,
++        past_key_values: Cache | None = None,
++        **kwargs,
++    ):
++        input_shape = hidden_states.shape[:-1]
++        hidden_shape = (*input_shape, -1, self.head_dim)
++
++        query_states = self.q_proj(hidden_states)
++        key_states = self.k_proj(hidden_states)
++        value_states = self.v_proj(hidden_states)
++
++        query_states = query_states.view(hidden_shape).transpose(1, 2)
++        key_states = key_states.view(hidden_shape).transpose(1, 2)
++        value_states = value_states.view(hidden_shape).transpose(1, 2)
++
++        if past_key_values is not None:
++            past_key_values = past_key_values.self_attention_cache
++            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
++
++        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
++            self.config._attn_implementation, eager_attention_forward
++        )
++
++        attn_output, attn_weights = attention_interface(
++            self,
++            query_states,
++            key_states,
++            value_states,
++            attention_mask,
++            dropout=0.0 if not self.training else self.attention_dropout,
++            scaling=self.scaling,
++            **kwargs,
++        )
++
++        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
++        attn_output = self.o_proj(attn_output)
++        return attn_output, attn_weights
++
++
++# Modular automatically inherits RoPE, hence no inheritance for now
++class CohereAsrCrossAttention(nn.Module):
++    def __init__(self, config: CohereAsrConfig, layer_idx: int):
++        super().__init__()
++        self.config = config
++        self.layer_idx = layer_idx
++        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
++        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
++        self.scaling = self.head_dim**-0.5
++        self.attention_dropout = config.attention_dropout
++        self.is_causal = False
++
++        self.q_proj = nn.Linear(
++            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.k_proj = nn.Linear(
++            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.v_proj = nn.Linear(
++            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
++        )
++        self.o_proj = nn.Linear(
++            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
++        )
++
++    def forward(
++        self,
++        hidden_states: torch.Tensor,
++        encoder_hidden_states: torch.Tensor | None = None,
++        attention_mask: torch.Tensor | None = None,
++        past_key_values: Cache | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ):
++        # determine input shapes
++        bsz, tgt_len = hidden_states.shape[:-1]
++        src_len = encoder_hidden_states.shape[1]
++
++        q_input_shape = (bsz, tgt_len, -1, self.head_dim)
++        kv_input_shape = (bsz, src_len, -1, self.head_dim)
++
++        # get query proj
++        query_states = self.q_proj(hidden_states).view(*q_input_shape).transpose(1, 2)
++
++        is_updated = past_key_values.is_updated.get(self.layer_idx) if past_key_values is not None else False
++        if past_key_values is not None and is_updated:
++            # reuse k,v, cross_attentions
++            key_states = past_key_values.cross_attention_cache.layers[self.layer_idx].keys
++            value_states = past_key_values.cross_attention_cache.layers[self.layer_idx].values
++        else:
++            key_states = self.k_proj(encoder_hidden_states).view(*kv_input_shape).transpose(1, 2)
++            value_states = self.v_proj(encoder_hidden_states).view(*kv_input_shape).transpose(1, 2)
++
++            if past_key_values is not None:
++                # save all states to the cache
++                key_states, value_states = past_key_values.cross_attention_cache.update(
++                    key_states, value_states, self.layer_idx
++                )
++                # set flag that curr layer for cross-attn is already updated so we can re-use in subsequent calls
++                past_key_values.is_updated[self.layer_idx] = True
++
++        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
++            self.config._attn_implementation, eager_attention_forward
++        )
++
++        attn_output, attn_weights = attention_interface(
++            self,
++            query_states,
++            key_states,
++            value_states,
++            attention_mask,
++            dropout=0.0 if not self.training else self.attention_dropout,
++            scaling=self.scaling,
++            **kwargs,
++        )
++        attn_output = attn_output.reshape(bsz, tgt_len, -1).contiguous()
++        attn_output = self.o_proj(attn_output)
++        return attn_output, attn_weights
++
++
++class CohereAsrDecoderLayer(GradientCheckpointingLayer):
++    def __init__(self, config, layer_idx=None):
++        super().__init__()
++        self.self_attn = CohereAsrSelfAttention(config=config, layer_idx=layer_idx)
++        self.encoder_attn = CohereAsrCrossAttention(config=config, layer_idx=layer_idx)
++
++        self.mlp = CohereAsrDecoderMLP(config)
++        self.input_layernorm = nn.LayerNorm(config.hidden_size)
++        self.post_attention_layernorm = nn.LayerNorm(config.hidden_size)
++        self.final_layernorm = nn.LayerNorm(config.hidden_size)
++
++    def forward(
++        self,
++        hidden_states: torch.Tensor,
++        attention_mask: torch.Tensor | None = None,
++        encoder_hidden_states: torch.Tensor | None = None,
++        encoder_attention_mask: torch.Tensor | None = None,
++        position_ids: torch.LongTensor | None = None,
++        encoder_position_ids: torch.LongTensor | None = None,
++        past_key_values: Cache | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
++        residual = hidden_states
++        hidden_states = self.input_layernorm(hidden_states)
++
++        hidden_states, _ = self.self_attn(
++            hidden_states=hidden_states,
++            attention_mask=attention_mask,
++            position_ids=position_ids,
++            past_key_values=past_key_values,
++            **kwargs,
++        )
++        hidden_states = residual + hidden_states
++
++        if encoder_hidden_states is not None:
++            residual = hidden_states
++            hidden_states = self.post_attention_layernorm(hidden_states)
++            hidden_states, _ = self.encoder_attn(
++                hidden_states=hidden_states,
++                encoder_hidden_states=encoder_hidden_states,
++                attention_mask=encoder_attention_mask,
++                past_key_values=past_key_values,
++            )
++            hidden_states = residual + hidden_states
++
++        residual = hidden_states
++        hidden_states = self.final_layernorm(hidden_states)
++        hidden_states = self.mlp(hidden_states)
++        hidden_states = residual + hidden_states
++        return hidden_states
++
++
++class CohereAsrPreTrainedModel(MoonshinePreTrainedModel):
++    main_input_name = "input_features"
++    _keys_to_ignore_on_load_unexpected = [r"preprocessor\.featurizer\..*"]
++
++
++class CohereAsrDecoder(MoonshineDecoder):
++    _can_record_outputs = {
++        "attentions": OutputRecorder(CohereAsrSelfAttention, index=1, layer_name="self_attn"),
++        "hidden_states": CohereAsrDecoderLayer,
++        "cross_attentions": OutputRecorder(CohereAsrCrossAttention, index=1, layer_name="encoder_attn"),
++    }
++
++    def __init__(self, config):
++        super().__init__(config)
++        del self.rotary_emb
++        self.norm = nn.LayerNorm(config.hidden_size)
++        self.pos_emb = nn.Embedding(config.max_position_embeddings, config.hidden_size)
++        self.embedding_layernorm = nn.LayerNorm(config.hidden_size)
++        self.proj = nn.Linear(config.encoder_config.hidden_size, config.hidden_size, bias=True)
++        self.post_init()
++
++    def forward(
++        self,
++        input_ids: torch.LongTensor | None = None,
++        attention_mask: torch.Tensor | None = None,
++        position_ids: torch.LongTensor | None = None,
++        past_key_values: Cache | None = None,
++        inputs_embeds: torch.FloatTensor | None = None,
++        use_cache: bool | None = None,
++        encoder_hidden_states: torch.FloatTensor | None = None,
++        encoder_attention_mask: torch.Tensor | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ) -> tuple | BaseModelOutputWithPastAndCrossAttentions:
++        r"""
++        encoder_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
++            Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention
++            of the decoder.
++        encoder_attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
++            Mask to avoid performing attention on padding indices in `encoder_hidden_states`. Mask values selected in `[0, 1]`:
++            - 1 for tokens that are **not masked**,
++            - 0 for tokens that are **masked**.
++            [What are attention masks?](../glossary#attention-mask)
++        """
++        encoder_hidden_states = self.proj(encoder_hidden_states)
++        if (input_ids is None) ^ (inputs_embeds is not None):
++            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
++
++        if inputs_embeds is None:
++            inputs_embeds = self.embed_tokens(input_ids)
++
++        if use_cache and past_key_values is None:
++            past_key_values = EncoderDecoderCache(DynamicCache(config=self.config), DynamicCache(config=self.config))
++
++        if position_ids is None:
++            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
++            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device) + past_seen_tokens
++            position_ids = position_ids.unsqueeze(0)
++
++        # Fixed sinusoidal position embedding added to token embeddings, then layernorm
++        pos_emb = self.pos_emb(position_ids.squeeze(0))
++        inputs_embeds = self.embedding_layernorm(inputs_embeds + pos_emb)
++
++        causal_mask = create_causal_mask(
++            config=self.config,
++            inputs_embeds=inputs_embeds,
++            attention_mask=attention_mask,
++            past_key_values=past_key_values,
++            position_ids=position_ids,
++        )
++        encoder_attention_mask = create_bidirectional_mask(
++            config=self.config,
++            inputs_embeds=inputs_embeds,
++            attention_mask=encoder_attention_mask,
++            encoder_hidden_states=encoder_hidden_states,
++        )
++
++        hidden_states = inputs_embeds
++        for decoder_layer in self.layers:
++            hidden_states = decoder_layer(
++                hidden_states,
++                causal_mask,
++                encoder_hidden_states,  # as a positional argument for gradient checkpointing
++                encoder_attention_mask=encoder_attention_mask,
++                position_ids=position_ids,
++                past_key_values=past_key_values,
++                **kwargs,
++            )
++
++        hidden_states = self.norm(hidden_states)
++
++        return BaseModelOutputWithPastAndCrossAttentions(
++            last_hidden_state=hidden_states,
++            past_key_values=past_key_values if use_cache else None,
++        )
++
++
++class CohereAsrModel(MoonshineModel):
++    def __init__(self, config):
++        super().__init__(config)
++        self.encoder = AutoModel.from_config(config.encoder_config)
++
++    @can_return_tuple
++    @auto_docstring
++    def forward(
++        self,
++        input_features: torch.FloatTensor | None = None,
++        attention_mask: torch.LongTensor | None = None,
++        decoder_input_ids: torch.LongTensor | None = None,
++        decoder_attention_mask: torch.LongTensor | None = None,
++        encoder_outputs: tuple[tuple[torch.FloatTensor]] | None = None,
++        past_key_values: EncoderDecoderCache | None = None,
++        decoder_inputs_embeds: tuple[torch.FloatTensor] | None = None,
++        decoder_position_ids: tuple[torch.LongTensor] | None = None,
++        use_cache: bool | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ) -> Seq2SeqModelOutput:
++        r"""
++        input_features (`torch.FloatTensor` of shape `(batch_size, audio_length)`):
++            Float values of the raw speech waveform. Raw speech waveform can be
++            obtained by loading a `.flac` or `.wav` audio file into an array of type `list[float]`, a
++            `numpy.ndarray` or a `torch.Tensor`, *e.g.* via the torchcodec library (`pip install torchcodec`) or
++            the soundfile library (`pip install soundfile`). To prepare the array into
++            `input_features`, the [`AutoFeatureExtractor`] should be used for padding
++            and conversion into a tensor of type `torch.FloatTensor`.
++        decoder_position_ids (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`):
++            Indices of positions of each input sequence tokens in the position embeddings.
++            Used to calculate the position embeddings up to `config.decoder_config.max_position_embeddings`
++
++        Example:
++
++        ```python
++        >>> import torch
++        >>> from transformers import AutoFeatureExtractor, CohereAsrModel
++        >>> from datasets import load_dataset
++
++        >>> model = CohereAsrModel.from_pretrained("UsefulSensors/cohere_asr-tiny")
++        >>> feature_extractor = AutoFeatureExtractor.from_pretrained("UsefulSensors/cohere_asr-tiny")
++        >>> ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
++        >>> inputs = feature_extractor(ds[0]["audio"]["array"], return_tensors="pt")
++        >>> input_features = inputs.input_features
++        >>> decoder_input_ids = torch.tensor([[1, 1]]) * model.config.decoder_start_token_id
++        >>> last_hidden_state = model(input_features, decoder_input_ids=decoder_input_ids).last_hidden_state
++        >>> list(last_hidden_state.shape)
++        [1, 2, 288]
++        ```
++        """
++        # Main difference: uses `input_features` instead of `input_values`
++        if encoder_outputs is None:
++            encoder_outputs: BaseModelOutput = self.encoder(input_features, attention_mask=attention_mask, **kwargs)
++
++        decoder_outputs: BaseModelOutputWithPastAndCrossAttentions = self.decoder(
++            input_ids=decoder_input_ids,
++            attention_mask=decoder_attention_mask,
++            encoder_hidden_states=encoder_outputs.last_hidden_state,
++            encoder_attention_mask=encoder_outputs.attention_mask,
++            past_key_values=past_key_values,
++            inputs_embeds=decoder_inputs_embeds,
++            position_ids=decoder_position_ids,
++            use_cache=use_cache,
++            **kwargs,
++        )
++
++        return Seq2SeqModelOutput(
++            last_hidden_state=decoder_outputs.last_hidden_state,
++            past_key_values=decoder_outputs.past_key_values,
++            decoder_hidden_states=decoder_outputs.hidden_states,
++            decoder_attentions=decoder_outputs.attentions,
++            cross_attentions=decoder_outputs.cross_attentions,
++            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
++            encoder_hidden_states=encoder_outputs.hidden_states,
++            encoder_attentions=encoder_outputs.attentions,
++        )
++
++
++class CohereAsrForConditionalGeneration(MoonshineForConditionalGeneration):
++    def __init__(self, config):
++        super().__init__(config)
++        self.proj_out = nn.Linear(config.hidden_size, config.vocab_size, bias=True)
++        self.post_init()
++
++    @can_return_tuple
++    @auto_docstring
++    def forward(
++        self,
++        input_features: torch.FloatTensor | None = None,
++        attention_mask: torch.LongTensor | None = None,
++        decoder_input_ids: torch.LongTensor | None = None,
++        decoder_attention_mask: torch.LongTensor | None = None,
++        encoder_outputs: tuple[tuple[torch.FloatTensor]] | None = None,
++        past_key_values: EncoderDecoderCache | None = None,
++        decoder_inputs_embeds: tuple[torch.FloatTensor] | None = None,
++        decoder_position_ids: tuple[torch.LongTensor] | None = None,
++        use_cache: bool | None = None,
++        labels: torch.LongTensor | None = None,
++        **kwargs: Unpack[TransformersKwargs],
++    ) -> Seq2SeqLMOutput:
++        r"""
++        input_features (`torch.FloatTensor` of shape `(batch_size, audio_length)`):
++            Float values of the raw speech waveform. Raw speech waveform can be
++            obtained by loading a `.flac` or `.wav` audio file into an array of type `list[float]`, a
++            `numpy.ndarray` or a `torch.Tensor`, *e.g.* via the torchcodec library (`pip install torchcodec`) or
++            the soundfile library (`pip install soundfile`). To prepare the array into
++            `input_features`, the [`AutoFeatureExtractor`] should be used for padding
++            and conversion into a tensor of type `torch.FloatTensor`.
++        decoder_position_ids (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`):
++            Indices of positions of each input sequence tokens in the position embeddings.
++            Used to calculate the position embeddings up to `config.decoder_config.max_position_embeddings`
++
++        Example:
++
++        ```python
++        >>> import torch
++        >>> from transformers import AutoProcessor, CohereAsrForConditionalGeneration
++        >>> from datasets import load_dataset
++
++        >>> processor = AutoProcessor.from_pretrained("UsefulSensors/cohere_asr-tiny")
++        >>> model = CohereAsrForConditionalGeneration.from_pretrained("UsefulSensors/cohere_asr-tiny")
++
++        >>> ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
++
++        >>> inputs = processor(ds[0]["audio"]["array"], return_tensors="pt")
++        >>> input_features = inputs.input_features
++
++        >>> generated_ids = model.generate(input_features, max_new_tokens=100)
++
++        >>> transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
++        >>> transcription
++        'Mr. Quilter is the apostle of the middle classes, and we are glad to welcome his gospel.'
++        ```"""
++        # Main difference: uses `input_features` instead of `input_values`
++        if labels is not None:
++            if decoder_input_ids is None and decoder_inputs_embeds is None:
++                decoder_input_ids = shift_tokens_right(
++                    labels, self.config.pad_token_id, self.config.decoder_start_token_id
++                )
++
++        outputs: Seq2SeqModelOutput = self.model(
++            input_features,
++            attention_mask=attention_mask,
++            decoder_input_ids=decoder_input_ids,
++            encoder_outputs=encoder_outputs,
++            decoder_attention_mask=decoder_attention_mask,
++            past_key_values=past_key_values,
++            decoder_inputs_embeds=decoder_inputs_embeds,
++            decoder_position_ids=decoder_position_ids,
++            use_cache=use_cache,
++            **kwargs,
++        )
++        logits = self.proj_out(outputs.last_hidden_state)
++
++        loss = None
++        if labels is not None:
++            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size)
++
++        return Seq2SeqLMOutput(
++            loss=loss,
++            logits=logits,
++            past_key_values=outputs.past_key_values,
++            decoder_hidden_states=outputs.decoder_hidden_states,
++            decoder_attentions=outputs.decoder_attentions,
++            cross_attentions=outputs.cross_attentions,
++            encoder_last_hidden_state=outputs.encoder_last_hidden_state,
++            encoder_hidden_states=outputs.encoder_hidden_states,
++            encoder_attentions=outputs.encoder_attentions,
++        )
++
++    def prepare_inputs_for_generation(self, *args, audio_chunk_index=None, **kwargs):
++        # audio_chunk_index is returned by the processor but not used by the model, absorb it here
++        return GenerationMixin.prepare_inputs_for_generation(self, *args, **kwargs)
++
++
++__all__ = [
++    "CohereAsrPreTrainedModel",
++    "CohereAsrModel",
++    "CohereAsrForConditionalGeneration",
++]
+diff --git a/src/transformers/models/cohere_asr/processing_cohere_asr.py b/src/transformers/models/cohere_asr/processing_cohere_asr.py
+new file mode 100644
+index 0000000000..74ebfe4c4e
+--- /dev/null
++++ b/src/transformers/models/cohere_asr/processing_cohere_asr.py
+@@ -0,0 +1,184 @@
++# Copyright 2026 The HuggingFace Inc. team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import torch
++
++from ...audio_utils import AudioInput, make_list_of_audio
++from ...processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
++from ...tokenization_utils_base import PreTokenizedInput, TextInput
++from ...utils import auto_docstring, logging
++
++
++LANGUAGES = {"ar", "de", "el", "en", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "vi", "zh"}
++_NO_SPACE_LANGS = {"ja", "zh"}
++
++
++logger = logging.get_logger(__name__)
++
++
++class CohereAsrProcessorKwargs(ProcessingKwargs, total=False):
++    _defaults = {
++        "audio_kwargs": {
++            "sampling_rate": 16000,
++            "padding": "longest",
++            "return_attention_mask": True,
++        },
++        "text_kwargs": {
++            "padding": True,
++            "padding_side": "right",
++            "add_special_tokens": False,
++        },
++        "common_kwargs": {"return_tensors": "pt"},
++    }
++
++
++@auto_docstring
++class CohereAsrProcessor(ProcessorMixin):
++    def __init__(self, feature_extractor, tokenizer):
++        super().__init__(feature_extractor, tokenizer)
++
++    def get_decoder_prompt_ids(self, language: str, punctuation: bool = True) -> list[int]:
++        """Build the decoder prompt token IDs for the given language and punctuation settings."""
++        if language not in LANGUAGES:
++            raise ValueError(
++                f"Unsupported language: {language!r}. Supported languages: {', '.join(sorted(LANGUAGES))}."
++            )
++        pnc_token = "<|pnc|>" if punctuation else "<|nopnc|>"
++        tokens = [
++            "▁",
++            "<|startofcontext|>",
++            "<|startoftranscript|>",
++            "<|emo:undefined|>",
++            f"<|{language}|>",
++            f"<|{language}|>",
++            pnc_token,
++            "<|noitn|>",
++            "<|notimestamp|>",
++            "<|nodiarize|>",
++        ]
++        return self.tokenizer.convert_tokens_to_ids(tokens)
++
++    @auto_docstring
++    def __call__(
++        self,
++        audio: AudioInput,
++        language: str,
++        text: TextInput | PreTokenizedInput | list[TextInput] | list[PreTokenizedInput] | None = None,
++        punctuation: bool = True,
++        sampling_rate: int | None = None,
++        **kwargs: Unpack[CohereAsrProcessorKwargs],
++    ):
++        r"""
++        language (`str`):
++            Language code (e.g. `"en"`, `"es"`, `"fr"`) used to build the decoder prompt. The processor
++            constructs the full decoder prompt and returns `decoder_input_ids` alongside the audio features.
++        punctuation (`bool`, defaults to `True`):
++            Whether to enable punctuation in the decoder prompt.
++        sampling_rate (`int`, *optional*):
++            The sampling rate of the input audio in Hz. This should match the sampling rate expected by the feature
++            extractor (defaults to 16000 Hz). If provided, it will be validated against the processor's expected
++            sampling rate, and an error will be raised if they don't match. If not provided, a warning will be
++            issued and the default sampling rate will be assumed.
++        """
++        audio = make_list_of_audio(audio)
++
++        output_kwargs = self._merge_kwargs(
++            CohereAsrProcessorKwargs,
++            tokenizer_init_kwargs=self.tokenizer.init_kwargs,
++            **kwargs,
++        )
++
++        if sampling_rate is None:
++            logger.warning_once(
++                f"You've provided audio without specifying the sampling rate. It will be assumed to be {output_kwargs['audio_kwargs']['sampling_rate']}, which can result in silent errors."
++            )
++        elif sampling_rate != output_kwargs["audio_kwargs"]["sampling_rate"]:
++            raise ValueError(
++                f"The sampling rate of the audio ({sampling_rate}) does not match the sampling rate of the processor ({output_kwargs['audio_kwargs']['sampling_rate']}). Please provide resampled the audio to the expected sampling rate."
++            )
++
++        inputs = self.feature_extractor(audio, **output_kwargs["audio_kwargs"])
++
++        prompt_ids = self.get_decoder_prompt_ids(language=language, punctuation=punctuation)
++        batch_size = inputs["input_features"].shape[0]
++        inputs["decoder_input_ids"] = torch.tensor([prompt_ids] * batch_size, dtype=torch.long)
++
++        if text is not None:
++            encodings = self.tokenizer(text, **output_kwargs["text_kwargs"])
++            inputs["labels"] = encodings["input_ids"]
++
++        return inputs
++
++    def decode(self, *args, audio_chunk_index=None, language=None, **kwargs):
++        texts = self.tokenizer.decode(*args, **kwargs)
++        if audio_chunk_index is None:
++            return texts
++        if language is None:
++            raise ValueError("`language` must be provided when `audio_chunk_index` is given.")
++        separator = "" if language in _NO_SPACE_LANGS else " "
++        return self._reassemble_chunk_texts(texts, audio_chunk_index, separator)
++
++    @staticmethod
++    def _reassemble_chunk_texts(
++        texts: list[str],
++        audio_chunk_index: list[tuple[int, int | None]],
++        separator: str = " ",
++    ) -> list[str]:
++        """Reassemble per-chunk transcription texts back into per-sample strings.
++
++        When audio inputs are longer than the feature extractor's `max_audio_clip_s`, they are split into
++        overlapping chunks before being fed to the model. This means a single original audio sample can
++        produce multiple decoded text segments. This method reverses that chunking: it groups the decoded
++        texts by their original sample index using `chunk_map`, orders the chunks, and joins them
++        with `separator` to reconstruct one transcription string per input sample.
++
++        Args:
++            texts: Decoded text strings, one per model output (i.e. one per chunk).
++            audio_chunk_index: List of `(sample_idx, chunk_idx)` tuples that map each entry in
++                `texts` back to its original sample and chunk position. A `chunk_idx` of `None`
++                indicates the sample was not chunked.
++            separator: String used to join chunks belonging to the same sample. Defaults to a
++                space; callers pass an empty string for languages that don't use spaces between
++                words (e.g. Chinese, Japanese).
++
++        Returns:
++            A list of reassembled transcription strings, one per original input sample.
++        """
++        max_sample_idx = max(sample_idx for sample_idx, _ in audio_chunk_index)
++        outputs = [""] * (max_sample_idx + 1)
++        chunked = {}
++
++        for (sample_idx, chunk_idx), text in zip(audio_chunk_index, texts):
++            if chunk_idx is None:
++                outputs[sample_idx] = text
++            else:
++                if sample_idx not in chunked:
++                    chunked[sample_idx] = []
++                chunked[sample_idx].append((chunk_idx, text))
++
++        for sample_idx, chunk_items in chunked.items():
++            chunk_items.sort(key=lambda item: item[0])
++            non_empty = [t for _, t in chunk_items if t and t.strip()]
++            parts = [non_empty[0].rstrip()] + [t.strip() for t in non_empty[1:]]
++            outputs[sample_idx] = separator.join(parts)
++
++        return outputs
++
++    @property
++    def model_input_names(self):
++        feature_extractor_input_names = self.feature_extractor.model_input_names
++        return feature_extractor_input_names + ["labels"]
++
++
++__all__ = ["CohereAsrProcessor"]
+diff --git a/src/transformers/models/parakeet/modeling_parakeet.py b/src/transformers/models/parakeet/modeling_parakeet.py
+index 23be85a2f8..501a573f84 100644
+--- a/src/transformers/models/parakeet/modeling_parakeet.py
++++ b/src/transformers/models/parakeet/modeling_parakeet.py
+@@ -577,12 +577,12 @@ class ParakeetEncoder(ParakeetPreTrainedModel):
+         self,
+         input_features: torch.Tensor,
+         attention_mask: torch.Tensor | None = None,
+-        output_attention_mask: bool | None = None,
++        output_attention_mask: bool = True,
+         **kwargs: Unpack[TransformersKwargs],
+     ) -> BaseModelOutput:
+         r"""
+-        output_attention_mask (`bool`, *optional*):
+-            Whether to return the output attention mask.
++        output_attention_mask (`bool`, *optional*, defaults to `True`):
++            Whether to return the output attention mask. Only effective when `attention_mask` is provided.
+ 
+         Example:
+ 
+@@ -636,7 +636,8 @@ class ParakeetEncoder(ParakeetPreTrainedModel):
+                 )
+ 
+         return ParakeetEncoderModelOutput(
+-            last_hidden_state=hidden_states, attention_mask=output_mask.int() if output_attention_mask else None
++            last_hidden_state=hidden_states,
++            attention_mask=output_mask.int() if attention_mask is not None and output_attention_mask else None,
+         )
+ 
+ 
+diff --git a/src/transformers/models/parakeet/modular_parakeet.py b/src/transformers/models/parakeet/modular_parakeet.py
+index 93ef18b1fa..b53d61a0c2 100644
+--- a/src/transformers/models/parakeet/modular_parakeet.py
++++ b/src/transformers/models/parakeet/modular_parakeet.py
+@@ -416,12 +416,12 @@ class ParakeetEncoder(ParakeetPreTrainedModel):
+         self,
+         input_features: torch.Tensor,
+         attention_mask: torch.Tensor | None = None,
+-        output_attention_mask: bool | None = None,
++        output_attention_mask: bool = True,
+         **kwargs: Unpack[TransformersKwargs],
+     ) -> BaseModelOutput:
+         r"""
+-        output_attention_mask (`bool`, *optional*):
+-            Whether to return the output attention mask.
++        output_attention_mask (`bool`, *optional*, defaults to `True`):
++            Whether to return the output attention mask. Only effective when `attention_mask` is provided.
+ 
+         Example:
+ 
+@@ -475,7 +475,8 @@ class ParakeetEncoder(ParakeetPreTrainedModel):
+                 )
+ 
+         return ParakeetEncoderModelOutput(
+-            last_hidden_state=hidden_states, attention_mask=output_mask.int() if output_attention_mask else None
++            last_hidden_state=hidden_states,
++            attention_mask=output_mask.int() if attention_mask is not None and output_attention_mask else None,
+         )
+ 
+ 
+diff --git a/tests/models/cohere_asr/__init__.py b/tests/models/cohere_asr/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/tests/models/cohere_asr/test_modeling_cohere_asr.py b/tests/models/cohere_asr/test_modeling_cohere_asr.py
+new file mode 100644
+index 0000000000..e5f6d54050
+--- /dev/null
++++ b/tests/models/cohere_asr/test_modeling_cohere_asr.py
+@@ -0,0 +1,451 @@
++# Copyright 2026 the HuggingFace Team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import copy
++import math
++import unittest
++
++from transformers import AutoProcessor, CohereAsrConfig, CohereAsrForConditionalGeneration, is_torch_available
++from transformers.audio_utils import load_audio
++from transformers.testing_utils import cleanup, require_torch, slow, torch_device
++
++from ...test_configuration_common import ConfigTester
++from ...test_modeling_common import (
++    GenerationTesterMixin,
++    ModelTesterMixin,
++    floats_tensor,
++    random_attention_mask,
++)
++from ...test_pipeline_mixin import PipelineTesterMixin
++
++
++if is_torch_available():
++    import torch
++
++    from transformers import CohereAsrForConditionalGeneration
++    from transformers.models.cohere_asr.modeling_cohere_asr import CohereAsrModel
++
++
++class CohereAsrModelTester:
++    def __init__(
++        self,
++        parent,
++        batch_size=3,
++        seq_length=256,
++        is_training=False,
++        encoder_config={
++            "model_type": "parakeet_encoder",
++            "hidden_size": 16,
++            "intermediate_size": 32,
++            "num_hidden_layers": 2,
++            "num_attention_heads": 2,
++            "hidden_act": "silu",
++            "attention_bias": True,
++            "convolution_bias": True,
++            "conv_kernel_size": 9,
++            "subsampling_factor": 4,
++            "subsampling_conv_channels": 8,
++            "num_mel_bins": 8,
++            "subsampling_conv_kernel_size": 3,
++            "subsampling_conv_stride": 2,
++            "dropout": 0.0,
++            "dropout_positions": 0.0,
++            "layerdrop": 0.0,
++            "activation_dropout": 0.0,
++            "attention_dropout": 0.0,
++            "max_position_embeddings": 5000,
++            "scale_input": False,
++        },
++        decoder_start_token_id=85,
++        bos_token_id=98,
++        eos_token_id=98,
++        pad_token_id=0,
++    ):
++        self.parent = parent
++        self.batch_size = batch_size
++        self.seq_length = seq_length
++        self.is_training = is_training
++        self.encoder_config = encoder_config
++        self.decoder_start_token_id = decoder_start_token_id
++        self.bos_token_id = bos_token_id
++        self.eos_token_id = eos_token_id
++        self.pad_token_id = pad_token_id
++
++        # Decoder defaults
++        self.vocab_size = 147
++        self.hidden_size = 16
++        self.intermediate_size = 32
++        self.num_hidden_layers = 2
++        self.num_attention_heads = 2
++        self.num_key_value_heads = 2
++        self.head_dim = 8
++
++        # Derived from encoder_config for test assertions
++        self.num_mel_bins = encoder_config["num_mel_bins"]
++        self.encoder_hidden_size = encoder_config["hidden_size"]
++        self.encoder_num_hidden_layers = encoder_config["num_hidden_layers"]
++        self.encoder_num_attention_heads = encoder_config["num_attention_heads"]
++        self.encoder_seq_length = self.get_encoder_output_length(seq_length)
++        self.decoder_seq_length = 1
++        self.decoder_key_length = 1
++        self.key_length = self.encoder_seq_length
++
++    def get_encoder_output_length(self, input_length):
++        """Compute the encoder output length after subsampling convolutions."""
++        num_layers = int(math.log2(self.encoder_config["subsampling_factor"]))
++        kernel_size = self.encoder_config["subsampling_conv_kernel_size"]
++        stride = self.encoder_config["subsampling_conv_stride"]
++        add_pad = (kernel_size - 1) // 2 * 2 - kernel_size
++        length = input_length
++        for _ in range(num_layers):
++            length = int((length + add_pad) / stride) + 1
++        return length
++
++    def get_config(self):
++        return CohereAsrConfig(
++            encoder_config=self.encoder_config,
++            vocab_size=self.vocab_size,
++            hidden_size=self.hidden_size,
++            intermediate_size=self.intermediate_size,
++            num_hidden_layers=self.num_hidden_layers,
++            num_attention_heads=self.num_attention_heads,
++            num_key_value_heads=self.num_key_value_heads,
++            head_dim=self.head_dim,
++            hidden_act="relu",
++            attention_bias=True,
++            attention_dropout=0.0,
++            decoder_start_token_id=self.decoder_start_token_id,
++            bos_token_id=self.bos_token_id,
++            eos_token_id=self.eos_token_id,
++            pad_token_id=self.pad_token_id,
++        )
++
++    def prepare_config_and_inputs(self):
++        input_features = floats_tensor([self.batch_size, self.seq_length, self.num_mel_bins], scale=1.0)
++        attention_mask = random_attention_mask([self.batch_size, self.seq_length])
++        decoder_input_ids = torch.tensor(self.batch_size * [[self.decoder_start_token_id]], device=torch_device)
++        decoder_attention_mask = decoder_input_ids.ne(self.pad_token_id)
++        config = self.get_config()
++        return config, input_features, attention_mask, decoder_input_ids, decoder_attention_mask
++
++    def prepare_config_and_inputs_for_common(self):
++        config, input_features, attention_mask, decoder_input_ids, decoder_attention_mask = (
++            self.prepare_config_and_inputs()
++        )
++        inputs_dict = {
++            "input_features": input_features,
++            "decoder_input_ids": decoder_input_ids,
++            "decoder_attention_mask": decoder_attention_mask,
++        }
++        return config, inputs_dict
++
++
++@require_torch
++class CohereAsrModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, unittest.TestCase):
++    all_model_classes = (CohereAsrModel, CohereAsrForConditionalGeneration) if is_torch_available() else ()
++    all_generative_model_classes = (CohereAsrForConditionalGeneration,)
++    pipeline_model_mapping = (
++        {
++            "automatic-speech-recognition": CohereAsrForConditionalGeneration,
++            "feature-extraction": CohereAsrModel,
++        }
++        if is_torch_available()
++        else {}
++    )
++    is_encoder_decoder = True
++
++    # CohereAsr's pos_emb layer is large relative to total model size
++    model_split_percents = [0.5, 0.9, 0.95]
++
++    def setUp(self):
++        self.model_tester = CohereAsrModelTester(self)
++        self.config_tester = ConfigTester(self, config_class=CohereAsrConfig)
++
++    def test_config(self):
++        self.config_tester.run_common_tests()
++
++    def test_reverse_loading_mapping(self, check_keys_were_modified=True):
++        # proj_out conversion only applies to ForConditionalGeneration, not the base model
++        try:
++            self.all_model_classes = (CohereAsrForConditionalGeneration,) if is_torch_available() else ()
++            super().test_reverse_loading_mapping(check_keys_were_modified)
++        finally:
++            self.all_model_classes = (
++                (CohereAsrModel, CohereAsrForConditionalGeneration) if is_torch_available() else ()
++            )
++
++    # Copied from tests.models.moonshine_streaming.test_modeling_moonshine_streaming.MoonshineStreamingModelTest.test_resize_tokens_embeddings
++    def test_resize_tokens_embeddings(self):
++        (
++            original_config,
++            inputs_dict,
++        ) = self.model_tester.prepare_config_and_inputs_for_common()
++        if not self.test_resize_embeddings:
++            self.skipTest(reason="test_resize_embeddings is False")
++
++        for model_class in self.all_model_classes:
++            config = copy.deepcopy(original_config)
++            model = model_class(config)
++            model.to(torch_device)
++
++            if self.model_tester.is_training is False:
++                model.eval()
++
++            model_vocab_size = config.vocab_size
++            # Retrieve the embeddings and clone theme
++            model_embed = model.resize_token_embeddings(model_vocab_size)
++            cloned_embeddings = model_embed.weight.clone()
++
++            # Check that resizing the token embeddings with a larger vocab size increases the model's vocab size
++            model_embed = model.resize_token_embeddings(model_vocab_size + 10)
++            self.assertEqual(model.config.vocab_size, model_vocab_size + 10)
++            # Check that it actually resizes the embeddings matrix
++            self.assertEqual(model_embed.weight.shape[0], cloned_embeddings.shape[0] + 10)
++            # Check that the model can still do a forward pass successfully (every parameter should be resized)
++            model(**self._prepare_for_class(inputs_dict, model_class))
++
++            # Check that resizing the token embeddings with a smaller vocab size decreases the model's vocab size
++            model_embed = model.resize_token_embeddings(model_vocab_size - 15)
++            self.assertEqual(model.config.vocab_size, model_vocab_size - 15)
++            # Check that it actually resizes the embeddings matrix
++            self.assertEqual(model_embed.weight.shape[0], cloned_embeddings.shape[0] - 15)
++
++            # make sure that decoder_input_ids are resized
++            if "decoder_input_ids" in inputs_dict:
++                inputs_dict["decoder_input_ids"].clamp_(max=model_vocab_size - 15 - 1)
++            model(**self._prepare_for_class(inputs_dict, model_class))
++
++            # Check that adding and removing tokens has not modified the first part of the embedding matrix.
++            models_equal = True
++            for p1, p2 in zip(cloned_embeddings, model_embed.weight):
++                if p1.data.ne(p2.data).sum() > 0:
++                    models_equal = False
++
++            self.assertTrue(models_equal)
++
++    # Copied from tests.models.moonshine_streaming.test_modeling_moonshine_streaming.MoonshineStreamingModelTest.test_resize_embeddings_untied
++    def test_resize_embeddings_untied(self):
++        (
++            original_config,
++            inputs_dict,
++        ) = self.model_tester.prepare_config_and_inputs_for_common()
++        if not self.test_resize_embeddings:
++            self.skipTest(reason="test_resize_embeddings is False")
++
++        original_config.tie_word_embeddings = False
++
++        # if model cannot untied embeddings -> leave test
++        if original_config.tie_word_embeddings:
++            self.skipTest(reason="Model cannot untie embeddings")
++
++        for model_class in self.all_model_classes:
++            config = copy.deepcopy(original_config)
++            model = model_class(config).to(torch_device)
++            model.eval()
++
++            # if no output embeddings -> leave test
++            if model.get_output_embeddings() is None:
++                continue
++
++            # Check that resizing the token embeddings with a larger vocab size increases the model's vocab size
++            model_vocab_size = config.vocab_size
++            model.resize_token_embeddings(model_vocab_size + 10)
++            self.assertEqual(model.config.vocab_size, model_vocab_size + 10)
++            output_embeds = model.get_output_embeddings()
++            self.assertEqual(output_embeds.weight.shape[0], model_vocab_size + 10)
++            # Check bias if present
++            if output_embeds.bias is not None:
++                self.assertEqual(output_embeds.bias.shape[0], model_vocab_size + 10)
++            # Check that the model can still do a forward pass successfully (every parameter should be resized)
++            model(**self._prepare_for_class(inputs_dict, model_class))
++
++            # Check that resizing the token embeddings with a smaller vocab size decreases the model's vocab size
++            model.resize_token_embeddings(model_vocab_size - 15)
++            self.assertEqual(model.config.vocab_size, model_vocab_size - 15)
++            # Check that it actually resizes the embeddings matrix
++            output_embeds = model.get_output_embeddings()
++            self.assertEqual(output_embeds.weight.shape[0], model_vocab_size - 15)
++            # Check bias if present
++            if output_embeds.bias is not None:
++                self.assertEqual(output_embeds.bias.shape[0], model_vocab_size - 15)
++            # Check that the model can still do a forward pass successfully (every parameter should be resized)
++            if "decoder_input_ids" in inputs_dict:
++                inputs_dict["decoder_input_ids"].clamp_(max=model_vocab_size - 15 - 1)
++            # Check that the model can still do a forward pass successfully (every parameter should be resized)
++            model(**self._prepare_for_class(inputs_dict, model_class))
++
++    @unittest.skip(reason="Not known - aborted for now, not super important")
++    def test_sdpa_can_dispatch_on_flash(self):
++        pass
++
++    @unittest.skip(reason="FIXME: likely intended because we need input ids but to double-check")
++    def test_generate_without_input_ids(self):
++        pass
++
++
++# TODO: remove revision
++@require_torch
++class CohereAsrIntegrationTest(unittest.TestCase):
++    checkpoint_name = "CohereLabs/cohere-transcribe-03-2026"
++
++    def setUp(self):
++        self.processor = AutoProcessor.from_pretrained(self.checkpoint_name, revision="refs/pr/6")
++
++    def tearDown(self):
++        cleanup(torch_device, gc_collect=True)
++
++    @slow
++    def test_shortform_english(self):
++        """
++        reproducer: https://gist.github.com/eustlb/cfcea58b4ffabfd45b4b6fce5ab283ed
++        """
++        audio = load_audio(
++            "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/bcn_weather.mp3",
++            sampling_rate=16000,
++        )
++        inputs = self.processor(
++            audio,
++            sampling_rate=16000,
++            return_tensors="pt",
++            language="en",
++        )
++        model = CohereAsrForConditionalGeneration.from_pretrained(
++            self.checkpoint_name, device_map=torch_device, revision="refs/pr/6"
++        )
++        inputs.to(model.device, dtype=model.dtype)
++
++        outputs = model.generate(**inputs, max_new_tokens=256)
++        text = self.processor.decode(outputs, skip_special_tokens=True)
++
++        EXPECTED_OUTPUT = [
++            " Yesterday it was thirty-five degrees in Barcelona, but today the temperature will go down to minus twenty degrees."
++        ]
++        self.assertEqual(text, EXPECTED_OUTPUT)
++
++    @slow
++    def test_shortform_english_no_punctuation(self):
++        """
++        reproducer: https://gist.github.com/eustlb/cfcea58b4ffabfd45b4b6fce5ab283ed
++        """
++        audio = load_audio(
++            "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/bcn_weather.mp3",
++            sampling_rate=16000,
++        )
++        inputs_pnc = self.processor(audio, sampling_rate=16000, return_tensors="pt", language="en", punctuation=True)
++        inputs_nopnc = self.processor(
++            audio, sampling_rate=16000, return_tensors="pt", language="en", punctuation=False
++        )
++
++        model = CohereAsrForConditionalGeneration.from_pretrained(
++            self.checkpoint_name, device_map=torch_device, revision="refs/pr/6"
++        )
++        inputs_pnc.to(model.device, dtype=model.dtype)
++        inputs_nopnc.to(model.device, dtype=model.dtype)
++
++        outputs_pnc = model.generate(**inputs_pnc, max_new_tokens=256)
++        outputs_nopnc = model.generate(**inputs_nopnc, max_new_tokens=256)
++
++        text_pnc = self.processor.decode(outputs_pnc, skip_special_tokens=True)
++        text_nopnc = self.processor.decode(outputs_nopnc, skip_special_tokens=True)
++
++        EXPECTED_OUTPUT_PNC = [
++            " Yesterday it was thirty-five degrees in Barcelona, but today the temperature will go down to minus twenty degrees."
++        ]
++        EXPECTED_OUTPUT_NOPNC = [
++            " yesterday it was thirty-five degrees in barcelona but today the temperature will go down to minus twenty degrees"
++        ]
++        self.assertEqual(text_pnc, EXPECTED_OUTPUT_PNC)
++        self.assertEqual(text_nopnc, EXPECTED_OUTPUT_NOPNC)
++
++    @slow
++    def test_longform_english(self):
++        """
++        reproducer: https://gist.github.com/eustlb/cfcea58b4ffabfd45b4b6fce5ab283ed
++        """
++        audio = load_audio(
++            "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/obama_first_45_secs.mp3",
++            sampling_rate=16000,
++        )
++        inputs = self.processor(audio=audio, return_tensors="pt", language="en", sampling_rate=16000)
++        audio_chunk_index = inputs.get("audio_chunk_index")
++        model = CohereAsrForConditionalGeneration.from_pretrained(
++            self.checkpoint_name, device_map=torch_device, revision="refs/pr/6"
++        )
++        inputs.to(model.device, dtype=model.dtype)
++
++        outputs = model.generate(**inputs, max_new_tokens=256)
++        text = self.processor.decode(
++            outputs, skip_special_tokens=True, audio_chunk_index=audio_chunk_index, language="en"
++        )
++
++        # fmt: off
++        EXPECTED_OUTPUT = [
++            " This week, I traveled to Chicago to deliver my final farewell address to the nation, following in the tradition of presidents before me. It was an opportunity to say thank you. Whether we've seen eye to eye or rarely agreed at all, my conversations with you, the American people, in living rooms and schools, at farms and on factory floors, at diners and on distant military outposts, all these conversations are what have kept me honest, kept me inspired, and kept me going. Every day I learned from you. You made me a better president and you made me a better man. Over the course of these eight years, I've seen the goodness, the resilience, and the hope of the American."
++        ]
++        # fmt: on
++        self.assertEqual(text, EXPECTED_OUTPUT)
++
++    @slow
++    def test_batched_mixed_lengths(self):
++        """
++        reproducer: https://gist.github.com/eustlb/cfcea58b4ffabfd45b4b6fce5ab283ed
++        """
++        audio_short = load_audio(
++            "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/bcn_weather.mp3",
++            sampling_rate=16000,
++        )
++        audio_long = load_audio(
++            "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/obama_first_45_secs.mp3",
++            sampling_rate=16000,
++        )
++        inputs = self.processor([audio_short, audio_long], sampling_rate=16000, return_tensors="pt", language="en")
++        audio_chunk_index = inputs.get("audio_chunk_index")
++        model = CohereAsrForConditionalGeneration.from_pretrained(
++            self.checkpoint_name, device_map=torch_device, revision="refs/pr/6"
++        )
++        inputs.to(model.device, dtype=model.dtype)
++
++        outputs = model.generate(**inputs, max_new_tokens=256)
++        text = self.processor.decode(
++            outputs, skip_special_tokens=True, audio_chunk_index=audio_chunk_index, language="en"
++        )
++
++        # fmt: off
++        EXPECTED_OUTPUT = [
++            " Yesterday it was thirty-five degrees in Barcelona, but today the temperature will go down to minus twenty degrees.",
++            " This week, I traveled to Chicago to deliver my final farewell address to the nation, following in the tradition of presidents before me. It was an opportunity to say thank you. Whether we've seen eye to eye or rarely agreed at all, my conversations with you, the American people, in living rooms and schools, at farms and on factory floors, at diners and on distant military outposts, all these conversations are what have kept me honest, kept me inspired, and kept me going. Every day I learned from you. You made me a better president and you made me a better man. Over the course of these eight years, I've seen the goodness, the resilience, and the hope of the American.",
++        ]
++        # fmt: on
++        self.assertEqual(text, EXPECTED_OUTPUT)
++
++    @slow
++    def test_non_english_with_punctuation(self):
++        """
++        reproducer: https://gist.github.com/eustlb/cfcea58b4ffabfd45b4b6fce5ab283ed
++        """
++        audio = load_audio(
++            "https://huggingface.co/datasets/hf-internal-testing/dummy-audio-samples/resolve/main/fleur_es_sample.wav",
++            sampling_rate=16000,
++        )
++        inputs = self.processor(audio, sampling_rate=16000, return_tensors="pt", language="es", punctuation=True)
++        model = CohereAsrForConditionalGeneration.from_pretrained(
++            self.checkpoint_name, device_map=torch_device, revision="refs/pr/6"
++        )
++        inputs.to(model.device, dtype=model.dtype)
++
++        outputs = model.generate(**inputs, max_new_tokens=256)
++        text = self.processor.decode(outputs, skip_special_tokens=True)
++
++        EXPECTED_OUTPUT = [" Esto parece tener sentido ya que en la Tierra no se percibe su movimiento, ¿cierto?"]
++        self.assertEqual(text, EXPECTED_OUTPUT)

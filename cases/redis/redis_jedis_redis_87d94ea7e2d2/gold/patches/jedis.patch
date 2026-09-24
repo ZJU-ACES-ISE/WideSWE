@@ -1,0 +1,820 @@
+diff --git a/pom.xml b/pom.xml
+index 22ea1cdce..746207203 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -335,8 +335,18 @@
+ 				<configuration>
+ 					<configFile>${project.basedir}/hbase-formatter.xml</configFile>
+ 					<directories>
+-						<directory>${project.basedir}/src/main/java/redis/clients/jedis/annots</directory>
++						<directory>${project.basedir}</directory>
+ 					</directories>
++					<includes>
++						<!-- Specific files -->
++						<include>src/main/java/redis/clients/jedis/annots/*.java</include>
++						<include>src/main/java/redis/clients/jedis/resps/StreamEntryDeletionResult.java</include>
++						<include>src/main/java/redis/clients/jedisargs/StreamDeletionPolicy.java</include>
++						<include>src/test/java/redis/clients/jedis/commands/StreamsCommandsTestBase.java</include>
++						<include>src/test/java/redis/clients/jedis/commands/jedis/ClusterStreamsCommandsTest.java</include>
++						<include>src/test/java/redis/clients/jedis/commands/jedis/PooledStreamsCommandsTest.java</include>
++						<include>src/test/java/redis/clients/jedis/resps/StreamEntryDeletionResultTest.java</include>
++					</includes>
+ 				</configuration>
+ 				<executions>
+ 					<execution>
+diff --git a/src/main/java/redis/clients/jedis/BuilderFactory.java b/src/main/java/redis/clients/jedis/BuilderFactory.java
+index 15bb0122c..585d4bfd2 100644
+--- a/src/main/java/redis/clients/jedis/BuilderFactory.java
++++ b/src/main/java/redis/clients/jedis/BuilderFactory.java
+@@ -1261,6 +1261,42 @@ public final class BuilderFactory {
+     }
+   };
+ 
++  public static final Builder<StreamEntryDeletionResult> STREAM_ENTRY_DELETION_RESULT = new Builder<StreamEntryDeletionResult>() {
++    @Override
++    public StreamEntryDeletionResult build(Object data) {
++      if (data == null) {
++        return null;
++      }
++      return StreamEntryDeletionResult.fromLong((Long) data);
++    }
++
++    @Override
++    public String toString() {
++      return "StreamEntryDeletionResult";
++    }
++  };
++
++  public static final Builder<List<StreamEntryDeletionResult>> STREAM_ENTRY_DELETION_RESULT_LIST = new Builder<List<StreamEntryDeletionResult>>() {
++    @Override
++    @SuppressWarnings("unchecked")
++    public List<StreamEntryDeletionResult> build(Object data) {
++      if (data == null) {
++        return null;
++      }
++      List<Object> objectList = (List<Object>) data;
++      List<StreamEntryDeletionResult> responses = new ArrayList<>(objectList.size());
++      for (Object object : objectList) {
++        responses.add(STREAM_ENTRY_DELETION_RESULT.build(object));
++      }
++      return responses;
++    }
++
++    @Override
++    public String toString() {
++      return "List<StreamEntryDeletionResult>";
++    }
++  };
++
+   public static final Builder<StreamEntry> STREAM_ENTRY = new Builder<StreamEntry>() {
+     @Override
+     @SuppressWarnings("unchecked")
+diff --git a/src/main/java/redis/clients/jedis/CommandObjects.java b/src/main/java/redis/clients/jedis/CommandObjects.java
+index ea4930f89..5533ecf1f 100644
+--- a/src/main/java/redis/clients/jedis/CommandObjects.java
++++ b/src/main/java/redis/clients/jedis/CommandObjects.java
+@@ -2626,10 +2626,26 @@ public class CommandObjects {
+     return new CommandObject<>(commandArguments(XACK).key(key).add(group).addObjects((Object[]) ids), BuilderFactory.LONG);
+   }
+ 
++  public final CommandObject<List<StreamEntryDeletionResult>> xackdel(String key, String group, StreamEntryID... ids) {
++    return new CommandObject<>(commandArguments(XACKDEL).key(key).add(group).add("IDS").add(ids.length).addObjects((Object[]) ids), BuilderFactory.STREAM_ENTRY_DELETION_RESULT_LIST);
++  }
++
++  public final CommandObject<List<StreamEntryDeletionResult>> xackdel(String key, String group, StreamDeletionPolicy trimMode, StreamEntryID... ids) {
++    return new CommandObject<>(commandArguments(XACKDEL).key(key).add(group).add(trimMode).add("IDS").add(ids.length).addObjects((Object[]) ids), BuilderFactory.STREAM_ENTRY_DELETION_RESULT_LIST);
++  }
++
+   public final CommandObject<Long> xack(byte[] key, byte[] group, byte[]... ids) {
+     return new CommandObject<>(commandArguments(XACK).key(key).add(group).addObjects((Object[]) ids), BuilderFactory.LONG);
+   }
+ 
++  public final CommandObject<List<StreamEntryDeletionResult>> xackdel(byte[] key, byte[] group, byte[]... ids) {
++    return new CommandObject<>(commandArguments(XACKDEL).key(key).add(group).add("IDS").add(ids.length).addObjects((Object[]) ids), BuilderFactory.STREAM_ENTRY_DELETION_RESULT_LIST);
++  }
++
++  public final CommandObject<List<StreamEntryDeletionResult>> xackdel(byte[] key, byte[] group, StreamDeletionPolicy trimMode, byte[]... ids) {
++    return new CommandObject<>(commandArguments(XACKDEL).key(key).add(group).add(trimMode).add("IDS").add(ids.length).addObjects((Object[]) ids), BuilderFactory.STREAM_ENTRY_DELETION_RESULT_LIST);
++  }
++
+   public final CommandObject<String> xgroupCreate(String key, String groupName, StreamEntryID id, boolean makeStream) {
+     CommandArguments args = commandArguments(XGROUP).add(CREATE).key(key)
+         .add(groupName).add(id == null ? "0-0" : id);
+@@ -2687,6 +2703,14 @@ public class CommandObjects {
+     return new CommandObject<>(commandArguments(XDEL).key(key).addObjects((Object[]) ids), BuilderFactory.LONG);
+   }
+ 
++  public final CommandObject<List<StreamEntryDeletionResult>> xdelex(String key, StreamEntryID... ids) {
++    return new CommandObject<>(commandArguments(XDELEX).key(key).add("IDS").add(ids.length).addObjects((Object[]) ids), BuilderFactory.STREAM_ENTRY_DELETION_RESULT_LIST);
++  }
++
++  public final CommandObject<List<StreamEntryDeletionResult>> xdelex(String key, StreamDeletionPolicy trimMode, StreamEntryID... ids) {
++    return new CommandObject<>(commandArguments(XDELEX).key(key).add(trimMode).add("IDS").add(ids.length).addObjects((Object[]) ids), BuilderFactory.STREAM_ENTRY_DELETION_RESULT_LIST);
++  }
++
+   public final CommandObject<Long> xtrim(String key, long maxLen, boolean approximate) {
+     CommandArguments args = commandArguments(XTRIM).key(key).add(MAXLEN);
+     if (approximate) args.add(Protocol.BYTES_TILDE);
+@@ -2702,6 +2726,14 @@ public class CommandObjects {
+     return new CommandObject<>(commandArguments(XDEL).key(key).addObjects((Object[]) ids), BuilderFactory.LONG);
+   }
+ 
++  public final CommandObject<List<StreamEntryDeletionResult>> xdelex(byte[] key, byte[]... ids) {
++    return new CommandObject<>(commandArguments(XDELEX).key(key).add("IDS").add(ids.length).addObjects((Object[]) ids), BuilderFactory.STREAM_ENTRY_DELETION_RESULT_LIST);
++  }
++
++  public final CommandObject<List<StreamEntryDeletionResult>> xdelex(byte[] key, StreamDeletionPolicy trimMode, byte[]... ids) {
++    return new CommandObject<>(commandArguments(XDELEX).key(key).add(trimMode).add("IDS").add(ids.length).addObjects((Object[]) ids), BuilderFactory.STREAM_ENTRY_DELETION_RESULT_LIST);
++  }
++
+   public final CommandObject<Long> xtrim(byte[] key, long maxLen, boolean approximateLength) {
+     CommandArguments args = commandArguments(XTRIM).key(key).add(MAXLEN);
+     if (approximateLength) args.add(Protocol.BYTES_TILDE);
+diff --git a/src/main/java/redis/clients/jedis/Jedis.java b/src/main/java/redis/clients/jedis/Jedis.java
+index e19a4fa61..6d50b8814 100644
+--- a/src/main/java/redis/clients/jedis/Jedis.java
++++ b/src/main/java/redis/clients/jedis/Jedis.java
+@@ -4866,6 +4866,18 @@ public class Jedis implements ServerCommands, DatabaseCommands, JedisCommands, J
+     return connection.executeCommand(commandObjects.xack(key, group, ids));
+   }
+ 
++  @Override
++  public List<StreamEntryDeletionResult> xackdel(byte[] key, byte[] group, byte[]... ids) {
++    checkIsInMultiOrPipeline();
++    return connection.executeCommand(commandObjects.xackdel(key, group, ids));
++  }
++
++  @Override
++  public List<StreamEntryDeletionResult> xackdel(byte[] key, byte[] group, StreamDeletionPolicy trimMode, byte[]... ids) {
++    checkIsInMultiOrPipeline();
++    return connection.executeCommand(commandObjects.xackdel(key, group, trimMode, ids));
++  }
++
+   @Override
+   public String xgroupCreate(byte[] key, byte[] consumer, byte[] id, boolean makeStream) {
+     checkIsInMultiOrPipeline();
+@@ -4902,6 +4914,18 @@ public class Jedis implements ServerCommands, DatabaseCommands, JedisCommands, J
+     return connection.executeCommand(commandObjects.xdel(key, ids));
+   }
+ 
++  @Override
++  public List<StreamEntryDeletionResult> xdelex(byte[] key, byte[]... ids) {
++    checkIsInMultiOrPipeline();
++    return connection.executeCommand(commandObjects.xdelex(key, ids));
++  }
++
++  @Override
++  public List<StreamEntryDeletionResult> xdelex(byte[] key, StreamDeletionPolicy trimMode, byte[]... ids) {
++    checkIsInMultiOrPipeline();
++    return connection.executeCommand(commandObjects.xdelex(key, trimMode, ids));
++  }
++
+   @Override
+   public long xtrim(byte[] key, long maxLen, boolean approximateLength) {
+     checkIsInMultiOrPipeline();
+@@ -9677,6 +9701,18 @@ public class Jedis implements ServerCommands, DatabaseCommands, JedisCommands, J
+     return connection.executeCommand(commandObjects.xack(key, group, ids));
+   }
+ 
++  @Override
++  public List<StreamEntryDeletionResult> xackdel(final String key, final String group, final StreamEntryID... ids) {
++    checkIsInMultiOrPipeline();
++    return connection.executeCommand(commandObjects.xackdel(key, group, ids));
++  }
++
++  @Override
++  public List<StreamEntryDeletionResult> xackdel(final String key, final String group, final StreamDeletionPolicy trimMode, final StreamEntryID... ids) {
++    checkIsInMultiOrPipeline();
++    return connection.executeCommand(commandObjects.xackdel(key, group, trimMode, ids));
++  }
++
+   @Override
+   public String xgroupCreate(final String key, final String groupName, final StreamEntryID id,
+       final boolean makeStream) {
+@@ -9714,6 +9750,18 @@ public class Jedis implements ServerCommands, DatabaseCommands, JedisCommands, J
+     return connection.executeCommand(commandObjects.xdel(key, ids));
+   }
+ 
++  @Override
++  public List<StreamEntryDeletionResult> xdelex(final String key, final StreamEntryID... ids) {
++    checkIsInMultiOrPipeline();
++    return connection.executeCommand(commandObjects.xdelex(key, ids));
++  }
++
++  @Override
++  public List<StreamEntryDeletionResult> xdelex(final String key, final StreamDeletionPolicy trimMode, final StreamEntryID... ids) {
++    checkIsInMultiOrPipeline();
++    return connection.executeCommand(commandObjects.xdelex(key, trimMode, ids));
++  }
++
+   @Override
+   public long xtrim(final String key, final long maxLen, final boolean approximateLength) {
+     checkIsInMultiOrPipeline();
+diff --git a/src/main/java/redis/clients/jedis/PipeliningBase.java b/src/main/java/redis/clients/jedis/PipeliningBase.java
+index f7b974f55..7274e8c7b 100644
+--- a/src/main/java/redis/clients/jedis/PipeliningBase.java
++++ b/src/main/java/redis/clients/jedis/PipeliningBase.java
+@@ -1552,6 +1552,16 @@ public abstract class PipeliningBase
+     return appendCommand(commandObjects.xack(key, group, ids));
+   }
+ 
++  @Override
++  public Response<List<StreamEntryDeletionResult>> xackdel(String key, String group, StreamEntryID... ids) {
++    return appendCommand(commandObjects.xackdel(key, group, ids));
++  }
++
++  @Override
++  public Response<List<StreamEntryDeletionResult>> xackdel(String key, String group, StreamDeletionPolicy trimMode, StreamEntryID... ids) {
++    return appendCommand(commandObjects.xackdel(key, group, trimMode, ids));
++  }
++
+   @Override
+   public Response<String> xgroupCreate(String key, String groupName, StreamEntryID id, boolean makeStream) {
+     return appendCommand(commandObjects.xgroupCreate(key, groupName, id, makeStream));
+@@ -1592,6 +1602,16 @@ public abstract class PipeliningBase
+     return appendCommand(commandObjects.xdel(key, ids));
+   }
+ 
++  @Override
++  public Response<List<StreamEntryDeletionResult>> xdelex(String key, StreamEntryID... ids) {
++    return appendCommand(commandObjects.xdelex(key, ids));
++  }
++
++  @Override
++  public Response<List<StreamEntryDeletionResult>> xdelex(String key, StreamDeletionPolicy trimMode, StreamEntryID... ids) {
++    return appendCommand(commandObjects.xdelex(key, trimMode, ids));
++  }
++
+   @Override
+   public Response<Long> xtrim(String key, long maxLen, boolean approximate) {
+     return appendCommand(commandObjects.xtrim(key, maxLen, approximate));
+@@ -3264,6 +3284,16 @@ public abstract class PipeliningBase
+     return appendCommand(commandObjects.xack(key, group, ids));
+   }
+ 
++  @Override
++  public Response<List<StreamEntryDeletionResult>> xackdel(byte[] key, byte[] group, byte[]... ids) {
++    return appendCommand(commandObjects.xackdel(key, group, ids));
++  }
++
++  @Override
++  public Response<List<StreamEntryDeletionResult>> xackdel(byte[] key, byte[] group, StreamDeletionPolicy trimMode, byte[]... ids) {
++    return appendCommand(commandObjects.xackdel(key, group, trimMode, ids));
++  }
++
+   @Override
+   public Response<String> xgroupCreate(byte[] key, byte[] groupName, byte[] id, boolean makeStream) {
+     return appendCommand(commandObjects.xgroupCreate(key, groupName, id, makeStream));
+@@ -3294,6 +3324,16 @@ public abstract class PipeliningBase
+     return appendCommand(commandObjects.xdel(key, ids));
+   }
+ 
++  @Override
++  public Response<List<StreamEntryDeletionResult>> xdelex(byte[] key, byte[]... ids) {
++    return appendCommand(commandObjects.xdelex(key, ids));
++  }
++
++  @Override
++  public Response<List<StreamEntryDeletionResult>> xdelex(byte[] key, StreamDeletionPolicy trimMode, byte[]... ids) {
++    return appendCommand(commandObjects.xdelex(key, trimMode, ids));
++  }
++
+   @Override
+   public Response<Long> xtrim(byte[] key, long maxLen, boolean approximateLength) {
+     return appendCommand(commandObjects.xtrim(key, maxLen, approximateLength));
+diff --git a/src/main/java/redis/clients/jedis/Protocol.java b/src/main/java/redis/clients/jedis/Protocol.java
+index 6d59a8b91..226702cd9 100644
+--- a/src/main/java/redis/clients/jedis/Protocol.java
++++ b/src/main/java/redis/clients/jedis/Protocol.java
+@@ -305,7 +305,7 @@ public final class Protocol {
+     GEORADIUSBYMEMBER, GEORADIUSBYMEMBER_RO, // <-- geo
+     PFADD, PFCOUNT, PFMERGE, // <-- hyper log log
+     XADD, XLEN, XDEL, XTRIM, XRANGE, XREVRANGE, XREAD, XACK, XGROUP, XREADGROUP, XPENDING, XCLAIM,
+-    XAUTOCLAIM, XINFO, // <-- stream
++    XAUTOCLAIM, XINFO, XDELEX, XACKDEL, // <-- stream
+     EVAL, EVALSHA, SCRIPT, EVAL_RO, EVALSHA_RO, FUNCTION, FCALL, FCALL_RO, // <-- program
+     SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, PUBSUB,
+     SSUBSCRIBE, SUNSUBSCRIBE, SPUBLISH, // <-- pub sub
+diff --git a/src/main/java/redis/clients/jedis/UnifiedJedis.java b/src/main/java/redis/clients/jedis/UnifiedJedis.java
+index e3960862f..e0522f1ed 100644
+--- a/src/main/java/redis/clients/jedis/UnifiedJedis.java
++++ b/src/main/java/redis/clients/jedis/UnifiedJedis.java
+@@ -3201,6 +3201,16 @@ public class UnifiedJedis implements JedisCommands, JedisBinaryCommands,
+     return executeCommand(commandObjects.xack(key, group, ids));
+   }
+ 
++  @Override
++  public List<StreamEntryDeletionResult> xackdel(String key, String group, StreamEntryID... ids) {
++    return executeCommand(commandObjects.xackdel(key, group, ids));
++  }
++
++  @Override
++  public List<StreamEntryDeletionResult> xackdel(String key, String group, StreamDeletionPolicy trimMode, StreamEntryID... ids) {
++    return executeCommand(commandObjects.xackdel(key, group, trimMode, ids));
++  }
++
+   @Override
+   public String xgroupCreate(String key, String groupName, StreamEntryID id, boolean makeStream) {
+     return executeCommand(commandObjects.xgroupCreate(key, groupName, id, makeStream));
+@@ -3241,6 +3251,16 @@ public class UnifiedJedis implements JedisCommands, JedisBinaryCommands,
+     return executeCommand(commandObjects.xdel(key, ids));
+   }
+ 
++  @Override
++  public List<StreamEntryDeletionResult> xdelex(String key, StreamEntryID... ids) {
++    return executeCommand(commandObjects.xdelex(key, ids));
++  }
++
++  @Override
++  public List<StreamEntryDeletionResult> xdelex(String key, StreamDeletionPolicy trimMode, StreamEntryID... ids) {
++    return executeCommand(commandObjects.xdelex(key, trimMode, ids));
++  }
++
+   @Override
+   public long xtrim(String key, long maxLen, boolean approximate) {
+     return executeCommand(commandObjects.xtrim(key, maxLen, approximate));
+@@ -3356,6 +3376,16 @@ public class UnifiedJedis implements JedisCommands, JedisBinaryCommands,
+     return executeCommand(commandObjects.xack(key, group, ids));
+   }
+ 
++  @Override
++  public List<StreamEntryDeletionResult> xackdel(byte[] key, byte[] group, byte[]... ids) {
++    return executeCommand(commandObjects.xackdel(key, group, ids));
++  }
++
++  @Override
++  public List<StreamEntryDeletionResult> xackdel(byte[] key, byte[] group, StreamDeletionPolicy trimMode, byte[]... ids) {
++    return executeCommand(commandObjects.xackdel(key, group, trimMode, ids));
++  }
++
+   @Override
+   public String xgroupCreate(byte[] key, byte[] groupName, byte[] id, boolean makeStream) {
+     return executeCommand(commandObjects.xgroupCreate(key, groupName, id, makeStream));
+@@ -3386,6 +3416,16 @@ public class UnifiedJedis implements JedisCommands, JedisBinaryCommands,
+     return executeCommand(commandObjects.xdel(key, ids));
+   }
+ 
++  @Override
++  public List<StreamEntryDeletionResult> xdelex(byte[] key, byte[]... ids) {
++    return executeCommand(commandObjects.xdelex(key, ids));
++  }
++
++  @Override
++  public List<StreamEntryDeletionResult> xdelex(byte[] key, StreamDeletionPolicy trimMode, byte[]... ids) {
++    return executeCommand(commandObjects.xdelex(key, trimMode, ids));
++  }
++
+   @Override
+   public long xtrim(byte[] key, long maxLen, boolean approximateLength) {
+     return executeCommand(commandObjects.xtrim(key, maxLen, approximateLength));
+diff --git a/src/main/java/redis/clients/jedis/args/StreamDeletionPolicy.java b/src/main/java/redis/clients/jedis/args/StreamDeletionPolicy.java
+new file mode 100644
+index 000000000..640c71dea
+--- /dev/null
++++ b/src/main/java/redis/clients/jedis/args/StreamDeletionPolicy.java
+@@ -0,0 +1,38 @@
++package redis.clients.jedis.args;
++
++import redis.clients.jedis.util.SafeEncoder;
++
++/**
++ * Deletion policy for stream commands that handle consumer group references. Used with XDELEX,
++ * XACKDEL, and enhanced XADD/XTRIM commands.
++ */
++public enum StreamDeletionPolicy implements Rawable {
++
++  /**
++   * Preserves existing references to entries in all consumer groups' PEL. This is the default
++   * behavior similar to XDEL.
++   */
++  KEEP_REFERENCES("KEEPREF"),
++
++  /**
++   * Removes all references to entries from all consumer groups' pending entry lists, effectively
++   * cleaning up all traces of the messages.
++   */
++  DELETE_REFERENCES("DELREF"),
++
++  /**
++   * Only operates on entries that were read and acknowledged by all consumer groups.
++   */
++  ACKNOWLEDGED("ACKED");
++
++  private final byte[] raw;
++
++  StreamDeletionPolicy(String redisParamName) {
++    raw = SafeEncoder.encode(redisParamName);
++  }
++
++  @Override
++  public byte[] getRaw() {
++    return raw;
++  }
++}
+diff --git a/src/main/java/redis/clients/jedis/commands/StreamBinaryCommands.java b/src/main/java/redis/clients/jedis/commands/StreamBinaryCommands.java
+index 5db025ef2..c2d3fcbb2 100644
+--- a/src/main/java/redis/clients/jedis/commands/StreamBinaryCommands.java
++++ b/src/main/java/redis/clients/jedis/commands/StreamBinaryCommands.java
+@@ -4,8 +4,10 @@ import java.util.List;
+ import java.util.Map;
+ 
+ import redis.clients.jedis.StreamEntryID;
++import redis.clients.jedis.args.StreamDeletionPolicy;
+ import redis.clients.jedis.params.*;
+ import redis.clients.jedis.resps.StreamEntryBinary;
++import redis.clients.jedis.resps.StreamEntryDeletionResult;
+ 
+ public interface StreamBinaryCommands {
+ 
+@@ -27,6 +29,16 @@ public interface StreamBinaryCommands {
+ 
+   long xack(byte[] key, byte[] group, byte[]... ids);
+ 
++  /**
++   * XACKDEL key group [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   */
++  List<StreamEntryDeletionResult> xackdel(byte[] key, byte[] group, byte[]... ids);
++
++  /**
++   * XACKDEL key group [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   */
++  List<StreamEntryDeletionResult> xackdel(byte[] key, byte[] group, StreamDeletionPolicy trimMode, byte[]... ids);
++
+   String xgroupCreate(byte[] key, byte[] groupName, byte[] id, boolean makeStream);
+ 
+   String xgroupSetID(byte[] key, byte[] groupName, byte[] id);
+@@ -39,6 +51,16 @@ public interface StreamBinaryCommands {
+ 
+   long xdel(byte[] key, byte[]... ids);
+ 
++  /**
++   * XDELEX key [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   */
++  List<StreamEntryDeletionResult> xdelex(byte[] key, byte[]... ids);
++
++  /**
++   * XDELEX key [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   */
++  List<StreamEntryDeletionResult> xdelex(byte[] key, StreamDeletionPolicy trimMode, byte[]... ids);
++
+   long xtrim(byte[] key, long maxLen, boolean approximateLength);
+ 
+   long xtrim(byte[] key, XTrimParams params);
+diff --git a/src/main/java/redis/clients/jedis/commands/StreamCommands.java b/src/main/java/redis/clients/jedis/commands/StreamCommands.java
+index 163e11050..0a61e3481 100644
+--- a/src/main/java/redis/clients/jedis/commands/StreamCommands.java
++++ b/src/main/java/redis/clients/jedis/commands/StreamCommands.java
+@@ -4,6 +4,7 @@ import java.util.List;
+ import java.util.Map;
+ 
+ import redis.clients.jedis.StreamEntryID;
++import redis.clients.jedis.args.StreamDeletionPolicy;
+ import redis.clients.jedis.params.*;
+ import redis.clients.jedis.resps.*;
+ 
+@@ -98,6 +99,20 @@ public interface StreamCommands {
+    */
+   long xack(String key, String group, StreamEntryID... ids);
+ 
++  /**
++   * XACKDEL key group [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   * Combines XACK and XDEL functionalities. Acknowledges specified message IDs
++   * in the given consumer group and attempts to delete corresponding stream entries.
++   */
++  List<StreamEntryDeletionResult> xackdel(String key, String group, StreamEntryID... ids);
++
++  /**
++   * XACKDEL key group [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   * Combines XACK and XDEL functionalities. Acknowledges specified message IDs
++   * in the given consumer group and attempts to delete corresponding stream entries.
++   */
++  List<StreamEntryDeletionResult> xackdel(String key, String group, StreamDeletionPolicy trimMode, StreamEntryID... ids);
++
+   /**
+    * {@code XGROUP CREATE key groupName <id or $>}
+    */
+@@ -128,6 +143,20 @@ public interface StreamCommands {
+    */
+   long xdel(String key, StreamEntryID... ids);
+ 
++  /**
++   * XDELEX key [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   * Extended XDEL command with enhanced control over message entry deletion
++   * with respect to consumer groups.
++   */
++  List<StreamEntryDeletionResult> xdelex(String key, StreamEntryID... ids);
++
++  /**
++   * XDELEX key [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   * Extended XDEL command with enhanced control over message entry deletion
++   * with respect to consumer groups.
++   */
++  List<StreamEntryDeletionResult> xdelex(String key, StreamDeletionPolicy trimMode, StreamEntryID... ids);
++
+   /**
+    * XTRIM key MAXLEN [~] count
+    */
+diff --git a/src/main/java/redis/clients/jedis/commands/StreamPipelineBinaryCommands.java b/src/main/java/redis/clients/jedis/commands/StreamPipelineBinaryCommands.java
+index 3cda8f079..bd6b36b1b 100644
+--- a/src/main/java/redis/clients/jedis/commands/StreamPipelineBinaryCommands.java
++++ b/src/main/java/redis/clients/jedis/commands/StreamPipelineBinaryCommands.java
+@@ -5,8 +5,10 @@ import java.util.Map;
+ 
+ import redis.clients.jedis.Response;
+ import redis.clients.jedis.StreamEntryID;
++import redis.clients.jedis.args.StreamDeletionPolicy;
+ import redis.clients.jedis.params.*;
+ import redis.clients.jedis.resps.StreamEntryBinary;
++import redis.clients.jedis.resps.StreamEntryDeletionResult;
+ 
+ public interface StreamPipelineBinaryCommands {
+ 
+@@ -28,6 +30,10 @@ public interface StreamPipelineBinaryCommands {
+ 
+   Response<Long> xack(byte[] key, byte[] group, byte[]... ids);
+ 
++  Response<List<StreamEntryDeletionResult>> xackdel(byte[] key, byte[] group, byte[]... ids);
++
++  Response<List<StreamEntryDeletionResult>> xackdel(byte[] key, byte[] group, StreamDeletionPolicy trimMode, byte[]... ids);
++
+   Response<String> xgroupCreate(byte[] key, byte[] groupName, byte[] id, boolean makeStream);
+ 
+   Response<String> xgroupSetID(byte[] key, byte[] groupName, byte[] id);
+@@ -40,6 +46,10 @@ public interface StreamPipelineBinaryCommands {
+ 
+   Response<Long> xdel(byte[] key, byte[]... ids);
+ 
++  Response<List<StreamEntryDeletionResult>> xdelex(byte[] key, byte[]... ids);
++
++  Response<List<StreamEntryDeletionResult>> xdelex(byte[] key, StreamDeletionPolicy trimMode, byte[]... ids);
++
+   Response<Long> xtrim(byte[] key, long maxLen, boolean approximateLength);
+ 
+   Response<Long> xtrim(byte[] key, XTrimParams params);
+diff --git a/src/main/java/redis/clients/jedis/commands/StreamPipelineCommands.java b/src/main/java/redis/clients/jedis/commands/StreamPipelineCommands.java
+index d4bda0fb9..e3346363d 100644
+--- a/src/main/java/redis/clients/jedis/commands/StreamPipelineCommands.java
++++ b/src/main/java/redis/clients/jedis/commands/StreamPipelineCommands.java
+@@ -5,6 +5,7 @@ import java.util.Map;
+ 
+ import redis.clients.jedis.Response;
+ import redis.clients.jedis.StreamEntryID;
++import redis.clients.jedis.args.StreamDeletionPolicy;
+ import redis.clients.jedis.params.*;
+ import redis.clients.jedis.resps.*;
+ 
+@@ -91,6 +92,16 @@ public interface StreamPipelineCommands {
+    */
+   Response<Long> xack(String key, String group, StreamEntryID... ids);
+ 
++  /**
++   * XACKDEL key group [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   */
++  Response<List<StreamEntryDeletionResult>> xackdel(String key, String group, StreamEntryID... ids);
++
++  /**
++   * XACKDEL key group [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   */
++  Response<List<StreamEntryDeletionResult>> xackdel(String key, String group, StreamDeletionPolicy trimMode, StreamEntryID... ids);
++
+   /**
+    * {@code XGROUP CREATE key groupName <id or $>}
+    */
+@@ -131,6 +142,16 @@ public interface StreamPipelineCommands {
+    */
+   Response<Long> xdel(String key, StreamEntryID... ids);
+ 
++  /**
++   * XDELEX key [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   */
++  Response<List<StreamEntryDeletionResult>> xdelex(String key, StreamEntryID... ids);
++
++  /**
++   * XDELEX key [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
++   */
++  Response<List<StreamEntryDeletionResult>> xdelex(String key, StreamDeletionPolicy trimMode, StreamEntryID... ids);
++
+   /**
+    * XTRIM key MAXLEN [~] count
+    */
+diff --git a/src/main/java/redis/clients/jedis/params/XAddParams.java b/src/main/java/redis/clients/jedis/params/XAddParams.java
+index 3575c6e5d..db6c4deb3 100644
+--- a/src/main/java/redis/clients/jedis/params/XAddParams.java
++++ b/src/main/java/redis/clients/jedis/params/XAddParams.java
+@@ -6,6 +6,7 @@ import redis.clients.jedis.Protocol.Keyword;
+ import redis.clients.jedis.StreamEntryID;
+ import redis.clients.jedis.args.Rawable;
+ import redis.clients.jedis.args.RawableFactory;
++import redis.clients.jedis.args.StreamDeletionPolicy;
+ 
+ import java.util.Objects;
+ 
+@@ -25,6 +26,8 @@ public class XAddParams implements IParams {
+ 
+   private Long limit;
+ 
++  private StreamDeletionPolicy trimMode;
++
+   public static XAddParams xAddParams() {
+     return new XAddParams();
+   }
+@@ -81,6 +84,17 @@ public class XAddParams implements IParams {
+     return this;
+   }
+ 
++  /**
++   * When trimming, defines desired behaviour for handling consumer group references.
++   * see {@link StreamDeletionPolicy} for details.
++   *
++   * @return XAddParams
++   */
++  public XAddParams trimmingMode(StreamDeletionPolicy trimMode) {
++    this.trimMode = trimMode;
++    return this;
++  }
++
+   @Override
+   public void addParams(CommandArguments args) {
+ 
+@@ -114,6 +128,10 @@ public class XAddParams implements IParams {
+       args.add(Keyword.LIMIT).add(limit);
+     }
+ 
++    if (trimMode != null) {
++      args.add(trimMode);
++    }
++
+     args.add(id != null ? id : StreamEntryID.NEW_ENTRY);
+   }
+ 
+@@ -122,11 +140,12 @@ public class XAddParams implements IParams {
+     if (this == o) return true;
+     if (o == null || getClass() != o.getClass()) return false;
+     XAddParams that = (XAddParams) o;
+-    return approximateTrimming == that.approximateTrimming && exactTrimming == that.exactTrimming && nomkstream == that.nomkstream && Objects.equals(id, that.id) && Objects.equals(maxLen, that.maxLen) && Objects.equals(minId, that.minId) && Objects.equals(limit, that.limit);
++    return approximateTrimming == that.approximateTrimming && exactTrimming == that.exactTrimming && nomkstream == that.nomkstream && Objects.equals(id, that.id) && Objects.equals(maxLen, that.maxLen) && Objects.equals(minId, that.minId) && Objects.equals(limit, that.limit) && trimMode == that.trimMode;
+   }
+ 
+   @Override
+   public int hashCode() {
+-    return Objects.hash(id, maxLen, approximateTrimming, exactTrimming, nomkstream, minId, limit);
++    return Objects.hash(id, maxLen, approximateTrimming, exactTrimming, nomkstream, minId, limit,
++        trimMode);
+   }
+ }
+diff --git a/src/main/java/redis/clients/jedis/params/XTrimParams.java b/src/main/java/redis/clients/jedis/params/XTrimParams.java
+index af77ba81b..a6c4e8d14 100644
+--- a/src/main/java/redis/clients/jedis/params/XTrimParams.java
++++ b/src/main/java/redis/clients/jedis/params/XTrimParams.java
+@@ -3,6 +3,7 @@ package redis.clients.jedis.params;
+ import redis.clients.jedis.CommandArguments;
+ import redis.clients.jedis.Protocol;
+ import redis.clients.jedis.Protocol.Keyword;
++import redis.clients.jedis.args.StreamDeletionPolicy;
+ 
+ import java.util.Objects;
+ 
+@@ -18,6 +19,8 @@ public class XTrimParams implements IParams {
+ 
+   private Long limit;
+ 
++  private StreamDeletionPolicy trimMode;
++
+   public static XTrimParams xTrimParams() {
+     return new XTrimParams();
+   }
+@@ -48,6 +51,17 @@ public class XTrimParams implements IParams {
+     return this;
+   }
+ 
++  /**
++   * Defines desired behaviour for handling consumer group references.
++   * see {@link StreamDeletionPolicy} for details.
++   *
++   * @return XAddParams
++   */
++  public XTrimParams trimmingMode(StreamDeletionPolicy trimMode) {
++    this.trimMode = trimMode;
++    return this;
++  }
++
+   @Override
+   public void addParams(CommandArguments args) {
+     if (maxLen != null) {
+@@ -75,6 +89,10 @@ public class XTrimParams implements IParams {
+     if (limit != null) {
+       args.add(Keyword.LIMIT).add(limit);
+     }
++
++    if (trimMode != null) {
++      args.add(trimMode);
++    }
+   }
+ 
+   @Override
+@@ -82,11 +100,11 @@ public class XTrimParams implements IParams {
+     if (this == o) return true;
+     if (o == null || getClass() != o.getClass()) return false;
+     XTrimParams that = (XTrimParams) o;
+-    return approximateTrimming == that.approximateTrimming && exactTrimming == that.exactTrimming && Objects.equals(maxLen, that.maxLen) && Objects.equals(minId, that.minId) && Objects.equals(limit, that.limit);
++    return approximateTrimming == that.approximateTrimming && exactTrimming == that.exactTrimming && Objects.equals(maxLen, that.maxLen) && Objects.equals(minId, that.minId) && Objects.equals(limit, that.limit) && trimMode == that.trimMode;
+   }
+ 
+   @Override
+   public int hashCode() {
+-    return Objects.hash(maxLen, approximateTrimming, exactTrimming, minId, limit);
++    return Objects.hash(maxLen, approximateTrimming, exactTrimming, minId, limit, trimMode);
+   }
+ }
+diff --git a/src/main/java/redis/clients/jedis/resps/StreamEntryDeletionResult.java b/src/main/java/redis/clients/jedis/resps/StreamEntryDeletionResult.java
+new file mode 100644
+index 000000000..974f8f347
+--- /dev/null
++++ b/src/main/java/redis/clients/jedis/resps/StreamEntryDeletionResult.java
+@@ -0,0 +1,86 @@
++package redis.clients.jedis.resps;
++
++/**
++ * Represents the result of a stream entry deletion operation for XDELEX and XACKDEL commands.
++ * <ul>
++ * <li>NOT_FOUND (-1): ID doesn't exist in stream</li>
++ * <li>DELETED (1): Entry was deleted/acknowledged and deleted</li>
++ * <li>ACKNOWLEDGED_NOT_DELETED (2): Entry was acknowledged but not deleted (still has dangling
++ * references)</li>
++ * </ul>
++ */
++public enum StreamEntryDeletionResult {
++
++  /**
++   * The stream entry ID doesn't exist in the stream.
++   * <p>
++   * Returned when trying to delete/acknowledge a non-existent entry.
++   * </p>
++   */
++  NOT_FOUND(-1),
++
++  /**
++   * The entry was successfully deleted/acknowledged and deleted.
++   * <p>
++   * This is the typical successful case.
++   * </p>
++   */
++  DELETED(1),
++
++  /**
++   * The entry was acknowledged but not deleted because it still has dangling references in other
++   * consumer groups' pending entry lists.
++   */
++  ACKNOWLEDGED_NOT_DELETED(2);
++
++  private final int code;
++
++  StreamEntryDeletionResult(int code) {
++    this.code = code;
++  }
++
++  /**
++   * Gets the numeric code returned by Redis for this result.
++   * @return the numeric code (-1, 1, or 2)
++   */
++  public int getCode() {
++    return code;
++  }
++
++  /**
++   * Creates a StreamEntryDeletionResult from the numeric code returned by Redis.
++   * @param code the numeric code from Redis
++   * @return the corresponding StreamEntryDeletionResult
++   * @throws IllegalArgumentException if the code is not recognized
++   */
++  public static StreamEntryDeletionResult fromCode(int code) {
++    switch (code) {
++      case -1:
++        return NOT_FOUND;
++      case 1:
++        return DELETED;
++      case 2:
++        return ACKNOWLEDGED_NOT_DELETED;
++      default:
++        throw new IllegalArgumentException("Unknown stream entry deletion result code: " + code);
++    }
++  }
++
++  /**
++   * Creates a StreamEntryDeletionResult from a Long value returned by Redis.
++   * @param value the Long value from Redis
++   * @return the corresponding StreamEntryDeletionResult
++   * @throws IllegalArgumentException if the value is null or not recognized
++   */
++  public static StreamEntryDeletionResult fromLong(Long value) {
++    if (value == null) {
++      throw new IllegalArgumentException("Stream entry deletion result value cannot be null");
++    }
++    return fromCode(value.intValue());
++  }
++
++  @Override
++  public String toString() {
++    return name() + "(" + code + ")";
++  }
++}

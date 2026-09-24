@@ -1,0 +1,347 @@
+diff --git a/_meta/config/common.reference.p2.yml.tmpl b/_meta/config/common.reference.p2.yml.tmpl
+index 8a77626b9279dce6a87b3ce52f8848e347b42488..06d9b08e399c41e9c1655f8aeb3585f2d8373b33 100644
+--- a/_meta/config/common.reference.p2.yml.tmpl
++++ b/_meta/config/common.reference.p2.yml.tmpl
+@@ -85,6 +85,9 @@ inputs:
+ 
+ # fleet:
+ #   access_api_key: ""
++#   checkin:
++#     # compression sets the compression algorithm for checkin requests one of ["gzip", "none"] (default: "gzip").
++#     compression: gzip
+ #   kibana:
+ #     # kibana minimal configuration
+ #     hosts: ["localhost:5601"]
+diff --git a/changelog/fragments/1773175656-Add-feature-flag-to-enable-checkin-request-compression.yaml b/changelog/fragments/1773175656-Add-feature-flag-to-enable-checkin-request-compression.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..622469aaed657056b023445677a7bbe2202a18d2
+--- /dev/null
++++ b/changelog/fragments/1773175656-Add-feature-flag-to-enable-checkin-request-compression.yaml
+@@ -0,0 +1,32 @@
++# Kind can be one of:
++# - breaking-change: a change to previously-documented behavior
++# - deprecation: functionality that is being removed in a later release
++# - bug-fix: fixes a problem in a previous version
++# - enhancement: extends functionality but does not break or fix existing behavior
++# - feature: new functionality
++# - known-issue: problems that we are aware of in a given version
++# - security: impacts on the security of a product or a user’s deployment.
++# - upgrade: important information for someone upgrading from a prior version
++# - other: does not fit into any of the other categories
++kind: feature
++
++# Change summary; a 80ish characters long description of the change.
++summary: Add config option to enable checkin request compression
++
++# Long description; in case the summary is not enough to describe the change
++# this field accommodate a description without length limits.
++# NOTE: This field will be rendered only for breaking-change and known-issue kinds at the moment.
++#description:
++
++# Affected component; usually one of "elastic-agent", "fleet-server", "filebeat", "metricbeat", "auditbeat", "all", etc.
++component: elastic-agent
++
++# PR URL; optional; the PR number that added the changeset.
++# If not present is automatically filled by the tooling finding the PR where this changelog fragment has been added.
++# NOTE: the tooling supports backports, so it's able to fill the original PR number instead of the backport PR number.
++# Please provide it if you are adding a fragment for a different PR.
++pr: https://github.com/elastic/elastic-agent/pull/13110
++
++# Issue URL; optional; the GitHub issue related to this changeset (either closes or is part of).
++# If not present is automatically filled by the tooling with the issue linked to the PR number.
++#issue: https://github.com/owner/repo/1234
+diff --git a/elastic-agent.reference.yml b/elastic-agent.reference.yml
+index 8ede5ba4462108b11d58404685f6a46a831004ec..df3e98d71521e282d81f43d4f7d41ebcec904473 100644
+--- a/elastic-agent.reference.yml
++++ b/elastic-agent.reference.yml
+@@ -91,6 +91,9 @@ inputs:
+ 
+ # fleet:
+ #   access_api_key: ""
++#   checkin:
++#     # compression sets the compression algorithm for checkin requests one of ["gzip", "none"] (default: "gzip").
++#     compression: gzip
+ #   kibana:
+ #     # kibana minimal configuration
+ #     hosts: ["localhost:5601"]
+diff --git a/internal/pkg/agent/application/enroll/enroll.go b/internal/pkg/agent/application/enroll/enroll.go
+index 4ada8c58be672c24b3e631e8505386618fc74316..7db2dc59513c3a9e432874bc00ebcff503eb6ef4 100644
+--- a/internal/pkg/agent/application/enroll/enroll.go
++++ b/internal/pkg/agent/application/enroll/enroll.go
+@@ -182,6 +182,16 @@ func enroll(
+ 		return err
+ 	}
+ 
++	if checkinRaw, ok := persistentConfig["fleet.checkin"]; ok {
++		if checkin, ok := checkinRaw.(*configuration.FleetCheckin); ok {
++			fleetConfig.Checkin = checkin
++		}
++		// Remove the key so CreateAgentConfig does not also write it as agent.fleet.checkin.
++		// Restore it on exit so that a retry still finds the user's configured value.
++		delete(persistentConfig, "fleet.checkin")
++		defer func() { persistentConfig["fleet.checkin"] = checkinRaw }()
++	}
++
+ 	agentConfig := CreateAgentConfig(resp.Item.ID, persistentConfig, options.FleetServer.Headers, options.Staging)
+ 
+ 	localFleetServer := options.FleetServer.ConnStr != ""
+@@ -415,8 +425,10 @@ func LoadPersistentConfig(pathConfigFile string) (map[string]interface{}, error)
+ 		Headers        map[string]string                      `json:"agent.headers,omitempty" yaml:"agent.headers,omitempty" config:"agent.headers,omitempty"`
+ 		LogLevel       string                                 `json:"agent.logging.level,omitempty" yaml:"agent.logging.level,omitempty" config:"agent.logging.level,omitempty"`
+ 		MonitoringHTTP *monitoringConfig.MonitoringHTTPConfig `json:"agent.monitoring.http,omitempty" yaml:"agent.monitoring.http,omitempty" config:"agent.monitoring.http,omitempty"`
++		FleetCheckin   *configuration.FleetCheckin            `json:"fleet.checkin,omitempty" yaml:"fleet.checkin,omitempty" config:"fleet.checkin,omitempty"`
+ 	}{
+ 		MonitoringHTTP: monitoringConfig.DefaultConfig().HTTP,
++		FleetCheckin:   configuration.DefaultFleetCheckin(),
+ 	}
+ 
+ 	if err := rawConfig.UnpackTo(&pc); err != nil {
+@@ -430,6 +442,9 @@ func LoadPersistentConfig(pathConfigFile string) (map[string]interface{}, error)
+ 	if pc.MonitoringHTTP != nil {
+ 		persistentMap["monitoring.http"] = pc.MonitoringHTTP
+ 	}
++	if pc.FleetCheckin != nil {
++		persistentMap["fleet.checkin"] = pc.FleetCheckin
++	}
+ 
+ 	return persistentMap, nil
+ }
+diff --git a/internal/pkg/agent/application/gateway/fleet/fleet_gateway.go b/internal/pkg/agent/application/gateway/fleet/fleet_gateway.go
+index c38f0ccf079d1c69ba74d35a568ecaddabe4fdd0..48ff09c0d8c8fcc80d4244c5975d854dbe1b7b02 100644
+--- a/internal/pkg/agent/application/gateway/fleet/fleet_gateway.go
++++ b/internal/pkg/agent/application/gateway/fleet/fleet_gateway.go
+@@ -98,6 +98,7 @@ type FleetGateway struct {
+ 	errCh              chan error
+ 	actionCh           chan []fleetapi.Action
+ 	rollbackSource     rollbacksSource
++	compression        string
+ }
+ 
+ // New creates a new fleet gateway
+@@ -114,7 +115,7 @@ func New(
+ 	scheduler := scheduler.NewPeriodicJitter(defaultGatewaySettings.Duration, defaultGatewaySettings.Jitter)
+ 	st := defaultGatewaySettings
+ 	st.Backoff = getBackoffSettings(cfg)
+-	return newFleetGatewayWithScheduler(
++	gw, err := newFleetGatewayWithScheduler(
+ 		log,
+ 		st,
+ 		agentInfo,
+@@ -125,6 +126,11 @@ func New(
+ 		stateFetcher,
+ 		source,
+ 	)
++	if err != nil {
++		return nil, err
++	}
++	gw.compression = cfg.GetCompression()
++	return gw, nil
+ }
+ 
+ func newFleetGatewayWithScheduler(
+@@ -427,7 +433,7 @@ func (f *FleetGateway) execute(ctx context.Context) (*fleetapi.CheckinResponse,
+ 	}
+ 
+ 	// checkin
+-	cmd := fleetapi.NewCheckinCmd(f.agentInfo, f.client)
++	cmd := fleetapi.NewCheckinCmd(f.agentInfo, f.client, f.compression)
+ 	req := &fleetapi.CheckinRequest{
+ 		AckToken:          ackToken,
+ 		Metadata:          ecsMeta,
+diff --git a/internal/pkg/agent/configuration/fleet.go b/internal/pkg/agent/configuration/fleet.go
+index 5eaaca32285b8d9e77be1a8398c136c92bf3d8f0..bf9bcdedf5dc9e6b5e0e712bbae46f918edb531c 100644
+--- a/internal/pkg/agent/configuration/fleet.go
++++ b/internal/pkg/agent/configuration/fleet.go
+@@ -11,6 +11,18 @@ import (
+ 	"github.com/elastic/elastic-agent/internal/pkg/remote"
+ )
+ 
++const (
++	// CheckinCompressionNone disables checkin request compression.
++	CheckinCompressionNone = "none"
++	// CheckinCompressionGzip enables gzip compression of checkin requests.
++	CheckinCompressionGzip = "gzip"
++
++	defaultCompression = CheckinCompressionGzip
++
++	fleetCheckinModeStandard       = "standard"
++	fleetCheckinModeOnStateChanged = "on_state_change"
++)
++
+ // FleetAgentConfig is the internal configuration of the agent after the enrollment is done,
+ // this configuration is not exposed in anyway in the elastic-agent.yml and is only internal configuration.
+ type FleetAgentConfig struct {
+@@ -54,7 +66,7 @@ func DefaultFleetAgentConfig() *FleetAgentConfig {
+ 		Enabled: false,
+ 		Client:  remote.DefaultClientConfig(),
+ 		Info:    &AgentInfo{},
+-		Checkin: nil,
++		Checkin: DefaultFleetCheckin(),
+ 	}
+ }
+ 
+@@ -62,6 +74,16 @@ type FleetCheckin struct {
+ 	Mode               string        `config:"mode" yaml:"mode,omitempty"` // `standard` or `on_state_change` (empty string is accepted as standard)
+ 	RequestBackoffInit time.Duration `config:"request_backoff_init" yaml:"request_backoff_init,omitempty"`
+ 	RequestBackoffMax  time.Duration `config:"request_backoff_max" yaml:"request_backoff_max,omitempty"`
++	// Compression controls how checkin request bodies are encoded.
++	// Accepted values: "none" (no compression) or "gzip" (gzip compression).
++	Compression string `config:"compression" yaml:"compression,omitempty"`
++}
++
++// DefaultFleetCheckin returns a FleetCheckin with default values.
++func DefaultFleetCheckin() *FleetCheckin {
++	return &FleetCheckin{
++		Compression: defaultCompression,
++	}
+ }
+ 
+ func (f *FleetCheckin) IsModeOnStateChanged() bool {
+@@ -88,10 +110,18 @@ func (f *FleetCheckin) Validate() error {
+ 	if f.RequestBackoffMax < f.RequestBackoffInit {
+ 		return errors.New("checkin.request_backoff_max must be greater than or equal to checkin.request_backoff_init")
+ 	}
++
++	if f.Compression != "" && f.Compression != CheckinCompressionNone && f.Compression != CheckinCompressionGzip {
++		return errors.New("checkin.compression must be either 'none' or 'gzip'")
++	}
++
+ 	return nil
+ }
+ 
+-const (
+-	fleetCheckinModeStandard       = "standard"
+-	fleetCheckinModeOnStateChanged = "on_state_change"
+-)
++// GetCompression returns the configured compression mode, defaulting to gzip.
++func (f *FleetCheckin) GetCompression() string {
++	if f == nil || f.Compression == "" {
++		return defaultCompression
++	}
++	return f.Compression
++}
+diff --git a/internal/pkg/fleetapi/checkin_cmd.go b/internal/pkg/fleetapi/checkin_cmd.go
+index 254a4fb62fb0425da449560625240f00ab99fd85..3a4f9ab582b541e356b2c320af6dff4fac5d3885 100644
+--- a/internal/pkg/fleetapi/checkin_cmd.go
++++ b/internal/pkg/fleetapi/checkin_cmd.go
+@@ -6,6 +6,7 @@ package fleetapi
+ 
+ import (
+ 	"bytes"
++	"compress/gzip"
+ 	"context"
+ 	"encoding/json"
+ 	"fmt"
+@@ -20,6 +21,8 @@ import (
+ )
+ 
+ const checkingPath = "/api/fleet/agents/%s/checkin"
++const checkinContentEncodingHeader = "Content-Encoding"
++const checkinContentEncodingGzip = "gzip"
+ 
+ // CheckinUnit provides information about a unit during checkin.
+ type CheckinUnit struct {
+@@ -96,8 +99,9 @@ func (e *CheckinResponse) Validate() error {
+ 
+ // CheckinCmd is a fleet API command.
+ type CheckinCmd struct {
+-	client client.Sender
+-	info   AgentInfo
++	client      client.Sender
++	info        AgentInfo
++	compression string // "gzip" or "none"
+ }
+ 
+ type AgentInfo interface {
+@@ -105,10 +109,12 @@ type AgentInfo interface {
+ }
+ 
+ // NewCheckinCmd creates a new api command.
+-func NewCheckinCmd(info AgentInfo, client client.Sender) *CheckinCmd {
++// compression must be either "gzip" (compress request bodies) or "none" (no compression).
++func NewCheckinCmd(info AgentInfo, client client.Sender, compression string) *CheckinCmd {
+ 	return &CheckinCmd{
+-		client: client,
+-		info:   info,
++		client:      client,
++		info:        info,
++		compression: compression,
+ 	}
+ }
+ 
+@@ -126,9 +132,21 @@ func (e *CheckinCmd) Execute(ctx context.Context, r *CheckinRequest) (*CheckinRe
+ 			errors.TypeUnexpected)
+ 	}
+ 
++	requestHeaders := http.Header{}
++	requestBody := bytes.NewBuffer(b)
++	if e.compression == "gzip" {
++		requestBody, err = gzipEncodeCheckinRequestBody(b)
++		if err != nil {
++			return nil, 0, errors.New(err,
++				"fail to gzip encode checkin request",
++				errors.TypeUnexpected)
++		}
++		requestHeaders.Set(checkinContentEncodingHeader, checkinContentEncodingGzip)
++	}
++
+ 	cp := fmt.Sprintf(checkingPath, e.info.AgentID())
+ 	sendStart := time.Now()
+-	resp, err := e.client.Send(ctx, "POST", cp, nil, nil, bytes.NewBuffer(b))
++	resp, err := e.client.Send(ctx, http.MethodPost, cp, nil, requestHeaders, requestBody)
+ 	sendDuration := time.Since(sendStart)
+ 	if err != nil {
+ 		return nil, sendDuration, errors.New(err,
+@@ -163,3 +181,17 @@ func (e *CheckinCmd) Execute(ctx context.Context, r *CheckinRequest) (*CheckinRe
+ 
+ 	return checkinResponse, sendDuration, nil
+ }
++
++func gzipEncodeCheckinRequestBody(body []byte) (*bytes.Buffer, error) {
++	compressedBody := bytes.NewBuffer(nil)
++	gzipWriter := gzip.NewWriter(compressedBody)
++	if _, err := gzipWriter.Write(body); err != nil {
++		return nil, err
++	}
++
++	if err := gzipWriter.Close(); err != nil {
++		return nil, err
++	}
++
++	return compressedBody, nil
++}
+diff --git a/testing/fleetservertest/server.go b/testing/fleetservertest/server.go
+index 3bbe744a333bd5479e59d74d4593c42b28d913e4..f55c41032d9dd1a3c5b0ea9168ae79dc6c73527c 100644
+--- a/testing/fleetservertest/server.go
++++ b/testing/fleetservertest/server.go
+@@ -5,6 +5,7 @@
+ package fleetservertest
+ 
+ import (
++	"compress/gzip"
+ 	"context"
+ 	"encoding/json"
+ 	"fmt"
+@@ -248,7 +249,21 @@ func (h *Handlers) AgentCheckin(w http.ResponseWriter, r *http.Request) {
+ 	acceptEncodingParam := r.Header.Get("Accept-Encoding")
+ 	checkinRequestParam := CheckinRequest{}
+ 
+-	d := json.NewDecoder(r.Body)
++	var bodyReader io.Reader = r.Body
++	if r.Header.Get("Content-Encoding") == "gzip" {
++		gr, err := gzip.NewReader(r.Body)
++		if err != nil {
++			respondAsJSON(http.StatusBadRequest, HTTPError{
++				StatusCode: http.StatusBadRequest,
++				Message:    fmt.Sprintf("cannot uncompress checkin request: %v", err),
++			}, w)
++			return
++		}
++		defer gr.Close()
++		bodyReader = gr
++	}
++
++	d := json.NewDecoder(bodyReader)
+ 	if err := d.Decode(&checkinRequestParam); err != nil {
+ 		respondAsJSON(http.StatusBadRequest, HTTPError{
+ 			StatusCode: http.StatusBadRequest,

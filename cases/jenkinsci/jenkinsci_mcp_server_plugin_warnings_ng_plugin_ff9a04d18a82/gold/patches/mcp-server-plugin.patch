@@ -1,0 +1,232 @@
+diff --git a/README.md b/README.md
+index e0e2f37..dfb5ecc 100644
+--- a/README.md
++++ b/README.md
+@@ -388,7 +388,6 @@ The plugin provides the following built-in tools for interacting with Jenkins:
+ - `getReplayScripts`: Return the main script and loaded scripts of a replayable Pipeline build. Use this to inspect or modify script before calling `replayBuild`. Fails for non-Pipeline jobs. Optional `buildNumber`; defaults to the last build.
+ - `replayBuild`: Run a Pipeline build again with a modified script. Provide `mainScript` (required) and optionally `loadedScripts`. Optional `buildNumber`; defaults to the last build. Fails if the build is not replayable or replay is not allowed (e.g. permissions or sandbox).
+ - `getTestResults`: Retrieve test results of a specific build or the last build.
+-- `getWarnings`: Retrieve warnings of a specific build or the last build.
+ 
+ #### SCM Integration
+ - `getJobScm`: Retrieve SCM configurations of a Jenkins job.
+diff --git a/pom.xml b/pom.xml
+index 4480b23..3f38aa9 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -120,11 +120,6 @@
+       <groupId>io.jenkins.plugins</groupId>
+       <artifactId>commons-lang3-api</artifactId>
+     </dependency>
+-    <dependency>
+-      <groupId>io.jenkins.plugins</groupId>
+-      <artifactId>warnings-ng</artifactId>
+-      <optional>true</optional>
+-    </dependency>
+     <dependency>
+       <groupId>io.modelcontextprotocol.sdk</groupId>
+       <artifactId>mcp</artifactId>
+diff --git a/src/main/java/io/jenkins/plugins/mcp/server/extensions/WarningsExtension.java b/src/main/java/io/jenkins/plugins/mcp/server/extensions/WarningsExtension.java
+deleted file mode 100644
+index 0258083..0000000
+--- a/src/main/java/io/jenkins/plugins/mcp/server/extensions/WarningsExtension.java
++++ /dev/null
+@@ -1,77 +0,0 @@
+-package io.jenkins.plugins.mcp.server.extensions;
+-
+-import edu.hm.hafner.analysis.Issue;
+-import hudson.model.Run;
+-import io.jenkins.plugins.analysis.core.model.ResultAction;
+-import io.jenkins.plugins.mcp.server.McpServerExtension;
+-import io.jenkins.plugins.mcp.server.annotation.Tool;
+-import io.jenkins.plugins.mcp.server.annotation.ToolParam;
+-import io.jenkins.plugins.mcp.server.extensions.util.JenkinsUtil;
+-import jakarta.annotation.Nullable;
+-import java.util.HashMap;
+-import java.util.List;
+-import java.util.Map;
+-import java.util.Optional;
+-import java.util.stream.Collectors;
+-import lombok.Getter;
+-import lombok.Setter;
+-import org.jenkinsci.plugins.variant.OptionalExtension;
+-
+-@OptionalExtension(requirePlugins = "warnings-ng")
+-public class WarningsExtension implements McpServerExtension {
+-
+-    @Tool(
+-            description = "Retrieves the warnings from static analysis tools associated with a Jenkins build",
+-            annotations = @Tool.Annotations(destructiveHint = false))
+-    public Map<String, Object> getWarnings(
+-            @ToolParam(description = "Job full name of the Jenkins job (e.g., 'folder/job-name')") String jobFullName,
+-            @Nullable
+-                    @ToolParam(
+-                            description =
+-                                    "Build number (optional, if not provided, returns the test results for last build)",
+-                            required = false)
+-                    Integer buildNumber,
+-            @Nullable
+-                    @ToolParam(
+-                            description =
+-                                    "ID of the check action (optional, if not provided, all warnings are returned)",
+-                            required = false)
+-                    String checkId) {
+-        Optional<Run> run = JenkinsUtil.getBuildByNumberOrLast(jobFullName, buildNumber);
+-        if (run.isPresent()) {
+-            List<ResultAction> warningActions = run.get().getActions(ResultAction.class);
+-            Map<String, Object> response = new HashMap<>();
+-            for (ResultAction warningAction : warningActions) {
+-                if (checkId != null && !warningAction.getId().equals(checkId)) {
+-                    continue;
+-                }
+-                var result = warningAction.getResult();
+-                if (result != null) {
+-                    response.put(
+-                            warningAction.getId(),
+-                            result.getIssues().stream().map(IssueJson::new).collect(Collectors.toList()));
+-                }
+-            }
+-            return response;
+-        }
+-        return Map.of();
+-    }
+-
+-    @Getter
+-    @Setter
+-    private static class IssueJson {
+-        private String category;
+-        private String message;
+-        private String type;
+-        private String severity;
+-        private String fileName;
+-
+-        IssueJson(Issue issue) {
+-            this.category = issue.getCategory();
+-            this.message = issue.getMessage();
+-            this.type = issue.getType();
+-            this.severity = issue.getSeverity().toString();
+-            this.fileName = issue.getFileName();
+-        }
+-    }
+-}
+diff --git a/src/test/java/io/jenkins/plugins/mcp/server/EndPointTest.java b/src/test/java/io/jenkins/plugins/mcp/server/EndPointTest.java
+index 262e47a..a0be088 100644
+--- a/src/test/java/io/jenkins/plugins/mcp/server/EndPointTest.java
++++ b/src/test/java/io/jenkins/plugins/mcp/server/EndPointTest.java
+@@ -68,8 +68,7 @@ public class EndPointTest {
+                             "getStatus",
+                             "getTestResults",
+                             "getFlakyFailures",
+-                            "getQueueItem",
+-                            "getWarnings");
++                            "getQueueItem");
+         }
+     }
+ 
+diff --git a/src/test/java/io/jenkins/plugins/mcp/server/extensions/WarningsExtensionTest.java b/src/test/java/io/jenkins/plugins/mcp/server/extensions/WarningsExtensionTest.java
+deleted file mode 100644
+index 618183d..0000000
+--- a/src/test/java/io/jenkins/plugins/mcp/server/extensions/WarningsExtensionTest.java
++++ /dev/null
+@@ -1,86 +0,0 @@
+-package io.jenkins.plugins.mcp.server.extensions;
+-
+-import static org.assertj.core.api.Assertions.assertThat;
+-
+-import com.fasterxml.jackson.databind.ObjectMapper;
+-import com.jayway.jsonpath.Configuration;
+-import com.jayway.jsonpath.DocumentContext;
+-import com.jayway.jsonpath.JsonPath;
+-import hudson.FilePath;
+-import hudson.model.Result;
+-import hudson.model.Run;
+-import io.jenkins.plugins.analysis.core.model.AnalysisResult;
+-import io.jenkins.plugins.analysis.core.model.ResultAction;
+-import io.jenkins.plugins.mcp.server.junit.JenkinsMcpClientBuilder;
+-import io.jenkins.plugins.mcp.server.junit.McpClientTest;
+-import io.modelcontextprotocol.spec.McpSchema;
+-import java.util.List;
+-import java.util.Map;
+-import java.util.Objects;
+-import java.util.Set;
+-import org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition;
+-import org.jenkinsci.plugins.workflow.job.WorkflowJob;
+-import org.jvnet.hudson.test.JenkinsRule;
+-import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
+-
+-@WithJenkins
+-public class WarningsExtensionTest {
+-
+-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+-
+-    @McpClientTest
+-    void testMcpToolCallGetTestResults(JenkinsRule jenkins, JenkinsMcpClientBuilder jenkinsMcpClientBuilder)
+-            throws Exception {
+-
+-        WorkflowJob j = jenkins.createProject(WorkflowJob.class, "singleStep");
+-        j.setDefinition(new CpsFlowDefinition("""
+-                        stage('first') {
+-                          node {
+-                            recordIssues qualityGates: [[threshold: 1, type: 'TOTAL', unstable: true]], tools: [
+-                                checkStyle(pattern: '**/*.xml')
+-                            ]
+-                          }
+-                        }
+-                        """, true));
+-        FilePath ws = jenkins.jenkins.getWorkspaceFor(j);
+-        FilePath warningsFile = Objects.requireNonNull(ws).child("checkstyle.xml");
+-        warningsFile.copyFrom(WarningsExtensionTest.class.getResource("checkstyle-sample.xml"));
+-
+-        Run run = jenkins.buildAndAssertStatus(Result.UNSTABLE, j);
+-        System.out.println(jenkins.getLog(run));
+-        assertThat(run).isNotNull();
+-        assertThat(run.getAction(ResultAction.class)).isNotNull();
+-
+-        AnalysisResult warningsResult = run.getAction(ResultAction.class).getResult();
+-
+-        try (var client = jenkinsMcpClientBuilder.jenkins(jenkins).build()) {
+-            {
+-                McpSchema.CallToolRequest request =
+-                        new McpSchema.CallToolRequest("getWarnings", Map.of("jobFullName", j.getFullName()));
+-
+-                var response = client.callTool(request);
+-
+-                // Assert response
+-                assertThat(response.isError()).isFalse();
+-                assertThat(response.content()).hasSize(1);
+-                assertThat(response.content().get(0).type()).isEqualTo("text");
+-                assertThat(response.content())
+-                        .first()
+-                        .isInstanceOfSatisfying(McpSchema.TextContent.class, textContent -> {
+-                            assertThat(textContent.type()).isEqualTo("text");
+-                        });
+-
+-                DocumentContext documentContext = JsonPath.using(Configuration.defaultConfiguration())
+-                        .parse(((McpSchema.TextContent) response.content().get(0)).text());
+-
+-                var result = documentContext.read("$.result", Map.class);
+-
+-                assertThat(result.keySet()).isEqualTo(Set.of("checkstyle"));
+-                Object warningsAction = result.get("checkstyle");
+-                assertThat(warningsAction).isInstanceOf(List.class);
+-                assertThat(((List<?>) warningsAction).size())
+-                        .isEqualTo(warningsResult.getIssues().size());
+-            }
+-        }
+-    }
+-}
+diff --git a/src/test/resources/io/jenkins/plugins/mcp/server/extensions/checkstyle-sample.xml b/src/test/resources/io/jenkins/plugins/mcp/server/extensions/checkstyle-sample.xml
+deleted file mode 100644
+index 975f185..0000000
+--- a/src/test/resources/io/jenkins/plugins/mcp/server/extensions/checkstyle-sample.xml
++++ /dev/null
+@@ -1,8 +0,0 @@
+-<?xml version="1.0" encoding="UTF-8"?>
+-<checkstyle version="10.0">
+-    <file name="com/puppycrawl/tools/checkstyle/Main.java">
+-        <error line="1" column="1" severity="error"
+-               message="Missing package-info.java file."
+-               source="com.puppycrawl.tools.checkstyle.checks.coding.MissingPackageInfoCheck"/>
+-    </file>
+-</checkstyle>
+\ No newline at end of file

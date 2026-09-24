@@ -1,0 +1,32 @@
+diff --git a/packages/pointer_interceptor/pointer_interceptor_web/example/integration_test/widget_test.dart b/packages/pointer_interceptor/pointer_interceptor_web/example/integration_test/widget_test.dart
+index c47d23807..d2efc26ff 100644
+--- a/packages/pointer_interceptor/pointer_interceptor_web/example/integration_test/widget_test.dart
++++ b/packages/pointer_interceptor/pointer_interceptor_web/example/integration_test/widget_test.dart
+@@ -63,6 +63,27 @@ void main() {
+ 
+       expect(element.id, 'background-html-view');
+     }, semanticsEnabled: false);
++
++    // Regression test for https://github.com/flutter/flutter/issues/157920
++    testWidgets(
++      'prevents default action of mousedown events',
++      (WidgetTester tester) async {
++        await _fullyRenderApp(tester);
++
++        final web.Element element =
++            _getHtmlElementAtCenter(clickableButtonFinder, tester);
++        expect(element.tagName.toLowerCase(), 'div');
++
++        final web.MouseEvent event = web.MouseEvent(
++          'mousedown',
++          web.MouseEventInit(button: 0, bubbles: true, cancelable: true),
++        );
++        element.dispatchEvent(event);
++        expect(event.target, element);
++        expect(event.defaultPrevented, isTrue);
++      },
++      semanticsEnabled: false,
++    );
+   });
+ }
+ 

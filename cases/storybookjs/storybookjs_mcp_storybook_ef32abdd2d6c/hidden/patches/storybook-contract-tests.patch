@@ -1,0 +1,150 @@
+diff --git a/code/renderers/react/src/componentManifest/generator.test.ts b/code/renderers/react/src/componentManifest/generator.test.ts
+index d506527..753214c 100644
+--- a/code/renderers/react/src/componentManifest/generator.test.ts
++++ b/code/renderers/react/src/componentManifest/generator.test.ts
+@@ -4,7 +4,7 @@ import { type StoryIndexGenerator } from 'storybook/internal/core-server';
+ 
+ import { vol } from 'memfs';
+ import { dedent } from 'ts-dedent';
+-import { loadConfig } from 'tsconfig-paths';
++import * as TsconfigPaths from 'tsconfig-paths';
+ 
+ import { componentManifestGenerator } from './generator';
+ 
+@@ -95,7 +95,9 @@ const indexJson = {
+ };
+ 
+ beforeEach(() => {
+-  vi.mocked(loadConfig).mockImplementation(() => ({ resultType: null!, message: null! }));
++  vi.spyOn(TsconfigPaths, 'loadConfig').mockImplementation(() => ({
++    resultType: null!, message: null!,
++  }));
+   vi.spyOn(process, 'cwd').mockReturnValue('/app');
+   vol.fromJSON(
+     {
+@@ -412,3 +414,125 @@ test('componentManifestGenerator generates correct id, name, description and exa
+     }
+   `);
+ });
++
++async function getContractManifest(storySource: string, componentPath?: string) {
++  vol.fromJSON(
++    {
++      ['./src/stories/Button.stories.ts']: storySource,
++      ['./src/stories/Button.tsx']: dedent`
++        import React from 'react';
++        export interface ButtonProps {
++          disabled?: boolean;
++          count?: number;
++          empty?: string;
++          children?: React.ReactNode;
++        }
++        export const Button = (props: ButtonProps) => <button {...props} />;
++      `,
++    },
++    '/app'
++  );
++
++  const entry = {
++    type: 'story',
++    subtype: 'story',
++    id: 'example-button--primary',
++    name: 'Primary',
++    title: 'Example/Button',
++    importPath: './src/stories/Button.stories.ts',
++    tags: ['dev', 'test'],
++    exportName: 'Primary',
++    ...(componentPath === undefined ? {} : { componentPath }),
++  };
++  const generator = await componentManifestGenerator();
++  const manifest = await generator({
++    getIndex: async () => ({ v: 5, entries: { [entry.id]: entry } }),
++  } as unknown as StoryIndexGenerator);
++  return manifest.components['example-button'];
++}
++
++const csf3 = (body: string, metaRender = '') => dedent`
++  import type { Meta } from '@storybook/react';
++  import { Button } from './Button';
++
++  const meta: Meta<typeof Button> = {
++    component: Button,
++    args: { children: 'Click me' },
++    ${metaRender}
++  };
++  export default meta;
++
++  ${body}
++`;
++
++test('manifest contract: unresolved component is retained as an error', async () => {
++  const component = await getContractManifest(csf3(`export const Primary = {};`));
++
++  expect(component).toBeDefined();
++  expect(component.path).toEqual(expect.any(String));
++  expect(component.error?.message).toEqual(expect.any(String));
++});
++
++test('manifest contract: unsupported story reports source context without a snippet', async () => {
++  const component = await getContractManifest(
++    csf3(`export const Primary = someWeirdExpression;`),
++    './src/stories/Button.tsx'
++  );
++  const example = component.examples.find(({ name }: { name: string }) => name === 'Primary');
++
++  expect(example).toBeDefined();
++  expect(example).not.toHaveProperty('snippet');
++  expect(example.error?.message).toContain('someWeirdExpression');
++  expect(example.error?.message).toMatch(/\d+\s*\|/);
++});
++
++test.each([
++  {
++    name: 'manifest contract: top-level function story',
++    source: csf3(`
++      export function Primary() {
++        return <Button>Function child</Button>;
++      }
++    `),
++    fragments: ['Primary', '<Button', 'Function child'],
++  },
++  {
++    name: 'manifest contract: CSF4 story without arguments',
++    source: dedent`
++      import preview from './preview';
++      import { Button } from './Button';
++      const meta = preview.meta({ component: Button, args: { children: 'Click me' } });
++      export const Primary = meta.story();
++    `,
++    fragments: ['Primary', '<Button', 'Click me'],
++  },
++  {
++    name: 'manifest contract: meta-level render',
++    source: csf3(
++      `export const Primary = { args: { count: 0 } };`,
++      `render: (args) => <Button {...args} empty="meta-render" />`
++    ),
++    fragments: ['Primary', '<Button', 'count={0}', 'empty="meta-render"'],
++  },
++  {
++    name: 'manifest contract: nested args, children, and falsy values',
++    source: csf3(`
++      export const Primary = {
++        args: { disabled: false, count: 0, empty: '', children: 'Nested child' },
++        render: (args) => <div><Button {...args}>{args.children}</Button></div>
++      };
++    `),
++    fragments: ['<div', '<Button', 'disabled={false}', 'count={0}', 'empty=""', 'Nested child'],
++  },
++])('$name', async ({ source, fragments }) => {
++  const component = await getContractManifest(source, './src/stories/Button.tsx');
++  const example = component.examples.find(({ name }: { name: string }) => name === 'Primary');
++
++  expect(component.path).toEqual(expect.any(String));
++  expect(component.error).toBeUndefined();
++  expect(example?.error).toBeUndefined();
++  expect(example?.snippet).toEqual(expect.any(String));
++  for (const fragment of fragments) {
++    expect(example.snippet).toContain(fragment);
++  }
++});

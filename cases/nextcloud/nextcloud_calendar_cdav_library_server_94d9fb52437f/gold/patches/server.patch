@@ -1,0 +1,187 @@
+diff --git a/apps/dav/appinfo/info.xml b/apps/dav/appinfo/info.xml
+index 6f17473623..68794dc85c 100644
+--- a/apps/dav/appinfo/info.xml
++++ b/apps/dav/appinfo/info.xml
+@@ -10,7 +10,7 @@
+ 	<name>WebDAV</name>
+ 	<summary>WebDAV endpoint</summary>
+ 	<description>WebDAV endpoint</description>
+-	<version>1.38.0</version>
++	<version>1.39.0</version>
+ 	<licence>agpl</licence>
+ 	<author>owncloud.org</author>
+ 	<namespace>DAV</namespace>
+diff --git a/apps/dav/composer/composer/autoload_classmap.php b/apps/dav/composer/composer/autoload_classmap.php
+index 361a57cee4..37f594bd5e 100644
+--- a/apps/dav/composer/composer/autoload_classmap.php
++++ b/apps/dav/composer/composer/autoload_classmap.php
+@@ -391,6 +391,7 @@ return array(
+     'OCA\\DAV\\Migration\\Version1034Date20250813093701' => $baseDir . '/../lib/Migration/Version1034Date20250813093701.php',
+     'OCA\\DAV\\Migration\\Version1036Date20251202000000' => $baseDir . '/../lib/Migration/Version1036Date20251202000000.php',
+     'OCA\\DAV\\Migration\\Version1038Date20260302000000' => $baseDir . '/../lib/Migration/Version1038Date20260302000000.php',
++    'OCA\\DAV\\Migration\\Version1039Date20260408000000' => $baseDir . '/../lib/Migration/Version1039Date20260408000000.php',
+     'OCA\\DAV\\Model\\ExampleEvent' => $baseDir . '/../lib/Model/ExampleEvent.php',
+     'OCA\\DAV\\Paginate\\LimitedCopyIterator' => $baseDir . '/../lib/Paginate/LimitedCopyIterator.php',
+     'OCA\\DAV\\Paginate\\PaginateCache' => $baseDir . '/../lib/Paginate/PaginateCache.php',
+diff --git a/apps/dav/composer/composer/autoload_static.php b/apps/dav/composer/composer/autoload_static.php
+index 959860e331..4b379f4831 100644
+--- a/apps/dav/composer/composer/autoload_static.php
++++ b/apps/dav/composer/composer/autoload_static.php
+@@ -7,14 +7,14 @@ namespace Composer\Autoload;
+ class ComposerStaticInitDAV
+ {
+     public static $prefixLengthsPsr4 = array (
+-        'O' =>
++        'O' => 
+         array (
+             'OCA\\DAV\\' => 8,
+         ),
+     );
+ 
+     public static $prefixDirsPsr4 = array (
+-        'OCA\\DAV\\' =>
++        'OCA\\DAV\\' => 
+         array (
+             0 => __DIR__ . '/..' . '/../lib',
+         ),
+@@ -406,6 +406,7 @@ class ComposerStaticInitDAV
+         'OCA\\DAV\\Migration\\Version1034Date20250813093701' => __DIR__ . '/..' . '/../lib/Migration/Version1034Date20250813093701.php',
+         'OCA\\DAV\\Migration\\Version1036Date20251202000000' => __DIR__ . '/..' . '/../lib/Migration/Version1036Date20251202000000.php',
+         'OCA\\DAV\\Migration\\Version1038Date20260302000000' => __DIR__ . '/..' . '/../lib/Migration/Version1038Date20260302000000.php',
++        'OCA\\DAV\\Migration\\Version1039Date20260408000000' => __DIR__ . '/..' . '/../lib/Migration/Version1039Date20260408000000.php',
+         'OCA\\DAV\\Model\\ExampleEvent' => __DIR__ . '/..' . '/../lib/Model/ExampleEvent.php',
+         'OCA\\DAV\\Paginate\\LimitedCopyIterator' => __DIR__ . '/..' . '/../lib/Paginate/LimitedCopyIterator.php',
+         'OCA\\DAV\\Paginate\\PaginateCache' => __DIR__ . '/..' . '/../lib/Paginate/PaginateCache.php',
+diff --git a/apps/dav/lib/CalDAV/CalDavBackend.php b/apps/dav/lib/CalDAV/CalDavBackend.php
+index 535e159d3a..735382b0f1 100644
+--- a/apps/dav/lib/CalDAV/CalDavBackend.php
++++ b/apps/dav/lib/CalDAV/CalDavBackend.php
+@@ -151,7 +151,8 @@ class CalDavBackend extends AbstractBackend implements SyncSupport, Subscription
+ 		'{http://apple.com/ns/ical/}calendar-order' => ['calendarorder', 'int'],
+ 		'{http://apple.com/ns/ical/}calendar-color' => ['calendarcolor', 'string'],
+ 		'{' . \OCA\DAV\DAV\Sharing\Plugin::NS_NEXTCLOUD . '}deleted-at' => ['deleted_at', 'int'],
+-		'{' . \OCA\DAV\DAV\Sharing\Plugin::NS_NEXTCLOUD . '}default-alarm' => ['default_alarm', 'int'],
++		'{' . \OCA\DAV\DAV\Sharing\Plugin::NS_NEXTCLOUD . '}default-alarm-part-day' => ['default_alarm_pday', 'int'],
++		'{' . \OCA\DAV\DAV\Sharing\Plugin::NS_NEXTCLOUD . '}default-alarm-full-day' => ['default_alarm_fday', 'int'],
+ 	];
+ 
+ 	/**
+diff --git a/apps/dav/lib/Migration/Version1039Date20260408000000.php b/apps/dav/lib/Migration/Version1039Date20260408000000.php
+new file mode 100644
+index 0000000000..e10f20d764
+--- /dev/null
++++ b/apps/dav/lib/Migration/Version1039Date20260408000000.php
+@@ -0,0 +1,51 @@
++<?php
++
++declare(strict_types=1);
++
++/**
++ * SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
++ * SPDX-License-Identifier: AGPL-3.0-or-later
++ */
++
++namespace OCA\DAV\Migration;
++
++use Closure;
++use OCP\DB\ISchemaWrapper;
++use OCP\DB\Types;
++use OCP\Migration\Attributes\AddColumn;
++use OCP\Migration\Attributes\ColumnType;
++use OCP\Migration\Attributes\DropColumn;
++use OCP\Migration\IOutput;
++use OCP\Migration\SimpleMigrationStep;
++
++#[DropColumn(table: 'calendars', name: 'default_alarm', description: 'Replaced by default_alarm_pday and default_alarm_fday')]
++#[AddColumn(table: 'calendars', name: 'default_alarm_pday', type: ColumnType::INTEGER)]
++#[AddColumn(table: 'calendars', name: 'default_alarm_fday', type: ColumnType::INTEGER)]
++class Version1039Date20260408000000 extends SimpleMigrationStep {
++	public function changeSchema(IOutput $output, Closure $schemaClosure, array $options): ?ISchemaWrapper {
++		/** @var ISchemaWrapper $schema */
++		$schema = $schemaClosure();
++
++		$calendarsTable = $schema->getTable('calendars');
++
++		if ($calendarsTable->hasColumn('default_alarm')) {
++			$calendarsTable->dropColumn('default_alarm');
++		}
++
++		if (!$calendarsTable->hasColumn('default_alarm_pday')) {
++			$calendarsTable->addColumn('default_alarm_pday', Types::INTEGER, [
++				'notnull' => false,
++				'default' => null,
++			]);
++		}
++
++		if (!$calendarsTable->hasColumn('default_alarm_fday')) {
++			$calendarsTable->addColumn('default_alarm_fday', Types::INTEGER, [
++				'notnull' => false,
++				'default' => null,
++			]);
++		}
++
++		return $schema;
++	}
++}
+diff --git a/apps/dav/tests/unit/CalDAV/CalDavBackendTest.php b/apps/dav/tests/unit/CalDAV/CalDavBackendTest.php
+index 09d77ddc61..985fc3d67a 100644
+--- a/apps/dav/tests/unit/CalDAV/CalDavBackendTest.php
++++ b/apps/dav/tests/unit/CalDAV/CalDavBackendTest.php
+@@ -1948,40 +1948,46 @@ EOD;
+ 
+ 	}
+ 
+-	public function testDefaultAlarmProperty(): void {
++	public function testDefaultAlarmProperties(): void {
+ 		$calendarId = $this->createTestCalendar();
+ 
+-		// Test setting default alarm property to 15 minutes before (-900 seconds)
++		// Test setting both default alarm properties
+ 		$patch = new PropPatch([
+-			'{http://nextcloud.com/ns}default-alarm' => -900
++			'{http://nextcloud.com/ns}default-alarm-part-day' => -900,
++			'{http://nextcloud.com/ns}default-alarm-full-day' => -3600,
+ 		]);
+ 		$this->backend->updateCalendar($calendarId, $patch);
+ 		$patch->commit();
+ 
+-		// Verify the property was set
++		// Verify the properties were set
+ 		$calendars = $this->backend->getCalendarsForUser(self::UNIT_TEST_USER);
+ 		$this->assertCount(1, $calendars);
+-		$this->assertEquals(-900, $calendars[0]['{http://nextcloud.com/ns}default-alarm']);
++		$this->assertEquals(-900, $calendars[0]['{http://nextcloud.com/ns}default-alarm-part-day']);
++		$this->assertEquals(-3600, $calendars[0]['{http://nextcloud.com/ns}default-alarm-full-day']);
+ 
+-		// Test updating to a different value (1 day before = -86400 seconds)
++		// Test updating to different values
+ 		$patch = new PropPatch([
+-			'{http://nextcloud.com/ns}default-alarm' => -86400
++			'{http://nextcloud.com/ns}default-alarm-part-day' => -86400,
++			'{http://nextcloud.com/ns}default-alarm-full-day' => -43200,
+ 		]);
+ 		$this->backend->updateCalendar($calendarId, $patch);
+ 		$patch->commit();
+ 
+ 		$calendars = $this->backend->getCalendarsForUser(self::UNIT_TEST_USER);
+-		$this->assertEquals(-86400, $calendars[0]['{http://nextcloud.com/ns}default-alarm']);
++		$this->assertEquals(-86400, $calendars[0]['{http://nextcloud.com/ns}default-alarm-part-day']);
++		$this->assertEquals(-43200, $calendars[0]['{http://nextcloud.com/ns}default-alarm-full-day']);
+ 
+-		// Test setting to "none"
++		// Test setting to null
+ 		$patch = new PropPatch([
+-			'{http://nextcloud.com/ns}default-alarm' => null
++			'{http://nextcloud.com/ns}default-alarm-part-day' => null,
++			'{http://nextcloud.com/ns}default-alarm-full-day' => null,
+ 		]);
+ 		$this->backend->updateCalendar($calendarId, $patch);
+ 		$patch->commit();
+ 
+ 		$calendars = $this->backend->getCalendarsForUser(self::UNIT_TEST_USER);
+-		$this->assertEquals(null, $calendars[0]['{http://nextcloud.com/ns}default-alarm']);
++		$this->assertNull($calendars[0]['{http://nextcloud.com/ns}default-alarm-part-day']);
++		$this->assertNull($calendars[0]['{http://nextcloud.com/ns}default-alarm-full-day']);
+ 
+ 		// Clean up
+ 		$this->backend->deleteCalendar($calendars[0]['id'], true);

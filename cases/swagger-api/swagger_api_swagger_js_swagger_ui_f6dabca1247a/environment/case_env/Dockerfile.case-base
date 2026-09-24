@@ -1,0 +1,554 @@
+FROM ecosyncbench/deps/swagger-ui-cypress-npm:f63d850-f6dabca1247a AS dep_0
+FROM ecosyncbench/deps/swagger-js-npm:5a4f9a3-f6dabca1247a
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git libnss-wrapper python3 python3-yaml \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH=/usr/local/cargo/bin:/usr/local/go/bin:/opt/java/openjdk/bin:/opt/maven/bin:/usr/share/maven/bin:/opt/gradle/bin:/usr/share/gradle/bin:${PATH}
+RUN cat > /etc/profile.d/ecosync-tools.sh <<'SH'
+_ecosync_setup_user_env() {
+  if getent passwd "$(id -u)" >/dev/null 2>&1; then
+    return 0
+  fi
+  local nss_wrapper candidate
+  nss_wrapper=
+  for candidate in /usr/lib/*/libnss_wrapper.so /usr/lib/libnss_wrapper.so; do
+    if [ -f "$candidate" ]; then nss_wrapper="$candidate"; break; fi
+  done
+  [ -n "$nss_wrapper" ] || return 0
+  export NSS_WRAPPER_PASSWD="${NSS_WRAPPER_PASSWD:-/tmp/ecosync-passwd-$(id -u)}"
+  export NSS_WRAPPER_GROUP="${NSS_WRAPPER_GROUP:-/tmp/ecosync-group-$(id -g)}"
+  if [ ! -f "$NSS_WRAPPER_PASSWD" ]; then
+    printf 'ecosync:x:%s:%s:EcoSync user:%s:/bin/bash\n' "$(id -u)" "$(id -g)" "${HOME:-/tmp/ecosync-home}" > "$NSS_WRAPPER_PASSWD" 2>/dev/null || return 0
+  fi
+  if [ ! -f "$NSS_WRAPPER_GROUP" ]; then
+    printf 'ecosync:x:%s:\n' "$(id -g)" > "$NSS_WRAPPER_GROUP" 2>/dev/null || return 0
+  fi
+  case ":${LD_PRELOAD:-}:" in
+    *":$nss_wrapper:"*) ;;
+    *) export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$nss_wrapper" ;;
+  esac
+}
+case "${HOME:-}" in
+  ''|/|/root|/root/*) export HOME="${ECOSYNC_HOME:-${ECOSYNC_WORKSPACE:-/tmp/ecosync-workspace}/.ecosyncbench/home}" ;;
+esac
+mkdir -p "$HOME" 2>/dev/null || true
+chmod 0777 "$HOME" 2>/dev/null || true
+_ecosync_setup_user_env
+_ecosync_prepend_path() {
+  case ":$PATH:" in
+    *":$1:"*) ;;
+    *) [ -d "$1" ] && PATH="$1:$PATH" ;;
+  esac
+  return 0
+}
+_ecosync_append_path() {
+  case ":$PATH:" in
+    *":$1:"*) ;;
+    *) [ -d "$1" ] && PATH="$PATH:$1" ;;
+  esac
+  return 0
+}
+_ecosync_prepend_path /usr/local/go/bin
+_ecosync_prepend_path /usr/local/cargo/bin
+_ecosync_prepend_path /opt/java/openjdk/bin
+_ecosync_prepend_path /opt/maven/bin
+_ecosync_prepend_path /usr/share/maven/bin
+_ecosync_prepend_path /opt/gradle/bin
+_ecosync_prepend_path /usr/share/gradle/bin
+_ecosync_prepend_path /opt/ecosync/agents/swe-python/bin
+_ecosync_prepend_path /opt/SWE-agent/.venv/bin
+_ecosync_prepend_path /opt/ecosync/shims
+export PATH
+export CARGO_HOME="${CARGO_HOME:-/usr/local/cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-/usr/local/rustup}"
+if [ -z "${JAVA_HOME:-}" ] && [ -d /opt/java/openjdk ]; then export JAVA_HOME=/opt/java/openjdk; fi
+if [ -z "${JAVA_HOME:-}" ] && [ -d /usr/lib/jvm ]; then
+  _ecosync_java_home="$(find /usr/lib/jvm -maxdepth 2 -type f -path '*/bin/java' -print -quit 2>/dev/null || true)"
+  [ -z "$_ecosync_java_home" ] || export JAVA_HOME="$(dirname "$(dirname "$_ecosync_java_home")")"
+fi
+export ECOSYNC_CACHE_ROOT="${ECOSYNC_CACHE_ROOT:-${ECOSYNC_WORKSPACE:-/tmp/ecosync-workspace}/.ecosyncbench/cache}"
+export CI="${CI:-true}"
+export COREPACK_ENABLE_DOWNLOAD_PROMPT="${COREPACK_ENABLE_DOWNLOAD_PROMPT:-0}"
+export npm_config_yes="${npm_config_yes:-true}"
+case "${DOTNET_CLI_HOME:-}" in
+  ''|/root|/root/*|/opt/ecosync/*) export DOTNET_CLI_HOME="$ECOSYNC_CACHE_ROOT/dotnet-home" ;;
+esac
+case "${NUGET_PACKAGES:-}" in
+  ''|/root|/root/*|/opt/ecosync/*) export NUGET_PACKAGES="$ECOSYNC_CACHE_ROOT/nuget/" ;;
+esac
+case "$NUGET_PACKAGES" in
+  */) ;;
+  *) export NUGET_PACKAGES="$NUGET_PACKAGES/" ;;
+esac
+export DOTNET_SKIP_FIRST_TIME_EXPERIENCE="${DOTNET_SKIP_FIRST_TIME_EXPERIENCE:-1}"
+export DOTNET_CLI_TELEMETRY_OPTOUT="${DOTNET_CLI_TELEMETRY_OPTOUT:-1}"
+mkdir -p "$DOTNET_CLI_HOME" "$NUGET_PACKAGES" 2>/dev/null || true
+chmod 0777 "$DOTNET_CLI_HOME" "$NUGET_PACKAGES" 2>/dev/null || true
+mkdir -p "$ECOSYNC_CACHE_ROOT/go/pkg/mod" "$ECOSYNC_CACHE_ROOT/go/path" /tmp/ecosync-gocache 2>/dev/null || true
+chmod 0777 "$ECOSYNC_CACHE_ROOT/go/pkg/mod" "$ECOSYNC_CACHE_ROOT/go/path" /tmp/ecosync-gocache 2>/dev/null || true
+export GOMODCACHE="${GOMODCACHE:-$ECOSYNC_CACHE_ROOT/go/pkg/mod}"
+export GOPATH="${GOPATH:-$ECOSYNC_CACHE_ROOT/go/path}"
+export GOCACHE="${GOCACHE:-/tmp/ecosync-gocache}"
+case "${GRADLE_USER_HOME:-}" in
+  ''|/root|/root/*|/opt/ecosync/*) export GRADLE_USER_HOME="${ECOSYNC_GRADLE_USER_HOME:-$ECOSYNC_CACHE_ROOT/gradle}" ;;
+esac
+mkdir -p "$GRADLE_USER_HOME" 2>/dev/null || true
+if [ -d /ecosync-scratch ]; then
+  export COMPOSER_HOME="${ECOSYNC_COMPOSER_HOME:-/ecosync-scratch/cache/composer}"
+elif [ -z "${COMPOSER_HOME:-}" ] || [ "${COMPOSER_HOME:-}" = /tmp/composer ]; then
+  export COMPOSER_HOME=/tmp/ecosync-composer-home
+fi
+mkdir -p "$(dirname "$COMPOSER_HOME")" "$COMPOSER_HOME" 2>/dev/null || true
+chmod 0777 "$(dirname "$COMPOSER_HOME")" "$COMPOSER_HOME" 2>/dev/null || true
+export MAVEN_OPTS="-Dmaven.repo.local=/opt/ecosync/m2 ${MAVEN_OPTS:-}"
+_ecosync_select_deps_root_for_cwd() {
+  local workspace repo_envs cwd rel root repo_abs
+  workspace="${ECOSYNC_WORKSPACE:-/workspace}"
+  repo_envs="${ECOSYNC_REPO_ENVS:-/opt/ecosync/repo-envs.tsv}"
+  cwd="${PWD:-$(pwd -L)}"
+  [ -r "$repo_envs" ] || return 1
+  while IFS=$'\t' read -r rel root; do
+    [ -n "${rel:-}" ] && [ -n "${root:-}" ] || continue
+    repo_abs="$workspace/$rel"
+    case "$cwd" in
+      "$repo_abs"|"$repo_abs"/*) printf '%s\n' "$root"; return 0 ;;
+    esac
+  done < "$repo_envs"
+  return 1
+}
+_ecosync_setup_repo_env() {
+  local root="$1" workspace
+  workspace="${ECOSYNC_WORKSPACE:-/workspace}"
+  [ -d "$root" ] || return 0
+  export ECOSYNC_DEPS_ROOT="$root"
+  if [ -d "$root/gomodcache" ] && [ -w "$root/gomodcache" ]; then export GOMODCACHE="$root/gomodcache"; else export GOMODCACHE="$ECOSYNC_CACHE_ROOT/go/pkg/mod"; fi
+  if [ -d "$root/gopath" ] && [ -w "$root/gopath" ]; then export GOPATH="$root/gopath"; else export GOPATH="$ECOSYNC_CACHE_ROOT/go/path"; fi
+  mkdir -p "$GOMODCACHE" "$GOPATH" /tmp/ecosync-gocache 2>/dev/null || true
+  chmod 0777 "$GOMODCACHE" "$GOPATH" /tmp/ecosync-gocache 2>/dev/null || true
+  export GOCACHE="${GOCACHE:-/tmp/ecosync-gocache}"
+  export MAVEN_OPTS="-Dmaven.repo.local=$root/m2 ${MAVEN_OPTS:-}"
+  export ECOSYNC_CACHE_ROOT="${ECOSYNC_CACHE_ROOT:-$workspace/.ecosyncbench/cache}"
+  case "${GRADLE_USER_HOME:-}" in
+    ''|/root|/root/*|/opt/ecosync/*) export GRADLE_USER_HOME="${ECOSYNC_GRADLE_USER_HOME:-$ECOSYNC_CACHE_ROOT/gradle}" ;;
+  esac
+  mkdir -p "$GRADLE_USER_HOME" 2>/dev/null || true
+  if [ -d "$root/composer/home" ]; then export COMPOSER_HOME="$root/composer/home"; else export COMPOSER_HOME="${COMPOSER_HOME:-$root/composer-home}"; fi
+  if [ -d "$root/composer/cache" ]; then export COMPOSER_CACHE_DIR="$root/composer/cache"; fi
+  if [ -d "$root/usr-local-bin" ]; then _ecosync_append_path "$root/usr-local-bin"; fi
+  if [ -d "$root/usr-local-lib" ]; then export LD_LIBRARY_PATH="$root/usr-local-lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi
+  if [ -d "$root/usr-local-cargo/bin" ]; then _ecosync_prepend_path "$root/usr-local-cargo/bin"; export CARGO_HOME="$root/usr-local-cargo"; fi
+  if [ -d "$root/usr-local-rustup" ]; then export RUSTUP_HOME="$root/usr-local-rustup"; fi
+  if [ -n "${RUSTUP_HOME:-}" ] && [ -d "$RUSTUP_HOME/toolchains" ]; then
+    if [ -n "${RUSTUP_TOOLCHAIN:-}" ] && [ ! -d "$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN" ]; then unset RUSTUP_TOOLCHAIN; fi
+    if [ -z "${RUSTUP_TOOLCHAIN:-}" ]; then installed_toolchain="$(find "$RUSTUP_HOME/toolchains" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -Vr | head -1 || true)"; [ -z "$installed_toolchain" ] || export RUSTUP_TOOLCHAIN="$installed_toolchain"; fi
+    if [ -n "${RUSTUP_TOOLCHAIN:-}" ]; then export ECOSYNC_RUST_TOOLCHAIN_DIR="$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN"; fi
+  fi
+  if [ -d "$root/php-libs" ]; then export LD_LIBRARY_PATH="$root/php-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi
+  if [ -d "$root/usr-local-etc/php" ]; then export PHPRC="$root/usr-local-etc/php"; export PHP_INI_SCAN_DIR="$root/usr-local-etc/php/conf.d${PHP_INI_SCAN_DIR:+:$PHP_INI_SCAN_DIR}"; fi
+  unset PYTHONHOME
+  if [ -d "$root/usr-local/lib" ] && [ -x "$root/usr-local-bin/python" ]; then export PYTHONHOME="$root/usr-local"; fi
+  if [ -d "$root/usr-local-bundle" ]; then export GEM_HOME="$root/usr-local-bundle"; export BUNDLE_PATH="$root/usr-local-bundle"; export BUNDLE_APP_CONFIG="$root/usr-local-bundle"; fi
+  if [ -d "$root/node-runtime/bin" ]; then _ecosync_append_path "$root/node-runtime/bin"; export ECOSYNC_NODE_RUNTIME_ROOT="$root/node-runtime"; fi
+  if [ -d "$root/node-runtime/lib/node_modules" ]; then export NODE_PATH="${NODE_PATH:+$NODE_PATH:}$root/node-runtime/lib/node_modules"; fi
+  if [ -d "$PWD/node_modules/.bin" ]; then _ecosync_prepend_path "$PWD/node_modules/.bin"; fi
+  if [ -d "$root/pnpm" ]; then _ecosync_prepend_path "$root/pnpm"; export PNPM_HOME="${PNPM_HOME:-$root/pnpm}"; fi
+  if [ -d "$root/pnpm-store" ]; then export PNPM_STORE_DIR="${PNPM_STORE_DIR:-$root/pnpm-store}"; export pnpm_config_store_dir="${pnpm_config_store_dir:-$root/pnpm-store}"; export npm_config_store_dir="${npm_config_store_dir:-$root/pnpm-store}"; export NPM_CONFIG_STORE_DIR="${NPM_CONFIG_STORE_DIR:-$root/pnpm-store}"; fi
+  if [ -d "$root/corepack" ]; then export COREPACK_HOME="${COREPACK_HOME:-$root/corepack}"; fi
+  if [ -d "$root/xdg" ]; then export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$root/xdg}"; export XDG_DATA_HOME="${XDG_DATA_HOME:-$root/xdg}"; fi
+  if [ -d "$root/global" ]; then export YARN_ENABLE_GLOBAL_CACHE="${YARN_ENABLE_GLOBAL_CACHE:-true}"; export YARN_GLOBAL_FOLDER="${YARN_GLOBAL_FOLDER:-$root/global}"; fi
+  if [ -d "$root/cache" ]; then export YARN_CACHE_FOLDER="${YARN_CACHE_FOLDER:-$root/cache}"; fi
+  if [ -d "$root/deps/node_modules/.bin" ]; then _ecosync_prepend_path "$root/deps/node_modules/.bin"; fi
+  if [ -d "$root/deps/node_modules" ]; then export NODE_PATH="${NODE_PATH:+$NODE_PATH:}$root/deps/node_modules"; fi
+  if [ -d "$root/repo/node_modules/.bin" ]; then _ecosync_prepend_path "$root/repo/node_modules/.bin"; fi
+  if [ -d "$root/repo/node_modules" ]; then export NODE_PATH="${NODE_PATH:+$NODE_PATH:}$root/repo/node_modules"; fi
+  if [ -d "$root/deps/vendor/bin" ]; then _ecosync_prepend_path "$root/deps/vendor/bin"; fi
+  if [ -d "$root/venv/bin" ]; then _ecosync_prepend_path "$root/venv/bin"; fi
+  if [ -d "$PWD/src" ]; then export PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"; else export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"; fi
+  export PATH
+}
+_ecosync_activate_repo_env() {
+  local root
+  if root="$(_ecosync_select_deps_root_for_cwd 2>/dev/null)"; then
+    _ecosync_setup_repo_env "$root"
+  fi
+  return 0
+}
+cd() {
+  if builtin cd "$@"; then
+    _ecosync_activate_repo_env >/dev/null 2>&1 || true
+    return 0
+  fi
+  return $?
+}
+_ecosync_activate_repo_env >/dev/null 2>&1 || true
+SH
+RUN mkdir -p /opt/ecosync/shims \
+    && cat > /opt/ecosync/shims/ecosync-tool-shim <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+tool="$(basename "$0")"
+workspace="${ECOSYNC_WORKSPACE:-/workspace}"
+repo_envs="${ECOSYNC_REPO_ENVS:-/opt/ecosync/repo-envs.tsv}"
+cwd="${PWD:-$(pwd -L)}"
+fallback_command() {
+  case "$tool" in
+    python) [[ -x /usr/local/bin/python ]] && exec /usr/local/bin/python "$@"; [[ -x /usr/local/bin/python3 ]] && exec /usr/local/bin/python3 "$@" ;;
+    python3) [[ -x /usr/local/bin/python3 ]] && exec /usr/local/bin/python3 "$@"; [[ -x /usr/local/bin/python ]] && exec /usr/local/bin/python "$@" ;;
+    pytest) [[ -x /usr/local/bin/pytest ]] && exec /usr/local/bin/pytest "$@"; [[ -x /usr/local/bin/python3 ]] && exec /usr/local/bin/python3 -m pytest "$@"; [[ -x /usr/local/bin/python ]] && exec /usr/local/bin/python -m pytest "$@" ;;
+    pip) [[ -x /usr/local/bin/pip ]] && exec /usr/local/bin/pip "$@"; [[ -x /usr/local/bin/python3 ]] && exec /usr/local/bin/python3 -m pip "$@"; [[ -x /usr/local/bin/python ]] && exec /usr/local/bin/python -m pip "$@" ;;
+    pip3) [[ -x /usr/local/bin/pip3 ]] && exec /usr/local/bin/pip3 "$@"; [[ -x /usr/local/bin/python3 ]] && exec /usr/local/bin/python3 -m pip "$@" ;;
+    uv) [[ -x /usr/local/bin/uv ]] && exec /usr/local/bin/uv "$@" ;;
+    node) [[ -x /usr/local/bin/node ]] && exec /usr/local/bin/node "$@" ;;
+    npm) [[ -x /usr/local/bin/node && -f /usr/local/lib/node_modules/npm/bin/npm-cli.js ]] && exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js "$@"; [[ -x /usr/local/bin/npm ]] && exec /usr/local/bin/npm "$@" ;;
+    npx) [[ -x /usr/local/bin/node && -f /usr/local/lib/node_modules/npm/bin/npx-cli.js ]] && exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npx-cli.js "$@"; [[ -x /usr/local/bin/npx ]] && exec /usr/local/bin/npx "$@" ;;
+    corepack) [[ -x /usr/local/bin/corepack ]] && exec /usr/local/bin/corepack "$@" ;;
+    yarn) [[ -x /usr/local/bin/yarn ]] && exec /usr/local/bin/yarn "$@" ;;
+    pnpm) [[ -x /usr/local/bin/pnpm ]] && exec /usr/local/bin/pnpm "$@"; command -v corepack >/dev/null 2>&1 && exec corepack pnpm "$@" ;;
+    bun) [[ -x /usr/local/bin/bun ]] && exec /usr/local/bin/bun "$@" ;;
+    jest) [[ -x ./node_modules/.bin/jest ]] && exec ./node_modules/.bin/jest "$@" ;;
+    mocha) [[ -x ./node_modules/.bin/mocha ]] && exec ./node_modules/.bin/mocha "$@" ;;
+    tsd) [[ -x ./node_modules/.bin/tsd ]] && exec ./node_modules/.bin/tsd "$@" ;;
+    go) [[ -x /usr/local/go/bin/go ]] && exec /usr/local/go/bin/go "$@" ;;
+    cargo) [[ -x /usr/local/cargo/bin/cargo ]] && exec /usr/local/cargo/bin/cargo "$@" ;;
+    rustc) [[ -x /usr/local/cargo/bin/rustc ]] && exec /usr/local/cargo/bin/rustc "$@" ;;
+    rustup) [[ -x /usr/local/cargo/bin/rustup ]] && exec /usr/local/cargo/bin/rustup "$@" ;;
+    dart) [[ -x /usr/local/bin/dart ]] && exec /usr/local/bin/dart "$@" ;;
+    flutter) [[ -x /usr/local/bin/flutter ]] && exec /usr/local/bin/flutter "$@" ;;
+    php) [[ -x /usr/local/bin/php ]] && exec /usr/local/bin/php "$@"; [[ -x /usr/bin/php ]] && exec /usr/bin/php "$@" ;;
+    composer) command -v /usr/local/bin/composer >/dev/null 2>&1 && exec /usr/local/bin/composer "$@" ;;
+    phpunit) [[ -x ./vendor/bin/phpunit ]] && exec ./vendor/bin/phpunit "$@" ;;
+    pest) [[ -x ./vendor/bin/pest ]] && exec ./vendor/bin/pest "$@" ;;
+    ruby) [[ -x /usr/local/bin/ruby ]] && exec /usr/local/bin/ruby "$@" ;;
+    gem) [[ -x /usr/local/bin/gem ]] && exec /usr/local/bin/gem "$@" ;;
+    bundle|bundler) [[ -x /usr/local/bin/bundle ]] && exec /usr/local/bin/bundle "$@"; [[ -x /usr/local/bin/bundler ]] && exec /usr/local/bin/bundler "$@" ;;
+    rake) [[ -x /usr/local/bin/rake ]] && exec /usr/local/bin/rake "$@" ;;
+    rspec) [[ -x /usr/local/bin/rspec ]] && exec /usr/local/bin/rspec "$@" ;;
+    mvn) [[ -x /opt/maven/bin/mvn ]] && exec /opt/maven/bin/mvn "$@"; [[ -x /usr/share/maven/bin/mvn ]] && exec /usr/share/maven/bin/mvn "$@" ;;
+    gradle) [[ -x /opt/gradle/bin/gradle ]] && exec /opt/gradle/bin/gradle "$@" ;;
+    cmake) [[ -x /usr/local/bin/cmake ]] && exec /usr/local/bin/cmake "$@"; [[ -x /usr/bin/cmake ]] && exec /usr/bin/cmake "$@" ;;
+    ctest) [[ -x /usr/local/bin/ctest ]] && exec /usr/local/bin/ctest "$@"; [[ -x /usr/bin/ctest ]] && exec /usr/bin/ctest "$@" ;;
+    scons) [[ -x /usr/local/bin/scons ]] && exec /usr/local/bin/scons "$@"; [[ -x /usr/bin/scons ]] && exec /usr/bin/scons "$@" ;;
+    godot) [[ -x /usr/local/bin/godot ]] && exec /usr/local/bin/godot "$@"; [[ -x /usr/bin/godot ]] && exec /usr/bin/godot "$@" ;;
+  esac
+  case "$tool" in
+    python) [[ -x /usr/bin/python ]] && exec /usr/bin/python "$@"; [[ -x /usr/bin/python3 ]] && exec /usr/bin/python3 "$@" ;;
+    python3) [[ -x /usr/bin/python3 ]] && exec /usr/bin/python3 "$@"; [[ -x /usr/bin/python ]] && exec /usr/bin/python "$@" ;;
+    pytest) [[ -x /usr/bin/pytest ]] && exec /usr/bin/pytest "$@"; [[ -x /usr/bin/python3 ]] && exec /usr/bin/python3 -m pytest "$@"; [[ -x /usr/bin/python ]] && exec /usr/bin/python -m pytest "$@" ;;
+    pip) [[ -x /usr/bin/pip ]] && exec /usr/bin/pip "$@"; [[ -x /usr/bin/python3 ]] && exec /usr/bin/python3 -m pip "$@"; [[ -x /usr/bin/python ]] && exec /usr/bin/python -m pip "$@" ;;
+    pip3) [[ -x /usr/bin/pip3 ]] && exec /usr/bin/pip3 "$@"; [[ -x /usr/bin/python3 ]] && exec /usr/bin/python3 -m pip "$@" ;;
+    node) [[ -x /usr/bin/node ]] && exec /usr/bin/node "$@" ;;
+    npm) [[ -x /usr/bin/npm ]] && exec /usr/bin/npm "$@" ;;
+    npx) [[ -x /usr/bin/npx ]] && exec /usr/bin/npx "$@" ;;
+    corepack) [[ -x /usr/bin/corepack ]] && exec /usr/bin/corepack "$@" ;;
+    yarn) [[ -x /usr/bin/yarn ]] && exec /usr/bin/yarn "$@" ;;
+    pnpm) command -v corepack >/dev/null 2>&1 && exec corepack pnpm "$@"; exec /usr/bin/pnpm "$@" ;;
+    bun) [[ -x /usr/bin/bun ]] && exec /usr/bin/bun "$@" ;;
+    go) exec /usr/bin/go "$@" ;;
+    cargo) exec /usr/bin/cargo "$@" ;;
+    rustc) exec /usr/bin/rustc "$@" ;;
+    rustup) exec /usr/bin/rustup "$@" ;;
+    dart) exec /usr/bin/dart "$@" ;;
+    flutter) exec /usr/bin/flutter "$@" ;;
+    php) [[ -x /usr/local/bin/php ]] && exec /usr/local/bin/php "$@"; exec /usr/bin/php "$@" ;;
+    composer) exec /usr/bin/composer "$@" ;;
+    pest) [[ -x ./vendor/bin/pest ]] && exec ./vendor/bin/pest "$@" ;;
+    ruby) exec /usr/bin/ruby "$@" ;;
+    gem) exec /usr/bin/gem "$@" ;;
+    bundle|bundler) exec /usr/bin/bundle "$@" ;;
+    rake) exec /usr/bin/rake "$@" ;;
+    rspec) exec /usr/bin/rspec "$@" ;;
+    mvn) exec /usr/bin/mvn "$@" ;;
+    gradle) exec /usr/bin/gradle "$@" ;;
+    cmake) exec /usr/bin/cmake "$@" ;;
+    ctest) exec /usr/bin/ctest "$@" ;;
+    scons) exec /usr/bin/scons "$@" ;;
+    godot) exec /usr/bin/godot "$@" ;;
+  esac
+  echo "ecosync shim could not find executable for $tool" >&2
+  exit 127
+}
+select_deps_root() {
+  [[ -r "$repo_envs" ]] || return 1
+  local rel root repo_abs
+  while IFS=$'\t' read -r rel root; do
+    [[ -n "${rel:-}" && -n "${root:-}" ]] || continue
+    repo_abs="$workspace/$rel"
+    case "$cwd" in
+      "$repo_abs"|"$repo_abs"/*)
+        printf '%s\n' "$root"
+        return 0
+        ;;
+    esac
+  done < "$repo_envs"
+  if [[ -n "${ECOSYNC_DEPS_ROOT:-}" && -d "$ECOSYNC_DEPS_ROOT" ]]; then
+    printf '%s\n' "$ECOSYNC_DEPS_ROOT"
+    return 0
+  fi
+  return 1
+}
+setup_repo_env() {
+  local root="$1"
+  [[ -d "$root" ]] || return 0
+  export ECOSYNC_DEPS_ROOT="$root"
+  if [[ -d "$root/gomodcache" && -w "$root/gomodcache" ]]; then export GOMODCACHE="$root/gomodcache"; else export GOMODCACHE="$ECOSYNC_CACHE_ROOT/go/pkg/mod"; fi
+  if [[ -d "$root/gopath" && -w "$root/gopath" ]]; then export GOPATH="$root/gopath"; else export GOPATH="$ECOSYNC_CACHE_ROOT/go/path"; fi
+  mkdir -p "$GOMODCACHE" "$GOPATH" /tmp/ecosync-gocache 2>/dev/null || true
+  chmod 0777 "$GOMODCACHE" "$GOPATH" /tmp/ecosync-gocache 2>/dev/null || true
+  export GOCACHE="${GOCACHE:-/tmp/ecosync-gocache}"
+  export MAVEN_OPTS="-Dmaven.repo.local=$root/m2 ${MAVEN_OPTS:-}"
+  export ECOSYNC_CACHE_ROOT="${ECOSYNC_CACHE_ROOT:-$workspace/.ecosyncbench/cache}"
+  case "${GRADLE_USER_HOME:-}" in
+    ''|/root|/root/*|/opt/ecosync/*) export GRADLE_USER_HOME="${ECOSYNC_GRADLE_USER_HOME:-$ECOSYNC_CACHE_ROOT/gradle}" ;;
+  esac
+  mkdir -p "$GRADLE_USER_HOME" 2>/dev/null || true
+  if [[ -d "$root/composer/home" ]]; then export COMPOSER_HOME="$root/composer/home"; else export COMPOSER_HOME="${COMPOSER_HOME:-$root/composer-home}"; fi
+  if [[ -d "$root/composer/cache" ]]; then export COMPOSER_CACHE_DIR="$root/composer/cache"; fi
+  if [[ -d "$root/usr-local-bin" ]]; then PATH="$PATH:$root/usr-local-bin"; fi
+  if [[ -d "$root/usr-local-lib" ]]; then export LD_LIBRARY_PATH="$root/usr-local-lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi
+  if [[ -d "$root/usr-local-cargo/bin" ]]; then PATH="$root/usr-local-cargo/bin:$PATH"; export CARGO_HOME="$root/usr-local-cargo"; fi
+  if [[ -d "$root/usr-local-rustup" ]]; then export RUSTUP_HOME="$root/usr-local-rustup"; fi
+  if [[ -n "${RUSTUP_HOME:-}" && -d "$RUSTUP_HOME/toolchains" ]]; then
+    if [[ -n "${RUSTUP_TOOLCHAIN:-}" && ! -d "$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN" ]]; then unset RUSTUP_TOOLCHAIN; fi
+    if [[ -z "${RUSTUP_TOOLCHAIN:-}" ]]; then installed_toolchain="$(find "$RUSTUP_HOME/toolchains" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -Vr | head -1 || true)"; [[ -z "$installed_toolchain" ]] || export RUSTUP_TOOLCHAIN="$installed_toolchain"; fi
+    if [[ -n "${RUSTUP_TOOLCHAIN:-}" ]]; then export ECOSYNC_RUST_TOOLCHAIN_DIR="$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN"; fi
+  fi
+  if [[ -d "$root/php-libs" ]]; then export LD_LIBRARY_PATH="$root/php-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi
+  if [[ -d "$root/usr-local-etc/php" ]]; then export PHPRC="$root/usr-local-etc/php"; export PHP_INI_SCAN_DIR="$root/usr-local-etc/php/conf.d${PHP_INI_SCAN_DIR:+:$PHP_INI_SCAN_DIR}"; fi
+  unset PYTHONHOME
+  if [[ -d "$root/usr-local/lib" && -x "$root/usr-local-bin/python" ]]; then export PYTHONHOME="$root/usr-local"; fi
+  if [[ -d "$root/usr-local-bundle" ]]; then export GEM_HOME="$root/usr-local-bundle"; export BUNDLE_PATH="$root/usr-local-bundle"; export BUNDLE_APP_CONFIG="$root/usr-local-bundle"; fi
+  if [[ -d "$root/node-runtime/bin" ]]; then PATH="$PATH:$root/node-runtime/bin"; export ECOSYNC_NODE_RUNTIME_ROOT="$root/node-runtime"; fi
+  if [[ -d "$root/node-runtime/lib/node_modules" ]]; then export NODE_PATH="${NODE_PATH:+$NODE_PATH:}$root/node-runtime/lib/node_modules"; fi
+  if [[ -d ./node_modules/.bin ]]; then PATH="$PWD/node_modules/.bin:$PATH"; fi
+  if [[ -d "$root/pnpm" ]]; then PATH="$root/pnpm:$PATH"; export PNPM_HOME="${PNPM_HOME:-$root/pnpm}"; fi
+  if [[ -d "$root/pnpm-store" ]]; then export PNPM_STORE_DIR="${PNPM_STORE_DIR:-$root/pnpm-store}"; export pnpm_config_store_dir="${pnpm_config_store_dir:-$root/pnpm-store}"; export npm_config_store_dir="${npm_config_store_dir:-$root/pnpm-store}"; export NPM_CONFIG_STORE_DIR="${NPM_CONFIG_STORE_DIR:-$root/pnpm-store}"; fi
+  if [[ -d "$root/corepack" ]]; then export COREPACK_HOME="${COREPACK_HOME:-$root/corepack}"; fi
+  if [[ -d "$root/xdg" ]]; then export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$root/xdg}"; export XDG_DATA_HOME="${XDG_DATA_HOME:-$root/xdg}"; fi
+  if [[ -d "$root/global" ]]; then export YARN_ENABLE_GLOBAL_CACHE="${YARN_ENABLE_GLOBAL_CACHE:-true}"; export YARN_GLOBAL_FOLDER="${YARN_GLOBAL_FOLDER:-$root/global}"; fi
+  if [[ -d "$root/cache" ]]; then export YARN_CACHE_FOLDER="${YARN_CACHE_FOLDER:-$root/cache}"; fi
+  if [[ -d "$root/deps/node_modules/.bin" ]]; then PATH="$root/deps/node_modules/.bin:$PATH"; fi
+  if [[ -d "$root/deps/node_modules" ]]; then export NODE_PATH="${NODE_PATH:+$NODE_PATH:}$root/deps/node_modules"; fi
+  if [[ -d "$root/repo/node_modules/.bin" ]]; then PATH="$root/repo/node_modules/.bin:$PATH"; fi
+  if [[ -d "$root/repo/node_modules" ]]; then export NODE_PATH="${NODE_PATH:+$NODE_PATH:}$root/repo/node_modules"; fi
+  if [[ -d "$root/deps/vendor/bin" ]]; then PATH="$root/deps/vendor/bin:$PATH"; fi
+  if [[ -d "$root/venv/bin" ]]; then PATH="$root/venv/bin:$PATH"; fi
+  if [[ -d "$PWD/src" ]]; then export PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"; else export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"; fi
+  export PATH
+}
+if deps_root="$(select_deps_root)"; then
+  setup_repo_env "$deps_root"
+  case "$tool" in
+    python|python3) [[ -x "$deps_root/venv/bin/python" ]] && exec "$deps_root/venv/bin/python" "$@"; [[ -x "$deps_root/usr-local-bin/python" ]] && exec "$deps_root/usr-local-bin/python" "$@"; [[ -x "$deps_root/usr-local-bin/python3" ]] && exec "$deps_root/usr-local-bin/python3" "$@" ;;
+    pytest) [[ -x "$deps_root/venv/bin/python" ]] && exec "$deps_root/venv/bin/python" -m pytest "$@"; [[ -x "$deps_root/usr-local-bin/pytest" ]] && exec "$deps_root/usr-local-bin/pytest" "$@"; [[ -x "$deps_root/usr-local-bin/python" ]] && exec "$deps_root/usr-local-bin/python" -m pytest "$@"; [[ -x "$deps_root/usr-local-bin/python3" ]] && exec "$deps_root/usr-local-bin/python3" -m pytest "$@" ;;
+    pip|pip3) [[ -x "$deps_root/venv/bin/python" ]] && exec "$deps_root/venv/bin/python" -m pip "$@"; [[ -x "$deps_root/usr-local-bin/pip" ]] && exec "$deps_root/usr-local-bin/pip" "$@"; [[ -x "$deps_root/usr-local-bin/python" ]] && exec "$deps_root/usr-local-bin/python" -m pip "$@"; [[ -x "$deps_root/usr-local-bin/python3" ]] && exec "$deps_root/usr-local-bin/python3" -m pip "$@" ;;
+    node) [[ -x "$deps_root/node-runtime/bin/node" ]] && exec "$deps_root/node-runtime/bin/node" "$@" ;;
+    npm) [[ -x "$deps_root/node-runtime/bin/node" && -f "$deps_root/node-runtime/lib/node_modules/npm/bin/npm-cli.js" ]] && exec "$deps_root/node-runtime/bin/node" "$deps_root/node-runtime/lib/node_modules/npm/bin/npm-cli.js" "$@" ;;
+    npx) [[ -x "$deps_root/node-runtime/bin/node" && -f "$deps_root/node-runtime/lib/node_modules/npm/bin/npx-cli.js" ]] && exec "$deps_root/node-runtime/bin/node" "$deps_root/node-runtime/lib/node_modules/npm/bin/npx-cli.js" "$@" ;;
+    corepack) [[ -x "$deps_root/node-runtime/bin/node" && -f "$deps_root/node-runtime/lib/node_modules/corepack/dist/corepack.js" ]] && exec "$deps_root/node-runtime/bin/node" "$deps_root/node-runtime/lib/node_modules/corepack/dist/corepack.js" "$@" ;;
+    yarn) [[ -x "$deps_root/node-runtime/bin/node" && -f "$deps_root/node-runtime/lib/node_modules/corepack/dist/corepack.js" ]] && exec "$deps_root/node-runtime/bin/node" "$deps_root/node-runtime/lib/node_modules/corepack/dist/corepack.js" yarn "$@" ;;
+    pnpm) [[ -x "$deps_root/node-runtime/bin/node" && -f "$deps_root/node-runtime/lib/node_modules/corepack/dist/corepack.js" ]] && exec "$deps_root/node-runtime/bin/node" "$deps_root/node-runtime/lib/node_modules/corepack/dist/corepack.js" pnpm "$@" ;;
+    bun) [[ -x "$deps_root/usr-local-bin/bun" ]] && exec "$deps_root/usr-local-bin/bun" "$@"; [[ -x "$deps_root/node-runtime/bin/bun" ]] && exec "$deps_root/node-runtime/bin/bun" "$@" ;;
+    uv) [[ -x "$deps_root/usr-local-bin/uv" ]] && exec "$deps_root/usr-local-bin/uv" "$@" ;;
+    dart) [[ -x "$deps_root/usr-local-bin/dart" ]] && exec "$deps_root/usr-local-bin/dart" "$@"; [[ -x /workspace/repos/flutter/flutter/bin/dart ]] && exec /workspace/repos/flutter/flutter/bin/dart "$@" ;;
+    flutter) [[ -x "$deps_root/usr-local-bin/flutter" ]] && exec "$deps_root/usr-local-bin/flutter" "$@"; [[ -x /workspace/repos/flutter/flutter/bin/flutter ]] && exec /workspace/repos/flutter/flutter/bin/flutter "$@" ;;
+    jest) [[ -x ./node_modules/.bin/jest ]] && exec ./node_modules/.bin/jest "$@"; [[ -x "$deps_root/deps/node_modules/.bin/jest" ]] && exec "$deps_root/deps/node_modules/.bin/jest" "$@"; [[ -x "$deps_root/repo/node_modules/.bin/jest" ]] && exec "$deps_root/repo/node_modules/.bin/jest" "$@" ;;
+    mocha) [[ -x ./node_modules/.bin/mocha ]] && exec ./node_modules/.bin/mocha "$@"; [[ -x "$deps_root/deps/node_modules/.bin/mocha" ]] && exec "$deps_root/deps/node_modules/.bin/mocha" "$@"; [[ -x "$deps_root/repo/node_modules/.bin/mocha" ]] && exec "$deps_root/repo/node_modules/.bin/mocha" "$@" ;;
+    tsd) [[ -x ./node_modules/.bin/tsd ]] && exec ./node_modules/.bin/tsd "$@"; [[ -x "$deps_root/deps/node_modules/.bin/tsd" ]] && exec "$deps_root/deps/node_modules/.bin/tsd" "$@"; [[ -x "$deps_root/repo/node_modules/.bin/tsd" ]] && exec "$deps_root/repo/node_modules/.bin/tsd" "$@" ;;
+    phpunit) [[ -x ./vendor/bin/phpunit ]] && exec ./vendor/bin/phpunit "$@"; [[ -x "$deps_root/deps/vendor/bin/phpunit" ]] && exec "$deps_root/deps/vendor/bin/phpunit" "$@" ;;
+    pest) [[ -x ./vendor/bin/pest ]] && exec ./vendor/bin/pest "$@"; [[ -x "$deps_root/deps/vendor/bin/pest" ]] && exec "$deps_root/deps/vendor/bin/pest" "$@" ;;
+    composer) command -v /usr/local/bin/composer >/dev/null 2>&1 && exec /usr/local/bin/composer "$@" ;;
+    ruby) [[ -x "$deps_root/usr-local-bin/ruby" ]] && exec "$deps_root/usr-local-bin/ruby" "$@" ;;
+    gem) [[ -x "$deps_root/usr-local-bin/gem" ]] && exec "$deps_root/usr-local-bin/gem" "$@" ;;
+    bundle|bundler) [[ -x "$deps_root/usr-local-bin/bundle" ]] && exec "$deps_root/usr-local-bin/bundle" "$@"; [[ -x "$deps_root/usr-local-bin/bundler" ]] && exec "$deps_root/usr-local-bin/bundler" "$@" ;;
+    rake) [[ -x "$deps_root/usr-local-bin/rake" ]] && exec "$deps_root/usr-local-bin/rake" "$@" ;;
+    rspec) [[ -x "$deps_root/usr-local-bin/rspec" ]] && exec "$deps_root/usr-local-bin/rspec" "$@" ;;
+    go) [[ -x /usr/local/go/bin/go ]] && exec /usr/local/go/bin/go "$@" ;;
+    cargo) [[ -x "$deps_root/usr-local-cargo/bin/cargo" ]] && exec "$deps_root/usr-local-cargo/bin/cargo" "$@"; [[ -x /usr/local/cargo/bin/cargo ]] && exec /usr/local/cargo/bin/cargo "$@" ;;
+    rustc) [[ -x "$deps_root/usr-local-cargo/bin/rustc" ]] && exec "$deps_root/usr-local-cargo/bin/rustc" "$@"; [[ -x /usr/local/cargo/bin/rustc ]] && exec /usr/local/cargo/bin/rustc "$@" ;;
+    rustup) [[ -x "$deps_root/usr-local-cargo/bin/rustup" ]] && exec "$deps_root/usr-local-cargo/bin/rustup" "$@"; [[ -x /usr/local/cargo/bin/rustup ]] && exec /usr/local/cargo/bin/rustup "$@" ;;
+    mvn) [[ -x /opt/maven/bin/mvn ]] && exec /opt/maven/bin/mvn "$@"; [[ -x /usr/share/maven/bin/mvn ]] && exec /usr/share/maven/bin/mvn "$@" ;;
+    gradle) [[ -x /opt/gradle/bin/gradle ]] && exec /opt/gradle/bin/gradle "$@" ;;
+    cmake) [[ -x "$deps_root/usr-local-bin/cmake" ]] && exec "$deps_root/usr-local-bin/cmake" "$@"; [[ -x /usr/local/bin/cmake ]] && exec /usr/local/bin/cmake "$@"; [[ -x /usr/bin/cmake ]] && exec /usr/bin/cmake "$@" ;;
+    ctest) [[ -x "$deps_root/usr-local-bin/ctest" ]] && exec "$deps_root/usr-local-bin/ctest" "$@"; [[ -x /usr/local/bin/ctest ]] && exec /usr/local/bin/ctest "$@"; [[ -x /usr/bin/ctest ]] && exec /usr/bin/ctest "$@" ;;
+    scons) [[ -x "$deps_root/usr-local-bin/scons" ]] && exec "$deps_root/usr-local-bin/scons" "$@"; [[ -x /usr/local/bin/scons ]] && exec /usr/local/bin/scons "$@"; [[ -x /usr/bin/scons ]] && exec /usr/bin/scons "$@" ;;
+    godot) [[ -x "$deps_root/usr-local-bin/godot" ]] && exec "$deps_root/usr-local-bin/godot" "$@"; [[ -x /usr/local/bin/godot ]] && exec /usr/local/bin/godot "$@"; [[ -x /usr/bin/godot ]] && exec /usr/bin/godot "$@" ;;
+  esac
+fi
+fallback_command "$@"
+SH
+RUN chmod +x /opt/ecosync/shims/ecosync-tool-shim \
+    && for tool in python python3 pytest pip pip3 uv node npm npx corepack yarn pnpm bun jest mocha tsd go cargo rustc rustup dart flutter php composer phpunit pest ruby gem bundle bundler rake rspec mvn gradle cmake ctest scons godot; do ln -sf ecosync-tool-shim "/opt/ecosync/shims/$tool"; done
+RUN if [ -x /usr/local/bin/node ] && [ -f /usr/local/lib/node_modules/npm/bin/npm-cli.js ]; then rm -f /usr/local/bin/npm && printf '%s\n' '#!/usr/bin/env sh' 'exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js "$@"' > /usr/local/bin/npm && chmod +x /usr/local/bin/npm; fi \
+    && if [ -x /usr/local/bin/node ] && [ -f /usr/local/lib/node_modules/npm/bin/npx-cli.js ]; then rm -f /usr/local/bin/npx && printf '%s\n' '#!/usr/bin/env sh' 'exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npx-cli.js "$@"' > /usr/local/bin/npx && chmod +x /usr/local/bin/npx; fi
+RUN mkdir -p /opt/ecosync/gradle-home /opt/ecosync/gomodcache /opt/ecosync/gopath /tmp/ecosync-gocache \
+    && chmod 0777 /opt/ecosync/gradle-home /opt/ecosync/gomodcache /opt/ecosync/gopath /tmp/ecosync-gocache
+RUN cat > /usr/local/bin/ecosync-case-prepare-workspace <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+workspace="${1:-${ECOSYNC_WORKSPACE:-/workspace}}"
+if [[ -r /etc/profile.d/ecosync-tools.sh ]]; then
+  # shellcheck disable=SC1091
+  source /etc/profile.d/ecosync-tools.sh
+fi
+copy_or_link() {
+  local src="$1"
+  local dst="$2"
+  [[ -e "$dst" || -L "$dst" || ! -e "$src" ]] && return 0
+  ln -s "$src" "$dst" 2>/dev/null || cp -a "$src" "$dst"
+}
+copy_tree() {
+  local src="$1"
+  local dst="$2"
+  [[ -e "$dst" || -L "$dst" || ! -e "$src" ]] && return 0
+  cp -a "$src" "$dst"
+}
+copy_writable_tree() {
+  local src="$1"
+  local dst="$2"
+  [[ -e "$dst" || -L "$dst" || ! -e "$src" ]] && return 0
+  cp -a "$src" "$dst"
+  chmod -R u+rwX "$dst" 2>/dev/null || true
+}
+prepare_gradle_home() {
+  local dst="${GRADLE_USER_HOME:-$workspace/.ecosyncbench/cache/gradle}"
+  mkdir -p "$dst" 2>/dev/null || return 0
+  if [[ -d /opt/ecosync/gradle-home && ! -e "$dst/.ecosync-preseeded" ]]; then
+    cp -R /opt/ecosync/gradle-home/. "$dst"/ 2>/dev/null || true
+    chmod -R u+rwX "$dst" 2>/dev/null || true
+    touch "$dst/.ecosync-preseeded" 2>/dev/null || true
+  fi
+}
+deps_roots_for_repo() {
+  local repo="$1"
+  local name
+  name="$(basename "$repo")"
+  local root
+  for root in /opt/ecosync/image-deps/*; do
+    [[ -d "$root/deps" || -d "$root/repo/node_modules" || -d "$root/pnpm-store" || -d "$root/venv" ]] || continue
+    [[ "$(basename "$root")" == *"$name"* ]] && printf '%s\n' "$root"
+  done
+  [[ -d /opt/ecosync/deps || -d /opt/ecosync/repo/node_modules || -d /opt/ecosync/pnpm-store || -d /opt/ecosync/venv ]] && printf '%s\n' /opt/ecosync
+  for root in /opt/ecosync/image-deps/*; do
+    [[ -d "$root/deps" || -d "$root/repo/node_modules" || -d "$root/pnpm-store" || -d "$root/venv" ]] && printf '%s\n' "$root"
+  done
+  return 0
+}
+prepare_repo() {
+  local repo="$1"
+  [[ -d "$repo" ]] || return 0
+  local root
+  while IFS= read -r root; do
+    [[ -n "$root" ]] || continue
+    [[ -f "$repo/composer.json" ]] && copy_tree "$root/deps/vendor" "$repo/vendor"
+    [[ -f "$repo/package.json" ]] && copy_tree "$root/deps/node_modules" "$repo/node_modules"
+    [[ -f "$repo/package.json" ]] && copy_tree "$root/repo/node_modules" "$repo/node_modules"
+    [[ -f "$repo/pyproject.toml" || -f "$repo/setup.py" ]] && copy_or_link "$root/venv" "$repo/.venv"
+  done < <(deps_roots_for_repo "$repo")
+  if [[ -f "$repo/tests/Java.Interop-Tests/Java.Interop-Tests.csproj" ]]; then
+    mkdir -p "$repo/external" "$repo/bin/BuildDebug"
+    local xat
+    for xat in /opt/ecosync/xamarin-android-tools-* /opt/ecosync/image-deps/*/xamarin-android-tools-*; do
+      [[ -d "$xat" ]] || continue
+      if [[ -L "$repo/external/xamarin-android-tools" || ! -f "$repo/external/xamarin-android-tools/src/Xamarin.Android.Tools.AndroidSdk/Xamarin.Android.Tools.AndroidSdk.csproj" || ! -w "$repo/external/xamarin-android-tools" ]]; then
+        rm -rf "$repo/external/xamarin-android-tools" 2>/dev/null || true
+      fi
+      copy_writable_tree "$xat" "$repo/external/xamarin-android-tools"
+      break
+    done
+    if [[ ! -f "$repo/bin/BuildDebug/JdkInfo.props" ]]; then
+      cat > "$repo/bin/BuildDebug/JdkInfo.props" <<'XML'
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Choose>
+    <When Condition=" '$(JdkJvmPath)' == '' ">
+      <PropertyGroup>
+        <JdkJvmPath>/usr/lib/jvm/java-17-openjdk-amd64/lib/server/libjvm.so</JdkJvmPath>
+      </PropertyGroup>
+      <ItemGroup>
+        <JdkIncludePath Include="/usr/lib/jvm/java-17-openjdk-amd64/include" />
+        <JdkIncludePath Include="/usr/lib/jvm/java-17-openjdk-amd64/include/linux" />
+      </ItemGroup>
+    </When>
+  </Choose>
+  <PropertyGroup>
+    <JavaApiDefineConstants Condition=" '$(JavaApiDefineConstants)' == '' ">JAVA_API_11;JAVA_API_12;JAVA_API_13;JAVA_API_14;JAVA_API_15;JAVA_API_16;JAVA_API_17</JavaApiDefineConstants>
+    <JavaMajorVersion Condition=" '$(JavaMajorVersion)' == '' ">17</JavaMajorVersion>
+    <JavaSdkDirectory Condition=" '$(JavaSdkDirectory)' == '' ">/usr/lib/jvm/java-17-openjdk-amd64</JavaSdkDirectory>
+    <JavaPath Condition=" '$(JavaPath)' == '' ">/usr/lib/jvm/java-17-openjdk-amd64/bin/java</JavaPath>
+    <JavaCPath Condition=" '$(JavaCPath)' == '' ">/usr/lib/jvm/java-17-openjdk-amd64/bin/javac</JavaCPath>
+    <JarPath Condition=" '$(JarPath)' == '' ">/usr/lib/jvm/java-17-openjdk-amd64/bin/jar</JarPath>
+    <DotnetToolPath Condition=" '$(DotnetToolPath)' == '' ">dotnet</DotnetToolPath>
+  </PropertyGroup>
+</Project>
+XML
+    fi
+    if [[ ! -f "$repo/bin/BuildDebug/JdkInfo.mk" ]]; then
+      cat > "$repo/bin/BuildDebug/JdkInfo.mk" <<'MK'
+export  JI_JAR_PATH          := /usr/lib/jvm/java-17-openjdk-amd64/bin/jar
+export  JI_JAVA_PATH         := /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+export  JI_JAVAC_PATH        := /usr/lib/jvm/java-17-openjdk-amd64/bin/javac
+export  JI_JDK_INCLUDE_PATHS := /usr/lib/jvm/java-17-openjdk-amd64/include /usr/lib/jvm/java-17-openjdk-amd64/include/linux
+export  JI_JVM_PATH          := /usr/lib/jvm/java-17-openjdk-amd64/lib/server/libjvm.so
+MK
+    fi
+  fi
+  return 0
+}
+if [[ -d "$workspace/repos" ]]; then
+  prepare_gradle_home
+  while IFS= read -r -d '' repo; do
+    prepare_repo "$repo"
+  done < <(find "$workspace/repos" -mindepth 2 -maxdepth 2 -type d -print0)
+fi
+exit 0
+SH
+RUN chmod +x /usr/local/bin/ecosync-case-prepare-workspace \
+    && printf '\n[ -r /etc/profile.d/ecosync-tools.sh ] && . /etc/profile.d/ecosync-tools.sh\n' >> /etc/bash.bashrc
+RUN mkdir -p /opt/ecosync/image-deps/ecosyncbench_deps_swagger-js-npm_5a4f9a3-f6dabca1247a/node-runtime/bin /opt/ecosync/image-deps/ecosyncbench_deps_swagger-js-npm_5a4f9a3-f6dabca1247a/node-runtime/lib \
+    && for tool in node npm npx corepack yarn pnpm bun; do for src in /usr/local/bin/$tool /usr/bin/$tool; do [ ! -e "$src" ] || { cp -a "$src" /opt/ecosync/image-deps/ecosyncbench_deps_swagger-js-npm_5a4f9a3-f6dabca1247a/node-runtime/bin/$tool; break; }; done; done \
+    && for src in /usr/local/lib/node_modules /usr/lib/node_modules; do [ ! -d "$src" ] || { mkdir -p /opt/ecosync/image-deps/ecosyncbench_deps_swagger-js-npm_5a4f9a3-f6dabca1247a/node-runtime/lib/node_modules && cp -a "$src"/. /opt/ecosync/image-deps/ecosyncbench_deps_swagger-js-npm_5a4f9a3-f6dabca1247a/node-runtime/lib/node_modules/; break; }; done
+COPY --from=dep_0 /usr/local/bin /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/usr-local-bin
+RUN --mount=from=dep_0,source=/,target=/dep,readonly set -eux; \
+    if ( [ -e /dep/usr/local/bin/python ] || ls /dep/usr/local/bin/python3* >/dev/null 2>&1 ) && [ -d /dep/usr/local/lib ]; then \
+      mkdir -p /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/usr-local-lib /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/usr-local; \
+      cp -a /dep/usr/local/lib/. /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/usr-local-lib/; \
+      ln -sfn ../usr-local-lib /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/usr-local/lib; \
+      for script in /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/usr-local-bin/*; do [ -f "$script" ] || continue; sed -i "1s|^#!/usr/local/bin/python[^[:space:]]*|#!/opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/usr-local-bin/python|" "$script" 2>/dev/null || true; done; \
+    fi
+RUN --mount=from=dep_0,source=/,target=/dep,readonly mkdir -p /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/node-runtime/bin /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/node-runtime/lib \
+    && for tool in node npm npx corepack yarn pnpm bun; do for src in /dep/usr/local/bin/$tool /dep/usr/bin/$tool; do [ ! -e "$src" ] || { cp -a "$src" /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/node-runtime/bin/$tool; break; }; done; done \
+    && for src in /dep/usr/local/lib/node_modules /dep/usr/lib/node_modules; do [ ! -d "$src" ] || { mkdir -p /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/node-runtime/lib/node_modules && cp -a "$src"/. /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/node-runtime/lib/node_modules/; break; }; done \
+    && [ ! -e /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/usr-local-bin/bun ] || cp -a /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/usr-local-bin/bun /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a/node-runtime/bin/bun
+COPY --from=dep_0 /opt/ecosync /opt/ecosync/image-deps/ecosyncbench_deps_swagger-ui-cypress-npm_f63d850-f6dabca1247a
+RUN set -eux; \
+    for cfg in /opt/ecosync/venv/pyvenv.cfg /opt/ecosync/image-deps/*/venv/pyvenv.cfg; do \
+      [ -f "$cfg" ] || continue; \
+      venv="$(dirname "$cfg")"; \
+      minor="$(sed -n 's/^version = \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$cfg" | head -1)"; \
+      [ -n "$minor" ] || continue; \
+      if [ -x "/usr/local/bin/python$minor" ]; then \
+        ln -sf "/usr/local/bin/python$minor" "$venv/bin/python"; \
+        ln -sf python "$venv/bin/python3"; \
+        sed -i "s#^home = .*#home = /usr/local/bin#; s#^executable = .*#executable = /usr/local/bin/python$minor#" "$cfg"; \
+        for script in "$venv"/bin/*; do \
+          [ -f "$script" ] || continue; \
+          first="$(head -c 64 "$script" 2>/dev/null || true)"; \
+          case "$first" in '#!'*'/opt/ecosync/venv/bin/python'*) sed -i "1s|^#!.*python.*$|#!$venv/bin/python|" "$script" ;; esac; \
+        done; \
+      fi; \
+    done
+RUN if [ -f /usr/local/lib/node_modules/corepack/dist/corepack.js ]; then \
+      ln -sf ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
+    fi
+ARG ECOSYNC_TASK_ID=swagger_api_swagger_js_swagger_ui_f6dabca1247a
+LABEL org.ecosyncbench.layer=case-base \
+      org.ecosyncbench.agent_environment=case-env \
+      org.ecosyncbench.task=swagger_api_swagger_js_swagger_ui_f6dabca1247a
+COPY --from=task_ctx /repo_envs.tsv /opt/ecosync/repo-envs.tsv
+COPY --from=task_ctx /runners/ /opt/ecosync/
+RUN chmod a+r /opt/ecosync/repo-envs.tsv \
+    && chmod +x /opt/ecosync/run-*.sh \
+    && git --version \
+    && python3 --version
+WORKDIR /workspace
+CMD ["bash"]

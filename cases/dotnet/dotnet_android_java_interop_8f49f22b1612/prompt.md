@@ -1,0 +1,3 @@
+Replace per-method `TrimmableNativeRegistration.RegisterMethod()` calls with a single JNI `RegisterNatives` call using `stackalloc`'d `JniNativeMethod` structs and compile-time UTF-8 byte data stored in RVA static fields.
+
+Add a `JniNativeMethod` struct matching JNI's `JNINativeMethod` layout `(byte* Name, byte* Signature, IntPtr FunctionPointer)` and a new `JniEnvironment.Types.RegisterNatives(JniObjectReference, ReadOnlySpan<JniNativeMethod>)` overload. It should call JNI `RegisterNatives` directly, bypassing delegate marshaling. Generated native registration should consume this API, deduplicate repeated UTF-8 method names and signatures, and make one JNI call per class with zero delegate, string, or array allocations.

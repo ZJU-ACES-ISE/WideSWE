@@ -1,0 +1,55 @@
+task_id: getsentry_sentry_symbolicator_6ff581b566d2
+agent_runtime_source_masks:
+- /cache/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/proguard-5.9.0
+agent_runtime_file_source_masks:
+- /cache/cargo-home/registry/cache/index.crates.io-1949cf8c6b5b557f/proguard-5.9.0.crate
+agent_cargo_workspace_patches:
+  proguard:
+    path: repos/getsentry/rust-proguard
+    locked_manifest_cache_path: cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/proguard-5.8.0/Cargo.toml
+hidden_test_patches:
+- repo: rust-proguard
+  patch: hidden/patches/rust-proguard-hidden-tests.patch
+  test_profile: rust_proguard-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/r8.rs
+  hidden_file: *id001
+  semantic_changes: Preserve the existing outline-frame cache regression test; the task does not permit removing prior outline remapping behavior.
+  source: upstream test changes from getsentry/rust-proguard PR(s) 67
+- repo: sentry
+  patch: hidden/patches/sentry-hidden-tests.patch
+  test_profile: sentry-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/sentry/test_stacktraces.py
+  hidden_file: *id002
+  semantic_changes: Assert the prompt-visible get_exception behavior without requiring Gold-specific StacktraceInfo storage attributes.
+  source: upstream test changes from getsentry/sentry PR(s) 104851
+- repo: symbolicator
+  patch: hidden/patches/symbolicator-hidden-tests.patch
+  test_profile: symbolicator-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - crates/symbolicator-proguard/tests/integration/proguard.rs
+  - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__basic_source_lookup.snap
+  - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__remap_exception.snap
+  - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__resolving_inline.snap
+  - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__rewrite_frames.snap
+  - crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__source_lookup_with_proguard.snap
+  - tests/fixtures/proguard/rewrite_frames/proguard.txt
+  hidden_file: *id003
+  semantic_changes: none
+  source: upstream test changes from getsentry/symbolicator PR(s) 1845
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - rust_proguard-hidden
+    - sentry-hidden
+    - symbolicator-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

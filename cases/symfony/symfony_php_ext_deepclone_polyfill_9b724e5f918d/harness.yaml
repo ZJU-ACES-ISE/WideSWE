@@ -1,0 +1,32 @@
+task_id: symfony_php_ext_deepclone_polyfill_9b724e5f918d
+hidden_test_patches:
+- repo: php-ext-deepclone
+  patch: hidden/patches/php-ext-deepclone-hidden-tests.patch
+  test_profile: php_ext_deepclone-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/deepclone_from_array_refid_overflow.phpt
+  - tests/deepclone_from_array_unserialize_nonobject.phpt
+  hidden_file: *id001
+  semantic_changes: preserves all malformed-input paths while checking ValueError behavior without fixing undisclosed error text
+  source: upstream test changes from symfony/php-ext-deepclone PR 19
+- repo: polyfill
+  patch: hidden/patches/polyfill-hidden-tests.patch
+  test_profile: polyfill-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/DeepClone/DeepCloneTest.php
+  hidden_file: *id002
+  semantic_changes: preserves malformed-input and warning checks without fixing undisclosed error text
+  source: upstream test changes from symfony/polyfill PR 627
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - php_ext_deepclone-hidden
+    - polyfill-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

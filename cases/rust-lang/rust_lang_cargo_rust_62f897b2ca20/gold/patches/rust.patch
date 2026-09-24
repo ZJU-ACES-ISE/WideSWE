@@ -1,0 +1,102 @@
+diff --git a/src/bootstrap/bootstrap.py b/src/bootstrap/bootstrap.py
+index 4dd465edb0d..2e16f2cf27e 100644
+--- a/src/bootstrap/bootstrap.py
++++ b/src/bootstrap/bootstrap.py
+@@ -1113,6 +1113,19 @@ class RustBuild(object):
+         else:
+             env["RUSTFLAGS"] = "-Zallow-features="
+ 
++        if not os.path.isfile(self.cargo()):
++            raise Exception("no cargo executable found at `{}`".format(self.cargo()))
++        args = [
++            self.cargo(),
++            "build",
++            "--jobs=" + self.jobs,
++            "--manifest-path",
++            os.path.join(self.rust_root, "src/bootstrap/Cargo.toml"),
++            "-Zroot-dir=" + self.rust_root,
++        ]
++        # verbose cargo output is very noisy, so only enable it with -vv
++        args.extend("--verbose" for _ in range(self.verbose - 1))
++
+         target_features = []
+         if self.get_toml("crt-static", build_section) == "true":
+             target_features += ["+crt-static"]
+@@ -1131,28 +1144,15 @@ class RustBuild(object):
+         else:
+             deny_warnings = self.warnings == "deny"
+         if deny_warnings:
+-            env["RUSTFLAGS"] += " -Dwarnings"
++            args += ["-Zwarnings"]
++            env["CARGO_BUILD_WARNINGS"] = "deny"
+ 
+         # Add RUSTFLAGS_BOOTSTRAP to RUSTFLAGS for bootstrap compilation.
+         # Note that RUSTFLAGS_BOOTSTRAP should always be added to the end of
+-        # RUSTFLAGS to be actually effective (e.g., if we have `-Dwarnings` in
+-        # RUSTFLAGS, passing `-Awarnings` from RUSTFLAGS_BOOTSTRAP should override it).
++        # RUSTFLAGS, since that causes RUSTFLAGS_BOOTSTRAP to override RUSTFLAGS.
+         if "RUSTFLAGS_BOOTSTRAP" in env:
+             env["RUSTFLAGS"] += " " + env["RUSTFLAGS_BOOTSTRAP"]
+ 
+-        if not os.path.isfile(self.cargo()):
+-            raise Exception("no cargo executable found at `{}`".format(self.cargo()))
+-        args = [
+-            self.cargo(),
+-            "build",
+-            "--jobs=" + self.jobs,
+-            "--manifest-path",
+-            os.path.join(self.rust_root, "src/bootstrap/Cargo.toml"),
+-            "-Zroot-dir=" + self.rust_root,
+-        ]
+-        # verbose cargo output is very noisy, so only enable it with -vv
+-        args.extend("--verbose" for _ in range(self.verbose - 1))
+-
+         if "BOOTSTRAP_TRACING" in env:
+             args.append("--features=tracing")
+ 
+diff --git a/src/bootstrap/src/bin/rustdoc.rs b/src/bootstrap/src/bin/rustdoc.rs
+index 784041985b7..2925892fed2 100644
+--- a/src/bootstrap/src/bin/rustdoc.rs
++++ b/src/bootstrap/src/bin/rustdoc.rs
+@@ -40,6 +40,12 @@ fn main() {
+         if !args.iter().any(|arg| arg == "--sysroot") {
+             cmd.arg("--sysroot").arg(&sysroot);
+         }
++    } else {
++        // Find any host flags that were passed by bootstrap.
++        // The flags are stored in a RUSTC_HOST_FLAGS variable, separated by spaces.
++        if let Ok(flags) = std::env::var("RUSTC_HOST_FLAGS") {
++            cmd.args(flags.split(' '));
++        }
+     }
+ 
+     cmd.args(&args);
+diff --git a/src/bootstrap/src/core/builder/cargo.rs b/src/bootstrap/src/core/builder/cargo.rs
+index 4697de7ffe0..dc95b8bd6e0 100644
+--- a/src/bootstrap/src/core/builder/cargo.rs
++++ b/src/bootstrap/src/core/builder/cargo.rs
+@@ -503,6 +503,11 @@ impl Builder<'_> {
+         let out_dir = self.stage_out(compiler, mode);
+         cargo.env("CARGO_TARGET_DIR", &out_dir);
+ 
++        // Set this unconditionally. Cargo silently ignores `CARGO_BUILD_WARNINGS` when `-Z
++        // warnings` isn't present, which is hard to debug, and it's not worth the effort to keep
++        // them in sync.
++        cargo.arg("-Zwarnings");
++
+         // Bootstrap makes a lot of assumptions about the artifacts produced in the target
+         // directory. If users override the "build directory" using `build-dir`
+         // (https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-dir), then
+@@ -1187,8 +1192,10 @@ impl Builder<'_> {
+             lint_flags.push("-Wunused_lifetimes");
+ 
+             if self.config.deny_warnings {
+-                lint_flags.push("-Dwarnings");
+-                rustdocflags.arg("-Dwarnings");
++                // We use this instead of `lint_flags` so that we don't have to rebuild all
++                // workspace dependencies when `deny-warnings` changes, but we still get an error
++                // immediately instead of having to wait until the next rebuild.
++                cargo.env("CARGO_BUILD_WARNINGS", "deny");
+             }
+ 
+             rustdocflags.arg("-Wrustdoc::invalid_codeblock_attributes");

@@ -1,0 +1,21 @@
+profiles:
+  mcp_server_plugin-hidden:
+    repo: mcp-server-plugin
+    workdir: repos/jenkinsci/mcp-server-plugin
+    command: mvn -B -ntp -U -Dmaven.repo.local=/m2 -Dmaven.gitcommitid.skip=true -Dtest=EndPointTest,WarningsExtensionTest test
+    status: implemented_manual_profile
+    dependency_image: ecosyncbench/base/java-maven:21-ubuntu
+    test_files:
+    - src/test/java/io/jenkins/plugins/mcp/server/EndPointTest.java
+    - src/test/java/io/jenkins/plugins/mcp/server/extensions/WarningsExtensionTest.java
+    - src/test/resources/io/jenkins/plugins/mcp/server/extensions/checkstyle-sample.xml
+  warnings_ng_plugin-hidden:
+    repo: warnings-ng-plugin
+    workdir: repos/jenkinsci/warnings-ng-plugin
+    command: mvn -B -ntp -U -Dmaven.repo.local=/m2 -Dmaven.gitcommitid.skip=true -pl plugin -Dtest=WarningsMcpServerExtensionTest test
+    status: implemented_manual_profile
+    dependency_image: ecosyncbench/base/java-maven:21-ubuntu
+    test_files:
+    - plugin/src/test/java/io/jenkins/plugins/analysis/core/mcp/WarningsMcpServerExtensionTest.java
+    - plugin/src/test/resources/design.puml
+    - plugin/src/test/resources/io/jenkins/plugins/analysis/core/mcp/checkstyle-sample.xml

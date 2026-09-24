@@ -1,0 +1,489 @@
+diff --git a/ecosync_contract/contract_test.go b/ecosync_contract/contract_test.go
+new file mode 100644
+index 0000000..1b1b4ff
+--- /dev/null
++++ b/ecosync_contract/contract_test.go
+@@ -0,0 +1,483 @@
++// Copyright 2026 The Prometheus Authors
++// Licensed under the Apache License, Version 2.0.
++
++package contract_test
++
++import (
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"reflect"
++	"strconv"
++	"strings"
++	"testing"
++
++	"github.com/prometheus-community/stackdriver_exporter/collectors"
++)
++
++func TestEcoSyncPublicConfigAndRuntime(t *testing.T) {
++	root, err := filepath.Abs("..")
++	if err != nil {
++		t.Fatal(err)
++	}
++	consumer := t.TempDir()
++	goMod := "module ecosync-public-contract\n\ngo 1.25.0\n\nrequire github.com/prometheus-community/stackdriver_exporter v0.0.0\n\nreplace github.com/prometheus-community/stackdriver_exporter => " + root + "\n"
++	if err := os.WriteFile(filepath.Join(consumer, "go.mod"), []byte(goMod), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(consumer, "runtime_test.go"), []byte(publicRuntimeConsumer), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	cmd := exec.Command("go", "test", "-count=1", ".")
++	cmd.Dir = consumer
++	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
++	output, err := cmd.CombinedOutput()
++	if err != nil {
++		t.Fatalf("public Config/Runtime contract failed: %v\n%s", err, output)
++	}
++}
++
++func TestEcoSyncConfigPackageIsPureValueType(t *testing.T) {
++	fset := token.NewFileSet()
++	packages, err := parser.ParseDir(fset, "../config", nil, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	foundConfig := false
++	for _, pkg := range packages {
++		for filename, file := range pkg.Files {
++			if strings.HasSuffix(filename, "_test.go") {
++				continue
++			}
++			for _, spec := range file.Imports {
++				importPath, err := strconv.Unquote(spec.Path.Value)
++				if err != nil {
++					continue
++				}
++				if strings.Contains(importPath, "/collectors") || strings.HasPrefix(importPath, "google.golang.org/") || strings.Contains(importPath, "oauth") {
++					t.Errorf("config package imports runtime dependency %q", importPath)
++				}
++			}
++			for _, decl := range file.Decls {
++				gen, ok := decl.(*ast.GenDecl)
++				if !ok || gen.Tok != token.TYPE {
++					continue
++				}
++				for _, spec := range gen.Specs {
++					typeSpec, ok := spec.(*ast.TypeSpec)
++					if !ok || typeSpec.Name.Name != "Config" {
++						continue
++					}
++					foundConfig = true
++					structure, ok := typeSpec.Type.(*ast.StructType)
++					if !ok {
++						t.Error("config.Config is not a value struct")
++						continue
++					}
++					for _, field := range structure.Fields.List {
++						if field.Tag != nil && strings.Contains(field.Tag.Value, "mapstructure") {
++							t.Error("config.Config contains receiver-specific mapstructure tags")
++						}
++					}
++				}
++			}
++		}
++	}
++	if !foundConfig {
++		t.Error("config package does not define Config")
++	}
++}
++
++func TestEcoSyncFilterErrorsUseHTTP500(t *testing.T) {
++	fset := token.NewFileSet()
++	packages, err := parser.ParseDir(fset, "..", nil, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	serveReceiver := ""
++	methods := []*ast.FuncDecl{}
++	hasInternalServerError := false
++	for _, pkg := range packages {
++		for filename, file := range pkg.Files {
++			if strings.HasSuffix(filename, "_test.go") {
++				continue
++			}
++			for _, decl := range file.Decls {
++				fn, ok := decl.(*ast.FuncDecl)
++				if !ok {
++					continue
++				}
++				if fn.Recv != nil {
++					methods = append(methods, fn)
++				}
++				if fn.Name.Name == "ServeHTTP" {
++					serveReceiver = receiverTypeName(fn)
++				}
++				ast.Inspect(fn.Body, func(node ast.Node) bool {
++					switch n := node.(type) {
++					case *ast.SelectorExpr:
++						if n.Sel.Name == "StatusInternalServerError" {
++							hasInternalServerError = true
++						}
++					case *ast.BasicLit:
++						if n.Kind == token.INT && n.Value == "500" {
++							hasInternalServerError = true
++						}
++					}
++					return true
++				})
++			}
++		}
++	}
++	if serveReceiver == "" {
++		t.Fatal("HTTP handler does not implement ServeHTTP")
++	}
++	if !hasInternalServerError {
++		t.Error("filter-path errors are not mapped to HTTP 500")
++	}
++	for _, method := range methods {
++		if receiverTypeName(method) != serveReceiver {
++			continue
++		}
++		ast.Inspect(method.Body, func(node ast.Node) bool {
++			call, ok := node.(*ast.CallExpr)
++			if !ok {
++				return true
++			}
++			selector, ok := call.Fun.(*ast.SelectorExpr)
++			if !ok || selector.Sel.Name != "Exit" {
++				return true
++			}
++			if pkg, ok := selector.X.(*ast.Ident); ok && pkg.Name == "os" {
++				t.Errorf("HTTP handler method %s exits the process on a request error", method.Name.Name)
++			}
++			return true
++		})
++	}
++}
++
++func TestEcoSyncMetricFilterParsing(t *testing.T) {
++	got := collectors.ParseMetricExtraFilters([]string{
++		"Compute.Googleapis.Com/Instance:resource.labels.zone=us-central1-a",
++		"invalid-filter",
++	})
++	want := []collectors.MetricFilter{{
++		TargetedMetricPrefix: "compute.googleapis.com/instance",
++		FilterQuery:          "resource.labels.zone=us-central1-a",
++	}}
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("ParseMetricExtraFilters() = %#v, want %#v", got, want)
++	}
++}
++
++func receiverTypeName(fn *ast.FuncDecl) string {
++	if fn.Recv == nil || len(fn.Recv.List) == 0 {
++		return ""
++	}
++	typeExpr := fn.Recv.List[0].Type
++	if pointer, ok := typeExpr.(*ast.StarExpr); ok {
++		typeExpr = pointer.X
++	}
++	if ident, ok := typeExpr.(*ast.Ident); ok {
++		return ident.Name
++	}
++	return ""
++}
++
++const publicRuntimeConsumer = `package contract
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"log/slog"
++	"os"
++	"path/filepath"
++	"reflect"
++	"testing"
++	"time"
++
++	"github.com/prometheus-community/stackdriver_exporter/collectors"
++	"github.com/prometheus-community/stackdriver_exporter/config"
++)
++
++var errorType = reflect.TypeOf((*error)(nil)).Elem()
++
++func installCredentials(t *testing.T) {
++	t.Helper()
++	path := filepath.Join(t.TempDir(), "credentials.json")
++	data := []byte("{\"type\":\"authorized_user\",\"client_id\":\"test\",\"client_secret\":\"test\",\"refresh_token\":\"test\"}")
++	if err := os.WriteFile(path, data, 0600); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
++}
++
++func invokeNewRuntime(t *testing.T, cfg any) (reflect.Value, error) {
++	t.Helper()
++	fn := reflect.ValueOf(collectors.NewRuntime)
++	fnType := fn.Type()
++	ctx := reflect.ValueOf(context.Background())
++	logger := reflect.ValueOf(slog.New(slog.NewTextHandler(io.Discard, nil)))
++	configValue := reflect.ValueOf(cfg)
++	args := make([]reflect.Value, fnType.NumIn())
++	for i := 0; i < fnType.NumIn(); i++ {
++		paramType := fnType.In(i)
++		switch {
++		case ctx.Type().AssignableTo(paramType):
++			args[i] = ctx
++		case logger.Type().AssignableTo(paramType):
++			args[i] = logger
++		case adaptableConfig(configValue, paramType).IsValid():
++			args[i] = adaptableConfig(configValue, paramType)
++		case paramType.Kind() == reflect.Func:
++			args[i] = reflect.MakeFunc(paramType, func([]reflect.Value) []reflect.Value {
++				out := make([]reflect.Value, paramType.NumOut())
++				for i := range out {
++					out[i] = reflect.Zero(paramType.Out(i))
++				}
++				return out
++			})
++		default:
++			t.Fatalf("NewRuntime has unsupported public parameter %v", paramType)
++		}
++	}
++	outputs, panicErr := safeCall(fn, args)
++	if panicErr != nil {
++		return reflect.Value{}, panicErr
++	}
++	var runtime reflect.Value
++	for _, output := range outputs {
++		if output.Type().Implements(errorType) {
++			if !output.IsNil() {
++				return reflect.Value{}, output.Interface().(error)
++			}
++			continue
++		}
++		if !isNil(output) && output.MethodByName("Collectors").IsValid() {
++			runtime = output
++		}
++	}
++	if !runtime.IsValid() {
++		return reflect.Value{}, fmt.Errorf("NewRuntime did not return a Runtime with Collectors")
++	}
++	return runtime, nil
++}
++
++func adaptableConfig(value reflect.Value, target reflect.Type) reflect.Value {
++	if value.IsValid() && value.Type().AssignableTo(target) {
++		return value
++	}
++	if value.IsValid() && value.Kind() == reflect.Pointer && value.Elem().Type().AssignableTo(target) {
++		return value.Elem()
++	}
++	if value.IsValid() && value.Kind() != reflect.Pointer {
++		pointer := reflect.New(value.Type())
++		pointer.Elem().Set(value)
++		if pointer.Type().AssignableTo(target) {
++			return pointer
++		}
++	}
++	return reflect.Value{}
++}
++
++func safeCall(fn reflect.Value, args []reflect.Value) (outputs []reflect.Value, err error) {
++	defer func() {
++		if recovered := recover(); recovered != nil {
++			err = fmt.Errorf("call panicked: %v", recovered)
++		}
++	}()
++	return fn.Call(args), nil
++}
++
++func isNil(value reflect.Value) bool {
++	switch value.Kind() {
++	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
++		return value.IsNil()
++	default:
++		return false
++	}
++}
++
++func runtimeMethod(runtime reflect.Value, name string, args ...reflect.Value) (reflect.Value, error) {
++	method := runtime.MethodByName(name)
++	if !method.IsValid() {
++		return reflect.Value{}, fmt.Errorf("Runtime has no %s method", name)
++	}
++	outputs, err := safeCall(method, args)
++	if err != nil {
++		return reflect.Value{}, err
++	}
++	for _, output := range outputs {
++		if output.Type().Implements(errorType) && !output.IsNil() {
++			return reflect.Value{}, output.Interface().(error)
++		}
++	}
++	for _, output := range outputs {
++		if output.Kind() == reflect.Slice {
++			return output, nil
++		}
++	}
++	return reflect.Value{}, nil
++}
++
++func withCache(runtime reflect.Value) (reflect.Value, error) {
++	method := runtime.MethodByName("WithCache")
++	if !method.IsValid() {
++		return reflect.Value{}, fmt.Errorf("Runtime has no WithCache method")
++	}
++	outputs, err := safeCall(method, nil)
++	if err != nil {
++		return reflect.Value{}, err
++	}
++	for _, output := range outputs {
++		if !isNil(output) && output.MethodByName("Collectors").IsValid() {
++			return output, nil
++		}
++	}
++	return runtime, nil
++}
++
++func collectorPointer(slice reflect.Value, index int) uintptr {
++	value := slice.Index(index)
++	for value.Kind() == reflect.Interface {
++		value = value.Elem()
++	}
++	if value.Kind() != reflect.Pointer {
++		return 0
++	}
++	return value.Pointer()
++}
++
++func TestConfigValidationContract(t *testing.T) {
++	bad := config.NewConfigWithDefaults()
++	if err := bad.Validate(); err == nil {
++		t.Fatal("config without metric prefixes passed validation")
++	}
++	if bad.Validated() {
++		t.Fatal("failed validation marked config validated")
++	}
++
++	good := config.NewConfigWithDefaults()
++	good.ProjectIDs = []string{"project-a", "project-b"}
++	good.MetricsPrefixes = []string{"compute.googleapis.com/", "pubsub.googleapis.com/"}
++	if err := good.Validate(); err != nil {
++		t.Fatalf("Validate() failed: %v", err)
++	}
++	if !good.Validated() {
++		t.Fatal("successful Validate() did not mark config validated")
++	}
++}
++
++func TestNewRuntimeRejectsUnvalidatedConfig(t *testing.T) {
++	cfg := config.NewConfigWithDefaults()
++	cfg.ProjectIDs = []string{"project-a"}
++	cfg.MetricsPrefixes = []string{"compute.googleapis.com/"}
++	if _, err := invokeNewRuntime(t, cfg); err == nil {
++		t.Fatal("NewRuntime accepted an unvalidated config")
++	}
++}
++
++func TestRuntimeCollectorsAndCache(t *testing.T) {
++	installCredentials(t)
++	cfg := config.NewConfigWithDefaults()
++	cfg.ProjectIDs = []string{"project-a", "project-b"}
++	cfg.MetricsPrefixes = []string{"compute.googleapis.com/", "pubsub.googleapis.com/"}
++	if err := cfg.Validate(); err != nil {
++		t.Fatal(err)
++	}
++	runtime, err := invokeNewRuntime(t, cfg)
++	if err != nil {
++		t.Fatalf("NewRuntime() failed: %v", err)
++	}
++	first, err := runtimeMethod(runtime, "Collectors")
++	if err != nil {
++		t.Fatal(err)
++	}
++	second, err := runtimeMethod(runtime, "Collectors")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if first.Len() != 2 || second.Len() != 2 {
++		t.Fatalf("Collectors returned %d and %d collectors, want one per project", first.Len(), second.Len())
++	}
++	if collectorPointer(first, 0) == collectorPointer(second, 0) {
++		t.Fatal("uncached Runtime reused a collector")
++	}
++
++	cached, err := withCache(runtime)
++	if err != nil {
++		t.Fatal(err)
++	}
++	all, err := runtimeMethod(cached, "Collectors")
++	if err != nil {
++		t.Fatal(err)
++	}
++	nilFilter, err := runtimeMethod(cached, "CollectorsForPrefixes", reflect.Zero(reflect.TypeOf([]string{})))
++	if err != nil {
++		t.Fatal(err)
++	}
++	emptyFilter, err := runtimeMethod(cached, "CollectorsForPrefixes", reflect.ValueOf([]string{}))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if all.Len() != 2 || collectorPointer(all, 0) != collectorPointer(nilFilter, 0) || collectorPointer(all, 0) != collectorPointer(emptyFilter, 0) {
++		t.Fatal("nil and empty prefix filters did not reuse all configured prefixes")
++	}
++
++	filter := reflect.ValueOf([]string{"compute.googleapis.com/instance"})
++	filtered, err := runtimeMethod(cached, "CollectorsForPrefixes", filter)
++	if err != nil {
++		t.Fatal(err)
++	}
++	filteredAgain, err := runtimeMethod(cached, "CollectorsForPrefixes", filter)
++	if err != nil {
++		t.Fatal(err)
++	}
++	otherFilter, err := runtimeMethod(cached, "CollectorsForPrefixes", reflect.ValueOf([]string{"pubsub.googleapis.com/subscription"}))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if collectorPointer(filtered, 0) != collectorPointer(filteredAgain, 0) {
++		t.Fatal("cache did not reuse a collector for the same project and prefix filter")
++	}
++	if collectorPointer(filtered, 0) == collectorPointer(otherFilter, 0) {
++		t.Fatal("cache reused a collector for a different prefix filter")
++	}
++}
++
++func TestRuntimeCacheExpiry(t *testing.T) {
++	installCredentials(t)
++	cfg := config.NewConfigWithDefaults()
++	cfg.ProjectIDs = []string{"project-a"}
++	cfg.MetricsPrefixes = []string{"compute.googleapis.com/"}
++	cfg.AggregateDeltas = true
++	cfg.AggregateDeltasTTL = 20 * time.Millisecond
++	if err := cfg.Validate(); err != nil {
++		t.Fatal(err)
++	}
++	runtime, err := invokeNewRuntime(t, cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	runtime, err = withCache(runtime)
++	if err != nil {
++		t.Fatal(err)
++	}
++	first, err := runtimeMethod(runtime, "Collectors")
++	if err != nil {
++		t.Fatal(err)
++	}
++	time.Sleep(50 * time.Millisecond)
++	second, err := runtimeMethod(runtime, "Collectors")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if collectorPointer(first, 0) == collectorPointer(second, 0) {
++		t.Fatal("cached collector remained after the configured cache lifetime")
++	}
++}
++`

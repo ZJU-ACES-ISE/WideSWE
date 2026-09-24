@@ -1,0 +1,29 @@
+profiles:
+  elasticsearch_js-hidden:
+    repo: elasticsearch-js
+    workdir: repos/elastic/elasticsearch-js
+    command: npm install --ignore-scripts && npm run build && tap --reporter=junit
+      test/unit/api.test.ts
+    status: implemented
+    evaluator_node_modules_mode: persistent
+    test_files:
+    - test/unit/api.test.ts
+    public_smoke_command: npm install --ignore-scripts && npm run generate-version
+      && npm run build:cjs && npx tap --disable-coverage --reporter=junit test/unit/api.test.ts
+  kibana-hidden:
+    repo: kibana
+    workdir: repos/elastic/kibana
+    command: yarn install --frozen-lockfile && node scripts/jest.js src/core/packages/elasticsearch/client-server-internal/src/cps_request_handler/cps_request_handler.test.ts
+    status: implemented
+    evaluator_node_modules_mode: persistent
+    test_files:
+    - src/core/packages/elasticsearch/client-server-internal/src/cps_request_handler/cps_request_handler.test.ts
+    public_smoke_command: corepack prepare yarn@1.22.22 --activate || true; if [ !
+      -d node_modules ] || [ -z "$(find node_modules -mindepth 1 -maxdepth 1 -print
+      -quit 2>/dev/null)" ]; then YARN_IGNORE_SCRIPTS=1 corepack yarn install --frozen-lockfile
+      --non-interactive --ignore-scripts || YARN_IGNORE_SCRIPTS=1 corepack yarn install
+      --non-interactive --ignore-scripts; fi; if [ ! -s src/platform/packages/private/kbn-repo-packages/package-map.json
+      ] && [ ! -s packages/kbn-repo-packages/package-map.json ]; then node -e 'const
+      fs=require("fs"); const p=fs.existsSync("./src/platform/packages/private/kbn-repo-packages")?"./src/platform/packages/private/kbn-repo-packages":"./packages/kbn-repo-packages";
+      const m=require(p); m.updatePackageMap(process.cwd(), Array.from(m.getRepoRelsSync(process.cwd(),
+      ["**/kibana.jsonc"])));'; fi; node scripts/jest.js --runInBand --forceExit src/platform/packages/shared/kbn-std/src/promise.test.ts

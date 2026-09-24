@@ -1,0 +1,206 @@
+diff --git a/lightning/pkg/importinto/external_id_contract_hidden_test.go b/lightning/pkg/importinto/external_id_contract_hidden_test.go
+new file mode 100644
+--- /dev/null
++++ b/lightning/pkg/importinto/external_id_contract_hidden_test.go
+@@ -0,0 +1,201 @@
++// Copyright 2026 PingCAP, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package importinto_test
++
++import (
++	"context"
++	"net/url"
++	"reflect"
++	"strings"
++	"testing"
++
++	"github.com/pingcap/tidb/lightning/pkg/importinto"
++	"github.com/pingcap/tidb/pkg/importsdk"
++	sdkmock "github.com/pingcap/tidb/pkg/importsdk/mock"
++	"github.com/pingcap/tidb/pkg/lightning/config"
++	"github.com/pingcap/tidb/pkg/lightning/log"
++	"github.com/stretchr/testify/require"
++	"go.uber.org/mock/gomock"
++)
++
++func TestExternalIDCompatibilityDisabledPreservesParameters(t *testing.T) {
++	tests := []struct {
++		name       string
++		sourceDir  string
++		parameters string
++	}{
++		{
++			name:       "s3",
++			sourceDir:  "s3://bucket/path?role-arn=arn&external-id=keep&external_id=keep-too&region=us-east-1",
++			parameters: "role-arn=arn&external-id=keep&external_id=keep-too&region=us-east-1",
++		},
++		{
++			name:       "s3-compatible",
++			sourceDir:  "oss://bucket/path?external-id=keep&external_id=keep-too&region=us-east-1",
++			parameters: "external-id=keep&external_id=keep-too&region=us-east-1",
++		},
++		{
++			name:       "non-s3",
++			sourceDir:  "gcs://bucket/path?external-id=keep&external_id=keep-too&region=us-east-1",
++			parameters: "external-id=keep&external_id=keep-too&region=us-east-1",
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			ctrl := gomock.NewController(t)
++			mockSDK := sdkmock.NewMockSDK(ctrl)
++			cfg := config.NewConfig()
++			cfg.Mydumper.SourceDir = tt.sourceDir
++
++			mockSDK.EXPECT().GenerateImportSQL(gomock.Any(), gomock.Any()).DoAndReturn(
++				func(_ *importsdk.TableMeta, opts *importsdk.ImportOptions) (string, error) {
++					require.Equal(t, tt.parameters, opts.ResourceParameters)
++					require.Equal(t, tt.sourceDir, cfg.Mydumper.SourceDir)
++					return "IMPORT INTO ...", nil
++				})
++			mockSDK.EXPECT().SubmitJob(gomock.Any(), "IMPORT INTO ...").Return(int64(123), nil)
++
++			submitter := importinto.NewJobSubmitter(mockSDK, cfg, "group", log.L())
++			job, err := submitter.SubmitTable(context.Background(), &importsdk.TableMeta{
++				Database: "db",
++				Table:    "t",
++			})
++			require.NoError(t, err)
++			require.NotNil(t, job)
++		})
++	}
++}
++
++func TestExternalIDCompatibilityCanBeEnabledThroughConfig(t *testing.T) {
++	baseCfg := config.NewConfig()
++	paths := collectFalseBoolPaths(reflect.ValueOf(baseCfg).Elem(), nil)
++	var compatibilityPath []int
++	for _, path := range paths {
++		cfg := config.NewConfig()
++		cfg.Mydumper.SourceDir = "s3://bucket/path?role-arn=arn&external-id=remove&external_id=remove-too&region=us-east-1"
++		field := valueAtPath(reflect.ValueOf(cfg).Elem(), path)
++		if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.Bool {
++			continue
++		}
++		field.SetBool(true)
++
++		parameters := importParametersForConfig(t, cfg)
++		if !containsExternalID(parameters) {
++			compatibilityPath = path
++			break
++		}
++	}
++
++	if compatibilityPath == nil {
++		t.Fatal("no Lightning configuration switch enables S3 external-ID compatibility")
++	}
++
++	checks := []struct {
++		sourceDir       string
++		keepsExternalID bool
++	}{
++		{
++			sourceDir: "s3://bucket/path?role-arn=arn&external-id=remove&external_id=remove-too&region=us-east-1",
++		},
++		{
++			sourceDir: "oss://bucket/path?role-arn=arn&external-id=remove&external_id=remove-too&region=us-east-1",
++		},
++		{
++			sourceDir:       "gcs://bucket/path?external-id=keep&external_id=keep-too&region=us-east-1",
++			keepsExternalID: true,
++		},
++	}
++	for _, check := range checks {
++		cfg := config.NewConfig()
++		cfg.Mydumper.SourceDir = check.sourceDir
++		field := valueAtPath(reflect.ValueOf(cfg).Elem(), compatibilityPath)
++		require.True(t, field.IsValid() && field.CanSet() && field.Kind() == reflect.Bool)
++		field.SetBool(true)
++
++		parameters := importParametersForConfig(t, cfg)
++		require.Equal(t, check.keepsExternalID, containsExternalID(parameters))
++		require.Equal(t, "us-east-1", parameters.Get("region"))
++		require.Equal(t, check.sourceDir, cfg.Mydumper.SourceDir)
++	}
++}
++
++func importParametersForConfig(t *testing.T, cfg *config.Config) url.Values {
++	t.Helper()
++	ctrl := gomock.NewController(t)
++	mockSDK := sdkmock.NewMockSDK(ctrl)
++	var rawParameters string
++	mockSDK.EXPECT().GenerateImportSQL(gomock.Any(), gomock.Any()).DoAndReturn(
++		func(_ *importsdk.TableMeta, opts *importsdk.ImportOptions) (string, error) {
++			rawParameters = opts.ResourceParameters
++			return "IMPORT INTO ...", nil
++		})
++	mockSDK.EXPECT().SubmitJob(gomock.Any(), "IMPORT INTO ...").Return(int64(123), nil)
++
++	submitter := importinto.NewJobSubmitter(mockSDK, cfg, "group", log.L())
++	_, err := submitter.SubmitTable(context.Background(), &importsdk.TableMeta{Database: "db", Table: "t"})
++	require.NoError(t, err)
++	parameters, err := url.ParseQuery(rawParameters)
++	require.NoError(t, err)
++	return parameters
++}
++
++func collectFalseBoolPaths(value reflect.Value, prefix []int) [][]int {
++	valueType := value.Type()
++	var paths [][]int
++	for i := 0; i < value.NumField(); i++ {
++		if valueType.Field(i).PkgPath != "" {
++			continue
++		}
++		field := value.Field(i)
++		path := append(append([]int(nil), prefix...), i)
++		switch field.Kind() {
++		case reflect.Bool:
++			if field.CanSet() && !field.Bool() {
++				paths = append(paths, path)
++			}
++		case reflect.Struct:
++			paths = append(paths, collectFalseBoolPaths(field, path)...)
++		case reflect.Pointer:
++			if !field.IsNil() && field.Elem().Kind() == reflect.Struct {
++				paths = append(paths, collectFalseBoolPaths(field.Elem(), path)...)
++			}
++		}
++	}
++	return paths
++}
++
++func valueAtPath(value reflect.Value, path []int) reflect.Value {
++	for _, index := range path {
++		value = value.Field(index)
++		if value.Kind() == reflect.Pointer {
++			if value.IsNil() {
++				return reflect.Value{}
++			}
++			value = value.Elem()
++		}
++	}
++	return value
++}
++
++func containsExternalID(parameters url.Values) bool {
++	for key := range parameters {
++		normalized := strings.ToLower(strings.ReplaceAll(key, "_", "-"))
++		if normalized == "external-id" {
++			return true
++		}
++	}
++	return false
++}

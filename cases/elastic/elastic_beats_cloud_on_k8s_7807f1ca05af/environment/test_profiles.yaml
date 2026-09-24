@@ -1,0 +1,30 @@
+profiles:
+  beats-hidden:
+    repo: beats
+    workdir: repos/elastic/beats
+    command: Start only the Elasticsearch compose service, then run the existing filestream Python integration test selection with the querylog module scope.
+    status: implemented
+    dependency_image: ecosyncbench/deps/elastic-go-python:1.26-querylog
+    test_files:
+    - filebeat/module/elasticsearch/querylog/test/test.log
+    - filebeat/module/elasticsearch/querylog/test/test.log-expected.json
+    - filebeat/tests/system/filebeat.py
+    - filebeat/tests/system/test_modules.py
+    test_command_files:
+    - filebeat/tests/system/test_modules.py
+    test_scope:
+      module: elasticsearch
+      fileset: querylog
+      filepattern: '*.log'
+    public_smoke_command: go test -count=1 ./libbeat/common/cfgtype
+  cloud_on_k8s-hidden:
+    repo: cloud-on-k8s
+    workdir: repos/elastic/cloud-on-k8s
+    command: go test -count=1 -json -run '^(Test_newBeatConfig|TestConfigVolumeName|TestCAVolumeName)$' ./pkg/controller/common/stackmon && go test -count=1 -json -run '^(TestWithMonitoring|TestMetricbeatConfig|TestQuerylogFilebeatConfig)$' ./pkg/controller/elasticsearch/stackmon
+    status: implemented
+    dependency_image: ecosyncbench/deps/elastic-go-python:1.26-querylog
+    test_files:
+    - pkg/controller/elasticsearch/stackmon/sidecar_test.go
+    test_packages:
+    - ./pkg/controller/common/stackmon
+    - ./pkg/controller/elasticsearch/stackmon

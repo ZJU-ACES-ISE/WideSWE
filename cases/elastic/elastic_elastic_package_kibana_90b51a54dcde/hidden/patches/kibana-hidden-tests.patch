@@ -1,0 +1,214 @@
+diff --git a/x-pack/platform/plugins/shared/fleet/common/services/qualified_input_contract.test.ts b/x-pack/platform/plugins/shared/fleet/common/services/qualified_input_contract.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..fe13d173f0024b37666b3bab70292a2795b7cc27
+--- /dev/null
++++ b/x-pack/platform/plugins/shared/fleet/common/services/qualified_input_contract.test.ts
+@@ -0,0 +1,93 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import type { PackageInfo } from '../types';
++
++import { packageToPackagePolicyInputs } from './package_to_package_policy';
++
++type ContractPolicyInput = {
++  name?: string;
++  type: string;
++  streams: Array<{ data_stream: { dataset: string } }>;
++};
++
++describe('qualified input policy contract', () => {
++  it('keeps same-type named inputs distinct and matches streams by name', () => {
++    const packageInfo = {
++      name: 'qualified-integration',
++      title: 'Qualified integration',
++      version: '1.0.0',
++      type: 'integration',
++      policy_templates: [
++        {
++          name: 'qualified',
++          data_streams: ['logs', 'metrics'],
++          inputs: [
++            { name: 'qualified_logs_input', type: 'otelcol', title: 'Logs input' },
++            { name: 'qualified_metrics_input', type: 'otelcol', title: 'Metrics input' },
++          ],
++        },
++      ],
++      data_streams: [
++        {
++          type: 'logs',
++          dataset: 'qualified.logs',
++          path: 'logs',
++          streams: [{ input: 'qualified_logs_input', title: 'Logs stream' }],
++        },
++        {
++          type: 'metrics',
++          dataset: 'qualified.metrics',
++          path: 'metrics',
++          streams: [{ input: 'qualified_metrics_input', title: 'Metrics stream' }],
++        },
++      ],
++    } as unknown as PackageInfo;
++
++    const result = packageToPackagePolicyInputs(packageInfo) as ContractPolicyInput[];
++    expect(result).toHaveLength(2);
++
++    const logs = result.find((input) => input.name === 'qualified_logs_input');
++    const metrics = result.find((input) => input.name === 'qualified_metrics_input');
++    expect(logs).toMatchObject({ type: 'otelcol' });
++    expect(metrics).toMatchObject({ type: 'otelcol' });
++    expect(logs?.streams.map((stream) => stream.data_stream.dataset)).toEqual(['qualified.logs']);
++    expect(metrics?.streams.map((stream) => stream.data_stream.dataset)).toEqual([
++      'qualified.metrics',
++    ]);
++  });
++
++  it('preserves type-based matching when no qualifier is present', () => {
++    const packageInfo = {
++      name: 'legacy-integration',
++      title: 'Legacy integration',
++      version: '1.0.0',
++      type: 'integration',
++      policy_templates: [
++        {
++          name: 'legacy',
++          data_streams: ['logs'],
++          inputs: [{ type: 'logfile', title: 'Log file input' }],
++        },
++      ],
++      data_streams: [
++        {
++          type: 'logs',
++          dataset: 'legacy.logs',
++          path: 'logs',
++          streams: [{ input: 'logfile', title: 'Logs stream' }],
++        },
++      ],
++    } as unknown as PackageInfo;
++
++    const result = packageToPackagePolicyInputs(packageInfo) as ContractPolicyInput[];
++    expect(result).toHaveLength(1);
++    expect(result[0]).toMatchObject({ type: 'logfile' });
++    expect(result[0].name).toBeUndefined();
++    expect(result[0].streams.map((stream) => stream.data_stream.dataset)).toEqual(['legacy.logs']);
++  });
++});
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/integrations/sections/epm/screens/detail/documentation/qualified_input_contract.test.tsx b/x-pack/platform/plugins/shared/fleet/public/applications/integrations/sections/epm/screens/detail/documentation/qualified_input_contract.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..2904e059c6970fd7dd06817d7b2754567f3ede31
+--- /dev/null
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/integrations/sections/epm/screens/detail/documentation/qualified_input_contract.test.tsx
+@@ -0,0 +1,109 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import React from 'react';
++
++import { createIntegrationsTestRendererMock } from '../../../../../../../mock';
++import type { PackageInfo } from '../../../../../types';
++
++import { DocumentationPage } from '.';
++
++jest.mock('../../../../../../../hooks', () => ({
++  ...jest.requireActual('../../../../../../../hooks'),
++  useStartServices: jest.fn().mockReturnValue({
++    docLinks: { links: { fleet: { api: 'https://example.test/fleet-api' } } },
++  }),
++}));
++
++describe('qualified input API reference', () => {
++  it('shows same-type inputs separately with only their referenced streams', () => {
++    const packageInfo = {
++      name: 'qualified',
++      title: 'Qualified inputs',
++      version: '1.0.0',
++      description: 'Qualified input contract fixture',
++      format_version: '3.6.0',
++      owner: { github: 'elastic' },
++      assets: {},
++      policy_templates: [
++        {
++          name: 'qualified',
++          title: 'Qualified inputs',
++          description: 'Qualified inputs',
++          inputs: [
++            {
++              name: 'logs_input',
++              type: 'otelcol',
++              title: 'Logs input',
++              description: 'Collect logs',
++            },
++            {
++              name: 'metrics_input',
++              type: 'otelcol',
++              title: 'Metrics input',
++              description: 'Collect metrics',
++            },
++          ],
++          multiple: true,
++        },
++      ],
++      data_streams: [
++        {
++          type: 'logs',
++          dataset: 'qualified.logs',
++          title: 'Qualified logs',
++          release: 'ga',
++          package: 'qualified',
++          path: 'logs',
++          streams: [
++            {
++              input: 'logs_input',
++              title: 'Logs stream',
++              description: 'Logs stream',
++              template_path: 'stream.yml.hbs',
++            },
++          ],
++        },
++        {
++          type: 'metrics',
++          dataset: 'qualified.metrics',
++          title: 'Qualified metrics',
++          release: 'ga',
++          package: 'qualified',
++          path: 'metrics',
++          streams: [
++            {
++              input: 'metrics_input',
++              title: 'Metrics stream',
++              description: 'Metrics stream',
++              template_path: 'stream.yml.hbs',
++            },
++          ],
++        },
++      ],
++      latestVersion: '1.0.0',
++      keepPoliciesUpToDate: false,
++      status: 'not_installed',
++    } as unknown as PackageInfo;
++
++    const renderer = createIntegrationsTestRendererMock();
++    const result = renderer.render(<DocumentationPage packageInfo={packageInfo} />);
++
++    expect(
++      result.getByText((content, element) =>
++        Boolean(element?.matches('code') && content.includes('logs_input'))
++      )
++    ).toBeInTheDocument();
++    expect(
++      result.getByText((content, element) =>
++        Boolean(element?.matches('code') && content.includes('metrics_input'))
++      )
++    ).toBeInTheDocument();
++    expect(result.getAllByText('qualified.logs')).toHaveLength(1);
++    expect(result.getAllByText('qualified.metrics')).toHaveLength(1);
++  });
++});

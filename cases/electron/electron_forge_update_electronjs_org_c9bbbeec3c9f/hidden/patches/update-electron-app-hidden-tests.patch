@@ -1,0 +1,68 @@
+diff --git a/test/__mocks__/electron.ts b/test/__mocks__/electron.ts
+index 0d06e8b..a190b8c 100644
+--- a/test/__mocks__/electron.ts
++++ b/test/__mocks__/electron.ts
+@@ -21,9 +21,7 @@ module.exports = {
+     on: () => {
+       /* no-op */
+     },
+-    setFeedURL: () => {
+-      /* no-op */
+-    },
++    setFeedURL: jest.fn(),
+     quitAndInstall: jest.fn(),
+   },
+   dialog: {
+diff --git a/test/index.test.ts b/test/index.test.ts
+index f45de9b..a1ac1a2 100644
+--- a/test/index.test.ts
++++ b/test/index.test.ts
+@@ -66,6 +66,48 @@ describe('updateElectronApp', () => {
+     });
+   });
+ 
++  describe('updateFormat', () => {
++    const windowsStoreDescriptor = Object.getOwnPropertyDescriptor(process, 'windowsStore');
++
++    beforeEach(() => {
++      jest.mocked(autoUpdater.setFeedURL).mockClear();
++    });
++
++    afterEach(() => {
++      if (windowsStoreDescriptor) {
++        Object.defineProperty(process, 'windowsStore', windowsStoreDescriptor);
++      } else {
++        Reflect.deleteProperty(process, 'windowsStore');
++      }
++    });
++
++    it('includes /msix/ in feed URL when process.windowsStore is true', () => {
++      Object.defineProperty(process, 'windowsStore', { value: true, configurable: true });
++      updateElectronApp({
++        updateSource: {
++          type: UpdateSourceType.ElectronPublicUpdateService,
++          repo,
++        },
++      });
++      expect(autoUpdater.setFeedURL).toHaveBeenCalledWith(
++        expect.objectContaining({ url: expect.stringContaining('/msix/') }),
++      );
++    });
++
++    it('omits format from feed URL when process.windowsStore is falsy', () => {
++      Object.defineProperty(process, 'windowsStore', { value: undefined, configurable: true });
++      updateElectronApp({
++        updateSource: {
++          type: UpdateSourceType.ElectronPublicUpdateService,
++          repo,
++        },
++      });
++      expect(autoUpdater.setFeedURL).toHaveBeenCalledWith(
++        expect.objectContaining({ url: expect.not.stringContaining('/msix/') }),
++      );
++    });
++  });
++
+   describe('updateInterval', () => {
+     it('must be 5 minutes or more', () => {
+       expect(() => {

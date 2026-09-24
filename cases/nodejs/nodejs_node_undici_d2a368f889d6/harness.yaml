@@ -1,0 +1,31 @@
+task_id: nodejs_node_undici_d2a368f889d6
+hidden_test_patches:
+- repo: node
+  patch: hidden/patches/node-hidden-tests.patch
+  test_profile: node-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test/parallel/test-http-server-non-utf8-header.js
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from nodejs/node PR(s) 46528
+- repo: undici
+  patch: hidden/patches/undici-hidden-tests.patch
+  test_profile: undici-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test/node-test/util.js
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from nodejs/undici PR(s) 4768
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - node-hidden
+    - undici-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

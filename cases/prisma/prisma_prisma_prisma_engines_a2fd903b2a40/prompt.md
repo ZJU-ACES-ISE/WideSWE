@@ -1,0 +1,3 @@
+Add support for externally managed enums.
+
+Add the wiring for the additional `enums.external` option in `prisma.config.ts`, gated by `experimental.externalTables`, and support externally managed enums analogous to external tables. Prisma should not consider listed enums during diffing, migration creation, or introspection, and should not create, drop, or alter them; they should remain represented in the Prisma schema and available through the client at runtime. Apply the same namespace qualification rules used by external tables when multiple database schemas are configured. This is especially required on PostgreSQL, where enums are dedicated database entities.

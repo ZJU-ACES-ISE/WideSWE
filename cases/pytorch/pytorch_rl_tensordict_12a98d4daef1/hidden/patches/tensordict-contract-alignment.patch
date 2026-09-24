@@ -1,0 +1,21 @@
+diff --git a/test/test_nn.py b/test/test_nn.py
+index 25462eb8..bd361bfa 100644
+--- a/test/test_nn.py
++++ b/test/test_nn.py
+@@ -2827,7 +2827,15 @@ class TestProbabilisticTensorDictModule:
+         assert torch.equal(s1, s2)
+ 
+     def test_generator_invalid_type(self):
+-        with pytest.raises(TypeError, match="generator must be"):
++        ProbabilisticTensorDictModule(
++            in_keys=["loc"],
++            out_keys=["sample"],
++            distribution_class=Normal,
++            distribution_kwargs={"scale": 1.0},
++            generator=torch.Generator(),
++        )
++
++        with pytest.raises(TypeError):
+             ProbabilisticTensorDictModule(
+                 in_keys=["loc"],
+                 out_keys=["sample"],

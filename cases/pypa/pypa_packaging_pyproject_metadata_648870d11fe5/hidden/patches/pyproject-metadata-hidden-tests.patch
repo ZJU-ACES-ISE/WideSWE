@@ -1,0 +1,254 @@
+diff --git a/tests/packages/metadata-2.5/LICENSE b/tests/packages/metadata-2.5/LICENSE
+new file mode 100644
+index 0000000..c3713cd
+--- /dev/null
++++ b/tests/packages/metadata-2.5/LICENSE
+@@ -0,0 +1,20 @@
++Copyright © 2019 Filipe Laíns <filipe.lains@gmail.com>
++
++Permission is hereby granted, free of charge, to any person obtaining a
++copy of this software and associated documentation files (the "Software"),
++to deal in the Software without restriction, including without limitation
++the rights to use, copy, modify, merge, publish, distribute, sublicense,
++and/or sell copies of the Software, and to permit persons to whom the
++Software is furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice (including the next
++paragraph) shall be included in all copies or substantial portions of the
++Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++DEALINGS IN THE SOFTWARE.
+diff --git a/tests/packages/metadata-2.5/README.md b/tests/packages/metadata-2.5/README.md
+new file mode 100644
+index 0000000..d58d5a4
+--- /dev/null
++++ b/tests/packages/metadata-2.5/README.md
+@@ -0,0 +1 @@
++some readme 👋
+diff --git a/tests/packages/metadata-2.5/metadata25.py b/tests/packages/metadata-2.5/metadata25.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/packages/metadata-2.5/pyproject.toml b/tests/packages/metadata-2.5/pyproject.toml
+new file mode 100644
+index 0000000..b39fee6
+--- /dev/null
++++ b/tests/packages/metadata-2.5/pyproject.toml
+@@ -0,0 +1,51 @@
++[project]
++name = 'metadata25'
++version = '3.2.1'
++description = 'A package with all the metadata :)'
++readme = 'README.md'
++license = "MIT"
++license-files = ["LICENSE"]
++keywords = ['trampolim', 'is', 'interesting']
++authors = [
++    { email = 'example@example.com' },
++    { name = 'Example!' },
++]
++maintainers = [
++    { name = 'Other Example', email = 'other@example.com' },
++]
++classifiers = [
++    'Development Status :: 4 - Beta',
++    'Programming Language :: Python',
++]
++
++requires-python = '>=3.8'
++dependencies = [
++    'dependency1',
++    'dependency2>1.0.0',
++    'dependency3[extra]',
++    'dependency4; os_name != "nt"',
++    'dependency5[other-extra]>1.0; os_name == "nt"',
++]
++import-names = ["metadata25"]
++
++[project.optional-dependencies]
++test = [
++    'test_dependency',
++    'test_dependency[test_extra]',
++    'test_dependency[test_extra2] > 3.0; os_name == "nt"',
++]
++
++[project.urls]
++homepage = 'example.com'
++documentation = 'readthedocs.org'
++repository = 'github.com/some/repo'
++changelog = 'github.com/some/repo/blob/master/CHANGELOG.rst'
++
++[project.scripts]
++full-metadata = 'full_metadata:main_cli'
++
++[project.gui-scripts]
++full-metadata-gui = 'full_metadata:main_gui'
++
++[project.entry-points.custom]
++full-metadata = 'full_metadata:main_custom'
+diff --git a/tests/test_standard_metadata.py b/tests/test_standard_metadata.py
+index 14ea64d..c4c99d1 100644
+--- a/tests/test_standard_metadata.py
++++ b/tests/test_standard_metadata.py
+@@ -918,6 +918,76 @@ def test_load_multierror(
+         assert "Failed to parse pyproject.toml" in repr(execinfo.value)
+ 
+ 
++@pytest.mark.parametrize(
++    ("valid_project", "invalid_project"),
++    [
++        pytest.param(
++            {"import-names": ["valid_name"]},
++            {"import-names": ["is"]},
++            id="import-name-keyword",
++        ),
++        pytest.param(
++            {"import-namespaces": ["valid_namespace"]},
++            {"import-namespaces": ["from"]},
++            id="namespace-keyword",
++        ),
++        pytest.param(
++            {"import-names": ["valid_name"]},
++            {"import-names": ["2two"]},
++            id="import-name-identifier",
++        ),
++        pytest.param(
++            {"import-namespaces": ["valid_namespace"]},
++            {"import-namespaces": ["3"]},
++            id="namespace-identifier",
++        ),
++        pytest.param(
++            {"import-names": ["one"], "import-namespaces": ["two"]},
++            {"import-names": ["one"], "import-namespaces": ["one"]},
++            id="overlap",
++        ),
++        pytest.param(
++            {"import-names": ["one; private"], "import-namespaces": ["two"]},
++            {"import-names": ["one; private"], "import-namespaces": ["one"]},
++            id="private-overlap",
++        ),
++        pytest.param(
++            {"import-names": ["one.two"], "import-namespaces": ["one"]},
++            {"import-names": ["one.two"]},
++            id="missing-parent",
++        ),
++        pytest.param(
++            {"import-namespaces": ["valid_name; private"]},
++            {"import-namespaces": ["valid_name; public"]},
++            id="invalid-private-marker",
++        ),
++    ],
++)
++def test_import_name_validation(
++    valid_project: dict[str, object],
++    invalid_project: dict[str, object],
++    all_errors: bool,
++) -> None:
++    base_project = {"name": "test", "version": "0.1.0"}
++    pyproject_metadata.StandardMetadata.from_pyproject(
++        {"project": {**base_project, **valid_project}},
++        allow_extra_keys=False,
++        all_errors=all_errors,
++    )
++
++    error_type = (
++        pyproject_metadata.errors.ExceptionGroup
++        if all_errors
++        else pyproject_metadata.ConfigurationError
++    )
++    with pytest.raises(error_type):
++        pyproject_metadata.StandardMetadata.from_pyproject(
++            {"project": {**base_project, **invalid_project}},
++            allow_extra_keys=False,
++            all_errors=all_errors,
++        )
++
++
+ @pytest.mark.parametrize(
+     ("data", "error", "metadata_version"),
+     [
+@@ -1060,6 +1130,25 @@ def test_value(after_rfc: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+     ]
+ 
+ 
++@pytest.mark.parametrize("after_rfc", [False, True])
++def test_value_25(after_rfc: bool, monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.chdir(DIR / "packages/metadata-2.5")
++    with open("pyproject.toml", "rb") as f:
++        metadata = pyproject_metadata.StandardMetadata.from_pyproject(tomllib.load(f))
++
++    if after_rfc:
++        metadata.as_rfc822()
++
++    assert metadata.auto_metadata_version == "2.5"
++
++    assert isinstance(metadata.license, str)
++    assert metadata.license == "MIT"
++    assert metadata.license_files == [pathlib.Path("LICENSE")]
++
++    assert metadata.import_names == ["metadata25"]
++    assert metadata.import_namespaces is None
++
++
+ def test_read_license(monkeypatch: pytest.MonkeyPatch) -> None:
+     monkeypatch.chdir(DIR / "packages/full-metadata2")
+     with open("pyproject.toml", "rb") as f:
+@@ -1183,11 +1272,53 @@ def test_as_rfc822(monkeypatch: pytest.MonkeyPatch) -> None:
+     assert core_metadata.get_payload() == "some readme 👋\n"
+ 
+ 
++def test_rfc822_empty_import_name() -> None:
++    metadata = pyproject_metadata.StandardMetadata.from_pyproject(
++        {"project": {"name": "test", "version": "0.1.0", "import-names": []}}
++    )
++    assert metadata.import_names == []
++    assert metadata.import_namespaces is None
++
++    core_metadata = metadata.as_rfc822()
++    assert core_metadata.items() == [
++        ("Metadata-Version", "2.5"),
++        ("Name", "test"),
++        ("Version", "0.1.0"),
++        ("Import-Name", ""),
++    ]
++
++
++def test_rfc822_full_import_name() -> None:
++    metadata = pyproject_metadata.StandardMetadata.from_pyproject(
++        {
++            "project": {
++                "name": "test",
++                "version": "0.1.0",
++                "import-names": ["one", "two"],
++                "import-namespaces": ["three"],
++            }
++        }
++    )
++    assert metadata.import_names == ["one", "two"]
++    assert metadata.import_namespaces == ["three"]
++
++    core_metadata = metadata.as_rfc822()
++    assert core_metadata.items() == [
++        ("Metadata-Version", "2.5"),
++        ("Name", "test"),
++        ("Version", "0.1.0"),
++        ("Import-Name", "one"),
++        ("Import-Name", "two"),
++        ("Import-Namespace", "three"),
++    ]
++
++
+ def test_as_json_spdx(monkeypatch: pytest.MonkeyPatch) -> None:
+     monkeypatch.chdir(DIR / "packages/spdx")
+ 
+     with open("pyproject.toml", "rb") as f:
+         metadata = pyproject_metadata.StandardMetadata.from_pyproject(tomllib.load(f))
++
+     core_metadata = metadata.as_json()
+     assert core_metadata == {
+         "license_expression": "MIT OR GPL-2.0-or-later OR (FSFUL AND BSD-2-Clause)",

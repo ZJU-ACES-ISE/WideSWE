@@ -1,0 +1,413 @@
+diff --git a/docs/service_controller.md b/docs/service_controller.md
+index 2e868a9..d855793 100644
+--- a/docs/service_controller.md
++++ b/docs/service_controller.md
+@@ -33,3 +33,56 @@ The service controller is responsible for watch for service and node object chan
+ | service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol              | [tcp\|http\|https]                  | tcp | NLB | Specifies the protocol to use for the target group health check. |
+ | service.beta.kubernetes.io/aws-load-balancer-subnets                           | Comma-separated list                | -   | ELB,NLB | Specifies the Availability Zone configuration for the load balancer. The values are comma separated list of subnetID or subnetName from different AZs. |
+ | service.beta.kubernetes.io/aws-load-balancer-target-node-labels                | Comma-separated list of key=value   | -   | ELB,NLB | Specifies a comma-separated list of key-value pairs which will be used to select the target nodes for the load balancer. |
++| service.beta.kubernetes.io/aws-load-balancer-target-group-attributes          | Comma-separated list of key=value   | -   | NLB | Specifies a comma-separated list of key-value pairs which will be applied as target group attributes. For example: "preserve_client_ip.enabled=false". The list of supported values is available [here](#tg-supported-attributes). |
++
++
++## Target group attributes for Service type-loadBalancer NLB <a name="tg-supported-attributes"></a>
++
++The following target group attributes are supported by the controller using the annotation `service.beta.kubernetes.io/aws-load-balancer-target-group-attributes`:
++
++| Attribute | Values | Description |
++| -- | -- | -- |
++| preserve_client_ip.enabled | [true\|false] | Whether to preserve client IP addresses when terminating connections at the target group level |
++| proxy_protocol_v2.enabled | [true\|false] | Whether to enable proxy protocol v2 on the target group |
++
++**Format:** Attributes are specified as `key=value` pairs, separated by commas.
++
++**Example:**
++```yaml
++service.beta.kubernetes.io/aws-load-balancer-target-group-attributes: preserve_client_ip.enabled=true,proxy_protocol_v2.enabled=false
++```
++
++### Usage Example 1 - working with hairpin connection on internal NLB
++
++The following Service example changes the Target Group Traffic Control attribute "Preserve client IP addresses" from the default (`true`, when target type is instance) to `false`:
++
++```yaml
++apiVersion: v1
++kind: Service
++metadata:
++  name: $SVC_NAME
++  namespace: ${APP_NAMESPACE}
++  annotations:
++    service.beta.kubernetes.io/aws-load-balancer-type: nlb
++    service.beta.kubernetes.io/aws-load-balancer-internal: true
++    service.beta.kubernetes.io/aws-load-balancer-target-group-attributes: preserve_client_ip.enabled=false
++[...]
++```
++
++### Usage Example 2 - working with hairpin connection on internal NLB tracking source IP address
++
++The following example allow users to fine tune the Services for a backend which requires tracking the original source IP address of internal Load Balancers NLB with support of hairpin connections:
++
++
++```yaml
++apiVersion: v1
++kind: Service
++metadata:
++  name: $SVC_NAME
++  namespace: ${APP_NAMESPACE}
++  annotations:
++    service.beta.kubernetes.io/aws-load-balancer-type: nlb
++    service.beta.kubernetes.io/aws-load-balancer-internal: true
++    service.beta.kubernetes.io/aws-load-balancer-target-group-attributes: preserve_client_ip.enabled=false,proxy_protocol_v2.enabled=true
++[...]
++```
+\ No newline at end of file
+diff --git a/pkg/providers/v1/aws.go b/pkg/providers/v1/aws.go
+index e1070ee..024dab2 100644
+--- a/pkg/providers/v1/aws.go
++++ b/pkg/providers/v1/aws.go
+@@ -216,6 +216,12 @@ const ServiceAnnotationLoadBalancerHCTimeout = "service.beta.kubernetes.io/aws-l
+ // service to specify, in seconds, the interval between health checks.
+ const ServiceAnnotationLoadBalancerHCInterval = "service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval"
+ 
++// ServiceAnnotationLoadBalancerTargetGroupAttributes is the annotation used on the
++// service to specify a comma-separated list of key-value pairs which will be applied as
++// target group attributes.
++// For example: "preserve_client_ip.enabled=false,proxy_protocol_v2.enabled=true"
++const ServiceAnnotationLoadBalancerTargetGroupAttributes = "service.beta.kubernetes.io/aws-load-balancer-target-group-attributes"
++
+ // ServiceAnnotationLoadBalancerEIPAllocations is the annotation used on the
+ // service to specify a comma separated list of EIP allocations to use as
+ // static IP addresses for the NLB. Only supported on elbv2 (NLB)
+@@ -267,6 +273,20 @@ const (
+ 	regularAvailabilityZoneType = "availability-zone"
+ )
+ 
++// Target Group Attributes
++// https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2@main/types#TargetGroupAttribute
++const (
++	// targetGroupAttributePreserveClientIPEnabled is the target group attribute preserve_client_ip.enabled.
++	// Indicates whether client IP preservation is enabled.
++	// Valid values are true or false.
++	targetGroupAttributePreserveClientIPEnabled = "preserve_client_ip.enabled"
++
++	// targetGroupAttributeProxyProtocolV2Enabled is the target group attribute proxy_protocol_v2.enabled.
++	// Indicates whether Proxy Protocol version 2 is enabled.
++	// Valid values are true or false.
++	targetGroupAttributeProxyProtocolV2Enabled = "proxy_protocol_v2.enabled"
++)
++
+ // awsTagNameMasterRoles is a set of well-known AWS tag names that indicate the instance is a master
+ var awsTagNameMasterRoles = sets.NewString("kubernetes.io/role/master", "k8s.io/role/master")
+ 
+@@ -2147,6 +2167,14 @@ func (c *Cloud) EnsureLoadBalancer(ctx context.Context, clusterName string, apiS
+ 	klog.V(2).Infof("EnsureLoadBalancer(%v, %v, %v, %v, %v, %v, %v)",
+ 		clusterName, apiService.Namespace, apiService.Name, c.region, apiService.Spec.LoadBalancerIP, apiService.Spec.Ports, annotations)
+ 
++	// pre-flight validations for EnsureLoadBalancer.
++	if err := ensureLoadBalancerValidation(&awsValidationInput{
++		apiService:  apiService,
++		annotations: annotations,
++	}); err != nil {
++		return nil, err
++	}
++
+ 	if apiService.Spec.SessionAffinity != v1.ServiceAffinityNone {
+ 		// ELB supports sticky sessions, but only when configured for HTTP/HTTPS
+ 		return nil, fmt.Errorf("unsupported load balancer affinity: %v", apiService.Spec.SessionAffinity)
+diff --git a/pkg/providers/v1/aws_loadbalancer.go b/pkg/providers/v1/aws_loadbalancer.go
+index ca95a3a..d45c21b 100644
+--- a/pkg/providers/v1/aws_loadbalancer.go
++++ b/pkg/providers/v1/aws_loadbalancer.go
+@@ -400,6 +400,14 @@ func (c *Cloud) ensureLoadBalancerv2(ctx context.Context, namespacedName types.N
+ 			loadBalancer = &loadBalancers.LoadBalancers[0]
+ 		}
+ 	}
++
++	// Reconcile target group attributes.
++	if _, present := annotations[ServiceAnnotationLoadBalancerTargetGroupAttributes]; present {
++		if err := c.reconcileTargetGroupsAttributes(ctx, aws.ToString(loadBalancer.LoadBalancerArn), annotations); err != nil {
++			return nil, fmt.Errorf("error reconciling target group attributes: %q", err)
++		}
++	}
++
+ 	return loadBalancer, nil
+ }
+ 
+@@ -493,9 +501,156 @@ func (c *Cloud) reconcileLBAttributes(ctx context.Context, loadBalancerArn strin
+ 			return fmt.Errorf("unable to update load balancer attributes during attribute sync: %q", err)
+ 		}
+ 	}
++
++	return nil
++}
++
++// reconcileTargetGroupsAttributes reconciles the target group attributes for all target groups
++// associated with a load balancer to match the desired state specified in service annotations.
++// Only supported attributes by controller are reconciled.
++//
++// Parameters:
++// - ctx: context for AWS API calls with timeout and cancellation support
++// - lbARN: AWS load balancer ARN to identify which target groups to process
++// - annotations: service annotations containing desired target group attribute configuration
++//
++// Returns:
++// - error: validation errors, AWS API errors, or target group attribute update failures
++//
++// Documentation generated by Cursor AI
++func (c *Cloud) reconcileTargetGroupsAttributes(ctx context.Context, lbARN string, annotations map[string]string) error {
++	if len(lbARN) == 0 {
++		return fmt.Errorf("error updating target groups attributes: load balancer ARN is empty")
++	}
++
++	describeTargetGroupsOutput, err := c.elbv2.DescribeTargetGroups(ctx, &elbv2.DescribeTargetGroupsInput{
++		LoadBalancerArn: aws.String(lbARN),
++	})
++	if err != nil {
++		return fmt.Errorf("error updating target groups attributes from load balancer %q: %w", lbARN, err)
++	}
++
++	var errs []error
++	for _, tg := range describeTargetGroupsOutput.TargetGroups {
++		err := c.ensureTargetGroupAttributes(ctx, &tg, annotations)
++		if err != nil {
++			errs = append(errs, fmt.Errorf("error updating target group attributes for target group %q: %w", aws.ToString(tg.TargetGroupArn), err))
++		}
++	}
++	if len(errs) > 0 {
++		return fmt.Errorf("one or more errors occurred while updating target group attributes: %v", errs)
++	}
++	return nil
++}
++
++// ensureTargetGroupAttributes ensures that the target group attributes for a specific
++// target group match the desired state specified in service annotations.
++//
++// Parameters:
++// - ctx: context for AWS API calls and cancellation
++// - tg: target group object containing ARN, protocol, and type information
++// - annotations: service annotations containing desired target group attributes
++//
++// Returns:
++// - error: validation errors, AWS API errors, or attribute building errors
++//
++// Documentation generated by Cursor AI
++func (c *Cloud) ensureTargetGroupAttributes(ctx context.Context, tg *elbv2types.TargetGroup, annotations map[string]string) error {
++	if tg == nil {
++		return fmt.Errorf("unable to reconcile target group attributes: target group is required")
++	}
++
++	tgAttributes, err := c.elbv2.DescribeTargetGroupAttributes(ctx, &elbv2.DescribeTargetGroupAttributesInput{
++		TargetGroupArn: tg.TargetGroupArn,
++	})
++	if err != nil {
++		return fmt.Errorf("unable to retrieve target group attributes during attribute sync: %w", err)
++	}
++
++	desiredTargetGroupAttributes, err := c.buildTargetGroupAttributes(tg, tgAttributes.Attributes, annotations)
++	if err != nil {
++		return fmt.Errorf("unable to build target group attributes: %w", err)
++	}
++
++	if len(desiredTargetGroupAttributes) == 0 {
++		return nil
++	}
++	klog.Infof("Updating attributes for target group %q", aws.ToString(tg.TargetGroupArn))
++
++	if _, err = c.elbv2.ModifyTargetGroupAttributes(ctx, &elbv2.ModifyTargetGroupAttributesInput{
++		TargetGroupArn: tg.TargetGroupArn,
++		Attributes:     desiredTargetGroupAttributes,
++	}); err != nil {
++		return fmt.Errorf("unable to modify target group attributes during attribute sync: %w", err)
++	}
++	klog.Infof("Successfully updated target group attributes for %q", aws.ToString(tg.TargetGroupArn))
++
+ 	return nil
+ }
+ 
++// buildTargetGroupAttributes builds the list of target group attributes that need to be modified
++// based on the Service annotation, and current attribute values, calculating only the attributes
++// to be changed.
++//
++// Supported values to annotation ServiceAnnotationLoadBalancerTargetGroupAttributes:
++// - preserve_client_ip.enabled=true|false - whether to preserve client IP addresses
++// - proxy_protocol_v2.enabled=true|false - whether to enable proxy protocol v2
++
++// Behavior when no annotations provided or removed:
++// - Target groups preserves the last set values, and skips any changes.
++//
++// Parameters:
++// - tg: target group object
++// - tgAttributes: current target group attributes from AWS resource
++// - annotations: service annotations containing desired attribute values
++//
++// Returns:
++// - []elbv2types.TargetGroupAttribute: list of attributes that need to be modified
++// - error: validation errors, parsing errors, or AWS restrictions
++//
++// Documentation generated by Cursor AI
++func (c *Cloud) buildTargetGroupAttributes(tg *elbv2types.TargetGroup, tgAttributes []elbv2types.TargetGroupAttribute, annotations map[string]string) ([]elbv2types.TargetGroupAttribute, error) {
++	errPrefix := "error building target group attributes"
++	if tg == nil {
++		return nil, fmt.Errorf("%s: target group is nil", errPrefix)
++	}
++	if tgAttributes == nil {
++		return nil, fmt.Errorf("%s: target group attributes are nil", errPrefix)
++	}
++
++	// existingAttributes are current target group attributes from AWS.
++	existingAttributes := make(map[string]string, len(tgAttributes))
++	for _, attr := range tgAttributes {
++		existingAttributes[aws.ToString(attr.Key)] = aws.ToString(attr.Value)
++	}
++
++	// annotationAttributes are the user-defined attributes set through annotations.
++	annotationAttributes := getKeyValuePropertiesFromAnnotation(annotations, ServiceAnnotationLoadBalancerTargetGroupAttributes)
++
++	// Calculate attribute difference between current and desired state.
++	var diff []elbv2types.TargetGroupAttribute
++	for attrKey, attrValue := range annotationAttributes {
++		// Skip non-supported attributes by controller.
++		if _, ok := existingAttributes[attrKey]; !ok {
++			klog.V(2).Infof("Skipping non-supported target group attribute %q", attrKey)
++			continue
++		}
++
++		// Calculate the target value: annotation override > current value.
++		if attrValue == existingAttributes[attrKey] {
++			klog.V(2).Infof("Skipping changes to target group attribute %q, values are the same: %q", attrKey, attrValue)
++			continue
++		}
++		klog.V(2).Infof("Setting from annotation the target group attribute %q value from %q to %q", attrKey, existingAttributes[attrKey], attrValue)
++
++		diff = append(diff, elbv2types.TargetGroupAttribute{
++			Key:   aws.String(attrKey),
++			Value: aws.String(attrValue),
++		})
++	}
++	return diff, nil
++}
++
+ var invalidELBV2NameRegex = regexp.MustCompile("[^[:alnum:]]")
+ 
+ // buildTargetGroupName will build unique name for targetGroup of service & port.
+diff --git a/pkg/providers/v1/aws_validations.go b/pkg/providers/v1/aws_validations.go
+new file mode 100644
+index 0000000..51e26e2
+--- /dev/null
++++ b/pkg/providers/v1/aws_validations.go
+@@ -0,0 +1,116 @@
++/*
++Copyright 2025 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package aws
++
++import (
++	"fmt"
++
++	v1 "k8s.io/api/core/v1"
++)
++
++// validationInput is the input parameters for validations.
++// TODO: ensure validations receive copy of values preventing mutation.
++type awsValidationInput struct {
++	apiService  *v1.Service
++	annotations map[string]string
++}
++
++// ensureLoadBalancerValidation validates the Service configuration early on EnsureLoadBalancer.
++// It validates the Service annotations and other constraints provided by the user are valid and supported by the controller.
++// It does not validate the AWS constraints.
++//
++// input:
++// v: awsValidationInput containing the required configuration to validate the Service object.
++//
++// returns:
++// - error: validation errors.
++func ensureLoadBalancerValidation(v *awsValidationInput) error {
++	// Validate Service annotations.
++	if err := validateServiceAnnotations(v); err != nil {
++		return err
++	}
++
++	// TODO: migrate other validations from EnsureLoadBalancer to this function.
++	return nil
++}
++
++// validateServiceAnnotations validates the service annotations constraints provided by the user
++// are valid and supported by the controller.
++func validateServiceAnnotations(v *awsValidationInput) error {
++	isNLB := isNLB(v.annotations)
++
++	// ServiceAnnotationLoadBalancerTargetGroupAttributes
++	if _, present := v.annotations[ServiceAnnotationLoadBalancerTargetGroupAttributes]; present {
++		if !isNLB {
++			return fmt.Errorf("target group annotations attribute is only supported for NLB")
++		}
++		if err := validateServiceAnnotationTargetGroupAttributes(v); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++// validateServiceAnnotationTargetGroupAttributes validates the target group attributes set through annotation:
++// Annotation: service.beta.kubernetes.io/aws-load-balancer-target-group-attributes
++//
++// input:
++// v: awsValidationInput containing the required configuration to validate the Service object.
++//
++// returns:
++// - error: validation errors.
++func validateServiceAnnotationTargetGroupAttributes(v *awsValidationInput) error {
++	errPrefix := "error validating target group attributes"
++
++	// Attributes are in format key=value separated by comma.
++	annotationGroupAttributes := getKeyValuePropertiesFromAnnotation(v.annotations, ServiceAnnotationLoadBalancerTargetGroupAttributes)
++	targetGroupAttributes := make(map[string]string, len(annotationGroupAttributes))
++
++	for attrKey, attrValue := range annotationGroupAttributes {
++		if _, ok := targetGroupAttributes[attrKey]; ok {
++			return fmt.Errorf("%s: %q is set twice in the annotation", errPrefix, attrKey)
++		}
++		if len(attrValue) == 0 {
++			return fmt.Errorf("%s: attribute value is empty for %q", errPrefix, attrKey)
++		}
++
++		switch attrKey {
++		case targetGroupAttributePreserveClientIPEnabled:
++			if attrValue != "true" && attrValue != "false" {
++				return fmt.Errorf("%s: invalid attribute value for %q: %s", errPrefix, attrKey, attrValue)
++			}
++			// AWS restriction: Client IP preservation can't be disabled for UDP and TCP_UDP target groups.
++			for _, port := range v.apiService.Spec.Ports {
++				if (port.Protocol == v1.ProtocolUDP || port.Protocol == "TCP_UDP") && attrValue == "false" {
++					return fmt.Errorf("%s: client IP preservation can't be disabled for UDP ports", errPrefix)
++				}
++			}
++			targetGroupAttributes[attrKey] = attrValue
++
++		case targetGroupAttributeProxyProtocolV2Enabled:
++			if attrValue != "true" && attrValue != "false" {
++				return fmt.Errorf("%s: invalid attribute value for %q: %s", errPrefix, attrKey, attrValue)
++			}
++			targetGroupAttributes[attrKey] = attrValue
++
++		default:
++			return fmt.Errorf("%s: the attribute %q is not supported by the controller or is invalid", errPrefix, attrKey)
++		}
++	}
++
++	return nil
++}

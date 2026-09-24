@@ -1,0 +1,15 @@
+diff --git a/packages/mui-utils/src/useControlled/useControlled.ts b/packages/mui-utils/src/useControlled/useControlled.ts
+index 433b06f066..58ea4ad5e9 100644
+--- a/packages/mui-utils/src/useControlled/useControlled.ts
++++ b/packages/mui-utils/src/useControlled/useControlled.ts
+@@ -52,9 +52,7 @@ export default function useControlled<T = unknown>(
+     const { current: defaultValue } = React.useRef(defaultProp);
+ 
+     React.useEffect(() => {
+-      // Object.is() is not equivalent to the === operator.
+-      // See https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/is for more details.
+-      if (!isControlled && !Object.is(defaultValue, defaultProp)) {
++      if (!isControlled && JSON.stringify(defaultProp) !== JSON.stringify(defaultValue)) {
+         console.error(
+           [
+             `MUI: A component is changing the default ${state} state of an uncontrolled ${name} after being initialized. ` +

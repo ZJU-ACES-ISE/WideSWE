@@ -1,0 +1,339 @@
+diff --git a/tests/conftest.py b/tests/conftest.py
+index ebb4bba9..9c2115f1 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -221,6 +221,19 @@ class TestTransport(Transport):
+         pass
+ 
+ 
++class TestTransportWithOptions(Transport):
++    """TestTransport above does not pass in the options and for some tests we need them"""
++
++    __test__ = False
++
++    def __init__(self, options=None):
++        Transport.__init__(self, options)
++
++    def capture_envelope(self, _: Envelope) -> None:
++        """No-op capture_envelope for tests"""
++        pass
++
++
+ @pytest.fixture
+ def capture_events(monkeypatch):
+     def inner():
+diff --git a/tests/test_dsc.py b/tests/test_dsc.py
+index e5ac0af3..c233fa0c 100644
+--- a/tests/test_dsc.py
++++ b/tests/test_dsc.py
+@@ -13,19 +13,7 @@ from unittest import mock
+ import pytest
+ 
+ import sentry_sdk
+-from sentry_sdk.transport import Transport
+-from sentry_sdk.envelope import Envelope
+-
+-
+-class TransportWithOptions(Transport):
+-    """conftest.TestTransport does not pass in the options so we need this here"""
+-
+-    def __init__(self, options=None):
+-        Transport.__init__(self, options)
+-
+-    def capture_envelope(self, _: Envelope) -> None:
+-        """No-op capture_envelope for tests"""
+-        pass
++from tests.conftest import TestTransportWithOptions
+ 
+ 
+ def test_dsc_head_of_trace(sentry_init, capture_envelopes):
+@@ -38,7 +26,7 @@ def test_dsc_head_of_trace(sentry_init, capture_envelopes):
+         release="myapp@0.0.1",
+         environment="canary",
+         traces_sample_rate=1.0,
+-        transport=TransportWithOptions,
++        transport=TestTransportWithOptions,
+     )
+     envelopes = capture_envelopes()
+ 
+@@ -94,7 +82,7 @@ def test_dsc_head_of_trace_uses_custom_org_id(sentry_init, capture_envelopes):
+         release="myapp@0.0.1",
+         environment="canary",
+         traces_sample_rate=1.0,
+-        transport=TransportWithOptions,
++        transport=TestTransportWithOptions,
+     )
+     envelopes = capture_envelopes()
+ 
+@@ -122,7 +110,7 @@ def test_dsc_continuation_of_trace(sentry_init, capture_envelopes):
+         release="myapp@0.0.1",
+         environment="canary",
+         traces_sample_rate=1.0,
+-        transport=TransportWithOptions,
++        transport=TestTransportWithOptions,
+     )
+     envelopes = capture_envelopes()
+ 
+@@ -200,7 +188,7 @@ def test_dsc_continuation_of_trace_sample_rate_changed_in_traces_sampler(
+         release="myapp@0.0.1",
+         environment="canary",
+         traces_sampler=my_traces_sampler,
+-        transport=TransportWithOptions,
++        transport=TestTransportWithOptions,
+     )
+     envelopes = capture_envelopes()
+ 
+@@ -270,7 +258,7 @@ def test_dsc_issue(sentry_init, capture_envelopes):
+         dsn="https://mysecret@o1234.ingest.sentry.io/12312012",
+         release="myapp@0.0.1",
+         environment="canary",
+-        transport=TransportWithOptions,
++        transport=TestTransportWithOptions,
+     )
+     envelopes = capture_envelopes()
+ 
+@@ -322,7 +310,7 @@ def test_dsc_issue_with_tracing(sentry_init, capture_envelopes):
+         release="myapp@0.0.1",
+         environment="canary",
+         traces_sample_rate=1.0,
+-        transport=TransportWithOptions,
++        transport=TestTransportWithOptions,
+     )
+     envelopes = capture_envelopes()
+ 
+@@ -394,7 +382,7 @@ def test_dsc_issue_twp(sentry_init, capture_envelopes, traces_sample_rate):
+         release="myapp@0.0.1",
+         environment="canary",
+         traces_sample_rate=traces_sample_rate,
+-        transport=TransportWithOptions,
++        transport=TestTransportWithOptions,
+     )
+     envelopes = capture_envelopes()
+ 
+diff --git a/tests/test_tracing_utils.py b/tests/test_tracing_utils.py
+index 2b2c62a6..af215eed 100644
+--- a/tests/test_tracing_utils.py
++++ b/tests/test_tracing_utils.py
+@@ -1,8 +1,10 @@
++import pytest
+ from dataclasses import asdict, dataclass
+ from typing import Optional, List
+ 
++import sentry_sdk
+ from sentry_sdk.tracing_utils import _should_be_included, Baggage
+-import pytest
++from tests.conftest import TestTransportWithOptions
+ 
+ 
+ def id_function(val):
+@@ -146,3 +148,137 @@ def test_strip_sentry_baggage(header, expected):
+ )
+ def test_baggage_repr(baggage, expected_repr):
+     assert repr(baggage) == expected_repr
++
++
++@pytest.mark.parametrize(
++    (
++        "baggage_header",
++        "dsn",
++        "explicit_org_id",
++        "strict_trace_continuation",
++        "should_continue_trace",
++    ),
++    (
++        # continue cases when strict_trace_continuation=False
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            "https://mysecret@o1234.ingest.sentry.io/12312012",
++            None,
++            False,
++            True,
++        ),
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700",
++            "https://mysecret@o1234.ingest.sentry.io/12312012",
++            None,
++            False,
++            True,
++        ),
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            None,
++            None,
++            False,
++            True,
++        ),
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            None,
++            "1234",
++            False,
++            True,
++        ),
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            "https://mysecret@not_org_id.ingest.sentry.io/12312012",
++            None,
++            False,
++            True,
++        ),
++        # start new cases when strict_trace_continuation=False
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            "https://mysecret@o9999.ingest.sentry.io/12312012",
++            None,
++            False,
++            False,
++        ),
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            "https://mysecret@o1234.ingest.sentry.io/12312012",
++            "9999",
++            False,
++            False,
++        ),
++        # continue cases when strict_trace_continuation=True
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            "https://mysecret@o1234.ingest.sentry.io/12312012",
++            None,
++            True,
++            True,
++        ),
++        ("sentry-trace_id=771a43a4192642f0b136d5159a501700", None, None, True, True),
++        # start new cases when strict_trace_continuation=True
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700",
++            "https://mysecret@o1234.ingest.sentry.io/12312012",
++            None,
++            True,
++            False,
++        ),
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            None,
++            None,
++            True,
++            False,
++        ),
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            "https://mysecret@not_org_id.ingest.sentry.io/12312012",
++            None,
++            True,
++            False,
++        ),
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            "https://mysecret@o9999.ingest.sentry.io/12312012",
++            None,
++            True,
++            False,
++        ),
++        (
++            "sentry-trace_id=771a43a4192642f0b136d5159a501700, sentry-org_id=1234",
++            "https://mysecret@o1234.ingest.sentry.io/12312012",
++            "9999",
++            True,
++            False,
++        ),
++    ),
++)
++def test_should_continue_trace(
++    sentry_init,
++    baggage_header,
++    dsn,
++    explicit_org_id,
++    strict_trace_continuation,
++    should_continue_trace,
++):
++    sentry_init(
++        dsn=dsn,
++        org_id=explicit_org_id,
++        strict_trace_continuation=strict_trace_continuation,
++        traces_sample_rate=1.0,
++        transport=TestTransportWithOptions,
++    )
++
++    incoming_trace_id = "771a43a4192642f0b136d5159a501700"
++    transaction = sentry_sdk.continue_trace(
++        {
++            "sentry-trace": f"{incoming_trace_id}-1234567890abcdef-1",
++            "baggage": baggage_header,
++        },
++        name="strict trace",
++    )
++    assert (transaction.trace_id == incoming_trace_id) is should_continue_trace
+diff --git a/tests/tracing/test_integration_tests.py b/tests/tracing/test_integration_tests.py
+index 0bd55489..117f2ef8 100644
+--- a/tests/tracing/test_integration_tests.py
++++ b/tests/tracing/test_integration_tests.py
+@@ -15,6 +15,7 @@ from sentry_sdk import (
+ )
+ from sentry_sdk.consts import SPANSTATUS
+ from sentry_sdk.transport import Transport
++from tests.conftest import TestTransportWithOptions
+ 
+ 
+ @pytest.mark.parametrize("sample_rate", [0.0, 1.0])
+@@ -361,3 +362,60 @@ def test_good_sysexit_doesnt_fail_transaction(
+     assert "status" not in span.get("tags", {})
+     assert "status" not in event["tags"]
+     assert event["contexts"]["trace"]["status"] == "ok"
++
++
++@pytest.mark.parametrize(
++    "strict_trace_continuation,baggage_org_id,dsn_org_id,should_continue_trace",
++    (
++        (True, "sentry-org_id=1234", "o1234", True),
++        (True, "sentry-org_id=1234", "o9999", False),
++        (True, "sentry-org_id=9999", "o1234", False),
++        (False, "sentry-org_id=1234", "o1234", True),
++        (False, "sentry-org_id=9999", "o1234", False),
++        (False, "sentry-org_id=1234", "o9999", False),
++        (False, "sentry-org_id=1234", "not_org_id", True),
++        (False, "", "o1234", True),
++    ),
++)
++def test_continue_trace_strict_trace_continuation(
++    sentry_init,
++    strict_trace_continuation,
++    baggage_org_id,
++    dsn_org_id,
++    should_continue_trace,
++):
++    sentry_init(
++        dsn=f"https://mysecret@{dsn_org_id}.ingest.sentry.io/12312012",
++        strict_trace_continuation=strict_trace_continuation,
++        traces_sample_rate=1.0,
++        transport=TestTransportWithOptions,
++    )
++
++    headers = {
++        "sentry-trace": "771a43a4192642f0b136d5159a501700-1234567890abcdef-1",
++        "baggage": (
++            "other-vendor-value-1=foo;bar;baz, sentry-trace_id=771a43a4192642f0b136d5159a501700, "
++            f"{baggage_org_id}, "
++            "sentry-public_key=49d0f7386ad645858ae85020e393bef3, sentry-sample_rate=0.01337, "
++            "sentry-user_id=Am%C3%A9lie, other-vendor-value-2=foo;bar;"
++        ),
++    }
++
++    transaction = continue_trace(headers, name="strict trace")
++
++    if should_continue_trace:
++        assert (
++            transaction.trace_id
++            == "771a43a4192642f0b136d5159a501700"
++            == "771a43a4192642f0b136d5159a501700"
++        )
++        assert transaction.parent_span_id == "1234567890abcdef"
++        assert transaction.parent_sampled
++    else:
++        assert (
++            transaction.trace_id
++            != "771a43a4192642f0b136d5159a501700"
++            == "771a43a4192642f0b136d5159a501700"
++        )
++        assert transaction.parent_span_id != "1234567890abcdef"
++        assert not transaction.parent_sampled

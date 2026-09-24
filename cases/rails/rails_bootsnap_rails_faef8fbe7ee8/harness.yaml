@@ -1,0 +1,52 @@
+task_id: rails_bootsnap_rails_faef8fbe7ee8
+hidden_test_patches:
+- repo: bootsnap
+  patch: hidden/patches/bootsnap-upstream-selector-tests.patch
+  test_profile: bootsnap-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - test/compile_cache/iseq_cache_test.rb
+  hidden_file: *id003
+  semantic_changes: none
+  source: Upstream behavior test from rails/bootsnap PR 535.
+- repo: bootsnap
+  patch: hidden/patches/bootsnap-hidden-tests.patch
+  test_profile: bootsnap-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id001
+  - test/ecosync_compiler_contract_test.rb
+  hidden_file: *id001
+  semantic_changes: Replaces Gold-internal cache/compiler signature migrations with
+    public runtime tests for per-load compiler selection, default compilers, config
+    loading, and frozen-string scope.
+  source: Contract derived from rails/bootsnap PR 535 and the task prompt.
+- repo: rails
+  patch: hidden/patches/rails-upstream-tests.patch
+  test_profile: rails-hidden
+  origin: upstream_test_diff
+  source_file: &id004
+  - railties/test/generators/app_generator_test.rb
+  hidden_file: *id004
+  semantic_changes: none
+  source: Upstream behavior test from rails/rails PR 57252.
+- repo: rails
+  patch: hidden/patches/rails-hidden-tests.patch
+  test_profile: rails-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id002
+  - railties/test/generators/ecosync_bootsnap_generator_test.rb
+  hidden_file: *id002
+  semantic_changes: Validates generated Bootsnap config content, minimum version,
+    RuboCop consistency, and the skip path without binding generator internals.
+  source: Contract derived from rails/rails PR 57252 and the task prompt.
+profile_sets:
+  linux-docker:
+    description: Contract-aligned runtime and app-generation tests for the public
+      Bootsnap/Rails frozen-string integration.
+    hidden_tests:
+    - bootsnap-hidden
+    - rails-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

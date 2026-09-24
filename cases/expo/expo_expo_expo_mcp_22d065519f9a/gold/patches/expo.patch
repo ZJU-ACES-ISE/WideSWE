@@ -1,0 +1,191 @@
+diff --git a/packages/@expo/cli/CHANGELOG.md b/packages/@expo/cli/CHANGELOG.md
+index 9ff76f608e5..9be4a9c1c3e 100644
+--- a/packages/@expo/cli/CHANGELOG.md
++++ b/packages/@expo/cli/CHANGELOG.md
+@@ -24,6 +24,7 @@
+ - Migrate typed routes logic from `expo-router` to `@expo/router-server` ([#40576](https://github.com/expo/expo/pull/40576) by [@hassankhan](https://github.com/hassankhan))
+ - Deduplicate shared types across `@expo/cli`, `@expo/router-server`, `expo-server` ([#40614](https://github.com/expo/expo/pull/40614) by [@hassankhan](https://github.com/hassankhan))
+ - Alias `transformer.asyncRequireModulePath` via Node resolution, when provided ([#40584](https://github.com/expo/expo/pull/40584) by [@kitten](https://github.com/kitten))
++- Added MCP server handshaking and graceful shutdown. ([#40660](https://github.com/expo/expo/pull/40660) by [@kudo](https://github.com/kudo))
+ 
+ ### ⚠️ Notices
+ 
+diff --git a/packages/@expo/cli/package.json b/packages/@expo/cli/package.json
+index 57a2a87f0c3..dd8833ecf0d 100644
+--- a/packages/@expo/cli/package.json
++++ b/packages/@expo/cli/package.json
+@@ -49,7 +49,7 @@
+     "@expo/env": "~2.0.7",
+     "@expo/image-utils": "^0.8.7",
+     "@expo/json-file": "^10.0.7",
+-    "@expo/mcp-tunnel": "~0.0.7",
++    "@expo/mcp-tunnel": "~0.1.0",
+     "@expo/metro": "~54.1.0",
+     "@expo/metro-config": "~54.0.3",
+     "@expo/osascript": "^2.3.7",
+diff --git a/packages/@expo/cli/src/start/interface/commandsTable.ts b/packages/@expo/cli/src/start/interface/commandsTable.ts
+index 7541410b2c1..fafb057252c 100644
+--- a/packages/@expo/cli/src/start/interface/commandsTable.ts
++++ b/packages/@expo/cli/src/start/interface/commandsTable.ts
+@@ -4,6 +4,7 @@ import qrcode from 'qrcode-terminal';
+ import wrapAnsi from 'wrap-ansi';
+ 
+ import * as Log from '../../log';
++import type { McpServer } from '../server/MCP';
+ 
+ export const BLT = '\u203A';
+ 
+@@ -14,6 +15,7 @@ export type StartOptions = {
+   nonPersistent?: boolean;
+   maxWorkers?: number;
+   platforms?: ExpoConfig['platforms'];
++  mcpServer?: McpServer;
+ };
+ 
+ export const printHelp = (): void => {
+diff --git a/packages/@expo/cli/src/start/interface/startInterface.ts b/packages/@expo/cli/src/start/interface/startInterface.ts
+index afc462d4581..7f531e8e773 100644
+--- a/packages/@expo/cli/src/start/interface/startInterface.ts
++++ b/packages/@expo/cli/src/start/interface/startInterface.ts
+@@ -36,7 +36,7 @@ const PLATFORM_SETTINGS: Record<
+ 
+ export async function startInterfaceAsync(
+   devServerManager: DevServerManager,
+-  options: Pick<StartOptions, 'devClient' | 'platforms'>
++  options: Pick<StartOptions, 'devClient' | 'platforms' | 'mcpServer'>
+ ) {
+   const actions = new DevServerManagerActions(devServerManager, options);
+ 
+@@ -73,6 +73,9 @@ export async function startInterfaceAsync(
+         const spinner = ora({ text: 'Stopping server', color: 'white' }).start();
+         try {
+           await devServerManager.stopAsync();
++          if (options.mcpServer) {
++            await options.mcpServer.closeAsync();
++          }
+           spinner.stopAndPersist({ text: 'Stopped server', symbol: `\u203A` });
+           // @ts-ignore: Argument of type '"SIGINT"' is not assignable to parameter of type '"disconnect"'.
+           process.emit('SIGINT');
+diff --git a/packages/@expo/cli/src/start/server/MCP.ts b/packages/@expo/cli/src/start/server/MCP.ts
+index f64a739a7b3..83170022176 100644
+--- a/packages/@expo/cli/src/start/server/MCP.ts
++++ b/packages/@expo/cli/src/start/server/MCP.ts
+@@ -7,17 +7,32 @@ import resolveFrom from 'resolve-from';
+ import { getAccessToken, getSession } from '../../api/user/UserSettings';
+ import { Log } from '../../log';
+ import { env } from '../../utils/env';
++import { installExitHooks } from '../../utils/exit';
+ 
+ const importESM = require('@expo/cli/add-module') as <T>(moduleName: string) => Promise<T>;
+ 
+ const debug = require('debug')('expo:start:server:mcp') as typeof console.log;
+ 
++/**
++ * The MCP server
++ */
++export type McpServer = Omit<McpServerProxy, 'close'> & {
++  /**
++   * Close the server
++   */
++  closeAsync: () => Promise<void>;
++};
++
+ /**
+  * Create the MCP server
+  */
+-export async function maybeCreateMCPServerAsync(
+-  projectRoot: string
+-): Promise<McpServerProxy | null> {
++export async function maybeCreateMCPServerAsync({
++  projectRoot,
++  devServerUrl,
++}: {
++  projectRoot: string;
++  devServerUrl: string;
++}): Promise<McpServer | null> {
+   const mcpServer = env.EXPO_UNSTABLE_MCP_SERVER;
+   if (!mcpServer) {
+     return null;
+@@ -55,11 +70,22 @@ export async function maybeCreateMCPServerAsync(
+         Log.log(...message);
+       },
+     };
+-    const server: McpServerProxy = new TunnelMcpServerProxy(mcpServerUrl, {
++    const serverProxy: McpServerProxy = new TunnelMcpServerProxy(mcpServerUrl, {
+       logger,
+       wsHeaders: createAuthHeaders(),
++      projectRoot,
++      devServerUrl,
+     });
+-    addMcpCapabilities(server, projectRoot);
++    addMcpCapabilities(serverProxy, projectRoot);
++
++    const removeExitHook = installExitHooks(async () => {
++      await serverProxy.close();
++    });
++    const server = serverProxy as unknown as McpServer;
++    server.closeAsync = async () => {
++      removeExitHook();
++      await serverProxy.close();
++    };
+ 
+     return server;
+   } catch (error: unknown) {
+diff --git a/packages/@expo/cli/src/start/startAsync.ts b/packages/@expo/cli/src/start/startAsync.ts
+index c64f00ab881..5d9d2a2693d 100644
+--- a/packages/@expo/cli/src/start/startAsync.ts
++++ b/packages/@expo/cli/src/start/startAsync.ts
+@@ -113,24 +113,29 @@ export async function startAsync(
+   // Open project on devices.
+   await profile(openPlatformsAsync)(devServerManager, options);
+ 
++  const defaultServerUrl = devServerManager.getDefaultDevServer()?.getDevServerUrl() ?? '';
+   // Present the Terminal UI.
+   if (isInteractive()) {
+-    const mcpServer = await profile(maybeCreateMCPServerAsync)(projectRoot);
++    const mcpServer =
++      (await profile(maybeCreateMCPServerAsync)({
++        projectRoot,
++        devServerUrl: defaultServerUrl,
++      })) ?? undefined;
+ 
+     await profile(startInterfaceAsync)(devServerManager, {
+       platforms: exp.platforms ?? ['ios', 'android', 'web'],
++      mcpServer,
+     });
+ 
+     mcpServer?.start();
+   } else {
+     // Display the server location in CI...
+-    const url = devServerManager.getDefaultDevServer()?.getDevServerUrl();
+-    if (url) {
++    if (defaultServerUrl) {
+       if (env.__EXPO_E2E_TEST) {
+         // Print the URL to stdout for tests
+-        console.info(`[__EXPO_E2E_TEST:server] ${JSON.stringify({ url })}`);
++        console.info(`[__EXPO_E2E_TEST:server] ${JSON.stringify({ url: defaultServerUrl })}`);
+       }
+-      Log.log(chalk`Waiting on {underline ${url}}`);
++      Log.log(chalk`Waiting on {underline ${defaultServerUrl}}`);
+     }
+   }
+ 
+diff --git a/yarn.lock b/yarn.lock
+index e5723373276..a7594a089d1 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -1580,10 +1580,10 @@
+     debug "^3.1.0"
+     glob "^10.4.2"
+ 
+-"@expo/mcp-tunnel@~0.0.7":
+-  version "0.0.7"
+-  resolved "https://registry.yarnpkg.com/@expo/mcp-tunnel/-/mcp-tunnel-0.0.7.tgz#16850d5e7b5b3961bf06be0111ae4689de959aeb"
+-  integrity sha512-ht8Q1nKtiHobZqkUqt/7awwjW2D59ardP6XDVmGceGjQtoZELVaJDHyMIX+aVG9SZ9aj8+uGlhQYeBi57SZPMA==
++"@expo/mcp-tunnel@~0.1.0":
++  version "0.1.0"
++  resolved "https://registry.yarnpkg.com/@expo/mcp-tunnel/-/mcp-tunnel-0.1.0.tgz#ae4ce4320b2f97a9891783c2316f9936c912d126"
++  integrity sha512-rJ6hl0GnIZj9+ssaJvFsC7fwyrmndcGz+RGFzu+0gnlm78X01957yjtHgjcmnQAgL5hWEOR6pkT0ijY5nU5AWw==
+   dependencies:
+     ws "^8.18.3"
+     zod "^3.25.76"

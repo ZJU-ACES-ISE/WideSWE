@@ -1,0 +1,960 @@
+diff --git a/x-pack/plugins/enterprise_search/public/applications/shared/decode_cloud_id/decode_cloud_id.ts b/x-pack/plugins/cloud/common/decode_cloud_id.ts
+similarity index 65%
+rename from x-pack/plugins/enterprise_search/public/applications/shared/decode_cloud_id/decode_cloud_id.ts
+rename to x-pack/plugins/cloud/common/decode_cloud_id.ts
+index f0059495ef1..70e4ba548ec 100644
+--- a/x-pack/plugins/enterprise_search/public/applications/shared/decode_cloud_id/decode_cloud_id.ts
++++ b/x-pack/plugins/cloud/common/decode_cloud_id.ts
+@@ -5,23 +5,21 @@
+  * 2.0.
+  */
+ 
+-// copied this solution from fleet due to time constraints
+-// x-pack/fleet/common/services/decode_cloud_id.ts
++import type { Logger } from '@kbn/logging';
++
++export interface DecodedCloudId {
++  host: string;
++  defaultPort: string;
++  elasticsearchUrl: string;
++  kibanaUrl: string;
++}
++
+ // decodeCloudId decodes the c.id into c.esURL and c.kibURL
+-export function decodeCloudId(cid: string):
+-  | {
+-      defaultPort: string;
+-      elasticsearchUrl: string;
+-      host: string;
+-      kibanaUrl: string;
+-    }
+-  | undefined {
++export function decodeCloudId(cid: string, logger: Logger): DecodedCloudId | undefined {
+   // 1. Ignore anything before `:`.
+   const id = cid.split(':').pop();
+   if (!id) {
+-    // throw new Error(`Unable to decode ${id}`);
+-    // eslint-disable-next-line no-console
+-    console.debug(`Unable to decode ${id}`);
++    logger.debug(`Unable to decode ${id}`);
+     return;
+   }
+ 
+@@ -30,18 +28,14 @@ export function decodeCloudId(cid: string):
+   try {
+     decoded = Buffer.from(id, 'base64').toString('utf8');
+   } catch {
+-    // throw new Error(`base64 decoding failed on ${id}`);
+-    // eslint-disable-next-line no-console
+-    console.debug(`base64 decoding failed on ${id}`);
++    logger.debug(`base64 decoding failed on ${id}`);
+     return;
+   }
+ 
+   // 3. separate based on `$`
+   const words = decoded.split('$');
+   if (words.length < 3) {
+-    // throw new Error(`Expected at least 3 parts in ${decoded}`);
+-    // eslint-disable-next-line no-console
+-    console.debug(`Expected at least 3 parts in ${decoded}`);
++    logger.debug(`Expected at least 3 parts in ${decoded}`);
+     return;
+   }
+   // 4. extract port from the ES and Kibana host
+@@ -52,12 +46,13 @@ export function decodeCloudId(cid: string):
+   const esUrl = `https://${esId}.${host}:${esPort}`;
+   const kbUrl = `https://${kbId}.${host}:${kbPort}`;
+   return {
++    host,
+     defaultPort,
+     elasticsearchUrl: esUrl,
+-    host,
+     kibanaUrl: kbUrl,
+   };
+ }
++
+ // extractPortFromName takes a string in the form `id:port` and returns the
+ // Id and the port. If there's no `:`, the default port is returned
+ function extractPortFromName(word: string, defaultPort = '443') {
+diff --git a/x-pack/plugins/cloud/public/index.ts b/x-pack/plugins/cloud/public/index.ts
+index ee37f85dfb6..8c2c1791dc0 100644
+--- a/x-pack/plugins/cloud/public/index.ts
++++ b/x-pack/plugins/cloud/public/index.ts
+@@ -8,7 +8,8 @@
+ import { PluginInitializerContext } from '@kbn/core/public';
+ import { CloudPlugin } from './plugin';
+ 
+-export type { CloudSetup, CloudConfigType, CloudStart } from './plugin';
++export type { CloudSetup, CloudStart } from './types';
++export type { CloudConfigType } from './plugin';
+ 
+ export function plugin(initializerContext: PluginInitializerContext) {
+   return new CloudPlugin(initializerContext);
+diff --git a/x-pack/plugins/cloud/public/mocks.tsx b/x-pack/plugins/cloud/public/mocks.tsx
+index fb1b66adcec..38c63ecb5cf 100644
+--- a/x-pack/plugins/cloud/public/mocks.tsx
++++ b/x-pack/plugins/cloud/public/mocks.tsx
+@@ -7,17 +7,22 @@
+ 
+ import React from 'react';
+ 
+-import { CloudStart } from '.';
++import type { CloudSetup, CloudStart } from './types';
+ 
+-function createSetupMock() {
++function createSetupMock(): jest.Mocked<CloudSetup> {
+   return {
+     cloudId: 'mock-cloud-id',
++    deploymentId: 'mock-deployment-id',
+     isCloudEnabled: true,
+     cname: 'cname',
+     baseUrl: 'base-url',
+     deploymentUrl: 'deployment-url',
+     profileUrl: 'profile-url',
+     organizationUrl: 'organization-url',
++    elasticsearchUrl: 'elasticsearch-url',
++    kibanaUrl: 'kibana-url',
++    cloudHost: 'cloud-host',
++    cloudDefaultPort: '443',
+     isElasticStaffOwned: true,
+     trialEndDate: new Date('2020-10-01T14:13:12Z'),
+     registerCloudService: jest.fn(),
+diff --git a/x-pack/plugins/cloud/public/plugin.test.mocks.ts b/x-pack/plugins/cloud/public/plugin.test.mocks.ts
+new file mode 100644
+index 00000000000..f3015fa81bb
+--- /dev/null
++++ b/x-pack/plugins/cloud/public/plugin.test.mocks.ts
+@@ -0,0 +1,22 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++export const parseDeploymentIdFromDeploymentUrlMock = jest.fn();
++
++jest.doMock('../common/parse_deployment_id_from_deployment_url', () => {
++  return {
++    parseDeploymentIdFromDeploymentUrl: parseDeploymentIdFromDeploymentUrlMock,
++  };
++});
++
++export const decodeCloudIdMock = jest.fn();
++
++jest.doMock('../common/decode_cloud_id', () => {
++  return {
++    decodeCloudId: decodeCloudIdMock,
++  };
++});
+diff --git a/x-pack/plugins/cloud/public/plugin.tsx b/x-pack/plugins/cloud/public/plugin.tsx
+index ded7924b506..02c2c6d51d5 100644
+--- a/x-pack/plugins/cloud/public/plugin.tsx
++++ b/x-pack/plugins/cloud/public/plugin.tsx
+@@ -6,11 +6,14 @@
+  */
+ 
+ import React, { FC } from 'react';
++import type { Logger } from '@kbn/logging';
+ import type { CoreSetup, CoreStart, Plugin, PluginInitializerContext } from '@kbn/core/public';
+-
+ import { registerCloudDeploymentMetadataAnalyticsContext } from '../common/register_cloud_deployment_id_analytics_context';
+ import { getIsCloudEnabled } from '../common/is_cloud_enabled';
++import { parseDeploymentIdFromDeploymentUrl } from '../common/parse_deployment_id_from_deployment_url';
+ import { ELASTIC_SUPPORT_LINK, CLOUD_SNAPSHOTS_PATH } from '../common/constants';
++import { decodeCloudId, type DecodedCloudId } from '../common/decode_cloud_id';
++import type { CloudSetup, CloudStart } from './types';
+ import { getFullCloudUrl } from './utils';
+ 
+ export interface CloudConfigType {
+@@ -24,81 +27,6 @@ export interface CloudConfigType {
+   is_elastic_staff_owned?: boolean;
+ }
+ 
+-export interface CloudStart {
+-  /**
+-   * A React component that provides a pre-wired `React.Context` which connects components to Cloud services.
+-   */
+-  CloudContextProvider: FC<{}>;
+-  /**
+-   * `true` when Kibana is running on Elastic Cloud.
+-   */
+-  isCloudEnabled: boolean;
+-  /**
+-   * Cloud ID. Undefined if not running on Cloud.
+-   */
+-  cloudId?: string;
+-  /**
+-   * The full URL to the deployment management page on Elastic Cloud. Undefined if not running on Cloud.
+-   */
+-  deploymentUrl?: string;
+-  /**
+-   * The full URL to the user profile page on Elastic Cloud. Undefined if not running on Cloud.
+-   */
+-  profileUrl?: string;
+-  /**
+-   * The full URL to the organization management page on Elastic Cloud. Undefined if not running on Cloud.
+-   */
+-  organizationUrl?: string;
+-}
+-
+-export interface CloudSetup {
+-  /**
+-   * Cloud ID. Undefined if not running on Cloud.
+-   */
+-  cloudId?: string;
+-  /**
+-   * This value is the same as `baseUrl` on ESS but can be customized on ECE.
+-   */
+-  cname?: string;
+-  /**
+-   * This is the URL of the Cloud interface.
+-   */
+-  baseUrl?: string;
+-  /**
+-   * The full URL to the deployment management page on Elastic Cloud. Undefined if not running on Cloud.
+-   */
+-  deploymentUrl?: string;
+-  /**
+-   * The full URL to the user profile page on Elastic Cloud. Undefined if not running on Cloud.
+-   */
+-  profileUrl?: string;
+-  /**
+-   * The full URL to the organization management page on Elastic Cloud. Undefined if not running on Cloud.
+-   */
+-  organizationUrl?: string;
+-  /**
+-   * This is the path to the Snapshots page for the deployment to which the Kibana instance belongs. The value is already prepended with `deploymentUrl`.
+-   */
+-  snapshotsUrl?: string;
+-  /**
+-   * `true` when Kibana is running on Elastic Cloud.
+-   */
+-  isCloudEnabled: boolean;
+-  /**
+-   * When the Cloud Trial ends/ended for the organization that owns this deployment. Only available when running on Elastic Cloud.
+-   */
+-  trialEndDate?: Date;
+-  /**
+-   * `true` if the Elastic Cloud organization that owns this deployment is owned by an Elastician. Only available when running on Elastic Cloud.
+-   */
+-  isElasticStaffOwned?: boolean;
+-  /**
+-   * Registers CloudServiceProviders so start's `CloudContextProvider` hooks them.
+-   * @param contextProvider The React component from the Service Provider.
+-   */
+-  registerCloudService: (contextProvider: FC) => void;
+-}
+-
+ interface CloudUrls {
+   deploymentUrl?: string;
+   profileUrl?: string;
+@@ -110,10 +38,12 @@ export class CloudPlugin implements Plugin<CloudSetup> {
+   private readonly config: CloudConfigType;
+   private readonly isCloudEnabled: boolean;
+   private readonly contextProviders: FC[] = [];
++  private readonly logger: Logger;
+ 
+   constructor(private readonly initializerContext: PluginInitializerContext) {
+     this.config = this.initializerContext.config.get<CloudConfigType>();
+     this.isCloudEnabled = getIsCloudEnabled(this.config.id);
++    this.logger = initializerContext.logger.get();
+   }
+ 
+   public setup(core: CoreSetup): CloudSetup {
+@@ -127,11 +57,21 @@ export class CloudPlugin implements Plugin<CloudSetup> {
+       is_elastic_staff_owned: isElasticStaffOwned,
+     } = this.config;
+ 
++    let decodedId: DecodedCloudId | undefined;
++    if (id) {
++      decodedId = decodeCloudId(id, this.logger);
++    }
++
+     return {
+       cloudId: id,
++      deploymentId: parseDeploymentIdFromDeploymentUrl(this.config.deployment_url),
+       cname,
+       baseUrl,
+       ...this.getCloudUrls(),
++      elasticsearchUrl: decodedId?.elasticsearchUrl,
++      kibanaUrl: decodedId?.kibanaUrl,
++      cloudHost: decodedId?.host,
++      cloudDefaultPort: decodedId?.defaultPort,
+       trialEndDate: trialEndDate ? new Date(trialEndDate) : undefined,
+       isElasticStaffOwned,
+       isCloudEnabled: this.isCloudEnabled,
+diff --git a/x-pack/plugins/cloud/public/types.ts b/x-pack/plugins/cloud/public/types.ts
+new file mode 100644
+index 00000000000..ae862a981cd
+--- /dev/null
++++ b/x-pack/plugins/cloud/public/types.ts
+@@ -0,0 +1,111 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import type { FC } from 'react';
++
++export interface CloudStart {
++  /**
++   * A React component that provides a pre-wired `React.Context` which connects components to Cloud services.
++   */
++  CloudContextProvider: FC<{}>;
++  /**
++   * `true` when Kibana is running on Elastic Cloud.
++   */
++  isCloudEnabled: boolean;
++  /**
++   * Cloud ID. Undefined if not running on Cloud.
++   */
++  cloudId?: string;
++  /**
++   * The full URL to the deployment management page on Elastic Cloud. Undefined if not running on Cloud.
++   */
++  deploymentUrl?: string;
++  /**
++   * The full URL to the user profile page on Elastic Cloud. Undefined if not running on Cloud.
++   */
++  profileUrl?: string;
++  /**
++   * The full URL to the organization management page on Elastic Cloud. Undefined if not running on Cloud.
++   */
++  organizationUrl?: string;
++  /**
++   * The full URL to the elasticsearch cluster.
++   */
++  elasticsearchUrl?: string;
++  /**
++   * The full URL to the Kibana deployment.
++   */
++  kibanaUrl?: string;
++}
++
++export interface CloudSetup {
++  /**
++   * Cloud ID. Undefined if not running on Cloud.
++   */
++  cloudId?: string;
++  /**
++   * The deployment's ID. Only available when running on Elastic Cloud.
++   */
++  deploymentId?: string;
++  /**
++   * This value is the same as `baseUrl` on ESS but can be customized on ECE.
++   */
++  cname?: string;
++  /**
++   * This is the URL of the Cloud interface.
++   */
++  baseUrl?: string;
++  /**
++   * The full URL to the deployment management page on Elastic Cloud. Undefined if not running on Cloud.
++   */
++  deploymentUrl?: string;
++  /**
++   * The full URL to the user profile page on Elastic Cloud. Undefined if not running on Cloud.
++   */
++  profileUrl?: string;
++  /**
++   * The full URL to the organization management page on Elastic Cloud. Undefined if not running on Cloud.
++   */
++  organizationUrl?: string;
++  /**
++   * This is the path to the Snapshots page for the deployment to which the Kibana instance belongs. The value is already prepended with `deploymentUrl`.
++   */
++  snapshotsUrl?: string;
++  /**
++   * The full URL to the elasticsearch cluster.
++   */
++  elasticsearchUrl?: string;
++  /**
++   * The full URL to the Kibana deployment.
++   */
++  kibanaUrl?: string;
++  /**
++   * {host} from the deployment url https://<deploymentId>.<application>.<host><?:port>
++   */
++  cloudHost?: string;
++  /**
++   * {port} from the deployment url https://<deploymentId>.<application>.<host><?:port>
++   */
++  cloudDefaultPort?: string;
++  /**
++   * `true` when Kibana is running on Elastic Cloud.
++   */
++  isCloudEnabled: boolean;
++  /**
++   * When the Cloud Trial ends/ended for the organization that owns this deployment. Only available when running on Elastic Cloud.
++   */
++  trialEndDate?: Date;
++  /**
++   * `true` if the Elastic Cloud organization that owns this deployment is owned by an Elastician. Only available when running on Elastic Cloud.
++   */
++  isElasticStaffOwned?: boolean;
++  /**
++   * Registers CloudServiceProviders so start's `CloudContextProvider` hooks them.
++   * @param contextProvider The React component from the Service Provider.
++   */
++  registerCloudService: (contextProvider: FC) => void;
++}
+diff --git a/x-pack/plugins/cloud/server/mocks.ts b/x-pack/plugins/cloud/server/mocks.ts
+index ad647689514..10423bd3e4c 100644
+--- a/x-pack/plugins/cloud/server/mocks.ts
++++ b/x-pack/plugins/cloud/server/mocks.ts
+@@ -5,13 +5,17 @@
+  * 2.0.
+  */
+ 
+-import { CloudSetup } from '.';
++import type { CloudSetup } from './plugin';
+ 
+ function createSetupMock(): jest.Mocked<CloudSetup> {
+   return {
+     cloudId: 'mock-cloud-id',
+-    instanceSizeMb: 1234,
+     deploymentId: 'deployment-id',
++    elasticsearchUrl: 'elasticsearch-url',
++    kibanaUrl: 'kibana-url',
++    cloudHost: 'cloud-host',
++    cloudDefaultPort: '443',
++    instanceSizeMb: 1234,
+     isCloudEnabled: true,
+     isElasticStaffOwned: true,
+     trialEndDate: new Date('2020-10-01T14:13:12Z'),
+diff --git a/x-pack/plugins/cloud/server/plugin.test.mocks.ts b/x-pack/plugins/cloud/server/plugin.test.mocks.ts
+new file mode 100644
+index 00000000000..f3015fa81bb
+--- /dev/null
++++ b/x-pack/plugins/cloud/server/plugin.test.mocks.ts
+@@ -0,0 +1,22 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++export const parseDeploymentIdFromDeploymentUrlMock = jest.fn();
++
++jest.doMock('../common/parse_deployment_id_from_deployment_url', () => {
++  return {
++    parseDeploymentIdFromDeploymentUrl: parseDeploymentIdFromDeploymentUrlMock,
++  };
++});
++
++export const decodeCloudIdMock = jest.fn();
++
++jest.doMock('../common/decode_cloud_id', () => {
++  return {
++    decodeCloudId: decodeCloudIdMock,
++  };
++});
+diff --git a/x-pack/plugins/cloud/server/plugin.ts b/x-pack/plugins/cloud/server/plugin.ts
+index 7d33ac99629..92db5f8c915 100644
+--- a/x-pack/plugins/cloud/server/plugin.ts
++++ b/x-pack/plugins/cloud/server/plugin.ts
+@@ -5,6 +5,7 @@
+  * 2.0.
+  */
+ 
++import type { Logger } from '@kbn/logging';
+ import type { CoreSetup, Plugin, PluginInitializerContext } from '@kbn/core/server';
+ import type { UsageCollectionSetup } from '@kbn/usage-collection-plugin/server';
+ import { registerCloudDeploymentMetadataAnalyticsContext } from '../common/register_cloud_deployment_id_analytics_context';
+@@ -12,6 +13,7 @@ import type { CloudConfigType } from './config';
+ import { registerCloudUsageCollector } from './collectors';
+ import { getIsCloudEnabled } from '../common/is_cloud_enabled';
+ import { parseDeploymentIdFromDeploymentUrl } from '../common/parse_deployment_id_from_deployment_url';
++import { decodeCloudId, DecodedCloudId } from '../common/decode_cloud_id';
+ import { readInstanceSizeMb } from './env';
+ 
+ interface PluginsSetup {
+@@ -30,6 +32,22 @@ export interface CloudSetup {
+    * The deployment's ID. Only available when running on Elastic Cloud.
+    */
+   deploymentId?: string;
++  /**
++   * The full URL to the elasticsearch cluster.
++   */
++  elasticsearchUrl?: string;
++  /**
++   * The full URL to the Kibana deployment.
++   */
++  kibanaUrl?: string;
++  /**
++   * {host} from the deployment url https://<deploymentId>.<application>.<host><?:port>
++   */
++  cloudHost?: string;
++  /**
++   * {port} from the deployment url https://<deploymentId>.<application>.<host><?:port>
++   */
++  cloudDefaultPort?: string;
+   /**
+    * `true` when running on Elastic Cloud.
+    */
+@@ -67,9 +85,11 @@ export interface CloudStart {
+ 
+ export class CloudPlugin implements Plugin<CloudSetup, CloudStart> {
+   private readonly config: CloudConfigType;
++  private readonly logger: Logger;
+ 
+   constructor(private readonly context: PluginInitializerContext) {
+     this.config = this.context.config.get<CloudConfigType>();
++    this.logger = this.context.logger.get();
+   }
+ 
+   public setup(core: CoreSetup, { usageCollection }: PluginsSetup): CloudSetup {
+@@ -81,10 +101,19 @@ export class CloudPlugin implements Plugin<CloudSetup, CloudStart> {
+       isElasticStaffOwned: this.config.is_elastic_staff_owned,
+     });
+ 
++    let decodedId: DecodedCloudId | undefined;
++    if (this.config.id) {
++      decodedId = decodeCloudId(this.config.id, this.logger);
++    }
++
+     return {
+       cloudId: this.config.id,
+       instanceSizeMb: readInstanceSizeMb(),
+       deploymentId: parseDeploymentIdFromDeploymentUrl(this.config.deployment_url),
++      elasticsearchUrl: decodedId?.elasticsearchUrl,
++      kibanaUrl: decodedId?.kibanaUrl,
++      cloudHost: decodedId?.host,
++      cloudDefaultPort: decodedId?.defaultPort,
+       isCloudEnabled,
+       trialEndDate: this.config.trial_end_date ? new Date(this.config.trial_end_date) : undefined,
+       isElasticStaffOwned: this.config.is_elastic_staff_owned,
+diff --git a/x-pack/plugins/cloud/tsconfig.json b/x-pack/plugins/cloud/tsconfig.json
+index 63a4d2a8711..f5d0f3623fc 100644
+--- a/x-pack/plugins/cloud/tsconfig.json
++++ b/x-pack/plugins/cloud/tsconfig.json
+@@ -15,6 +15,8 @@
+     "@kbn/usage-collection-plugin",
+     "@kbn/analytics-client",
+     "@kbn/config-schema",
++    "@kbn/logging-mocks",
++    "@kbn/logging",
+   ],
+   "exclude": [
+     "target/**/*",
+diff --git a/x-pack/plugins/enterprise_search/public/applications/analytics/components/analytics_collection_view/analytics_collection_integrate/analytics_collection_integrate_view.tsx b/x-pack/plugins/enterprise_search/public/applications/analytics/components/analytics_collection_view/analytics_collection_integrate/analytics_collection_integrate_view.tsx
+index 903486e025a..56b575f0aef 100644
+--- a/x-pack/plugins/enterprise_search/public/applications/analytics/components/analytics_collection_view/analytics_collection_integrate/analytics_collection_integrate_view.tsx
++++ b/x-pack/plugins/enterprise_search/public/applications/analytics/components/analytics_collection_view/analytics_collection_integrate/analytics_collection_integrate_view.tsx
+@@ -28,7 +28,6 @@ import { i18n } from '@kbn/i18n';
+ 
+ import { AnalyticsCollection } from '../../../../../../common/types/analytics';
+ import { useCloudDetails } from '../../../../shared/cloud_details/cloud_details';
+-import { decodeCloudId } from '../../../../shared/decode_cloud_id/decode_cloud_id';
+ import { docLinks } from '../../../../shared/doc_links';
+ 
+ import { KibanaLogic } from '../../../../shared/kibana';
+@@ -196,8 +195,7 @@ export const AnalyticsCollectionIntegrateView: React.FC<AnalyticsCollectionInteg
+   const DEFAULT_URL = 'https://localhost:9200';
+   const cloudContext = useCloudDetails();
+ 
+-  const baseUrl =
+-    (cloudContext.cloudId && decodeCloudId(cloudContext.cloudId)?.elasticsearchUrl) || DEFAULT_URL;
++  const baseUrl = cloudContext.elasticsearchUrl || DEFAULT_URL;
+ 
+   const analyticsConfig: AnalyticsConfig = {
+     apiKey: apiKey || '########',
+diff --git a/x-pack/plugins/enterprise_search/public/applications/applications/components/engine/engine_connect/search_application_api.tsx b/x-pack/plugins/enterprise_search/public/applications/applications/components/engine/engine_connect/search_application_api.tsx
+index 0bccac9b65e..399b55963e9 100644
+--- a/x-pack/plugins/enterprise_search/public/applications/applications/components/engine/engine_connect/search_application_api.tsx
++++ b/x-pack/plugins/enterprise_search/public/applications/applications/components/engine/engine_connect/search_application_api.tsx
+@@ -24,7 +24,6 @@ import { i18n } from '@kbn/i18n';
+ import { FormattedMessage } from '@kbn/i18n-react';
+ 
+ import { CloudDetails, useCloudDetails } from '../../../../shared/cloud_details/cloud_details';
+-import { decodeCloudId } from '../../../../shared/decode_cloud_id/decode_cloud_id';
+ import { docLinks } from '../../../../shared/doc_links';
+ import { KibanaLogic } from '../../../../shared/kibana';
+ 
+@@ -36,8 +35,7 @@ import { GenerateEngineApiKeyModal } from './generate_engine_api_key_modal/gener
+ 
+ export const elasticsearchUrl = (cloudContext: CloudDetails): string => {
+   const defaultUrl = 'https://localhost:9200';
+-  const url =
+-    (cloudContext.cloudId && decodeCloudId(cloudContext.cloudId)?.elasticsearchUrl) || defaultUrl;
++  const url = cloudContext.elasticsearchUrl || defaultUrl;
+   return url;
+ };
+ 
+diff --git a/x-pack/plugins/enterprise_search/public/applications/enterprise_search_content/components/search_index/components/curl_request/curl_request.tsx b/x-pack/plugins/enterprise_search/public/applications/enterprise_search_content/components/search_index/components/curl_request/curl_request.tsx
+index 6dfbf1c5083..a645a60fb67 100644
+--- a/x-pack/plugins/enterprise_search/public/applications/enterprise_search_content/components/search_index/components/curl_request/curl_request.tsx
++++ b/x-pack/plugins/enterprise_search/public/applications/enterprise_search_content/components/search_index/components/curl_request/curl_request.tsx
+@@ -12,8 +12,6 @@ import { EuiCodeBlock } from '@elastic/eui';
+ import { IngestPipelineParams } from '../../../../../../../common/types/connectors';
+ import { useCloudDetails } from '../../../../../shared/cloud_details/cloud_details';
+ 
+-import { decodeCloudId } from '../../../../../shared/decode_cloud_id/decode_cloud_id';
+-
+ interface CurlRequestParams {
+   apiKey?: string;
+   document?: Record<string, unknown>;
+@@ -30,8 +28,7 @@ export const CurlRequest: React.FC<CurlRequestParams> = ({
+   const cloudContext = useCloudDetails();
+ 
+   const DEFAULT_URL = 'https://localhost:9200';
+-  const baseUrl =
+-    (cloudContext.cloudId && decodeCloudId(cloudContext.cloudId)?.elasticsearchUrl) || DEFAULT_URL;
++  const baseUrl = cloudContext.elasticsearchUrl || DEFAULT_URL;
+   const apiKeyExample = apiKey || '<Replace_with_created_API_key>';
+   const { name: pipelineName, ...pipelineParams } = pipeline ?? {};
+   // We have to prefix the parameters with an underscore because that's what the actual pipeline looks for
+diff --git a/x-pack/plugins/enterprise_search/public/applications/shared/cloud_details/cloud_details.ts b/x-pack/plugins/enterprise_search/public/applications/shared/cloud_details/cloud_details.ts
+index b46a7f9c130..33a5ab1d114 100644
+--- a/x-pack/plugins/enterprise_search/public/applications/shared/cloud_details/cloud_details.ts
++++ b/x-pack/plugins/enterprise_search/public/applications/shared/cloud_details/cloud_details.ts
+@@ -12,6 +12,8 @@ import { KibanaLogic } from '../kibana';
+ export interface CloudDetails {
+   cloudId: string | undefined;
+   deploymentUrl: string | undefined;
++  elasticsearchUrl: string | undefined;
++  kibanaUrl: string | undefined;
+ }
+ 
+ export const useCloudDetails = (): CloudDetails => {
+@@ -19,5 +21,7 @@ export const useCloudDetails = (): CloudDetails => {
+   return {
+     cloudId: cloud?.cloudId,
+     deploymentUrl: cloud?.deploymentUrl,
++    elasticsearchUrl: cloud?.elasticsearchUrl,
++    kibanaUrl: cloud?.kibanaUrl,
+   };
+ };
+diff --git a/x-pack/plugins/enterprise_search/public/applications/shared/get_cloud_enterprise_search_host/get_cloud_enterprise_search_host.ts b/x-pack/plugins/enterprise_search/public/applications/shared/get_cloud_enterprise_search_host/get_cloud_enterprise_search_host.ts
+index e7a61113b51..01e8ae84be1 100644
+--- a/x-pack/plugins/enterprise_search/public/applications/shared/get_cloud_enterprise_search_host/get_cloud_enterprise_search_host.ts
++++ b/x-pack/plugins/enterprise_search/public/applications/shared/get_cloud_enterprise_search_host/get_cloud_enterprise_search_host.ts
+@@ -5,29 +5,13 @@
+  * 2.0.
+  */
+ 
+-import { CloudSetup } from '@kbn/cloud-plugin/public';
+-
+-import { decodeCloudId } from '../decode_cloud_id/decode_cloud_id';
++import type { CloudSetup } from '@kbn/cloud-plugin/public';
+ 
+ export function getCloudEnterpriseSearchHost(cloud: CloudSetup | undefined): string | undefined {
+-  if (cloud && cloud.isCloudEnabled && cloud.cloudId) {
+-    const deploymentId = getDeploymentId(cloud.cloudId);
+-    const res = decodeCloudId(cloud.cloudId);
+-    if (!(deploymentId && res)) {
+-      return;
+-    }
+-
++  if (cloud && cloud.isCloudEnabled && cloud.cloudId && cloud.deploymentId && cloud.cloudHost) {
+     // Enterprise Search Server url are formed like this `https://<deploymentId>.ent.<host>
+-    return `https://${deploymentId}.ent.${res.host}${
+-      res.defaultPort !== '443' ? `:${res.defaultPort}` : ''
++    return `https://${cloud.deploymentId}.ent.${cloud.cloudHost}${
++      cloud.cloudDefaultPort && cloud.cloudDefaultPort !== '443' ? `:${cloud.cloudDefaultPort}` : ''
+     }`;
+   }
+ }
+-
+-function getDeploymentId(cloudId: string): string | undefined {
+-  const [deploymentId, rest] = cloudId.split(':');
+-
+-  if (deploymentId && rest) {
+-    return deploymentId;
+-  }
+-}
+diff --git a/x-pack/plugins/fleet/common/index.ts b/x-pack/plugins/fleet/common/index.ts
+index 21b66ed14a0..6d89be74ada 100644
+--- a/x-pack/plugins/fleet/common/index.ts
++++ b/x-pack/plugins/fleet/common/index.ts
+@@ -71,8 +71,6 @@ export {
+   // Package policy helpers
+   isValidNamespace,
+   INVALID_NAMESPACE_CHARACTERS,
+-  // TODO Should probably not be exposed by Fleet
+-  decodeCloudId,
+   getFileMetadataIndexName,
+   getFileDataIndexName,
+ } from './services';
+diff --git a/x-pack/plugins/fleet/common/services/index.ts b/x-pack/plugins/fleet/common/services/index.ts
+index 6f799c4a01b..671f416f0c9 100644
+--- a/x-pack/plugins/fleet/common/services/index.ts
++++ b/x-pack/plugins/fleet/common/services/index.ts
+@@ -15,7 +15,6 @@ export {
+ } from './package_to_package_policy';
+ export { fullAgentPolicyToYaml } from './full_agent_policy_to_yaml';
+ export { isPackageLimited, doesAgentPolicyAlreadyIncludePackage } from './limited_package';
+-export { decodeCloudId } from './decode_cloud_id';
+ export { isValidNamespace, INVALID_NAMESPACE_CHARACTERS } from './is_valid_namespace';
+ export { isDiffPathProtocol } from './is_diff_path_protocol';
+ export { LicenseService } from './license';
+diff --git a/x-pack/plugins/fleet/server/services/output.ts b/x-pack/plugins/fleet/server/services/output.ts
+index 8666330f664..50fb7b54a53 100644
+--- a/x-pack/plugins/fleet/server/services/output.ts
++++ b/x-pack/plugins/fleet/server/services/output.ts
+@@ -25,7 +25,7 @@ import {
+   AGENT_POLICY_SAVED_OBJECT_TYPE,
+ } from '../constants';
+ import { SO_SEARCH_LIMIT, outputType } from '../../common/constants';
+-import { decodeCloudId, normalizeHostsForAgents } from '../../common/services';
++import { normalizeHostsForAgents } from '../../common/services';
+ import {
+   OutputUnauthorizedError,
+   OutputInvalidError,
+@@ -289,8 +289,7 @@ class OutputService {
+ 
+   public getDefaultESHosts(): string[] {
+     const cloud = appContextService.getCloud();
+-    const cloudId = cloud?.isCloudEnabled && cloud.cloudId;
+-    const cloudUrl = cloudId && decodeCloudId(cloudId)?.elasticsearchUrl;
++    const cloudUrl = cloud?.elasticsearchUrl;
+     const cloudHosts = cloudUrl ? [cloudUrl] : undefined;
+     const flagHosts =
+       appContextService.getConfig()!.agents?.elasticsearch?.hosts &&
+diff --git a/x-pack/plugins/fleet/server/services/preconfiguration/fleet_server_host.ts b/x-pack/plugins/fleet/server/services/preconfiguration/fleet_server_host.ts
+index 3dc25332a84..d0a2dac7b64 100644
+--- a/x-pack/plugins/fleet/server/services/preconfiguration/fleet_server_host.ts
++++ b/x-pack/plugins/fleet/server/services/preconfiguration/fleet_server_host.ts
+@@ -7,7 +7,7 @@
+ 
+ import type { ElasticsearchClient, SavedObjectsClientContract } from '@kbn/core/server';
+ 
+-import { decodeCloudId, normalizeHostsForAgents } from '../../../common/services';
++import { normalizeHostsForAgents } from '../../../common/services';
+ import type { FleetConfigType } from '../../config';
+ import { DEFAULT_FLEET_SERVER_HOST_ID } from '../../constants';
+ 
+@@ -27,16 +27,13 @@ import { isDifferent } from './utils';
+ 
+ export function getCloudFleetServersHosts() {
+   const cloudSetup = appContextService.getCloud();
+-  if (cloudSetup && cloudSetup.isCloudEnabled && cloudSetup.cloudId && cloudSetup.deploymentId) {
+-    const res = decodeCloudId(cloudSetup.cloudId);
+-    if (!res) {
+-      return;
+-    }
+-
++  if (cloudSetup && cloudSetup.isCloudEnabled && cloudSetup.cloudHost) {
+     // Fleet Server url are formed like this `https://<deploymentId>.fleet.<host>
+     return [
+-      `https://${cloudSetup.deploymentId}.fleet.${res.host}${
+-        res.defaultPort !== '443' ? `:${res.defaultPort}` : ''
++      `https://${cloudSetup.deploymentId}.fleet.${cloudSetup.cloudHost}${
++        cloudSetup.cloudDefaultPort && cloudSetup.cloudDefaultPort !== '443'
++          ? `:${cloudSetup.cloudDefaultPort}`
++          : ''
+       }`,
+     ];
+   }
+diff --git a/x-pack/plugins/observability_onboarding/server/routes/custom_logs/get_cloud_urls.ts b/x-pack/plugins/observability_onboarding/server/routes/custom_logs/get_cloud_urls.ts
+deleted file mode 100644
+index 62e6e5d84fc..00000000000
+--- a/x-pack/plugins/observability_onboarding/server/routes/custom_logs/get_cloud_urls.ts
++++ /dev/null
+@@ -1,18 +0,0 @@
+-/*
+- * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+- * or more contributor license agreements. Licensed under the Elastic License
+- * 2.0; you may not use this file except in compliance with the Elastic License
+- * 2.0.
+- */
+-
+-import { decodeCloudId } from '@kbn/fleet-plugin/common';
+-
+-export function getCloudUrls(cloudId: string) {
+-  const decodedCloudId = decodeCloudId(cloudId);
+-  if (decodedCloudId) {
+-    return {
+-      elasticsearchUrl: decodedCloudId.elasticsearchUrl,
+-      kibanaUrl: decodedCloudId.kibanaUrl,
+-    };
+-  }
+-}
+diff --git a/x-pack/plugins/observability_onboarding/server/routes/custom_logs/route.ts b/x-pack/plugins/observability_onboarding/server/routes/custom_logs/route.ts
+index d9498011d03..52cc979a27e 100644
+--- a/x-pack/plugins/observability_onboarding/server/routes/custom_logs/route.ts
++++ b/x-pack/plugins/observability_onboarding/server/routes/custom_logs/route.ts
+@@ -11,7 +11,6 @@ import { ObservabilityOnboardingState } from '../../saved_objects/observability_
+ import { createObservabilityOnboardingServerRoute } from '../create_observability_onboarding_server_route';
+ import { createShipperApiKey } from './api_key/create_shipper_api_key';
+ import { hasLogMonitoringPrivileges } from './api_key/has_log_monitoring_privileges';
+-import { getCloudUrls } from './get_cloud_urls';
+ import { getFallbackUrls } from './get_fallback_urls';
+ import { getHasLogs } from './get_has_logs';
+ import { getObservabilityOnboardingState } from './get_observability_onboarding_state';
+@@ -50,9 +49,8 @@ const installShipperSetupRoute = createObservabilityOnboardingServerRoute({
+     const { core, plugins } = resources;
+     const coreStart = await core.start();
+ 
+-    const cloudId = plugins.cloud.setup.cloudId;
+-    const { kibanaUrl } =
+-      (cloudId && getCloudUrls(cloudId)) || getFallbackUrls(coreStart);
++    const kibanaUrl =
++      plugins.cloud?.setup?.kibanaUrl ?? getFallbackUrls(coreStart).kibanaUrl;
+     const scriptDownloadUrl = `${kibanaUrl}/plugins/observabilityOnboarding/assets/standalone_agent_setup.sh`;
+     const apiEndpoint = `${kibanaUrl}/api/observability_onboarding`;
+ 
+diff --git a/x-pack/plugins/observability_onboarding/server/routes/elastic_agent/route.ts b/x-pack/plugins/observability_onboarding/server/routes/elastic_agent/route.ts
+index 7d5505b79c9..320547410bd 100644
+--- a/x-pack/plugins/observability_onboarding/server/routes/elastic_agent/route.ts
++++ b/x-pack/plugins/observability_onboarding/server/routes/elastic_agent/route.ts
+@@ -9,7 +9,6 @@ import { getAuthenticationAPIKey } from '../../lib/get_authentication_api_key';
+ import { createObservabilityOnboardingServerRoute } from '../create_observability_onboarding_server_route';
+ import { getObservabilityOnboardingState } from '../custom_logs/get_observability_onboarding_state';
+ import { generateYml } from './generate_yml';
+-import { getCloudUrls } from '../custom_logs/get_cloud_urls';
+ import { getFallbackUrls } from '../custom_logs/get_fallback_urls';
+ 
+ const generateConfig = createObservabilityOnboardingServerRoute({
+@@ -23,9 +22,9 @@ const generateConfig = createObservabilityOnboardingServerRoute({
+     const savedObjectsClient =
+       coreStart.savedObjects.createInternalRepository();
+ 
+-    const cloudId = plugins.cloud.setup.cloudId;
+-    const { elasticsearchUrl } =
+-      (cloudId && getCloudUrls(cloudId)) || getFallbackUrls(coreStart);
++    const elasticsearchUrl =
++      plugins.cloud?.setup?.elasticsearchUrl ??
++      getFallbackUrls(coreStart).elasticsearchUrl;
+ 
+     const savedState = await getObservabilityOnboardingState({
+       savedObjectsClient,
+diff --git a/x-pack/plugins/observability_onboarding/tsconfig.json b/x-pack/plugins/observability_onboarding/tsconfig.json
+index 3452fd941d5..8b2e56775c5 100644
+--- a/x-pack/plugins/observability_onboarding/tsconfig.json
++++ b/x-pack/plugins/observability_onboarding/tsconfig.json
+@@ -24,7 +24,6 @@
+     "@kbn/shared-ux-router",
+     "@kbn/i18n-react",
+     "@kbn/cloud-plugin",
+-    "@kbn/fleet-plugin",
+     "@kbn/usage-collection-plugin",
+     "@kbn/observability-shared-plugin",
+     "@kbn/core-http-server",
+diff --git a/x-pack/plugins/serverless_search/common/services/decode_cloud_id.ts b/x-pack/plugins/serverless_search/common/services/decode_cloud_id.ts
+deleted file mode 100644
+index f0059495ef1..00000000000
+--- a/x-pack/plugins/serverless_search/common/services/decode_cloud_id.ts
++++ /dev/null
+@@ -1,66 +0,0 @@
+-/*
+- * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+- * or more contributor license agreements. Licensed under the Elastic License
+- * 2.0; you may not use this file except in compliance with the Elastic License
+- * 2.0.
+- */
+-
+-// copied this solution from fleet due to time constraints
+-// x-pack/fleet/common/services/decode_cloud_id.ts
+-// decodeCloudId decodes the c.id into c.esURL and c.kibURL
+-export function decodeCloudId(cid: string):
+-  | {
+-      defaultPort: string;
+-      elasticsearchUrl: string;
+-      host: string;
+-      kibanaUrl: string;
+-    }
+-  | undefined {
+-  // 1. Ignore anything before `:`.
+-  const id = cid.split(':').pop();
+-  if (!id) {
+-    // throw new Error(`Unable to decode ${id}`);
+-    // eslint-disable-next-line no-console
+-    console.debug(`Unable to decode ${id}`);
+-    return;
+-  }
+-
+-  // 2. base64 decode
+-  let decoded: string | undefined;
+-  try {
+-    decoded = Buffer.from(id, 'base64').toString('utf8');
+-  } catch {
+-    // throw new Error(`base64 decoding failed on ${id}`);
+-    // eslint-disable-next-line no-console
+-    console.debug(`base64 decoding failed on ${id}`);
+-    return;
+-  }
+-
+-  // 3. separate based on `$`
+-  const words = decoded.split('$');
+-  if (words.length < 3) {
+-    // throw new Error(`Expected at least 3 parts in ${decoded}`);
+-    // eslint-disable-next-line no-console
+-    console.debug(`Expected at least 3 parts in ${decoded}`);
+-    return;
+-  }
+-  // 4. extract port from the ES and Kibana host
+-  const [host, defaultPort] = extractPortFromName(words[0]);
+-  const [esId, esPort] = extractPortFromName(words[1], defaultPort);
+-  const [kbId, kbPort] = extractPortFromName(words[2], defaultPort);
+-  // 5. form the URLs
+-  const esUrl = `https://${esId}.${host}:${esPort}`;
+-  const kbUrl = `https://${kbId}.${host}:${kbPort}`;
+-  return {
+-    defaultPort,
+-    elasticsearchUrl: esUrl,
+-    host,
+-    kibanaUrl: kbUrl,
+-  };
+-}
+-// extractPortFromName takes a string in the form `id:port` and returns the
+-// Id and the port. If there's no `:`, the default port is returned
+-function extractPortFromName(word: string, defaultPort = '443') {
+-  const [host, port = defaultPort] = word.split(':');
+-  return [host, port];
+-}
+diff --git a/x-pack/plugins/serverless_search/public/application/components/overview.tsx b/x-pack/plugins/serverless_search/public/application/components/overview.tsx
+index 52ba85870c2..59c0a0f2eca 100644
+--- a/x-pack/plugins/serverless_search/public/application/components/overview.tsx
++++ b/x-pack/plugins/serverless_search/public/application/components/overview.tsx
+@@ -22,7 +22,6 @@ import { i18n } from '@kbn/i18n';
+ import React, { useMemo, useState } from 'react';
+ import { docLinks } from '../../../common/doc_links';
+ import { PLUGIN_ID } from '../../../common';
+-import { decodeCloudId } from '../../../common/services/decode_cloud_id';
+ import { useKibanaServices } from '../hooks/use_kibana';
+ import { CodeBox } from './code_box';
+ import { javascriptDefinition } from './languages/javascript';
+@@ -49,12 +48,9 @@ export const ElasticsearchOverview = () => {
+     http,
+     userProfile,
+   } = useKibanaServices();
+-  const cloudId = cloud.cloudId ?? '';
+   const elasticsearchURL = useMemo(() => {
+-    if (cloudId.length === 0) return ELASTICSEARCH_URL_PLACEHOLDER;
+-    const decodedCloudId = decodeCloudId(cloudId);
+-    return decodedCloudId?.elasticsearchUrl ?? ELASTICSEARCH_URL_PLACEHOLDER;
+-  }, [cloudId]);
++    return cloud?.elasticsearchUrl ?? ELASTICSEARCH_URL_PLACEHOLDER;
++  }, [cloud]);
+   const assetBasePath = http.basePath.prepend(`/plugins/${PLUGIN_ID}/assets/`);
+   const codeSnippetArguments: LanguageDefinitionSnippetArguments = {
+     url: elasticsearchURL,
+diff --git a/x-pack/plugins/synthetics/server/synthetics_service/get_es_hosts.ts b/x-pack/plugins/synthetics/server/synthetics_service/get_es_hosts.ts
+index 646ec52c2fb..23a3f5aaf27 100644
+--- a/x-pack/plugins/synthetics/server/synthetics_service/get_es_hosts.ts
++++ b/x-pack/plugins/synthetics/server/synthetics_service/get_es_hosts.ts
+@@ -12,8 +12,7 @@
+  * 2.0.
+  */
+ 
+-import { CloudSetup } from '@kbn/cloud-plugin/server';
+-import { decodeCloudId } from '@kbn/fleet-plugin/common';
++import type { CloudSetup } from '@kbn/cloud-plugin/server';
+ import { ServiceConfig } from '../../common/config';
+ 
+ export function getEsHosts({
+@@ -23,8 +22,7 @@ export function getEsHosts({
+   cloud?: CloudSetup;
+   config: ServiceConfig;
+ }): string[] {
+-  const cloudId = cloud?.isCloudEnabled && cloud.cloudId;
+-  const cloudUrl = cloudId && decodeCloudId(cloudId)?.elasticsearchUrl;
++  const cloudUrl = cloud?.isCloudEnabled && cloud?.elasticsearchUrl;
+   const cloudHosts = cloudUrl ? [cloudUrl] : undefined;
+   if (cloudHosts && cloudHosts.length > 0) {
+     return cloudHosts;

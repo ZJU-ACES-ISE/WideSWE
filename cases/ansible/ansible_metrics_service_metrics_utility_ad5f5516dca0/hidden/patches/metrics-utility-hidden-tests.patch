@@ -1,0 +1,1406 @@
+diff --git a/metrics_utility/test/gather/test_feature_flags_service_gather.py b/metrics_utility/test/gather/test_feature_flags_service_gather.py
+new file mode 100644
+index 0000000..6354dc9
+--- /dev/null
++++ b/metrics_utility/test/gather/test_feature_flags_service_gather.py
+@@ -0,0 +1,38 @@
++import pytest
++
++from django.db import connection
++
++from metrics_utility.library.collectors.controller.feature_flags_service import feature_flags_service
++
++
++# Expected enabled feature flags seeded by dab_feature_flags.sql
++# (only flags with condition='boolean' and value='True')
++feature_flags_service_lines = [
++    'name,condition,value,description,support_level,toggle_type,visibility',
++    'FEATURE_ANALYTICS_ENABLED,boolean,True,Enables analytics data collection.,tech-preview,boolean,True',
++    'FEATURE_INDIRECT_NODE_COUNTING_ENABLED,boolean,True,Enables indirect node counting for managed hosts.,supported,boolean,True',
++]
++
++feature_flags_service_skip_columns = []
++
++
++@pytest.mark.filterwarnings('ignore::ResourceWarning')
++def test_feature_flags_service_command():
++    """Build and validate feature_flags_service output from library collector."""
++    collector_instance = feature_flags_service(db=connection)
++    df = collector_instance.gather()
++
++    assert df is not None, 'feature_flags_service returned None'
++    assert not df.empty, 'feature_flags_service returned an empty DataFrame'
++
++    flag_values = {str(value) for column in df.columns for value in df[column].dropna().tolist()}
++
++    # The disabled flag should NOT appear in the results
++    assert 'FEATURE_SOME_DISABLED_FLAG' not in flag_values, 'Disabled feature flags should be filtered out'
++
++    # The two enabled flags from test data should be present
++    assert 'FEATURE_INDIRECT_NODE_COUNTING_ENABLED' in flag_values
++    assert 'FEATURE_ANALYTICS_ENABLED' in flag_values
++
++    # Exactly 2 enabled flags from test data
++    assert len(df) == 2, f'Expected 2 enabled feature flags, got {len(df)}'
+diff --git a/metrics_utility/test/library/test_collectors_task_executions_service.py b/metrics_utility/test/library/test_collectors_task_executions_service.py
+new file mode 100644
+index 0000000..56bc4aa
+--- /dev/null
++++ b/metrics_utility/test/library/test_collectors_task_executions_service.py
+@@ -0,0 +1,221 @@
++"""
++Unit tests for the task_executions_service collector.
++"""
++
++import ast
++import importlib
++from datetime import datetime, timezone
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import pandas as pd
++import pytest
++
++
++def _resolve_task_executions_service():
++    """Find the prompt-named collector without prescribing its subpackage."""
++    import metrics_utility.library.collectors as collectors_package
++
++    candidates = []
++    direct = getattr(collectors_package, 'task_executions_service', None)
++    if callable(direct):
++        candidates.append(direct)
++
++    package_root = Path(collectors_package.__file__).parent
++    for source_path in package_root.rglob('*.py'):
++        try:
++            tree = ast.parse(source_path.read_text(encoding='utf-8'))
++        except (OSError, SyntaxError, UnicodeDecodeError):
++            continue
++
++        defines_collector = any(
++            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == 'task_executions_service'
++            for node in ast.walk(tree)
++        )
++        if not defines_collector:
++            continue
++
++        relative_module = source_path.relative_to(package_root).with_suffix('')
++        module_parts = list(relative_module.parts)
++        if module_parts[-1] == '__init__':
++            module_parts.pop()
++        module_name = '.'.join([collectors_package.__name__, *module_parts])
++        module = importlib.import_module(module_name)
++        candidate = getattr(module, 'task_executions_service', None)
++        if callable(candidate):
++            candidates.append(candidate)
++
++    unique_candidates = {id(candidate): candidate for candidate in candidates}
++    assert unique_candidates, 'No callable task_executions_service was found in the collectors package'
++    assert len(unique_candidates) == 1, 'Multiple distinct task_executions_service implementations were found'
++    return next(iter(unique_candidates.values()))
++
++
++def test_task_executions_service_basic():
++    """Collector exposes the repository's public gather interface."""
++    mock_db = MagicMock()
++
++    instance = _resolve_task_executions_service()(db=mock_db)
++
++    assert hasattr(instance, 'gather')
++
++
++@patch('metrics_utility.library.collectors.util._copy_table_pandas')
++def test_task_executions_service_calls_copy_table(mock_copy_pandas):
++    """Collector calls _copy_table_pandas with the correct DB and a valid SQL query."""
++    mock_db = MagicMock()
++    mock_copy_pandas.return_value = pd.DataFrame(
++        {
++            'started_at': [datetime(2025, 6, 13, 1, 0, 0, tzinfo=timezone.utc)],
++            'completed_at': [datetime(2025, 6, 13, 1, 0, 5, tzinfo=timezone.utc)],
++            'collector_type': ['unified_jobs'],
++        }
++    )
++
++    since = datetime(2025, 6, 13, 0, 0, 0, tzinfo=timezone.utc)
++    until = datetime(2025, 6, 14, 0, 0, 0, tzinfo=timezone.utc)
++
++    instance = _resolve_task_executions_service()(db=mock_db, since=since, until=until)
++    result = instance.gather()
++
++    mock_copy_pandas.assert_called_once()
++    call_args = mock_copy_pandas.call_args
++
++    assert call_args[0][0] == mock_db
++    assert isinstance(result, pd.DataFrame)
++
++
++@patch('metrics_utility.library.collectors.util._copy_table_pandas')
++def test_task_executions_service_query_structure(mock_copy_pandas):
++    """The requested collection window is represented in the data query."""
++    mock_db = MagicMock()
++    mock_copy_pandas.return_value = pd.DataFrame()
++
++    since = datetime(2025, 6, 13, 0, 0, 0, tzinfo=timezone.utc)
++    until = datetime(2025, 6, 14, 0, 0, 0, tzinfo=timezone.utc)
++
++    instance = _resolve_task_executions_service()(db=mock_db, since=since, until=until)
++    instance.gather()
++
++    call_args = mock_copy_pandas.call_args
++    query = call_args[0][1]
++
++    assert '2025-06-13' in query
++    assert '2025-06-14' in query
++
++
++@patch('metrics_utility.library.collectors.util._copy_table_pandas')
++def test_task_executions_service_propagates_error(mock_copy_pandas):
++    """
++    Collector propagates exceptions to the caller (fail-fast).
++
++    tasks_taskexecution lives in the metrics-service DB, not the controller DB.
++    Passing the wrong connection raises an error that must surface so callers
++    can detect the misconfiguration rather than silently producing empty data.
++    """
++    mock_db = MagicMock()
++    mock_copy_pandas.side_effect = Exception('relation "tasks_taskexecution" does not exist')
++
++    since = datetime(2025, 6, 13, 0, 0, 0, tzinfo=timezone.utc)
++    until = datetime(2025, 6, 14, 0, 0, 0, tzinfo=timezone.utc)
++
++    instance = _resolve_task_executions_service()(db=mock_db, since=since, until=until)
++    with pytest.raises(Exception):
++        instance.gather()
++
++
++@patch('metrics_utility.library.collectors.util._copy_table_pandas')
++def test_task_executions_service_defaults_to_previous_day(mock_copy_pandas):
++    """
++    When no since/until is provided the query window covers the previous calendar day,
++    filtering tasks_taskexecution by started_at.
++    """
++    mock_db = MagicMock()
++    mock_copy_pandas.return_value = pd.DataFrame()
++
++    instance = _resolve_task_executions_service()(db=mock_db)
++    instance.gather()
++
++    call_args = mock_copy_pandas.call_args
++    query = call_args[0][1]
++
++    assert 'started_at >=' in query
++    assert 'started_at <' in query
++
++
++@pytest.mark.parametrize(
++    'since,until',
++    [
++        (
++            datetime(2025, 6, 13, 0, 0, 0, tzinfo=timezone.utc),
++            datetime(2025, 6, 14, 0, 0, 0, tzinfo=timezone.utc),
++        ),
++    ],
++)
++@patch('metrics_utility.library.collectors.util._copy_table_pandas')
++def test_task_executions_service_returns_dataframe_with_expected_columns(mock_copy_pandas, since, until):
++    """Collector returns the task execution rows produced for the requested window."""
++    mock_db = MagicMock()
++    expected = pd.DataFrame(
++        {
++            'started_at': [
++                datetime(2025, 6, 13, 1, 0, 0, tzinfo=timezone.utc),
++                datetime(2025, 6, 13, 2, 0, 0, tzinfo=timezone.utc),
++                datetime(2025, 6, 13, 3, 0, 0, tzinfo=timezone.utc),
++            ],
++            'completed_at': [
++                datetime(2025, 6, 13, 1, 0, 4, tzinfo=timezone.utc),
++                datetime(2025, 6, 13, 2, 0, 5, tzinfo=timezone.utc),
++                None,
++            ],
++            'collector_type': ['unified_jobs', 'unified_jobs', 'job_host_summary_service'],
++        }
++    )
++    mock_copy_pandas.return_value = expected
++
++    instance = _resolve_task_executions_service()(db=mock_db, since=since, until=until)
++    result = instance.gather()
++
++    assert isinstance(result, pd.DataFrame)
++    pd.testing.assert_frame_equal(result, expected)
++
++
++@patch('metrics_utility.library.collectors.util._copy_table_pandas')
++def test_task_executions_service_covers_both_hourly_and_snapshot_collectors(mock_copy_pandas):
++    """
++    Collector covers both hourly collectors (24 runs/day) and snapshot collectors
++    (1 run/day) — all recorded in tasks_taskexecution.
++    Pipeline tasks are NOT included; they run after this collector.
++    """
++    mock_db = MagicMock()
++    mock_copy_pandas.return_value = pd.DataFrame(
++        {
++            'started_at': [
++                datetime(2025, 6, 13, 1, 0, 0, tzinfo=timezone.utc),
++                datetime(2025, 6, 13, 2, 0, 0, tzinfo=timezone.utc),
++                datetime(2025, 6, 13, 3, 0, 0, tzinfo=timezone.utc),
++            ],
++            'completed_at': [
++                datetime(2025, 6, 13, 1, 0, 4, tzinfo=timezone.utc),
++                datetime(2025, 6, 13, 2, 0, 3, tzinfo=timezone.utc),
++                datetime(2025, 6, 13, 3, 0, 1, tzinfo=timezone.utc),
++            ],
++            'collector_type': [
++                'unified_jobs',  # hourly
++                'unified_jobs',  # hourly (second hour)
++                'execution_environments',  # snapshot
++            ],
++        }
++    )
++
++    since = datetime(2025, 6, 13, 0, 0, 0, tzinfo=timezone.utc)
++    until = datetime(2025, 6, 14, 0, 0, 0, tzinfo=timezone.utc)
++
++    instance = _resolve_task_executions_service()(db=mock_db, since=since, until=until)
++    result = instance.gather()
++
++    assert isinstance(result, pd.DataFrame)
++    collector_types = set(result['collector_type'].tolist())
++    assert 'unified_jobs' in collector_types
++    assert 'execution_environments' in collector_types
++    assert len(result) == 3
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_all.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_all.py
+index 73ce008..ed31513 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_all.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_all.py
+@@ -24,7 +24,6 @@ from datetime import datetime
+ import pandas as pd
+ import pytest
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.library.storage.segment import StorageSegment
+ 
+ # Import all job data from job1 through job8
+@@ -54,6 +53,7 @@ from metrics_utility.test.test_anonymized_rollups.big_test1.job7 import jobs as
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job8 import events as events8
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job8 import jobhostsummary as jhs8
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job8 import jobs as jobs8
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ @pytest.fixture(scope='module')
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_all_no_events.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_all_no_events.py
+index a910265..090df8d 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_all_no_events.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_all_no_events.py
+@@ -26,7 +26,6 @@ from datetime import datetime
+ import pandas as pd
+ import pytest
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.library.storage.segment import StorageSegment
+ 
+ # Import all job data from job1 through job8 (but NOT events)
+@@ -48,6 +47,7 @@ from metrics_utility.test.test_anonymized_rollups.big_test1.job7 import jobhosts
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job7 import jobs as jobs7
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job8 import jobhostsummary as jhs8
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job8 import jobs as jobs8
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ @pytest.fixture(scope='module')
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job1.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job1.py
+index 2b2f8b6..a91e694 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job1.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job1.py
+@@ -22,10 +22,10 @@ import tempfile
+ 
+ import pandas as pd
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.test_anonymized_rollups.big_test1.credentials import credentials
+ from metrics_utility.test.test_anonymized_rollups.big_test1.execution_environments import execution_environments
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job1 import events, jobhostsummary, jobs
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ def test_big_test1():
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job2.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job2.py
+index 452a368..c8e4996 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job2.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job2.py
+@@ -22,10 +22,10 @@ import tempfile
+ 
+ import pandas as pd
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.test_anonymized_rollups.big_test1.credentials import credentials
+ from metrics_utility.test.test_anonymized_rollups.big_test1.execution_environments import execution_environments
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job2 import events, jobhostsummary, jobs
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ def test_big_test2():
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job3.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job3.py
+index 96978e3..bfad1be 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job3.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job3.py
+@@ -22,10 +22,10 @@ import tempfile
+ 
+ import pandas as pd
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.test_anonymized_rollups.big_test1.credentials import credentials
+ from metrics_utility.test.test_anonymized_rollups.big_test1.execution_environments import execution_environments
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job3 import events, jobhostsummary, jobs
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ def test_big_test3():
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job4.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job4.py
+index 36d12ef..fbb3a60 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job4.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job4.py
+@@ -22,10 +22,10 @@ import tempfile
+ 
+ import pandas as pd
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.test_anonymized_rollups.big_test1.credentials import credentials
+ from metrics_utility.test.test_anonymized_rollups.big_test1.execution_environments import execution_environments
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job4 import events, jobhostsummary, jobs
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ def test_big_test4():
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job5.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job5.py
+index f61eaec..f7c4736 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job5.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job5.py
+@@ -22,10 +22,10 @@ import tempfile
+ 
+ import pandas as pd
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.test_anonymized_rollups.big_test1.credentials import credentials
+ from metrics_utility.test.test_anonymized_rollups.big_test1.execution_environments import execution_environments
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job5 import events, jobhostsummary, jobs
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ def test_big_test5():
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job6.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job6.py
+index fcc08b0..8e3890c 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job6.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job6.py
+@@ -22,10 +22,10 @@ import tempfile
+ 
+ import pandas as pd
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.test_anonymized_rollups.big_test1.credentials import credentials
+ from metrics_utility.test.test_anonymized_rollups.big_test1.execution_environments import execution_environments
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job6 import events, jobhostsummary, jobs
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ def test_big_test6():
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job7.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job7.py
+index 04e5741..80edb56 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job7.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job7.py
+@@ -22,10 +22,10 @@ import tempfile
+ 
+ import pandas as pd
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.test_anonymized_rollups.big_test1.credentials import credentials
+ from metrics_utility.test.test_anonymized_rollups.big_test1.execution_environments import execution_environments
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job7 import events, jobhostsummary, jobs
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ def test_big_test7():
+diff --git a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job8.py b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job8.py
+index 231aa12..1839376 100644
+--- a/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job8.py
++++ b/metrics_utility/test/test_anonymized_rollups/big_test1/test_big_test_job8.py
+@@ -22,10 +22,10 @@ import tempfile
+ 
+ import pandas as pd
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.test_anonymized_rollups.big_test1.credentials import credentials
+ from metrics_utility.test.test_anonymized_rollups.big_test1.execution_environments import execution_environments
+ from metrics_utility.test.test_anonymized_rollups.big_test1.job8 import events, jobhostsummary, jobs
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ 
+ 
+ def test_big_test8():
+diff --git a/metrics_utility/test/test_anonymized_rollups/helpers.py b/metrics_utility/test/test_anonymized_rollups/helpers.py
+new file mode 100644
+index 0000000..84575d0
+--- /dev/null
++++ b/metrics_utility/test/test_anonymized_rollups/helpers.py
+@@ -0,0 +1,262 @@
++"""
++Test helpers for anonymized rollup tests.
++
++These functions support test scenarios that load raw data (DataFrames or CSV file paths),
++run the full rollup+anonymize pipeline, and write intermediate debug files to ./out/batches/.
++They are intentionally NOT part of the production flow — production code calls the individual
++rollup classes and anonymize_rollups() directly.
++"""
++
++import ast
++import importlib
++import json
++import os
++import shutil
++from pathlib import Path
++
++import pandas as pd
++
++from metrics_utility.anonymized_rollups.anonymized_rollups import anonymize_rollups
++from metrics_utility.anonymized_rollups.base_anonymized_rollup import BaseAnonymizedRollup
++from metrics_utility.anonymized_rollups.controller_version_anonymized_rollup import ControllerVersionAnonymizedRollup
++from metrics_utility.anonymized_rollups.credentials_anonymized_rollup import CredentialsAnonymizedRollup
++from metrics_utility.anonymized_rollups.events_modules_anonymized_rollup import EventModulesAnonymizedRollup
++from metrics_utility.anonymized_rollups.execution_environments_anonymized_rollup import ExecutionEnvironmentsAnonymizedRollup
++from metrics_utility.anonymized_rollups.feature_flags_anonymized_rollup import FeatureFlagsAnonymizedRollup
++from metrics_utility.anonymized_rollups.helpers import sanitize_json
++from metrics_utility.anonymized_rollups.jobhostsummary_anonymized_rollup import JobHostSummaryAnonymizedRollup
++from metrics_utility.anonymized_rollups.jobs_anonymized_rollup import JobsAnonymizedRollup
++from metrics_utility.anonymized_rollups.table_metadata_anonymized_rollup import TableMetadataAnonymizedRollup
++from metrics_utility.anonymized_rollups.task_executions_anonymized_rollup import TaskExecutionsAnonymizedRollup
++from metrics_utility.library.collectors.controller import (
++    controller_version_service,
++    credentials_service,
++    execution_environments,
++    feature_flags_service,
++    job_host_summary_service,
++    main_jobevent_service,
++    table_metadata,
++    unified_jobs,
++)
++from metrics_utility.logger import logger
++
++
++OUT_BATCHES_DIR = './out/batches'
++
++
++def _resolve_task_executions_service():
++    """Find the prompt-named collector without prescribing its subpackage."""
++    import metrics_utility.library.collectors as collectors_package
++
++    candidates = []
++    direct = getattr(collectors_package, 'task_executions_service', None)
++    if callable(direct):
++        candidates.append(direct)
++
++    package_root = Path(collectors_package.__file__).parent
++    for source_path in package_root.rglob('*.py'):
++        try:
++            tree = ast.parse(source_path.read_text(encoding='utf-8'))
++        except (OSError, SyntaxError, UnicodeDecodeError):
++            continue
++
++        defines_collector = any(
++            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == 'task_executions_service'
++            for node in ast.walk(tree)
++        )
++        if not defines_collector:
++            continue
++
++        relative_module = source_path.relative_to(package_root).with_suffix('')
++        module_parts = list(relative_module.parts)
++        if module_parts[-1] == '__init__':
++            module_parts.pop()
++        module_name = '.'.join([collectors_package.__name__, *module_parts])
++        module = importlib.import_module(module_name)
++        candidate = getattr(module, 'task_executions_service', None)
++        if callable(candidate):
++            candidates.append(candidate)
++
++    unique_candidates = {id(candidate): candidate for candidate in candidates}
++    if not unique_candidates:
++        raise ImportError('No callable task_executions_service was found in the collectors package')
++    if len(unique_candidates) != 1:
++        raise ImportError('Multiple distinct task_executions_service implementations were found')
++    return next(iter(unique_candidates.values()))
++
++
++# loads data from a list of dataframes
++# then filter_function is applied to the dataframe
++# all result dataframes are concatenated into one dataframe
++def load_anonymized_rollup_data(rollup_object: BaseAnonymizedRollup, dataframe_list):
++    # compat for one dataframe
++    if isinstance(dataframe_list, pd.DataFrame):
++        prepared_data = rollup_object.prepare(dataframe_list)
++        return rollup_object.merge(None, prepared_data)
++
++    concat_data = None
++
++    rollup_object_name = rollup_object.rollup_name
++
++    counter = -1
++    for dataframe in dataframe_list:
++        counter += 1
++        # compat for CSVs
++        if isinstance(dataframe, str):
++            dataframe = pd.read_csv(dataframe, encoding='utf-8')
++
++        prepared_data = rollup_object.prepare(dataframe)
++        # serialize prepared data to json
++        prepared_data = json.dumps(prepared_data, indent=2)
++        # back to dict/list
++        prepared_data = json.loads(prepared_data)
++        concat_data = rollup_object.merge(concat_data, prepared_data)
++        # concat data to json and then back
++        concat_data = json.dumps(concat_data, indent=2)
++        concat_data = json.loads(concat_data)
++
++        # Create a subdirectory for this rollup
++        rollup_batch_dir = os.path.join(OUT_BATCHES_DIR, rollup_object_name)
++        os.makedirs(rollup_batch_dir, exist_ok=True)
++        # save prepare data and concat data to separate files (as json pretty printed)
++        # Each rollup has its own folder
++        file1_name = os.path.join(rollup_batch_dir, f'{counter}_prepare.json')
++        file2_name = os.path.join(rollup_batch_dir, f'{counter}_xconcat.json')
++        with open(file1_name, 'w') as f:
++            f.write(json.dumps(prepared_data, indent=2))
++        with open(file2_name, 'w') as f:
++            f.write(json.dumps(concat_data, indent=2))
++
++    return concat_data
++
++
++def compute_anonymized_rollup_from_raw_data(input_data, salt):
++
++    # delete everything in the directory ./out/batches (including subdirectories)
++    if os.path.exists(OUT_BATCHES_DIR):
++        shutil.rmtree(OUT_BATCHES_DIR, ignore_errors=True)
++
++    jobs = load_anonymized_rollup_data(JobsAnonymizedRollup(), input_data['unified_jobs'])
++    jobs_result = JobsAnonymizedRollup().base(jobs)
++
++    job_host_summary = load_anonymized_rollup_data(JobHostSummaryAnonymizedRollup(), input_data['job_host_summary'])
++    job_host_summary_result = JobHostSummaryAnonymizedRollup().base(job_host_summary)
++
++    events_modules = load_anonymized_rollup_data(EventModulesAnonymizedRollup(), input_data['main_jobevent'])
++    events_modules_result = EventModulesAnonymizedRollup().base(events_modules)
++
++    execution_environments = load_anonymized_rollup_data(ExecutionEnvironmentsAnonymizedRollup(), input_data['execution_environments'])
++    execution_environments_result = ExecutionEnvironmentsAnonymizedRollup().base(execution_environments)
++
++    credentials = load_anonymized_rollup_data(CredentialsAnonymizedRollup(), input_data['credentials'])
++    credentials_result = CredentialsAnonymizedRollup().base(credentials)
++
++    table_metadata = load_anonymized_rollup_data(TableMetadataAnonymizedRollup(), input_data.get('table_metadata', []))
++    table_metadata_result = TableMetadataAnonymizedRollup().base(table_metadata)
++
++    controller_version = load_anonymized_rollup_data(ControllerVersionAnonymizedRollup(), input_data.get('controller_version', []))
++    controller_version_result = ControllerVersionAnonymizedRollup().base(controller_version)
++
++    feature_flags = load_anonymized_rollup_data(FeatureFlagsAnonymizedRollup(), input_data.get('feature_flags', []))
++    feature_flags_result = FeatureFlagsAnonymizedRollup().base(feature_flags)
++
++    task_executions = load_anonymized_rollup_data(TaskExecutionsAnonymizedRollup(), input_data.get('task_executions', []))
++    task_executions_result = TaskExecutionsAnonymizedRollup().base(task_executions)
++
++    anonymized_rollup = anonymize_rollups(
++        events_modules_rollup=events_modules_result['json'],
++        execution_environments_rollup=execution_environments_result['json'],
++        jobs_rollup=jobs_result['json'],
++        job_host_summary_rollup=job_host_summary_result['json'],
++        credentials_rollup=credentials_result['json'],
++        table_metadata_rollup=table_metadata_result['json'],
++        controller_version_rollup=controller_version_result['json'],
++        feature_flags_rollup=feature_flags_result['json'],
++        salt=salt,
++        task_executions_rollup=task_executions_result['json'],
++    )
++    # Sanitize the result to replace NaN and infinity values with None (valid JSON)
++    anonymized_rollup = sanitize_json(anonymized_rollup)
++
++    # save anonymized rollup to file
++    os.makedirs(OUT_BATCHES_DIR, exist_ok=True)
++    file_name = os.path.join(OUT_BATCHES_DIR, 'anonymized_rollup.json')
++    with open(file_name, 'w') as f:
++        f.write(json.dumps(anonymized_rollup, indent=2))
++    return anonymized_rollup
++
++
++def compute_anonymized_rollup(db, salt, since, until, service_db=None):
++    # This will contain list of files that belongs to particular collector
++    execution_environments_data = []
++    try:
++        execution_environments_data = execution_environments(db=db).gather()
++    except Exception as e:
++        logger.error(f'Failed to gather execution_environments data: {e}')
++
++    unified_jobs_data = []
++    try:
++        unified_jobs_data = unified_jobs(db=db, since=since, until=until).gather()
++    except Exception as e:
++        logger.error(f'Failed to gather unified_jobs data: {e}')
++
++    job_host_summary_data = []
++    try:
++        job_host_summary_data = job_host_summary_service(db=db, since=since, until=until).gather()
++    except Exception as e:
++        logger.error(f'Failed to gather job_host_summary data: {e}')
++
++    main_jobevent_data = []
++    try:
++        main_jobevent_data = main_jobevent_service(db=db, since=since, until=until).gather()
++    except Exception as e:
++        logger.error(f'Failed to gather main_jobevent data: {e}')
++
++    credentials_data = []
++    try:
++        credentials_data = credentials_service(db=db, since=since, until=until).gather()
++    except Exception as e:
++        logger.error(f'Failed to gather credentials data: {e}')
++
++    table_metadata_data = []
++    try:
++        table_metadata_data = table_metadata(db=db).gather()
++    except Exception as e:
++        logger.error(f'Failed to gather table_metadata data: {e}')
++
++    controller_version_data = []
++    try:
++        controller_version_data = controller_version_service(db=db).gather()
++    except Exception as e:
++        logger.error(f'Failed to gather controller_version data: {e}')
++
++    feature_flags_data = []
++    try:
++        feature_flags_data = feature_flags_service(db=db).gather()
++    except Exception as e:
++        logger.error(f'Failed to gather feature_flags data: {e}')
++
++    task_executions_data = []
++    if service_db is not None:
++        try:
++            task_executions_service = _resolve_task_executions_service()
++            task_executions_data = task_executions_service(db=service_db, since=since, until=until).gather()
++        except Exception as e:
++            logger.error(f'Failed to gather task_executions data: {e}')
++
++    input_data = {
++        'execution_environments': execution_environments_data,
++        'unified_jobs': unified_jobs_data,
++        'job_host_summary': job_host_summary_data,
++        'main_jobevent': main_jobevent_data,
++        'credentials': credentials_data,
++        'table_metadata': table_metadata_data,
++        'controller_version': controller_version_data,
++        'feature_flags': feature_flags_data,
++        'task_executions': task_executions_data,
++    }
++
++    # load data for each collector
++    json_data = compute_anonymized_rollup_from_raw_data(input_data, salt)
++
++    return json_data
+diff --git a/metrics_utility/test/test_anonymized_rollups/test_anonymized_rollups_module.py b/metrics_utility/test/test_anonymized_rollups/test_anonymized_rollups_module.py
+new file mode 100644
+index 0000000..b4d5801
+--- /dev/null
++++ b/metrics_utility/test/test_anonymized_rollups/test_anonymized_rollups_module.py
+@@ -0,0 +1,121 @@
++"""
++Unit tests targeting uncovered branches in anonymized_rollups.py:
++  - create_anonymized_object: the else/raise ValueError branch
++  - anonymize_data: early-return guard (not a dict / falsy)
++  - _calculate_host_summary_totals: empty host_ids branch
++  - _inject_controller_version: empty list early return
++"""
++
++import pytest
++
++from metrics_utility.anonymized_rollups.anonymized_rollups import (
++    _calculate_host_summary_totals,
++    _inject_controller_version,
++    anonymize_data,
++    create_anonymized_object,
++)
++from metrics_utility.anonymized_rollups.controller_version_anonymized_rollup import ControllerVersionAnonymizedRollup
++from metrics_utility.anonymized_rollups.credentials_anonymized_rollup import CredentialsAnonymizedRollup
++from metrics_utility.anonymized_rollups.events_modules_anonymized_rollup import EventModulesAnonymizedRollup
++from metrics_utility.anonymized_rollups.execution_environments_anonymized_rollup import ExecutionEnvironmentsAnonymizedRollup
++from metrics_utility.anonymized_rollups.feature_flags_anonymized_rollup import FeatureFlagsAnonymizedRollup
++from metrics_utility.anonymized_rollups.jobhostsummary_anonymized_rollup import JobHostSummaryAnonymizedRollup
++from metrics_utility.anonymized_rollups.jobs_anonymized_rollup import JobsAnonymizedRollup
++from metrics_utility.anonymized_rollups.table_metadata_anonymized_rollup import TableMetadataAnonymizedRollup
++from metrics_utility.anonymized_rollups.task_executions_anonymized_rollup import TaskExecutionsAnonymizedRollup
++
++
++# ---------------------------------------------------------------------------
++# create_anonymized_object
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    'name, expected_type',
++    [
++        ('jobs', JobsAnonymizedRollup),
++        ('job_host_summary', JobHostSummaryAnonymizedRollup),
++        ('events_modules', EventModulesAnonymizedRollup),
++        ('execution_environments', ExecutionEnvironmentsAnonymizedRollup),
++        ('credentials', CredentialsAnonymizedRollup),
++        ('table_metadata', TableMetadataAnonymizedRollup),
++        ('controller_version', ControllerVersionAnonymizedRollup),
++        ('feature_flags', FeatureFlagsAnonymizedRollup),
++        ('task_executions', TaskExecutionsAnonymizedRollup),
++    ],
++)
++def test_create_anonymized_object_known_names(name, expected_type):
++    obj = create_anonymized_object(name)
++    assert isinstance(obj, expected_type)
++
++
++def test_create_anonymized_object_unknown_name_raises():
++    with pytest.raises(ValueError, match='Invalid rollup name'):
++        create_anonymized_object('nonexistent_rollup')
++
++
++# ---------------------------------------------------------------------------
++# anonymize_data – early-return guards
++# ---------------------------------------------------------------------------
++
++
++def test_anonymize_data_none_returns_none():
++    """anonymize_data should return immediately (no error) when data is None."""
++    result = anonymize_data(None, 'salt')
++    assert result is None
++
++
++def test_anonymize_data_non_dict_returns_none():
++    """anonymize_data should return immediately when data is not a dict."""
++    result = anonymize_data(['not', 'a', 'dict'], 'salt')
++    assert result is None
++
++
++def test_anonymize_data_empty_dict_does_not_raise():
++    """anonymize_data with an empty dict should be a no-op."""
++    data = {}
++    anonymize_data(data, 'salt')
++    assert data == {}
++
++
++# ---------------------------------------------------------------------------
++# _calculate_host_summary_totals – empty / None host_ids
++# ---------------------------------------------------------------------------
++
++
++def test_calculate_host_summary_totals_empty_host_ids():
++    result = _calculate_host_summary_totals([], host_ids=[])
++    assert result['unique_hosts_total'] == 0
++
++
++def test_calculate_host_summary_totals_none_host_ids():
++    result = _calculate_host_summary_totals([], host_ids=None)
++    assert result['unique_hosts_total'] == 0
++
++
++def test_calculate_host_summary_totals_with_host_ids():
++    result = _calculate_host_summary_totals([], host_ids=[1, 2, 2, 3])
++    # unique: {1, 2, 3}
++    assert result['unique_hosts_total'] == 3
++
++
++# ---------------------------------------------------------------------------
++# _inject_controller_version – empty list early return
++# ---------------------------------------------------------------------------
++
++
++def test_inject_controller_version_empty_list_returns_empty():
++    result = _inject_controller_version([], ['1.0.0'])
++    assert result == []
++
++
++def test_inject_controller_version_injects_first_version():
++    jobs = [{'job_type': 'run'}]
++    result = _inject_controller_version(jobs, ['2.5.0', '2.4.0'])
++    assert result[0]['controller_version'] == '2.5.0'
++
++
++def test_inject_controller_version_no_versions_injects_none():
++    jobs = [{'job_type': 'run'}]
++    result = _inject_controller_version(jobs, [])
++    assert result[0]['controller_version'] is None
+diff --git a/metrics_utility/test/test_anonymized_rollups/test_feature_flags_anonymized_rollup.py b/metrics_utility/test/test_anonymized_rollups/test_feature_flags_anonymized_rollup.py
+new file mode 100644
+index 0000000..a238798
+--- /dev/null
++++ b/metrics_utility/test/test_anonymized_rollups/test_feature_flags_anonymized_rollup.py
+@@ -0,0 +1,76 @@
++import pandas as pd
++
++from metrics_utility.anonymized_rollups.feature_flags_anonymized_rollup import FeatureFlagsAnonymizedRollup
++
++
++# ---------------------------------------------------------------------------
++# prepare()
++# ---------------------------------------------------------------------------
++
++
++def test_prepare_returns_flag_names():
++    rollup = FeatureFlagsAnonymizedRollup()
++    df = pd.DataFrame([{'name': 'flag_a'}, {'name': 'flag_b'}])
++    result = rollup.prepare(df)
++    assert result == ['flag_a', 'flag_b']
++
++
++def test_prepare_none_returns_empty_list():
++    rollup = FeatureFlagsAnonymizedRollup()
++    result = rollup.prepare(None)
++    assert result == []
++
++
++def test_prepare_empty_dataframe_returns_empty_list():
++    rollup = FeatureFlagsAnonymizedRollup()
++    result = rollup.prepare(pd.DataFrame())
++    assert result == []
++
++
++def test_prepare_missing_name_column_returns_empty_list():
++    rollup = FeatureFlagsAnonymizedRollup()
++    df = pd.DataFrame([{'other_column': 'value'}])
++    result = rollup.prepare(df)
++    assert result == []
++
++
++# ---------------------------------------------------------------------------
++# merge()
++# ---------------------------------------------------------------------------
++
++
++def test_merge_returns_new_data():
++    rollup = FeatureFlagsAnonymizedRollup()
++    result = rollup.merge(['old_flag'], ['new_flag'])
++    assert isinstance(result, list)
++    assert 'new_flag' in result
++
++
++def test_merge_with_none_old_returns_new():
++    rollup = FeatureFlagsAnonymizedRollup()
++    assert rollup.merge(None, ['flag_x']) == ['flag_x']
++
++
++# ---------------------------------------------------------------------------
++# base()
++# ---------------------------------------------------------------------------
++
++
++def test_base_none_returns_empty_json():
++    rollup = FeatureFlagsAnonymizedRollup()
++    result = rollup.base(None)
++    assert result == {'json': []}
++
++
++def test_base_with_list():
++    rollup = FeatureFlagsAnonymizedRollup()
++    data = ['flag_a', 'flag_b']
++    result = rollup.base(data)
++    assert result == {'json': ['flag_a', 'flag_b']}
++
++
++def test_base_with_dataframe_calls_prepare():
++    rollup = FeatureFlagsAnonymizedRollup()
++    df = pd.DataFrame([{'name': 'flag_x'}])
++    result = rollup.base(df)
++    assert result == {'json': ['flag_x']}
+diff --git a/metrics_utility/test/test_anonymized_rollups/test_from_gather_to_json.py b/metrics_utility/test/test_anonymized_rollups/test_from_gather_to_json.py
+index 49227ce..e8833ec 100644
+--- a/metrics_utility/test/test_anonymized_rollups/test_from_gather_to_json.py
++++ b/metrics_utility/test/test_anonymized_rollups/test_from_gather_to_json.py
+@@ -8,16 +8,17 @@ import pytest
+ 
+ from django.db import connection
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.library.collectors.controller import (
+     controller_version_service,
+     credentials_service,
+     execution_environments,
++    feature_flags_service,
+     job_host_summary_service,
+     main_jobevent_service,
+     table_metadata,
+     unified_jobs,
+ )
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.util import utcdt
+ 
+ 
+@@ -51,6 +52,8 @@ def _validate_top_level_structure(json_data):
+     assert 'jobs_by_controller_version' in json_data, "Missing 'jobs_by_controller_version' in json_data"
+     assert 'table_metadata' in json_data, "Missing 'table_metadata' at top level"
+     assert 'controller_versions' in json_data, "Missing 'controller_versions' at top level"
++    assert 'feature_flags' in json_data, "Missing 'feature_flags' at top level"
++    assert 'observability_by_tasks' in json_data, "Missing 'observability_by_tasks' at top level"
+ 
+ 
+ def _validate_statistics_structure(statistics):
+@@ -785,6 +788,27 @@ def _validate_jobs_by_controller_version(json_data, statistics):
+     assert len(ctrl_summary['ansible_versions']) > 0, 'ansible_versions should not be empty'
+ 
+ 
++def _validate_feature_flags(json_data):
++    """Validate feature_flags structure and values."""
++    print('--- Validating feature_flags data values ---')
++    assert 'feature_flags' in json_data, 'Should have feature_flags at top level'
++    feature_flags = json_data['feature_flags']
++    assert isinstance(feature_flags, list), 'feature_flags should be a list'
++
++    # All entries must be strings (flag names)
++    for flag in feature_flags:
++        assert isinstance(flag, str), f'Each feature flag should be a string, got {type(flag)}'
++        assert flag.startswith('FEATURE_'), f'Feature flag name should start with FEATURE_, got {flag}'
++
++    # Based on test data seeded by dab_feature_flags.sql, two flags are enabled
++    expected_flags = ['FEATURE_ANALYTICS_ENABLED', 'FEATURE_INDIRECT_NODE_COUNTING_ENABLED']
++    assert len(feature_flags) == len(expected_flags), f'Should have {len(expected_flags)} feature flags, got {len(feature_flags)}'
++    assert set(feature_flags) == set(expected_flags), f'Feature flags should match expected set. Expected: {expected_flags}, Got: {feature_flags}'
++
++    # Disabled flag must not appear
++    assert 'FEATURE_SOME_DISABLED_FLAG' not in feature_flags, 'Disabled flag FEATURE_SOME_DISABLED_FLAG should not be in the rollup'
++
++
+ def _validate_controller_versions(json_data):
+     """Validate controller_versions structure and values."""
+     print('--- Validating controller_versions data values ---')
+@@ -853,10 +877,13 @@ def _collect_data_from_collectors(collectors, time_intervals, db):
+     for collector_name, collector_info in collectors.items():
+         print(f'Collecting {collector_name}...')
+ 
++        # Allow individual collectors to override the default DB connection.
++        collector_db = collector_info.get('db', db)
++
+         if collector_info['needs_since_until']:
+-            dataframes = _collect_time_series_data(collector_info['func'], collector_name, time_intervals, db)
++            dataframes = _collect_time_series_data(collector_info['func'], collector_name, time_intervals, collector_db)
+         else:
+-            dataframes = _collect_snapshot_data(collector_info['func'], collector_name, db)
++            dataframes = _collect_snapshot_data(collector_info['func'], collector_name, collector_db)
+ 
+         results[collector_name] = dataframes
+         print(f'  Collected {len(dataframes)} dataframe(s)')
+@@ -943,6 +970,7 @@ def _validate_all_data(json_data, statistics):
+     _validate_table_metadata_values(json_data)
+     _validate_controller_versions(json_data)
+     _validate_jobs_by_controller_version(json_data, statistics)
++    _validate_feature_flags(json_data)
+ 
+     print('✅ All data value assertions passed!')
+ 
+@@ -982,6 +1010,10 @@ def test_from_gather_to_json(cleanup_glob):
+             'func': controller_version_service,
+             'needs_since_until': False,  # snapshot collector
+         },
++        'feature_flags_service': {
++            'func': feature_flags_service,
++            'needs_since_until': False,  # snapshot collector
++        },
+     }
+ 
+     # Define two hourly intervals: 10:00-11:00 and 11:00-12:00
+@@ -999,6 +1031,7 @@ def test_from_gather_to_json(cleanup_glob):
+         'execution_environments': 'execution_environments',
+         'table_metadata': 'table_metadata',
+         'controller_version_service': 'controller_version',
++        'feature_flags_service': 'feature_flags',
+     }
+ 
+     # Collect data from all collectors
+diff --git a/metrics_utility/test/test_anonymized_rollups/test_jobs_anonymized_rollups.py b/metrics_utility/test/test_anonymized_rollups/test_jobs_anonymized_rollups.py
+index c9c1931..b8c3e8d 100644
+--- a/metrics_utility/test/test_anonymized_rollups/test_jobs_anonymized_rollups.py
++++ b/metrics_utility/test/test_anonymized_rollups/test_jobs_anonymized_rollups.py
+@@ -1422,7 +1422,7 @@ def test_jobs_anonymized_rollups_statistics_ansible_versions():
+ 
+     from datetime import datetime
+ 
+-    from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
++    from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+     from metrics_utility.test.test_anonymized_rollups.test_credentials_anonymized_rollup import credentials
+     from metrics_utility.test.test_anonymized_rollups.test_events_modules_anonymized_rollups import events
+     from metrics_utility.test.test_anonymized_rollups.test_execution_environments_anonymized_rollups import execution_environments
+diff --git a/metrics_utility/test/test_anonymized_rollups/test_json.py b/metrics_utility/test/test_anonymized_rollups/test_json.py
+index bdc42d0..a03c4fe 100644
+--- a/metrics_utility/test/test_anonymized_rollups/test_json.py
++++ b/metrics_utility/test/test_anonymized_rollups/test_json.py
+@@ -10,6 +10,7 @@ from metrics_utility.anonymized_rollups import (
+     CredentialsAnonymizedRollup,
+     EventModulesAnonymizedRollup,
+     ExecutionEnvironmentsAnonymizedRollup,
++    FeatureFlagsAnonymizedRollup,
+     JobHostSummaryAnonymizedRollup,
+     JobsAnonymizedRollup,
+     TableMetadataAnonymizedRollup,
+@@ -18,6 +19,7 @@ from metrics_utility.library.collectors.controller import (
+     controller_version_service,
+     credentials_service,
+     execution_environments,
++    feature_flags_service,
+     job_host_summary_service,
+     main_jobevent_service,
+     table_metadata,
+@@ -106,6 +108,7 @@ def test_json_serialization_roundtrip(cleanup_glob):
+         ('credentials_service', credentials_service, CredentialsAnonymizedRollup, {'since': since, 'until': until}),
+         ('table_metadata', table_metadata, TableMetadataAnonymizedRollup, {}),
+         ('controller_version_service', controller_version_service, ControllerVersionAnonymizedRollup, {}),
++        ('feature_flags_service', feature_flags_service, FeatureFlagsAnonymizedRollup, {}),
+     ]
+ 
+     for collector_name, collector_func, rollup_class, collector_kwargs in collector_rollup_map:
+diff --git a/metrics_utility/test/test_anonymized_rollups/test_multiple_files.py b/metrics_utility/test/test_anonymized_rollups/test_multiple_files.py
+index 6d1cba4..4060f25 100644
+--- a/metrics_utility/test/test_anonymized_rollups/test_multiple_files.py
++++ b/metrics_utility/test/test_anonymized_rollups/test_multiple_files.py
+@@ -26,7 +26,7 @@ from datetime import datetime
+ import pandas as pd
+ import pytest
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup_from_raw_data
+ from metrics_utility.test.test_anonymized_rollups.test_credentials_anonymized_rollup import credentials
+ from metrics_utility.test.test_anonymized_rollups.test_events_modules_anonymized_rollups import events
+ from metrics_utility.test.test_anonymized_rollups.test_execution_environments_anonymized_rollups import execution_environments
+diff --git a/metrics_utility/test/test_anonymized_rollups/test_task_executions_anonymized_rollup.py b/metrics_utility/test/test_anonymized_rollups/test_task_executions_anonymized_rollup.py
+new file mode 100644
+index 0000000..1e24e3e
+--- /dev/null
++++ b/metrics_utility/test/test_anonymized_rollups/test_task_executions_anonymized_rollup.py
+@@ -0,0 +1,220 @@
++import pandas as pd
++import pytest
++
++from metrics_utility.anonymized_rollups.task_executions_anonymized_rollup import TaskExecutionsAnonymizedRollup
++
++
++IDENTITY_KEYS = ('collector_type', 'task_name', 'function_name', 'name')
++TOTAL_KEYS = ('executions_total', 'execution_count', 'count', 'total')
++DURATION_KEYS = (
++    'execution_duration_total_seconds',
++    'execution_time_seconds',
++    'total_duration_seconds',
++    'duration_seconds',
++)
++
++
++def _candidate_frames(groups):
++    """Build equivalent raw-event and pre-aggregated task statistics."""
++    raw_rows = []
++    aggregate_rows = []
++    start = pd.Timestamp('2025-06-13T00:00:00Z')
++
++    for task_name, durations in groups:
++        for offset, duration in enumerate(durations):
++            started_at = start + pd.Timedelta(hours=offset)
++            completed_at = None if duration is None else started_at + pd.Timedelta(seconds=duration)
++            raw_rows.append(
++                {
++                    'collector_type': task_name,
++                    'started_at': None if duration is None else started_at.isoformat(),
++                    'completed_at': None if completed_at is None else completed_at.isoformat(),
++                }
++            )
++
++        aggregate_rows.append(
++            {
++                'task_name': task_name,
++                'executions_total': len(durations),
++                'executions_successful': sum(duration is not None for duration in durations),
++                'executions_failed': sum(duration is None for duration in durations),
++                'execution_time_seconds': sum(duration or 0 for duration in durations),
++            }
++        )
++
++    return [pd.DataFrame(raw_rows), pd.DataFrame(aggregate_rows)]
++
++
++def _identity(item):
++    for key in IDENTITY_KEYS:
++        if key in item:
++            return str(item[key]).strip('"')
++    return None
++
++
++def _metric(item, keys):
++    for key in keys:
++        if key in item and isinstance(item[key], (int, float)) and not isinstance(item[key], bool):
++            return item[key]
++    return None
++
++
++def _summary_item(result, task_name):
++    for item in result:
++        if isinstance(item, dict) and _identity(item) == task_name.strip('"'):
++            return item
++    raise AssertionError(f'No observability entry found for {task_name!r}: {result!r}')
++
++
++def _assert_summary(result, task_name, total, duration=None):
++    item = _summary_item(result, task_name)
++    assert _metric(item, TOTAL_KEYS) == total
++    if duration is not None:
++        assert _metric(item, DURATION_KEYS) == pytest.approx(duration)
++    return item
++
++
++def _prepare_observability(rollup, groups):
++    errors = []
++    for dataframe in _candidate_frames(groups):
++        try:
++            result = rollup.prepare(dataframe)
++        except Exception as exc:
++            errors.append(repr(exc))
++            continue
++        if isinstance(result, list) and result:
++            return result
++    raise AssertionError(f'No supported task-observability input produced data: {errors!r}')
++
++
++def _base_observability(rollup, groups):
++    for dataframe in _candidate_frames(groups):
++        try:
++            result = rollup.base(dataframe)
++        except Exception:
++            continue
++        if isinstance(result, dict) and isinstance(result.get('json'), list) and result['json']:
++            return result
++    raise AssertionError('base() did not expose task observability as a non-empty json list')
++
++
++# ---------------------------------------------------------------------------
++# prepare()
++# ---------------------------------------------------------------------------
++
++
++def test_prepare_none_returns_empty_list():
++    rollup = TaskExecutionsAnonymizedRollup()
++    assert rollup.prepare(None) == []
++
++
++def test_prepare_empty_dataframe_returns_empty_list():
++    rollup = TaskExecutionsAnonymizedRollup()
++    assert rollup.prepare(pd.DataFrame()) == []
++
++
++def test_prepare_hourly_collector_counts_and_durations():
++    rollup = TaskExecutionsAnonymizedRollup()
++    result = _prepare_observability(rollup, [('unified_jobs', [60, 120])])
++    _assert_summary(result, 'unified_jobs', total=2, duration=180)
++
++
++def test_prepare_snapshot_collector_expected_1():
++    rollup = TaskExecutionsAnonymizedRollup()
++    result = _prepare_observability(rollup, [('feature_flags_service', [5])])
++    _assert_summary(result, 'feature_flags_service', total=1, duration=5)
++
++
++def test_prepare_executions_exceeding_expected_give_zero_missing():
++    rollup = TaskExecutionsAnonymizedRollup()
++    result = _prepare_observability(rollup, [('unified_jobs', [60] * 25)])
++    _assert_summary(result, 'unified_jobs', total=25, duration=1500)
++
++
++def test_prepare_unknown_collector_defaults_to_24_expected():
++    rollup = TaskExecutionsAnonymizedRollup()
++    result = _prepare_observability(rollup, [('some_new_collector', [60])])
++    _assert_summary(result, 'some_new_collector', total=1, duration=60)
++
++
++def test_prepare_missing_timestamps_gives_none_durations():
++    rollup = TaskExecutionsAnonymizedRollup()
++    result = _prepare_observability(rollup, [('unified_jobs', [None])])
++    _assert_summary(result, 'unified_jobs', total=1)
++
++
++def test_prepare_strips_surrounding_quotes_from_collector_type():
++    """Quoted task identifiers remain recognizable in the observability output."""
++    rollup = TaskExecutionsAnonymizedRollup()
++    result = _prepare_observability(rollup, [('"unified_jobs"', [60])])
++    _assert_summary(result, 'unified_jobs', total=1, duration=60)
++
++
++def test_prepare_multiple_collector_types_produces_one_row_each():
++    rollup = TaskExecutionsAnonymizedRollup()
++    result = _prepare_observability(
++        rollup,
++        [('unified_jobs', [60]), ('feature_flags_service', [10])],
++    )
++    _assert_summary(result, 'unified_jobs', total=1, duration=60)
++    _assert_summary(result, 'feature_flags_service', total=1, duration=10)
++
++
++def test_prepare_all_snapshot_collectors_expect_1():
++    rollup = TaskExecutionsAnonymizedRollup()
++    for collector_type in ('execution_environments', 'table_metadata', 'controller_version_service', 'feature_flags_service'):
++        result = _prepare_observability(rollup, [(collector_type, [1])])
++        _assert_summary(result, collector_type, total=1, duration=1)
++
++
++def test_prepare_all_hourly_collectors_expect_24():
++    rollup = TaskExecutionsAnonymizedRollup()
++    for collector_type in ('unified_jobs', 'job_host_summary_service', 'credentials_service', 'main_jobevent_service'):
++        result = _prepare_observability(rollup, [(collector_type, [60])])
++        _assert_summary(result, collector_type, total=1, duration=60)
++
++
++# ---------------------------------------------------------------------------
++# merge()
++# ---------------------------------------------------------------------------
++
++
++def test_merge_always_returns_new_data():
++    rollup = TaskExecutionsAnonymizedRollup()
++    old = _prepare_observability(rollup, [('unified_jobs', [1] * 5)])
++    new = _prepare_observability(rollup, [('unified_jobs', [1] * 10)])
++    result = rollup.merge(old, new)
++    item = _summary_item(result, 'unified_jobs')
++    assert _metric(item, TOTAL_KEYS) >= 10
++
++
++def test_merge_with_none_old_returns_new():
++    rollup = TaskExecutionsAnonymizedRollup()
++    new = _prepare_observability(rollup, [('unified_jobs', [1] * 3)])
++    result = rollup.merge(None, new)
++    _assert_summary(result, 'unified_jobs', total=3)
++
++
++# ---------------------------------------------------------------------------
++# base()
++# ---------------------------------------------------------------------------
++
++
++def test_base_none_returns_empty_json():
++    rollup = TaskExecutionsAnonymizedRollup()
++    result = rollup.base(None)
++    assert result == {'json': []}
++
++
++def test_base_with_prepared_list():
++    rollup = TaskExecutionsAnonymizedRollup()
++    data = _prepare_observability(rollup, [('unified_jobs', [1] * 5)])
++    result = rollup.base(data)
++    assert isinstance(result, dict)
++    _assert_summary(result['json'], 'unified_jobs', total=5)
++
++
++def test_base_with_dataframe_calls_prepare():
++    rollup = TaskExecutionsAnonymizedRollup()
++    result = _base_observability(rollup, [('unified_jobs', [60])])
++    _assert_summary(result['json'], 'unified_jobs', total=1, duration=60)
+diff --git a/tools/anonymized_db_perf_data/rollup_performance_test.py b/tools/anonymized_db_perf_data/rollup_performance_test.py
+index 414a578..4a38115 100644
+--- a/tools/anonymized_db_perf_data/rollup_performance_test.py
++++ b/tools/anonymized_db_perf_data/rollup_performance_test.py
+@@ -29,11 +29,6 @@ prepare()
+ 
+ from django.db import connection  # noqa: E402
+ 
+-# Import rollup computation
+-from metrics_utility.anonymized_rollups.anonymized_rollups import (  # noqa: E402
+-    compute_anonymized_rollup_from_raw_data,
+-)
+-
+ # Import collectors
+ from metrics_utility.library.collectors.controller import (  # noqa: E402
+     execution_environments,
+@@ -42,6 +37,11 @@ from metrics_utility.library.collectors.controller import (  # noqa: E402
+     unified_jobs,
+ )
+ 
++# Import rollup computation
++from metrics_utility.test.test_anonymized_rollups.helpers import (  # noqa: E402
++    compute_anonymized_rollup_from_raw_data,
++)
++
+ 
+ # Try to import psutil for memory tracking
+ try:
+diff --git a/tools/docker/dab_feature_flags.sql b/tools/docker/dab_feature_flags.sql
+new file mode 100644
+index 0000000..43b1473
+--- /dev/null
++++ b/tools/docker/dab_feature_flags.sql
+@@ -0,0 +1,73 @@
++-- Feature flag test data for dab_feature_flags_aapflag table
++
++-- Enabled boolean flag
++INSERT INTO public.dab_feature_flags_aapflag (
++    modified,
++    created,
++    name,
++    ui_name,
++    condition,
++    value,
++    required,
++    support_level,
++    visibility,
++    toggle_type,
++    description,
++    support_url,
++    labels,
++    created_by_id,
++    modified_by_id
++) VALUES
++(
++    '2025-11-04 15:00:00+00',
++    '2025-11-04 15:00:00+00',
++    'FEATURE_INDIRECT_NODE_COUNTING_ENABLED',
++    'Indirect Node Counting',
++    'boolean',
++    'True',
++    false,
++    'supported',
++    true,
++    'boolean',
++    'Enables indirect node counting for managed hosts.',
++    '',
++    NULL,
++    NULL,
++    NULL
++),
++-- Disabled boolean flag
++(
++    '2025-11-04 15:00:00+00',
++    '2025-11-04 15:00:00+00',
++    'FEATURE_SOME_DISABLED_FLAG',
++    'Some Disabled Feature',
++    'boolean',
++    'False',
++    false,
++    'supported',
++    true,
++    'boolean',
++    'A feature that is currently disabled.',
++    '',
++    NULL,
++    NULL,
++    NULL
++),
++-- Another enabled boolean flag
++(
++    '2025-11-04 15:00:00+00',
++    '2025-11-04 15:00:00+00',
++    'FEATURE_ANALYTICS_ENABLED',
++    'Analytics',
++    'boolean',
++    'True',
++    false,
++    'tech-preview',
++    true,
++    'boolean',
++    'Enables analytics data collection.',
++    '',
++    NULL,
++    NULL,
++    NULL
++);

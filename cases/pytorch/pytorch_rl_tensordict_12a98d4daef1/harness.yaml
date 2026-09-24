@@ -1,0 +1,42 @@
+task_id: pytorch_rl_tensordict_12a98d4daef1
+hidden_test_patches:
+- repo: rl
+  patch: hidden/patches/rl-hidden-tests.patch
+  test_profile: rl-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test/test_actors.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from pytorch/rl PR 3704
+- repo: tensordict
+  patch: hidden/patches/tensordict-hidden-tests.patch
+  test_profile: tensordict-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test/test_nn.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from pytorch/tensordict PR 1689
+- repo: tensordict
+  patch: hidden/patches/tensordict-contract-alignment.patch
+  test_profile: tensordict-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id003
+  - test/test_nn.py
+  hidden_file: *id003
+  semantic_changes: First verifies that a valid generator is accepted, then preserves
+    the upstream invalid-generator TypeError check without requiring an undisclosed
+    exact exception message.
+  source: Contract derived from pytorch/tensordict PR 1689 and the task prompt.
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - rl-hidden
+    - tensordict-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

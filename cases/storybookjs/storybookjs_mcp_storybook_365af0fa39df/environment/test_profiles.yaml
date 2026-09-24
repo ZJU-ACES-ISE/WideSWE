@@ -1,0 +1,24 @@
+profiles:
+  mcp-hidden:
+    repo: mcp
+    workdir: repos/storybookjs/mcp
+    command: pnpm exec vitest run apps/internal-storybook/tests/mcp-endpoint.e2e.test.ts
+    status: implemented
+    dependency_image: mcr.microsoft.com/playwright:v1.56.1-noble
+    docker_cache:
+    - storybookjs-mcp-pnpm-store
+    test_files:
+    - apps/internal-storybook/tests/mcp-endpoint.e2e.test.ts
+  storybook-hidden:
+    repo: storybook
+    workdir: repos/storybookjs/storybook
+    command: cd code && yarn exec -- vitest run each upstream test file with its owning package config
+    status: implemented
+    dependency_image: mcr.microsoft.com/playwright:v1.56.1-noble
+    docker_cache:
+    - storybookjs-storybook-yarn-cache
+    test_files:
+    - code/addons/vitest/src/node/test-manager.test.ts
+    - code/builders/builder-vite/src/vite-config.test.ts
+    - code/core/src/core-server/utils/index-json.test.ts
+    - code/frameworks/angular/src/server/framework-preset-angular-cli.test.ts

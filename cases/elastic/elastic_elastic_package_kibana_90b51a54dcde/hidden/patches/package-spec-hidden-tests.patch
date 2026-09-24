@@ -1,0 +1,1116 @@
+diff --git a/code/go/pkg/validator/qualified_input_contract_test.go b/code/go/pkg/validator/qualified_input_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd7de222cb9fd83406556669bb17be18815ea56c
+--- /dev/null
++++ b/code/go/pkg/validator/qualified_input_contract_test.go
+@@ -0,0 +1,35 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License;
++// you may not use this file except in compliance with the Elastic License.
++
++package validator
++
++import (
++	"path/filepath"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestQualifiedInputPackageContract(t *testing.T) {
++	packagesRoot := filepath.Join("..", "..", "..", "..", "test", "packages")
++	tests := []struct {
++		name  string
++		valid bool
++	}{
++		{name: "good_input_qualifier", valid: true},
++		{name: "bad_input_qualifier_ambiguous", valid: false},
++		{name: "bad_input_qualifier_old_version", valid: false},
++	}
++
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			err := ValidateFromPath(filepath.Join(packagesRoot, test.name))
++			if test.valid {
++				require.NoError(t, err)
++				return
++			}
++			require.Error(t, err)
++		})
++	}
++}
+diff --git a/test/packages/bad_input_qualifier_ambiguous/changelog.yml b/test/packages/bad_input_qualifier_ambiguous/changelog.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..5a976949e61bd349b80d2a872b903402b0c4625a
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/changelog.yml
+@@ -0,0 +1,5 @@
++- version: 0.0.1
++  changes:
++    - description: Initial release
++      type: enhancement
++      link: https://github.com/elastic/package-spec/pull/1234
+diff --git a/test/packages/bad_input_qualifier_ambiguous/data_stream/access/agent/stream/stream.yml.hbs b/test/packages/bad_input_qualifier_ambiguous/data_stream/access/agent/stream/stream.yml.hbs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d0a3b3825d66e6332ac32924ddf91b0c50dbe24e
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/data_stream/access/agent/stream/stream.yml.hbs
+@@ -0,0 +1,15 @@
++receivers:
++  filelog:
++    include:
++{{#each paths}}
++      - {{this}}
++{{/each}}
++exporters:
++  {{#each exporters}}
++  {{this}}
++  {{/each}}
++service:
++  pipelines:
++    {{#each pipelines}}
++    {{this}}
++    {{/each}}
+diff --git a/test/packages/bad_input_qualifier_ambiguous/data_stream/access/elasticsearch/ingest_pipeline/default.yml b/test/packages/bad_input_qualifier_ambiguous/data_stream/access/elasticsearch/ingest_pipeline/default.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..f55f768875646183ec19a1afe46da527aa8e479b
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/data_stream/access/elasticsearch/ingest_pipeline/default.yml
+@@ -0,0 +1,18 @@
++---
++description: Pipeline for processing Nginx access logs
++processors:
++  - set:
++      tag: set_data_stream_type
++      field: data_stream.type
++      value: logs
++on_failure:
++  - set:
++      field: event.kind
++      value: pipeline_error
++  - set:
++      field: error.message
++      value: >-
++        Processor '{{{ _ingest.on_failure_processor_type }}}'
++        with tag '{{{ _ingest.on_failure_processor_tag }}}'
++        in pipeline '{{{ _ingest.pipeline }}}'
++        failed with message '{{{ _ingest.on_failure_message }}}'
+diff --git a/test/packages/bad_input_qualifier_ambiguous/data_stream/access/fields/fields.yml b/test/packages/bad_input_qualifier_ambiguous/data_stream/access/fields/fields.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..7c798f4534ca5e3d01fb149e5cc48cf22a90ecf8
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/data_stream/access/fields/fields.yml
+@@ -0,0 +1,12 @@
++- name: data_stream.type
++  type: constant_keyword
++  description: Data stream type.
++- name: data_stream.dataset
++  type: constant_keyword
++  description: Data stream dataset.
++- name: data_stream.namespace
++  type: constant_keyword
++  description: Data stream namespace.
++- name: '@timestamp'
++  type: date
++  description: Event timestamp.
+diff --git a/test/packages/bad_input_qualifier_ambiguous/data_stream/access/manifest.yml b/test/packages/bad_input_qualifier_ambiguous/data_stream/access/manifest.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..f95887a2685b22a7076a74b54e4ea5d2fd475233
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/data_stream/access/manifest.yml
+@@ -0,0 +1,15 @@
++title: Nginx Access Logs
++type: logs
++streams:
++  - input: filelog_otel
++    title: Collect Nginx access logs via filelog OTel receiver
++    description: Collecting Nginx access logs via filelog OpenTelemetry receiver.
++    vars:
++      - name: paths
++        type: text
++        title: Log file paths
++        multi: true
++        required: true
++        show_user: true
++        default:
++          - /var/log/nginx/access.log
+diff --git a/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/agent/stream/stream.yml.hbs b/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/agent/stream/stream.yml.hbs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5a44c963bbc43935e932636202abcf516096bc34
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/agent/stream/stream.yml.hbs
+@@ -0,0 +1,13 @@
++receivers:
++  nginx:
++    endpoint: http://127.0.0.1/nginx_status
++    collection_interval: {{period}}
++exporters:
++  {{#each exporters}}
++  {{this}}
++  {{/each}}
++service:
++  pipelines:
++    {{#each pipelines}}
++    {{this}}
++    {{/each}}
+diff --git a/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/elasticsearch/ingest_pipeline/default.yml b/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/elasticsearch/ingest_pipeline/default.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..aea0906a020870b9ea6587005e92f6bc1ba8ae8f
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/elasticsearch/ingest_pipeline/default.yml
+@@ -0,0 +1,18 @@
++---
++description: Pipeline for processing Nginx stub status metrics
++processors:
++  - set:
++      tag: set_data_stream_type
++      field: data_stream.type
++      value: metrics
++on_failure:
++  - set:
++      field: event.kind
++      value: pipeline_error
++  - set:
++      field: error.message
++      value: >-
++        Processor '{{{ _ingest.on_failure_processor_type }}}'
++        with tag '{{{ _ingest.on_failure_processor_tag }}}'
++        in pipeline '{{{ _ingest.pipeline }}}'
++        failed with message '{{{ _ingest.on_failure_message }}}'
+diff --git a/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/fields/fields.yml b/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/fields/fields.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..7c798f4534ca5e3d01fb149e5cc48cf22a90ecf8
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/fields/fields.yml
+@@ -0,0 +1,12 @@
++- name: data_stream.type
++  type: constant_keyword
++  description: Data stream type.
++- name: data_stream.dataset
++  type: constant_keyword
++  description: Data stream dataset.
++- name: data_stream.namespace
++  type: constant_keyword
++  description: Data stream namespace.
++- name: '@timestamp'
++  type: date
++  description: Event timestamp.
+diff --git a/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/manifest.yml b/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/manifest.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3e01137a645da3acd85e5468d27aefbdce7f5b7e
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/data_stream/stubstatus/manifest.yml
+@@ -0,0 +1,14 @@
++title: Nginx Stub Status Metrics
++type: metrics
++streams:
++  - input: nginx_otel
++    title: Collect Nginx stub status metrics via OTel receiver
++    description: Collecting Nginx stub_status metrics via OpenTelemetry receiver.
++    vars:
++      - name: period
++        type: text
++        title: Collection period
++        multi: false
++        required: true
++        show_user: true
++        default: 10s
+diff --git a/test/packages/bad_input_qualifier_ambiguous/docs/README.md b/test/packages/bad_input_qualifier_ambiguous/docs/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2dc5571b4197ca74f3b71fa23392e08778c845f1
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/docs/README.md
+@@ -0,0 +1,3 @@
++# Good Input Qualifier
++
++Integration package with multiple inputs of the same type using named qualifiers.
+diff --git a/test/packages/bad_input_qualifier_ambiguous/manifest.yml b/test/packages/bad_input_qualifier_ambiguous/manifest.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..6457b75ed5318f8791c74de64d1a30580c96480c
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_ambiguous/manifest.yml
+@@ -0,0 +1,29 @@
++format_version: 3.6.0
++name: bad_input_qualifier_ambiguous
++title: "Bad package with ambiguous inputs"
++version: 0.0.1
++source:
++  license: "Apache-2.0"
++description: "Integration package with multiple inputs of the same type without names."
++type: integration
++categories:
++  - observability
++conditions:
++  kibana:
++    version: "^9.4.0"
++  elastic:
++    subscription: "basic"
++policy_templates:
++  - name: nginx
++    title: Nginx logs and metrics
++    description: Collect logs and metrics from Nginx instances
++    inputs:
++      - type: otelcol
++        title: Collect Nginx access logs via filelog OTel receiver
++        description: Use the filelog OTel receiver to tail Nginx access log files.
++      - type: otelcol
++        title: Collect Nginx stub status metrics via OTel receiver
++        description: Use the nginx OTel receiver to scrape Nginx stub_status metrics.
++owner:
++  github: elastic/foobar
++  type: elastic
+diff --git a/test/packages/bad_input_qualifier_old_version/LICENSE.txt b/test/packages/bad_input_qualifier_old_version/LICENSE.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..d645695673349e3947e8e5ae42332d0ac3164cd7
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_old_version/LICENSE.txt
+@@ -0,0 +1,202 @@
++
++                                 Apache License
++                           Version 2.0, January 2004
++                        http://www.apache.org/licenses/
++
++   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
++
++   1. Definitions.
++
++      "License" shall mean the terms and conditions for use, reproduction,
++      and distribution as defined by Sections 1 through 9 of this document.
++
++      "Licensor" shall mean the copyright owner or entity authorized by
++      the copyright owner that is granting the License.
++
++      "Legal Entity" shall mean the union of the acting entity and all
++      other entities that control, are controlled by, or are under common
++      control with that entity. For the purposes of this definition,
++      "control" means (i) the power, direct or indirect, to cause the
++      direction or management of such entity, whether by contract or
++      otherwise, or (ii) ownership of fifty percent (50%) or more of the
++      outstanding shares, or (iii) beneficial ownership of such entity.
++
++      "You" (or "Your") shall mean an individual or Legal Entity
++      exercising permissions granted by this License.
++
++      "Source" form shall mean the preferred form for making modifications,
++      including but not limited to software source code, documentation
++      source, and configuration files.
++
++      "Object" form shall mean any form resulting from mechanical
++      transformation or translation of a Source form, including but
++      not limited to compiled object code, generated documentation,
++      and conversions to other media types.
++
++      "Work" shall mean the work of authorship, whether in Source or
++      Object form, made available under the License, as indicated by a
++      copyright notice that is included in or attached to the work
++      (an example is provided in the Appendix below).
++
++      "Derivative Works" shall mean any work, whether in Source or Object
++      form, that is based on (or derived from) the Work and for which the
++      editorial revisions, annotations, elaborations, or other modifications
++      represent, as a whole, an original work of authorship. For the purposes
++      of this License, Derivative Works shall not include works that remain
++      separable from, or merely link (or bind by name) to the interfaces of,
++      the Work and Derivative Works thereof.
++
++      "Contribution" shall mean any work of authorship, including
++      the original version of the Work and any modifications or additions
++      to that Work or Derivative Works thereof, that is intentionally
++      submitted to Licensor for inclusion in the Work by the copyright owner
++      or by an individual or Legal Entity authorized to submit on behalf of
++      the copyright owner. For the purposes of this definition, "submitted"
++      means any form of electronic, verbal, or written communication sent
++      to the Licensor or its representatives, including but not limited to
++      communication on electronic mailing lists, source code control systems,
++      and issue tracking systems that are managed by, or on behalf of, the
++      Licensor for the purpose of discussing and improving the Work, but
++      excluding communication that is conspicuously marked or otherwise
++      designated in writing by the copyright owner as "Not a Contribution."
++
++      "Contributor" shall mean Licensor and any individual or Legal Entity
++      on behalf of whom a Contribution has been received by Licensor and
++      subsequently incorporated within the Work.
++
++   2. Grant of Copyright License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      copyright license to reproduce, prepare Derivative Works of,
++      publicly display, publicly perform, sublicense, and distribute the
++      Work and such Derivative Works in Source or Object form.
++
++   3. Grant of Patent License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      (except as stated in this section) patent license to make, have made,
++      use, offer to sell, sell, import, and otherwise transfer the Work,
++      where such license applies only to those patent claims licensable
++      by such Contributor that are necessarily infringed by their
++      Contribution(s) alone or by combination of their Contribution(s)
++      with the Work to which such Contribution(s) was submitted. If You
++      institute patent litigation against any entity (including a
++      cross-claim or counterclaim in a lawsuit) alleging that the Work
++      or a Contribution incorporated within the Work constitutes direct
++      or contributory patent infringement, then any patent licenses
++      granted to You under this License for that Work shall terminate
++      as of the date such litigation is filed.
++
++   4. Redistribution. You may reproduce and distribute copies of the
++      Work or Derivative Works thereof in any medium, with or without
++      modifications, and in Source or Object form, provided that You
++      meet the following conditions:
++
++      (a) You must give any other recipients of the Work or
++          Derivative Works a copy of this License; and
++
++      (b) You must cause any modified files to carry prominent notices
++          stating that You changed the files; and
++
++      (c) You must retain, in the Source form of any Derivative Works
++          that You distribute, all copyright, patent, trademark, and
++          attribution notices from the Source form of the Work,
++          excluding those notices that do not pertain to any part of
++          the Derivative Works; and
++
++      (d) If the Work includes a "NOTICE" text file as part of its
++          distribution, then any Derivative Works that You distribute must
++          include a readable copy of the attribution notices contained
++          within such NOTICE file, excluding those notices that do not
++          pertain to any part of the Derivative Works, in at least one
++          of the following places: within a NOTICE text file distributed
++          as part of the Derivative Works; within the Source form or
++          documentation, if provided along with the Derivative Works; or,
++          within a display generated by the Derivative Works, if and
++          wherever such third-party notices normally appear. The contents
++          of the NOTICE file are for informational purposes only and
++          do not modify the License. You may add Your own attribution
++          notices within Derivative Works that You distribute, alongside
++          or as an addendum to the NOTICE text from the Work, provided
++          that such additional attribution notices cannot be construed
++          as modifying the License.
++
++      You may add Your own copyright statement to Your modifications and
++      may provide additional or different license terms and conditions
++      for use, reproduction, or distribution of Your modifications, or
++      for any such Derivative Works as a whole, provided Your use,
++      reproduction, and distribution of the Work otherwise complies with
++      the conditions stated in this License.
++
++   5. Submission of Contributions. Unless You explicitly state otherwise,
++      any Contribution intentionally submitted for inclusion in the Work
++      by You to the Licensor shall be under the terms and conditions of
++      this License, without any additional terms or conditions.
++      Notwithstanding the above, nothing herein shall supersede or modify
++      the terms of any separate license agreement you may have executed
++      with Licensor regarding such Contributions.
++
++   6. Trademarks. This License does not grant permission to use the trade
++      names, trademarks, service marks, or product names of the Licensor,
++      except as required for reasonable and customary use in describing the
++      origin of the Work and reproducing the content of the NOTICE file.
++
++   7. Disclaimer of Warranty. Unless required by applicable law or
++      agreed to in writing, Licensor provides the Work (and each
++      Contributor provides its Contributions) on an "AS IS" BASIS,
++      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++      implied, including, without limitation, any warranties or conditions
++      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
++      PARTICULAR PURPOSE. You are solely responsible for determining the
++      appropriateness of using or redistributing the Work and assume any
++      risks associated with Your exercise of permissions under this License.
++
++   8. Limitation of Liability. In no event and under no legal theory,
++      whether in tort (including negligence), contract, or otherwise,
++      unless required by applicable law (such as deliberate and grossly
++      negligent acts) or agreed to in writing, shall any Contributor be
++      liable to You for damages, including any direct, indirect, special,
++      incidental, or consequential damages of any character arising as a
++      result of this License or out of the use or inability to use the
++      Work (including but not limited to damages for loss of goodwill,
++      work stoppage, computer failure or malfunction, or any and all
++      other commercial damages or losses), even if such Contributor
++      has been advised of the possibility of such damages.
++
++   9. Accepting Warranty or Additional Liability. While redistributing
++      the Work or Derivative Works thereof, You may choose to offer,
++      and charge a fee for, acceptance of support, warranty, indemnity,
++      or other liability obligations and/or rights consistent with this
++      License. However, in accepting such obligations, You may act only
++      on Your own behalf and on Your sole responsibility, not on behalf
++      of any other Contributor, and only if You agree to indemnify,
++      defend, and hold each Contributor harmless for any liability
++      incurred by, or claims asserted against, such Contributor by reason
++      of your accepting any such warranty or additional liability.
++
++   END OF TERMS AND CONDITIONS
++
++   APPENDIX: How to apply the Apache License to your work.
++
++      To apply the Apache License to your work, attach the following
++      boilerplate notice, with the fields enclosed by brackets "[]"
++      replaced with your own identifying information. (Don't include
++      the brackets!)  The text should be enclosed in the appropriate
++      comment syntax for the file format. We also recommend that a
++      file or class name and description of purpose be included on the
++      same "printed page" as the copyright notice for easier
++      identification within third-party archives.
++
++   Copyright [yyyy] [name of copyright owner]
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++       http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
+diff --git a/test/packages/bad_input_qualifier_old_version/changelog.yml b/test/packages/bad_input_qualifier_old_version/changelog.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb0320a5243f7399502acd6889b0d8a1764140ca
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_old_version/changelog.yml
+@@ -0,0 +1,6 @@
++# newer versions go on top
++- version: "0.0.1"
++  changes:
++    - description: Initial draft of the package
++      type: enhancement
++      link: https://github.com/elastic/integrations/pull/1 # FIXME Replace with the real PR link
+diff --git a/test/packages/bad_input_qualifier_old_version/docs/README.md b/test/packages/bad_input_qualifier_old_version/docs/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..d28db2ce3644bd9a591c117880c39b49d8754f16
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_old_version/docs/README.md
+@@ -0,0 +1 @@
++# Bad integration because of use of otel before 3.6.0
+diff --git a/test/packages/bad_input_qualifier_old_version/img/sample-logo.svg b/test/packages/bad_input_qualifier_old_version/img/sample-logo.svg
+new file mode 100644
+index 0000000000000000000000000000000000000000..6268dd88f3b3db3e7e3989fc13c6088885e1acd6
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_old_version/img/sample-logo.svg
+@@ -0,0 +1 @@
++<svg width="32" height="32" fill="none" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" class="euiIcon euiIcon--xxLarge" focusable="false" role="img" aria-hidden="true"><path fill="#FFF" d="M32 16.77a6.334 6.334 0 00-1.14-3.641 6.298 6.298 0 00-3.02-2.32 9.098 9.098 0 00-.873-5.965A9.05 9.05 0 0022.56.746a9.007 9.007 0 00-5.994-.419 9.037 9.037 0 00-4.93 3.446 4.789 4.789 0 00-5.78-.07A4.833 4.833 0 004.198 9.26a6.384 6.384 0 00-3.035 2.33A6.42 6.42 0 000 15.242 6.341 6.341 0 001.145 18.9a6.305 6.305 0 003.039 2.321 9.334 9.334 0 00-.16 1.725 9.067 9.067 0 001.727 5.333 9.014 9.014 0 004.526 3.287 8.982 8.982 0 005.587-.023 9.016 9.016 0 004.5-3.322 4.789 4.789 0 005.77.074 4.833 4.833 0 001.672-5.542 6.383 6.383 0 003.032-2.331A6.419 6.419 0 0032 16.77z"></path><path fill="#FEC514" d="M12.58 13.787l7.002 3.211 7.066-6.213a7.854 7.854 0 00.152-1.557 7.944 7.944 0 00-1.54-4.704 7.897 7.897 0 00-4.02-2.869 7.87 7.87 0 00-4.932.086 7.9 7.9 0 00-3.92 3.007l-1.174 6.118 1.367 2.92z"></path><path fill="#00BFB3" d="M5.333 21.228A7.964 7.964 0 006.72 27.53a7.918 7.918 0 004.04 2.874 7.89 7.89 0 004.95-.097 7.921 7.921 0 003.926-3.03l1.166-6.102-1.555-2.985-7.03-3.211-6.885 6.248z"></path><path fill="#F04E98" d="M5.288 9.067l4.8 1.137L11.14 4.73a3.785 3.785 0 00-4.538-.023A3.82 3.82 0 005.29 9.065"></path><path fill="#1BA9F5" d="M4.872 10.214a5.294 5.294 0 00-2.595 1.882 5.324 5.324 0 00-.142 6.124 5.287 5.287 0 002.505 2l6.733-6.101-1.235-2.65-5.266-1.255z"></path><path fill="#93C90E" d="M20.873 27.277a3.737 3.737 0 002.285.785 3.783 3.783 0 003.101-1.63 3.813 3.813 0 00.451-3.484l-4.8-1.125-1.037 5.454z"></path><path fill="#07C" d="M21.848 20.563l5.28 1.238a5.34 5.34 0 002.622-1.938 5.37 5.37 0 001.013-3.106 5.312 5.312 0 00-.936-3.01 5.283 5.283 0 00-2.475-1.944l-6.904 6.07 1.4 2.69z"></path></svg>
+\ No newline at end of file
+diff --git a/test/packages/bad_input_qualifier_old_version/img/sample-screenshot.png b/test/packages/bad_input_qualifier_old_version/img/sample-screenshot.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7a56a3ecc078c38636698cefba33f86291dd178
+GIT binary patch
+literal 18849
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/test/packages/bad_input_qualifier_old_version/manifest.yml b/test/packages/bad_input_qualifier_old_version/manifest.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..12c90ecdc60a84b52896af4b681956292d4097f7
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_old_version/manifest.yml
+@@ -0,0 +1,32 @@
++format_version: 3.5.7
++name: bad_input_qualifier_old_version
++title: "Integration package with named inputs and old version"
++version: 0.0.1
++source:
++  license: "Apache-2.0"
++description: "Test package for integration with named inputs and old format_version"
++type: integration
++categories:
++  - custom
++conditions:
++  kibana:
++    version: "^9.4.0"
++  elastic:
++    subscription: "basic"
++icons:
++  - src: /img/sample-logo.svg
++    title: Sample logo
++    size: 32x32
++    type: image/svg+xml
++policy_templates:
++  - name: nginx
++    title: Nginx logs and metrics
++    description: Collect logs and metrics from Nginx instances
++    inputs:
++      - name: filelog_otel
++        type: otelcol
++        title: Collect Nginx access logs via filelog OTel receiver
++        description: Use the filelog OTel receiver to tail Nginx access log files.
++owner:
++  github: elastic/ecosystem
++  type: elastic
+diff --git a/test/packages/bad_input_qualifier_old_version/sample_event.json b/test/packages/bad_input_qualifier_old_version/sample_event.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..e4a442fcbd029762302d1ce665714896df2c0172
+--- /dev/null
++++ b/test/packages/bad_input_qualifier_old_version/sample_event.json
+@@ -0,0 +1,3 @@
++{
++    "description": "This is an example sample-event for Integration package with otelcol input and old version. Replace it with a real sample event. Hint: If system tests exist, running `elastic-package test system --generate` will generate this file."
++}
+diff --git a/test/packages/good_input_qualifier/changelog.yml b/test/packages/good_input_qualifier/changelog.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..5a976949e61bd349b80d2a872b903402b0c4625a
+--- /dev/null
++++ b/test/packages/good_input_qualifier/changelog.yml
+@@ -0,0 +1,5 @@
++- version: 0.0.1
++  changes:
++    - description: Initial release
++      type: enhancement
++      link: https://github.com/elastic/package-spec/pull/1234
+diff --git a/test/packages/good_input_qualifier/data_stream/access/agent/stream/stream.yml.hbs b/test/packages/good_input_qualifier/data_stream/access/agent/stream/stream.yml.hbs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d0a3b3825d66e6332ac32924ddf91b0c50dbe24e
+--- /dev/null
++++ b/test/packages/good_input_qualifier/data_stream/access/agent/stream/stream.yml.hbs
+@@ -0,0 +1,15 @@
++receivers:
++  filelog:
++    include:
++{{#each paths}}
++      - {{this}}
++{{/each}}
++exporters:
++  {{#each exporters}}
++  {{this}}
++  {{/each}}
++service:
++  pipelines:
++    {{#each pipelines}}
++    {{this}}
++    {{/each}}
+diff --git a/test/packages/good_input_qualifier/data_stream/access/elasticsearch/ingest_pipeline/default.yml b/test/packages/good_input_qualifier/data_stream/access/elasticsearch/ingest_pipeline/default.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..f55f768875646183ec19a1afe46da527aa8e479b
+--- /dev/null
++++ b/test/packages/good_input_qualifier/data_stream/access/elasticsearch/ingest_pipeline/default.yml
+@@ -0,0 +1,18 @@
++---
++description: Pipeline for processing Nginx access logs
++processors:
++  - set:
++      tag: set_data_stream_type
++      field: data_stream.type
++      value: logs
++on_failure:
++  - set:
++      field: event.kind
++      value: pipeline_error
++  - set:
++      field: error.message
++      value: >-
++        Processor '{{{ _ingest.on_failure_processor_type }}}'
++        with tag '{{{ _ingest.on_failure_processor_tag }}}'
++        in pipeline '{{{ _ingest.pipeline }}}'
++        failed with message '{{{ _ingest.on_failure_message }}}'
+diff --git a/test/packages/good_input_qualifier/data_stream/access/fields/fields.yml b/test/packages/good_input_qualifier/data_stream/access/fields/fields.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..7c798f4534ca5e3d01fb149e5cc48cf22a90ecf8
+--- /dev/null
++++ b/test/packages/good_input_qualifier/data_stream/access/fields/fields.yml
+@@ -0,0 +1,12 @@
++- name: data_stream.type
++  type: constant_keyword
++  description: Data stream type.
++- name: data_stream.dataset
++  type: constant_keyword
++  description: Data stream dataset.
++- name: data_stream.namespace
++  type: constant_keyword
++  description: Data stream namespace.
++- name: '@timestamp'
++  type: date
++  description: Event timestamp.
+diff --git a/test/packages/good_input_qualifier/data_stream/access/manifest.yml b/test/packages/good_input_qualifier/data_stream/access/manifest.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..f95887a2685b22a7076a74b54e4ea5d2fd475233
+--- /dev/null
++++ b/test/packages/good_input_qualifier/data_stream/access/manifest.yml
+@@ -0,0 +1,15 @@
++title: Nginx Access Logs
++type: logs
++streams:
++  - input: filelog_otel
++    title: Collect Nginx access logs via filelog OTel receiver
++    description: Collecting Nginx access logs via filelog OpenTelemetry receiver.
++    vars:
++      - name: paths
++        type: text
++        title: Log file paths
++        multi: true
++        required: true
++        show_user: true
++        default:
++          - /var/log/nginx/access.log
+diff --git a/test/packages/good_input_qualifier/data_stream/stubstatus/agent/stream/stream.yml.hbs b/test/packages/good_input_qualifier/data_stream/stubstatus/agent/stream/stream.yml.hbs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5a44c963bbc43935e932636202abcf516096bc34
+--- /dev/null
++++ b/test/packages/good_input_qualifier/data_stream/stubstatus/agent/stream/stream.yml.hbs
+@@ -0,0 +1,13 @@
++receivers:
++  nginx:
++    endpoint: http://127.0.0.1/nginx_status
++    collection_interval: {{period}}
++exporters:
++  {{#each exporters}}
++  {{this}}
++  {{/each}}
++service:
++  pipelines:
++    {{#each pipelines}}
++    {{this}}
++    {{/each}}
+diff --git a/test/packages/good_input_qualifier/data_stream/stubstatus/elasticsearch/ingest_pipeline/default.yml b/test/packages/good_input_qualifier/data_stream/stubstatus/elasticsearch/ingest_pipeline/default.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..aea0906a020870b9ea6587005e92f6bc1ba8ae8f
+--- /dev/null
++++ b/test/packages/good_input_qualifier/data_stream/stubstatus/elasticsearch/ingest_pipeline/default.yml
+@@ -0,0 +1,18 @@
++---
++description: Pipeline for processing Nginx stub status metrics
++processors:
++  - set:
++      tag: set_data_stream_type
++      field: data_stream.type
++      value: metrics
++on_failure:
++  - set:
++      field: event.kind
++      value: pipeline_error
++  - set:
++      field: error.message
++      value: >-
++        Processor '{{{ _ingest.on_failure_processor_type }}}'
++        with tag '{{{ _ingest.on_failure_processor_tag }}}'
++        in pipeline '{{{ _ingest.pipeline }}}'
++        failed with message '{{{ _ingest.on_failure_message }}}'
+diff --git a/test/packages/good_input_qualifier/data_stream/stubstatus/fields/fields.yml b/test/packages/good_input_qualifier/data_stream/stubstatus/fields/fields.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..7c798f4534ca5e3d01fb149e5cc48cf22a90ecf8
+--- /dev/null
++++ b/test/packages/good_input_qualifier/data_stream/stubstatus/fields/fields.yml
+@@ -0,0 +1,12 @@
++- name: data_stream.type
++  type: constant_keyword
++  description: Data stream type.
++- name: data_stream.dataset
++  type: constant_keyword
++  description: Data stream dataset.
++- name: data_stream.namespace
++  type: constant_keyword
++  description: Data stream namespace.
++- name: '@timestamp'
++  type: date
++  description: Event timestamp.
+diff --git a/test/packages/good_input_qualifier/data_stream/stubstatus/manifest.yml b/test/packages/good_input_qualifier/data_stream/stubstatus/manifest.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3e01137a645da3acd85e5468d27aefbdce7f5b7e
+--- /dev/null
++++ b/test/packages/good_input_qualifier/data_stream/stubstatus/manifest.yml
+@@ -0,0 +1,14 @@
++title: Nginx Stub Status Metrics
++type: metrics
++streams:
++  - input: nginx_otel
++    title: Collect Nginx stub status metrics via OTel receiver
++    description: Collecting Nginx stub_status metrics via OpenTelemetry receiver.
++    vars:
++      - name: period
++        type: text
++        title: Collection period
++        multi: false
++        required: true
++        show_user: true
++        default: 10s
+diff --git a/test/packages/good_input_qualifier/docs/README.md b/test/packages/good_input_qualifier/docs/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2dc5571b4197ca74f3b71fa23392e08778c845f1
+--- /dev/null
++++ b/test/packages/good_input_qualifier/docs/README.md
+@@ -0,0 +1,3 @@
++# Good Input Qualifier
++
++Integration package with multiple inputs of the same type using named qualifiers.
+diff --git a/test/packages/good_input_qualifier/manifest.yml b/test/packages/good_input_qualifier/manifest.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..61feb6433c0b6d4c97d6d367733e4ee9fd6b8ad5
+--- /dev/null
++++ b/test/packages/good_input_qualifier/manifest.yml
+@@ -0,0 +1,31 @@
++format_version: 3.6.0
++name: good_input_qualifier
++title: "Good package with named inputs"
++version: 0.0.1
++source:
++  license: "Apache-2.0"
++description: "Integration package with multiple inputs of the same type using named qualifiers."
++type: integration
++categories:
++  - observability
++conditions:
++  kibana:
++    version: "^9.4.0"
++  elastic:
++    subscription: "basic"
++policy_templates:
++  - name: nginx
++    title: Nginx logs and metrics
++    description: Collect logs and metrics from Nginx instances
++    inputs:
++      - name: filelog_otel
++        type: otelcol
++        title: Collect Nginx access logs via filelog OTel receiver
++        description: Use the filelog OTel receiver to tail Nginx access log files.
++      - name: nginx_otel
++        type: otelcol
++        title: Collect Nginx stub status metrics via OTel receiver
++        description: Use the nginx OTel receiver to scrape Nginx stub_status metrics.
++owner:
++  github: elastic/foobar
++  type: elastic

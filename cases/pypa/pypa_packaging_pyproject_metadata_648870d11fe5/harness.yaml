@@ -1,0 +1,38 @@
+task_id: pypa_packaging_pyproject_metadata_648870d11fe5
+hidden_test_patches:
+- repo: packaging
+  patch: hidden/patches/packaging-hidden-tests.patch
+  test_profile: packaging-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/metadata/everything.metadata
+  - tests/test_metadata.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from pypa/packaging PR(s) 948
+- repo: pyproject-metadata
+  patch: hidden/patches/pyproject-metadata-hidden-tests.patch
+  test_profile: pyproject_metadata-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id002
+  - tests/packages/metadata-2.5/LICENSE
+  - tests/packages/metadata-2.5/README.md
+  - tests/packages/metadata-2.5/metadata25.py
+  - tests/packages/metadata-2.5/pyproject.toml
+  - tests/test_standard_metadata.py
+  hidden_file: *id002
+  semantic_changes: Preserves PEP 794 validity coverage while checking rejection
+    through the public API without requiring Gold-specific error wording, counts,
+    or ordering. Each negative case first verifies a corresponding valid field value.
+  source: Contract derived from pypa/pyproject-metadata PR 260 and the task prompt.
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - packaging-hidden
+    - pyproject_metadata-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

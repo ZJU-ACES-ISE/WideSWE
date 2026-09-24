@@ -1,0 +1,3819 @@
+diff --git a/.changeset/busy-goats-brush.md b/.changeset/busy-goats-brush.md
+new file mode 100644
+index 000000000..ec19cc049
+--- /dev/null
++++ b/.changeset/busy-goats-brush.md
+@@ -0,0 +1,5 @@
++---
++'@sveltejs/kit': patch
++---
++
++fix: don't request new data when `.refresh` is called on a query with no cache entry
+diff --git a/.changeset/eight-sheep-unite.md b/.changeset/eight-sheep-unite.md
+new file mode 100644
+index 000000000..b18ef353c
+--- /dev/null
++++ b/.changeset/eight-sheep-unite.md
+@@ -0,0 +1,5 @@
++---
++'@sveltejs/kit': minor
++---
++
++breaking: add `run()` method to queries, disallow awaiting queries outside render
+diff --git a/.changeset/great-actors-stop.md b/.changeset/great-actors-stop.md
+new file mode 100644
+index 000000000..83fd72873
+--- /dev/null
++++ b/.changeset/great-actors-stop.md
+@@ -0,0 +1,5 @@
++---
++'@sveltejs/kit': patch
++---
++
++fix: manage queries in their own `$effect.root`
+diff --git a/.changeset/orange-queens-rush.md b/.changeset/orange-queens-rush.md
+new file mode 100644
+index 000000000..3407fff99
+--- /dev/null
++++ b/.changeset/orange-queens-rush.md
+@@ -0,0 +1,5 @@
++---
++'@sveltejs/kit': minor
++---
++
++feat: use `hydratable` for remote function transport
+diff --git a/.changeset/silver-baths-camp.md b/.changeset/silver-baths-camp.md
+new file mode 100644
+index 000000000..d164d8b51
+--- /dev/null
++++ b/.changeset/silver-baths-camp.md
+@@ -0,0 +1,5 @@
++---
++'@sveltejs/kit': patch
++---
++
++fix: deduplicate same-cache-key `batch` calls during SSR
+diff --git a/packages/adapter-netlify/test/apps/split/src/routes/remote/query/+page.svelte b/packages/adapter-netlify/test/apps/split/src/routes/remote/query/+page.svelte
+index a4728ea5c..5f92f6e7a 100644
+--- a/packages/adapter-netlify/test/apps/split/src/routes/remote/query/+page.svelte
++++ b/packages/adapter-netlify/test/apps/split/src/routes/remote/query/+page.svelte
+@@ -1,7 +1,17 @@
+ <script>
++	import { onMount } from 'svelte';
+ 	import { getData } from './example.remote';
++
++	let data = $state.raw(new Promise(() => {}));
++	onMount(() => {
++		data = getData();
++	});
+ </script>
+ 
+-{#await getData() then data}
+-	<p>a: {data.a}</p>
+-{/await}
++<svelte:boundary>
++	<p>a: {(await data).a}</p>
++
++	{#snippet pending()}
++		Loading...
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/adapter-netlify/test/apps/split/svelte.config.js b/packages/adapter-netlify/test/apps/split/svelte.config.js
+index f9615fced..82a386bcf 100644
+--- a/packages/adapter-netlify/test/apps/split/svelte.config.js
++++ b/packages/adapter-netlify/test/apps/split/svelte.config.js
+@@ -2,6 +2,7 @@ import adapter from '../../../index.js';
+ 
+ /** @type {import('@sveltejs/kit').Config} */
+ const config = {
++	compilerOptions: { experimental: { async: true } },
+ 	kit: {
+ 		adapter: adapter({ split: true }),
+ 		experimental: {
+diff --git a/packages/kit/src/exports/public.d.ts b/packages/kit/src/exports/public.d.ts
+index c67fbfe61..aaad6eef8 100644
+--- a/packages/kit/src/exports/public.d.ts
++++ b/packages/kit/src/exports/public.d.ts
+@@ -2102,14 +2102,14 @@ export type RemoteForm<Input extends RemoteFormInput | void, Output> = {
+  * The return value of a remote `command` function. See [Remote functions](https://svelte.dev/docs/kit/remote-functions#command) for full documentation.
+  */
+ export type RemoteCommand<Input, Output> = {
+-	(arg: undefined extends Input ? Input | void : Input): Promise<Awaited<Output>> & {
+-		updates(...queries: Array<RemoteQuery<any> | RemoteQueryOverride>): Promise<Awaited<Output>>;
++	(arg: undefined extends Input ? Input | void : Input): Promise<Output> & {
++		updates(...queries: Array<RemoteQuery<any> | RemoteQueryOverride>): Promise<Output>;
+ 	};
+ 	/** The number of pending command executions */
+ 	get pending(): number;
+ };
+ 
+-export type RemoteResource<T> = Promise<Awaited<T>> & {
++export type RemoteResource<T> = Promise<T> & {
+ 	/** The error in case the query fails. Most often this is a [`HttpError`](https://svelte.dev/docs/kit/@sveltejs-kit#HttpError) but it isn't guaranteed to be. */
+ 	get error(): any;
+ 	/** `true` before the first result is available and during refreshes */
+@@ -2122,12 +2122,18 @@ export type RemoteResource<T> = Promise<Awaited<T>> & {
+ 		  }
+ 		| {
+ 				/** The current value of the query. Undefined until `ready` is `true` */
+-				get current(): Awaited<T>;
++				get current(): T;
+ 				ready: true;
+ 		  }
+ 	);
+ 
+ export type RemoteQuery<T> = RemoteResource<T> & {
++	/**
++	 * Returns a plain promise with the result.
++	 * Unlike awaiting the resource directly, this can only be used _outside_ render
++	 * (i.e. in load functions, event handlers and so on)
++	 */
++	run(): Promise<T>;
+ 	/**
+ 	 * On the client, this function will update the value of the query without re-fetching it.
+ 	 *
+@@ -2161,7 +2167,7 @@ export type RemoteQuery<T> = RemoteResource<T> & {
+ 	 * </form>
+ 	 * ```
+ 	 */
+-	withOverride(update: (current: Awaited<T>) => Awaited<T>): RemoteQueryOverride;
++	withOverride(update: (current: T) => T): RemoteQueryOverride;
+ };
+ 
+ export interface RemoteQueryOverride {
+diff --git a/packages/kit/src/runtime/app/paths/server.js b/packages/kit/src/runtime/app/paths/server.js
+index 2338f4b53..5fd50a890 100644
+--- a/packages/kit/src/runtime/app/paths/server.js
++++ b/packages/kit/src/runtime/app/paths/server.js
+@@ -8,7 +8,7 @@ import { get_hooks } from '__SERVER__/internal.js';
+ /** @type {import('./client.js').asset} */
+ export function asset(file) {
+ 	// @ts-expect-error we use the `resolve` mechanism, but with the 'wrong' input
+-	return assets ? assets + file : resolve(file);
++	return assets && assets !== base ? assets + file : resolve(file);
+ }
+ 
+ /** @type {import('./client.js').resolve} */
+diff --git a/packages/kit/src/runtime/app/server/remote/command.js b/packages/kit/src/runtime/app/server/remote/command.js
+index ebfc170b8..353dc0af7 100644
+--- a/packages/kit/src/runtime/app/server/remote/command.js
++++ b/packages/kit/src/runtime/app/server/remote/command.js
+@@ -65,14 +65,19 @@ export function command(validate_or_fn, maybe_fn) {
+ 	const wrapper = (arg) => {
+ 		const { event, state } = get_request_store();
+ 
+-		if (!state.allows_commands) {
+-			const disallowed_method = !MUTATIVE_METHODS.includes(event.request.method);
++		if (!MUTATIVE_METHODS.includes(event.request.method)) {
+ 			throw new Error(
+-				`Cannot call a command (\`${__.name}(${maybe_fn ? '...' : ''})\`) ${disallowed_method ? `from a ${event.request.method} handler or ` : ''}during server-side rendering`
++				`Cannot call a command (\`${__.name}(${maybe_fn ? '...' : ''})\`) from a ${event.request.method} handler`
+ 			);
+ 		}
+ 
+-		state.refreshes ??= {};
++		if (state.is_in_render) {
++			throw new Error(
++				`Cannot call a command (\`${__.name}(${maybe_fn ? '...' : ''})\`) during server-side rendering`
++			);
++		}
++
++		state.remote.refreshes ??= {};
+ 
+ 		const promise = Promise.resolve(
+ 			run_remote_function(event, state, true, () => validate(arg), fn)
+diff --git a/packages/kit/src/runtime/app/server/remote/form.js b/packages/kit/src/runtime/app/server/remote/form.js
+index 7b4012406..71d4de251 100644
+--- a/packages/kit/src/runtime/app/server/remote/form.js
++++ b/packages/kit/src/runtime/app/server/remote/form.js
+@@ -136,7 +136,7 @@ export function form(validate_or_fn, maybe_fn) {
+ 						data = validated.value;
+ 					}
+ 
+-					state.refreshes ??= {};
++					state.remote.refreshes ??= {};
+ 
+ 					const issue = create_issues();
+ 
+@@ -160,7 +160,7 @@ export function form(validate_or_fn, maybe_fn) {
+ 				// We don't need to care about args or deduplicating calls, because uneval results are only relevant in full page reloads
+ 				// where only one form submission is active at the same time
+ 				if (!event.isRemoteRequest) {
+-					get_cache(__, state)[''] ??= output;
++					get_cache(__, state)[''] ??= { serialize: true, data: output };
+ 				}
+ 
+ 				return output;
+@@ -178,26 +178,26 @@ export function form(validate_or_fn, maybe_fn) {
+ 			get() {
+ 				return create_field_proxy(
+ 					{},
+-					() => get_cache(__)?.['']?.input ?? {},
++					() => get_cache(__)?.['']?.data?.input ?? {},
+ 					(path, value) => {
+ 						const cache = get_cache(__);
+-						const data = cache[''];
++						const entry = cache[''];
+ 
+-						if (data?.submission) {
++						if (entry?.data?.submission) {
+ 							// don't override a submission
+ 							return;
+ 						}
+ 
+ 						if (path.length === 0) {
+-							(cache[''] ??= {}).input = value;
++							(cache[''] ??= { serialize: true, data: {} }).data.input = value;
+ 							return;
+ 						}
+ 
+-						const input = data?.input ?? {};
++						const input = entry?.data?.input ?? {};
+ 						deep_set(input, path.map(String), value);
+-						(cache[''] ??= {}).input = input;
++						(cache[''] ??= { serialize: true, data: {} }).data.input = input;
+ 					},
+-					() => flatten_issues(get_cache(__)?.['']?.issues ?? [])
++					() => flatten_issues(get_cache(__)?.['']?.data?.issues ?? [])
+ 				);
+ 			}
+ 		});
+@@ -219,7 +219,7 @@ export function form(validate_or_fn, maybe_fn) {
+ 		Object.defineProperty(instance, 'result', {
+ 			get() {
+ 				try {
+-					return get_cache(__)?.['']?.result;
++					return get_cache(__)?.['']?.data?.result;
+ 				} catch {
+ 					return undefined;
+ 				}
+@@ -248,14 +248,14 @@ export function form(validate_or_fn, maybe_fn) {
+ 				value: (key) => {
+ 					const { state } = get_request_store();
+ 					const cache_key = __.id + '|' + JSON.stringify(key);
+-					let instance = (state.form_instances ??= new Map()).get(cache_key);
++					let instance = (state.remote.forms ??= new Map()).get(cache_key);
+ 
+ 					if (!instance) {
+ 						instance = create_instance(key);
+ 						instance.__.id = `${__.id}/${encodeURIComponent(JSON.stringify(key))}`;
+ 						instance.__.name = __.name;
+ 
+-						state.form_instances.set(cache_key, instance);
++						state.remote.forms.set(cache_key, instance);
+ 					}
+ 
+ 					return instance;
+diff --git a/packages/kit/src/runtime/app/server/remote/prerender.js b/packages/kit/src/runtime/app/server/remote/prerender.js
+index f9729f7c7..de71b97b1 100644
+--- a/packages/kit/src/runtime/app/server/remote/prerender.js
++++ b/packages/kit/src/runtime/app/server/remote/prerender.js
+@@ -103,8 +103,9 @@ export function prerender(validate_or_fn, fn_or_options, maybe_options) {
+ 
+ 						// TODO adapters can provide prerendered data more efficiently than
+ 						// fetching from the public internet
+-						const promise = (cache[key] ??= fetch(new URL(url, event.url.origin).href).then(
+-							async (response) => {
++						const promise = (cache[key] ??= {
++							serialize: true,
++							data: fetch(new URL(url, event.url.origin).href).then(async (response) => {
+ 								if (!response.ok) {
+ 									throw new Error('Prerendered response not found');
+ 								}
+@@ -116,8 +117,8 @@ export function prerender(validate_or_fn, fn_or_options, maybe_options) {
+ 								}
+ 
+ 								return prerendered.result;
+-							}
+-						));
++							})
++						}).data;
+ 
+ 						return parse_remote_response(await promise, state.transport);
+ 					});
+diff --git a/packages/kit/src/runtime/app/server/remote/query.js b/packages/kit/src/runtime/app/server/remote/query.js
+index 4b21603ae..03dc4a550 100644
+--- a/packages/kit/src/runtime/app/server/remote/query.js
++++ b/packages/kit/src/runtime/app/server/remote/query.js
+@@ -1,8 +1,8 @@
+ /** @import { RemoteQuery, RemoteQueryFunction } from '@sveltejs/kit' */
+-/** @import { RemoteInfo, MaybePromise } from 'types' */
++/** @import { RemoteInfo, MaybePromise, RequestState } from 'types' */
+ /** @import { StandardSchemaV1 } from '@standard-schema/spec' */
+ import { get_request_store } from '@sveltejs/kit/internal/server';
+-import { create_remote_key, stringify_remote_arg } from '../../../shared.js';
++import { create_remote_key, stringify, stringify_remote_arg } from '../../../shared.js';
+ import { prerendering } from '__sveltekit/environment';
+ import { create_validator, get_cache, get_response, run_remote_function } from './shared.js';
+ import { handle_error_and_jsonify } from '../../../server/utils.js';
+@@ -74,28 +74,9 @@ export function query(validate_or_fn, maybe_fn) {
+ 
+ 		const { event, state } = get_request_store();
+ 
+-		const get_remote_function_result = () =>
+-			run_remote_function(event, state, false, () => validate(arg), fn);
+-
+-		/** @type {Promise<any> & Partial<RemoteQuery<any>>} */
+-		const promise = get_response(__, arg, state, get_remote_function_result);
+-
+-		promise.catch(() => {});
+-
+-		promise.set = (value) => update_refresh_value(get_refresh_context(__, 'set', arg), value);
+-
+-		promise.refresh = () => {
+-			const refresh_context = get_refresh_context(__, 'refresh', arg);
+-			const is_immediate_refresh = !refresh_context.cache[refresh_context.cache_key];
+-			const value = is_immediate_refresh ? promise : get_remote_function_result();
+-			return update_refresh_value(refresh_context, value, is_immediate_refresh);
+-		};
+-
+-		promise.withOverride = () => {
+-			throw new Error(`Cannot call '${__.name}.withOverride()' on the server`);
+-		};
+-
+-		return /** @type {RemoteQuery<Output>} */ (promise);
++		return create_query_resource(__, arg, state, () =>
++			run_remote_function(event, state, false, () => validate(arg), fn)
++		);
+ 	};
+ 
+ 	Object.defineProperty(wrapper, '__', { value: __ });
+@@ -164,7 +145,8 @@ function batch(validate_or_fn, maybe_fn) {
+ 					return Promise.all(
+ 						input.map(async (arg, i) => {
+ 							try {
+-								return { type: 'result', data: get_result(arg, i) };
++								const data = get_result(arg, i);
++								return { type: 'result', data: stringify(data, state.transport) };
+ 							} catch (error) {
+ 								return {
+ 									type: 'error',
+@@ -182,8 +164,8 @@ function batch(validate_or_fn, maybe_fn) {
+ 		}
+ 	};
+ 
+-	/** @type {{ args: any[], resolvers: Array<{resolve: (value: any) => void, reject: (error: any) => void}> }} */
+-	let batching = { args: [], resolvers: [] };
++	/** @type {Map<string, { arg: any, resolvers: Array<{resolve: (value: any) => void, reject: (error: any) => void}> }>} */
++	let batching = new Map();
+ 
+ 	/** @type {RemoteQueryFunction<Input, Output> & { __: RemoteInfo }} */
+ 	const wrapper = (arg) => {
+@@ -195,71 +177,132 @@ function batch(validate_or_fn, maybe_fn) {
+ 
+ 		const { event, state } = get_request_store();
+ 
+-		const get_remote_function_result = () => {
++		return create_query_resource(__, arg, state, () => {
+ 			// Collect all the calls to the same query in the same macrotask,
+ 			// then execute them as one backend request.
+ 			return new Promise((resolve, reject) => {
+-				// We don't need to deduplicate args here, because get_response already caches/reuses identical calls
+-				batching.args.push(arg);
+-				batching.resolvers.push({ resolve, reject });
++				const key = stringify_remote_arg(arg, state.transport);
++				const entry = batching.get(key);
++
++				if (entry) {
++					entry.resolvers.push({ resolve, reject });
++					return;
++				}
++
++				batching.set(key, {
++					arg,
++					resolvers: [{ resolve, reject }]
++				});
+ 
+-				if (batching.args.length > 1) return;
++				if (batching.size > 1) return;
+ 
+ 				setTimeout(async () => {
+ 					const batched = batching;
+-					batching = { args: [], resolvers: [] };
++					batching = new Map();
++					const entries = Array.from(batched.values());
++					const args = entries.map((entry) => entry.arg);
+ 
+ 					try {
+ 						return await run_remote_function(
+ 							event,
+ 							state,
+ 							false,
+-							async () => Promise.all(batched.args.map(validate)),
++							async () => Promise.all(args.map(validate)),
+ 							async (input) => {
+ 								const get_result = await fn(input);
+ 
+-								for (let i = 0; i < batched.resolvers.length; i++) {
++								for (let i = 0; i < entries.length; i++) {
+ 									try {
+-										batched.resolvers[i].resolve(get_result(input[i], i));
++										const result = get_result(input[i], i);
++
++										for (const resolver of entries[i].resolvers) {
++											resolver.resolve(result);
++										}
+ 									} catch (error) {
+-										batched.resolvers[i].reject(error);
++										for (const resolver of entries[i].resolvers) {
++											resolver.reject(error);
++										}
+ 									}
+ 								}
+ 							}
+ 						);
+ 					} catch (error) {
+-						for (const resolver of batched.resolvers) {
+-							resolver.reject(error);
++						for (const entry of batched.values()) {
++							for (const resolver of entry.resolvers) {
++								resolver.reject(error);
++							}
+ 						}
+ 					}
+ 				}, 0);
+ 			});
+-		};
++		});
++	};
++
++	Object.defineProperty(wrapper, '__', { value: __ });
+ 
+-		/** @type {Promise<any> & Partial<RemoteQuery<any>>} */
+-		const promise = get_response(__, arg, state, get_remote_function_result);
++	return wrapper;
++}
+ 
+-		promise.catch(() => {});
++/**
++ * @param {RemoteInfo} __
++ * @param {any} arg
++ * @param {RequestState} state
++ * @param {() => Promise<any>} fn
++ * @returns {RemoteQuery<any>}
++ */
++function create_query_resource(__, arg, state, fn) {
++	/** @type {Promise<any> | null} */
++	let promise = null;
+ 
+-		promise.set = (value) => update_refresh_value(get_refresh_context(__, 'set', arg), value);
++	const get_promise = () => {
++		return (promise ??= get_response(__, arg, state, fn));
++	};
+ 
+-		promise.refresh = () => {
++	return {
++		/** @type {Promise<any>['catch']} */
++		catch(onrejected) {
++			return get_promise().catch(onrejected);
++		},
++		current: undefined,
++		error: undefined,
++		/** @type {Promise<any>['finally']} */
++		finally(onfinally) {
++			return get_promise().finally(onfinally);
++		},
++		loading: true,
++		ready: false,
++		refresh() {
+ 			const refresh_context = get_refresh_context(__, 'refresh', arg);
+ 			const is_immediate_refresh = !refresh_context.cache[refresh_context.cache_key];
+-			const value = is_immediate_refresh ? promise : get_remote_function_result();
++			const value = is_immediate_refresh ? get_promise() : fn();
+ 			return update_refresh_value(refresh_context, value, is_immediate_refresh);
+-		};
+-
+-		promise.withOverride = () => {
++		},
++		run() {
++			// potential TODO: if we want to be able to run queries at the top level of modules / outside of the request context, we could technically remove
++			// the requirement that `state` is defined, but that's kind of an annoying change to make, so we're going to wait on that until we have any sort of
++			// concrete use case.
++			if (!state.is_in_universal_load) {
++				throw new Error(
++					'On the server, .run() can only be called in universal `load` functions. Anywhere else, just await the query directly'
++				);
++			}
++			return get_response(__, arg, state, fn);
++		},
++		/** @param {any} value */
++		set(value) {
++			return update_refresh_value(get_refresh_context(__, 'set', arg), value);
++		},
++		/** @type {Promise<any>['then']} */
++		then(onfulfilled, onrejected) {
++			return get_promise().then(onfulfilled, onrejected);
++		},
++		withOverride() {
+ 			throw new Error(`Cannot call '${__.name}.withOverride()' on the server`);
+-		};
+-
+-		return /** @type {RemoteQuery<Output>} */ (promise);
++		},
++		get [Symbol.toStringTag]() {
++			return 'QueryResource';
++		}
+ 	};
+-
+-	Object.defineProperty(wrapper, '__', { value: __ });
+-
+-	return wrapper;
+ }
+ 
+ // Add batch as a property to the query function
+@@ -269,11 +312,11 @@ Object.defineProperty(query, 'batch', { value: batch, enumerable: true });
+  * @param {RemoteInfo} __
+  * @param {'set' | 'refresh'} action
+  * @param {any} [arg]
+- * @returns {{ __: RemoteInfo; state: any; refreshes: Record<string, Promise<any>>; cache: Record<string, Promise<any>>; refreshes_key: string; cache_key: string }}
++ * @returns {{ __: RemoteInfo; state: any; refreshes: Record<string, Promise<any>>; cache: Record<string, { serialize: boolean; data: any }>; refreshes_key: string; cache_key: string }}
+  */
+ function get_refresh_context(__, action, arg) {
+ 	const { state } = get_request_store();
+-	const { refreshes } = state;
++	const { refreshes } = state.remote;
+ 
+ 	if (!refreshes) {
+ 		const name = __.type === 'query_batch' ? `query.batch '${__.name}'` : `query '${__.name}'`;
+@@ -290,7 +333,7 @@ function get_refresh_context(__, action, arg) {
+ }
+ 
+ /**
+- * @param {{ __: RemoteInfo; refreshes: Record<string, Promise<any>>; cache: Record<string, Promise<any>>; refreshes_key: string; cache_key: string }} context
++ * @param {{ __: RemoteInfo; refreshes: Record<string, Promise<any>>; cache: Record<string, { serialize: boolean; data: any }>; refreshes_key: string; cache_key: string }} context
+  * @param {any} value
+  * @param {boolean} [is_immediate_refresh=false]
+  * @returns {Promise<void>}
+@@ -303,7 +346,7 @@ function update_refresh_value(
+ 	const promise = Promise.resolve(value);
+ 
+ 	if (!is_immediate_refresh) {
+-		cache[cache_key] = promise;
++		cache[cache_key] = { serialize: true, data: promise };
+ 	}
+ 
+ 	if (__.id) {
+diff --git a/packages/kit/src/runtime/app/server/remote/shared.js b/packages/kit/src/runtime/app/server/remote/shared.js
+index a2e310649..5c9674eb3 100644
+--- a/packages/kit/src/runtime/app/server/remote/shared.js
++++ b/packages/kit/src/runtime/app/server/remote/shared.js
+@@ -3,7 +3,12 @@
+ import { parse } from 'devalue';
+ import { error } from '@sveltejs/kit';
+ import { with_request_store, get_request_store } from '@sveltejs/kit/internal/server';
+-import { stringify_remote_arg } from '../../../shared.js';
++import {
++	stringify_remote_arg,
++	create_remote_key,
++	stringify,
++	unfriendly_hydratable
++} from '../../../shared.js';
+ 
+ /**
+  * @param {any} validate_or_fn
+@@ -73,8 +78,25 @@ export async function get_response(info, arg, state, get_result) {
+ 	await 0;
+ 
+ 	const cache = get_cache(info, state);
++	const key = stringify_remote_arg(arg, state.transport);
++	const entry = (cache[key] ??= {
++		serialize: false,
++		data: get_result()
++	});
++
++	entry.serialize ||= !!state.is_in_universal_load;
++
++	if (state.is_in_render && info.id) {
++		const remote_key = create_remote_key(info.id, key);
++
++		Promise.resolve(entry.data)
++			.then((value) => {
++				void unfriendly_hydratable(remote_key, () => stringify(value, state.transport));
++			})
++			.catch(() => {});
++	}
+ 
+-	return (cache[stringify_remote_arg(arg, state.transport)] ??= get_result());
++	return entry.data;
+ }
+ 
+ /**
+@@ -150,11 +172,11 @@ export async function run_remote_function(event, state, allow_cookies, get_input
+  * @param {RequestState} state
+  */
+ export function get_cache(info, state = get_request_store().state) {
+-	let cache = state.remote_data?.get(info);
++	let cache = state.remote.data?.get(info);
+ 
+ 	if (cache === undefined) {
+ 		cache = {};
+-		(state.remote_data ??= new Map()).set(info, cache);
++		(state.remote.data ??= new Map()).set(info, cache);
+ 	}
+ 
+ 	return cache;
+diff --git a/packages/kit/src/runtime/client/client.js b/packages/kit/src/runtime/client/client.js
+index d6ece5753..125b2c657 100644
+--- a/packages/kit/src/runtime/client/client.js
++++ b/packages/kit/src/runtime/client/client.js
+@@ -1,3 +1,4 @@
++/** @import { RemoteQueryCacheEntry } from './remote-functions/query.svelte.js' */
+ import { BROWSER, DEV } from 'esm-env';
+ import * as svelte from 'svelte';
+ import { HttpError, Redirect, SvelteKitError } from '@sveltejs/kit/internal';
+@@ -198,10 +199,18 @@ let target;
+ export let app;
+ 
+ /**
+- * Data that was serialized during SSR. This is cleared when the user first navigates
++ * Data that was serialized during SSR for queries/forms/commands.
++ * This is cleared before client-side loads run.
+  * @type {Record<string, any>}
+  */
+-export let remote_responses = {};
++export let query_responses = {};
++
++/**
++ * Data that was serialized during SSR for prerender functions.
++ * This persists across client-side navigations.
++ * @type {Record<string, any>}
++ */
++export let prerender_responses = {};
+ 
+ /** @type {Array<((url: URL) => boolean)>} */
+ const invalidated = [];
+@@ -292,7 +301,7 @@ const preload_tokens = new Set();
+ export let pending_invalidate;
+ 
+ /**
+- * @type {Map<string, {count: number, resource: any}>}
++ * @type {Map<string, RemoteQueryCacheEntry<any>>}
+  * A map of id -> query info with all queries that currently exist in the app.
+  */
+ export const query_map = new Map();
+@@ -309,8 +318,9 @@ export async function start(_app, _target, hydrate) {
+ 		);
+ 	}
+ 
+-	if (__SVELTEKIT_PAYLOAD__?.data) {
+-		remote_responses = __SVELTEKIT_PAYLOAD__.data;
++	if (__SVELTEKIT_PAYLOAD__) {
++		query_responses = __SVELTEKIT_PAYLOAD__.query ?? {};
++		prerender_responses = __SVELTEKIT_PAYLOAD__.prerender ?? {};
+ 	}
+ 
+ 	// detect basic auth credentials in the current URL
+@@ -402,7 +412,7 @@ async function _invalidate(include_load_functions = true, reset_page_state = tru
+ 	// Rerun queries
+ 	if (force_invalidation) {
+ 		query_map.forEach(({ resource }) => {
+-			resource.refresh?.();
++			void resource.refresh?.();
+ 		});
+ 	}
+ 
+@@ -510,7 +520,7 @@ export async function _goto(url, options, redirect_count, nav_token) {
+ 				query_map.forEach(({ resource }, key) => {
+ 					// Only refresh those that already existed on the old page
+ 					if (query_keys?.includes(key)) {
+-						resource.refresh?.();
++						void resource.refresh?.();
+ 					}
+ 				});
+ 			});
+@@ -1602,8 +1612,6 @@ async function navigate({
+ 	block = noop,
+ 	event
+ }) {
+-	remote_responses = {};
+-
+ 	const prev_token = token;
+ 	token = nav_token;
+ 
+@@ -2262,8 +2270,6 @@ export function refreshAll({ includeLoadFunctions = true } = {}) {
+ 		throw new Error('Cannot call refreshAll() on the server');
+ 	}
+ 
+-	remote_responses = {};
+-
+ 	force_invalidation = true;
+ 	return _invalidate(includeLoadFunctions, false);
+ }
+@@ -2942,6 +2948,8 @@ async function _hydrate(
+ 
+ 		target.textContent = '';
+ 		hydrate = false;
++	} finally {
++		query_responses = {};
+ 	}
+ 
+ 	if (result.props.page) {
+diff --git a/packages/kit/src/runtime/client/remote-functions/form.svelte.js b/packages/kit/src/runtime/client/remote-functions/form.svelte.js
+index 090fd273f..b504eae5e 100644
+--- a/packages/kit/src/runtime/client/remote-functions/form.svelte.js
++++ b/packages/kit/src/runtime/client/remote-functions/form.svelte.js
+@@ -6,7 +6,7 @@ import { app_dir, base } from '$app/paths/internal/client';
+ import * as devalue from 'devalue';
+ import { DEV } from 'esm-env';
+ import { HttpError } from '@sveltejs/kit/internal';
+-import { app, remote_responses, _goto, set_nearest_error_page, invalidateAll } from '../client.js';
++import { app, query_responses, _goto, set_nearest_error_page, invalidateAll } from '../client.js';
+ import { tick } from 'svelte';
+ import { refresh_queries, release_overrides } from './shared.svelte.js';
+ import { createAttachmentKey } from 'svelte/attachments';
+@@ -73,7 +73,7 @@ export function form(id) {
+ 		const issues = $derived(flatten_issues(raw_issues));
+ 
+ 		/** @type {any} */
+-		let result = $state.raw(remote_responses[action_id]);
++		let result = $state.raw(query_responses[action_id]);
+ 
+ 		/** @type {number} */
+ 		let pending_count = $state(0);
+diff --git a/packages/kit/src/runtime/client/remote-functions/prerender.svelte.js b/packages/kit/src/runtime/client/remote-functions/prerender.svelte.js
+index 322ae0e11..3ab177c09 100644
+--- a/packages/kit/src/runtime/client/remote-functions/prerender.svelte.js
++++ b/packages/kit/src/runtime/client/remote-functions/prerender.svelte.js
+@@ -1,13 +1,11 @@
++/** @import { RemotePrerenderFunction } from '@sveltejs/kit' */
+ import { app_dir, base } from '$app/paths/internal/client';
+ import { version } from '__sveltekit/environment';
+ import * as devalue from 'devalue';
+ import { DEV } from 'esm-env';
+-import { app, remote_responses } from '../client.js';
+-import {
+-	create_remote_function,
+-	get_remote_request_headers,
+-	remote_request
+-} from './shared.svelte.js';
++import { app, prerender_responses } from '../client.js';
++import { get_remote_request_headers, remote_request } from './shared.svelte.js';
++import { create_remote_key, stringify_remote_arg } from '../../shared.js';
+ 
+ // Initialize Cache API for prerender functions
+ const CACHE_NAME = DEV ? `sveltekit:${Date.now()}` : `sveltekit:${version}`;
+@@ -32,9 +30,106 @@ const prerender_cache_ready = (async () => {
+ 	}
+ })();
+ 
++/**
++ * @param {string} url
++ * @param {string} encoded
++ */
++function put(url, encoded) {
++	return /** @type {Cache} */ (prerender_cache)
++		.put(
++			url,
++			// We need to create a new response because the original response is already consumed
++			new Response(encoded, {
++				headers: {
++					'Content-Type': 'application/json'
++				}
++			})
++		)
++		.catch(() => {
++			// Nothing we can do here
++		});
++}
++
++/**
++ * @param {string} id
++ * @returns {RemotePrerenderFunction<any, any>}
++ */
++export function prerender(id) {
++	return (arg) => {
++		const payload = stringify_remote_arg(arg, app.hooks.transport);
++		const cache_key = create_remote_key(id, payload);
++
++		let resource = prerender_resources.get(cache_key)?.deref();
++
++		if (!resource) {
++			resource = new Prerender(async () => {
++				await prerender_cache_ready;
++
++				const url = `${base}/${app_dir}/remote/${id}${payload ? `/${payload}` : ''}`;
++
++				if (Object.hasOwn(prerender_responses, cache_key)) {
++					const data = prerender_responses[cache_key];
++
++					if (prerender_cache) {
++						void put(url, devalue.stringify(data, app.encoders));
++					}
++
++					return data;
++				}
++
++				// Do this here, after await Svelte' reactivity context is gone.
++				const headers = get_remote_request_headers();
++
++				// Check the Cache API first
++				if (prerender_cache) {
++					try {
++						const cached_response = await prerender_cache.match(url);
++
++						if (cached_response) {
++							const cached_result = await cached_response.text();
++							return devalue.parse(cached_result, app.decoders);
++						}
++					} catch {
++						void prerender_cache.delete(url);
++					}
++				}
++
++				const encoded = await remote_request(url, headers);
++
++				// For successful prerender requests, save to cache
++				if (prerender_cache) {
++					void put(url, encoded);
++				}
++
++				return devalue.parse(encoded, app.decoders);
++			});
++
++			prerender_resources.set(cache_key, new WeakRef(resource));
++			prerender_resource_cleanup?.register(resource, cache_key);
++		}
++
++		return resource;
++	};
++}
++
++/** @type {Map<string, WeakRef<Prerender<any>>>} */
++// eslint-disable-next-line svelte/prefer-svelte-reactivity
++const prerender_resources = new Map();
++
++/** @type {FinalizationRegistry<string> | null} */
++const prerender_resource_cleanup =
++	typeof FinalizationRegistry === 'undefined'
++		? null
++		: new FinalizationRegistry((cache_key) => {
++				const ref = prerender_resources.get(cache_key);
++				if (ref && ref.deref() === undefined) {
++					prerender_resources.delete(cache_key);
++				}
++			});
++
+ /**
+  * @template T
+- * @implements {Partial<Promise<T>>}
++ * @implements {Promise<T>}
+  */
+ class Prerender {
+ 	/** @type {Promise<T>} */
+@@ -42,7 +137,6 @@ class Prerender {
+ 
+ 	#loading = $state(true);
+ 	#ready = $state(false);
+-
+ 	/** @type {T | undefined} */
+ 	#current = $state.raw();
+ 
+@@ -57,6 +151,7 @@ class Prerender {
+ 				this.#loading = false;
+ 				this.#ready = true;
+ 				this.#current = value;
++				this.#error = undefined;
+ 				return value;
+ 			},
+ 			(error) => {
+@@ -112,73 +207,8 @@ class Prerender {
+ 	get ready() {
+ 		return this.#ready;
+ 	}
+-}
+-
+-/**
+- * @param {string} url
+- * @param {string} encoded
+- */
+-function put(url, encoded) {
+-	return /** @type {Cache} */ (prerender_cache)
+-		.put(
+-			url,
+-			// We need to create a new response because the original response is already consumed
+-			new Response(encoded, {
+-				headers: {
+-					'Content-Type': 'application/json'
+-				}
+-			})
+-		)
+-		.catch(() => {
+-			// Nothing we can do here
+-		});
+-}
+ 
+-/**
+- * @param {string} id
+- */
+-export function prerender(id) {
+-	return create_remote_function(id, (cache_key, payload) => {
+-		return new Prerender(async () => {
+-			await prerender_cache_ready;
+-
+-			const url = `${base}/${app_dir}/remote/${id}${payload ? `/${payload}` : ''}`;
+-
+-			if (Object.hasOwn(remote_responses, cache_key)) {
+-				const data = remote_responses[cache_key];
+-
+-				if (prerender_cache) {
+-					void put(url, devalue.stringify(data, app.encoders));
+-				}
+-
+-				return data;
+-			}
+-
+-			// Do this here, after await Svelte' reactivity context is gone.
+-			const headers = get_remote_request_headers();
+-
+-			// Check the Cache API first
+-			if (prerender_cache) {
+-				try {
+-					const cached_response = await prerender_cache.match(url);
+-
+-					if (cached_response) {
+-						const cached_result = await cached_response.text();
+-						return devalue.parse(cached_result, app.decoders);
+-					}
+-				} catch {
+-					// Nothing we can do here
+-				}
+-			}
+-
+-			const encoded = await remote_request(url, headers);
+-
+-			// For successful prerender requests, save to cache
+-			if (prerender_cache) {
+-				void put(url, encoded);
+-			}
+-
+-			return devalue.parse(encoded, app.decoders);
+-		});
+-	});
++	get [Symbol.toStringTag]() {
++		return 'Prerender';
++	}
+ }
+diff --git a/packages/kit/src/runtime/client/remote-functions/query.svelte.js b/packages/kit/src/runtime/client/remote-functions/query.svelte.js
+index 6ca5db50e..dba4b1670 100644
+--- a/packages/kit/src/runtime/client/remote-functions/query.svelte.js
++++ b/packages/kit/src/runtime/client/remote-functions/query.svelte.js
+@@ -1,16 +1,35 @@
+ /** @import { RemoteQueryFunction } from '@sveltejs/kit' */
+ /** @import { RemoteFunctionResponse } from 'types' */
+ import { app_dir, base } from '$app/paths/internal/client';
+-import { app, goto, query_map, remote_responses } from '../client.js';
+-import { tick } from 'svelte';
+-import {
+-	create_remote_function,
+-	get_remote_request_headers,
+-	remote_request
+-} from './shared.svelte.js';
++import { app, goto, query_map, query_responses } from '../client.js';
++import { get_remote_request_headers, remote_request } from './shared.svelte.js';
+ import * as devalue from 'devalue';
+ import { HttpError, Redirect } from '@sveltejs/kit/internal';
+ import { DEV } from 'esm-env';
++import { with_resolvers } from '../../../utils/promise.js';
++import { tick, untrack } from 'svelte';
++import { create_remote_key, stringify_remote_arg, unfriendly_hydratable } from '../../shared.js';
++
++/**
++ * @template T
++ * @typedef {{
++ *   count: number;
++ *   resource: Query<T>;
++ *   cleanup: () => void;
++ * }} RemoteQueryCacheEntry
++ */
++
++/**
++ * @returns {boolean} Returns `true` if we are in an effect
++ */
++function is_in_effect() {
++	try {
++		$effect.pre(() => {});
++		return true;
++	} catch {
++		return false;
++	}
++}
+ 
+ /**
+  * @param {string} id
+@@ -22,141 +41,149 @@ export function query(id) {
+ 		for (const [key, entry] of query_map) {
+ 			if (key === id || key.startsWith(id + '/')) {
+ 				// use optional chaining in case a prerender function was turned into a query
+-				entry.resource.refresh?.();
++				void entry.resource.refresh?.();
+ 			}
+ 		}
+ 	}
+ 
+-	return create_remote_function(id, (cache_key, payload) => {
+-		return new Query(cache_key, async () => {
+-			if (Object.hasOwn(remote_responses, cache_key)) {
+-				return remote_responses[cache_key];
+-			}
++	return create_query_function(id, async (key, payload) => {
++		const url = `${base}/${app_dir}/remote/${id}${payload ? `?payload=${payload}` : ''}`;
+ 
+-			const url = `${base}/${app_dir}/remote/${id}${payload ? `?payload=${payload}` : ''}`;
++		const serialized = await unfriendly_hydratable(key, () =>
++			remote_request(url, get_remote_request_headers())
++		);
+ 
+-			const result = await remote_request(url, get_remote_request_headers());
+-			return devalue.parse(result, app.decoders);
+-		});
++		return devalue.parse(serialized, app.decoders);
+ 	});
+ }
+ 
+ /**
+  * @param {string} id
+- * @returns {(arg: any) => Query<any>}
++ * @returns {RemoteQueryFunction<any, any>}
+  */
+ export function query_batch(id) {
+ 	/** @type {Map<string, Array<{resolve: (value: any) => void, reject: (error: any) => void}>>} */
+ 	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- we don't need reactivity for this
+ 	let batching = new Map();
+ 
+-	return create_remote_function(id, (cache_key, payload) => {
+-		return new Query(cache_key, () => {
+-			if (Object.hasOwn(remote_responses, cache_key)) {
+-				return remote_responses[cache_key];
+-			}
+-
+-			// Collect all the calls to the same query in the same macrotask,
+-			// then execute them as one backend request.
+-			return new Promise((resolve, reject) => {
+-				// create_remote_function caches identical calls, but in case a refresh to the same query is called multiple times this function
+-				// is invoked multiple times with the same payload, so we need to deduplicate here
+-				const entry = batching.get(payload) ?? [];
+-				entry.push({ resolve, reject });
+-				batching.set(payload, entry);
+-
+-				if (batching.size > 1) return;
+-
+-				// Do this here, after await Svelte' reactivity context is gone.
+-				// TODO is it possible to have batches of the same key
+-				// but in different forks/async contexts and in the same macrotask?
+-				// If so this would potentially be buggy
+-				const headers = {
+-					'Content-Type': 'application/json',
+-					...get_remote_request_headers()
+-				};
+-
+-				// Wait for the next macrotask - don't use microtask as Svelte runtime uses these to collect changes and flush them,
+-				// and flushes could reveal more queries that should be batched.
+-				setTimeout(async () => {
+-					const batched = batching;
+-					// eslint-disable-next-line svelte/prefer-svelte-reactivity
+-					batching = new Map();
+-
+-					try {
+-						const response = await fetch(`${base}/${app_dir}/remote/${id}`, {
+-							method: 'POST',
+-							body: JSON.stringify({
+-								payloads: Array.from(batched.keys())
+-							}),
+-							headers
+-						});
+-
+-						if (!response.ok) {
+-							throw new Error('Failed to execute batch query');
+-						}
++	return create_query_function(id, async (key, payload) => {
++		const serialized = await unfriendly_hydratable(
++			key,
++			() =>
++				new Promise((resolve, reject) => {
++					// create_remote_function caches identical calls, but in case a refresh to the same query is called multiple times this function
++					// is invoked multiple times with the same payload, so we need to deduplicate here
++					const entry = batching.get(payload) ?? [];
++					entry.push({ resolve, reject });
++					batching.set(payload, entry);
++
++					if (batching.size > 1) return;
++
++					// Do this here, after await Svelte' reactivity context is gone.
++					// TODO is it possible to have batches of the same key
++					// but in different forks/async contexts and in the same macrotask?
++					// If so this would potentially be buggy
++					const headers = {
++						'Content-Type': 'application/json',
++						...get_remote_request_headers()
++					};
++
++					// Wait for the next macrotask - don't use microtask as Svelte runtime uses these to collect changes and flush them,
++					// and flushes could reveal more queries that should be batched.
++					setTimeout(async () => {
++						const batched = batching;
++						// eslint-disable-next-line svelte/prefer-svelte-reactivity
++						batching = new Map();
++
++						try {
++							const response = await fetch(`${base}/${app_dir}/remote/${id}`, {
++								method: 'POST',
++								body: JSON.stringify({
++									payloads: Array.from(batched.keys())
++								}),
++								headers
++							});
++
++							if (!response.ok) {
++								throw new Error('Failed to execute batch query');
++							}
+ 
+-						const result = /** @type {RemoteFunctionResponse} */ (await response.json());
+-						if (result.type === 'error') {
+-							throw new HttpError(result.status ?? 500, result.error);
+-						}
++							const result = /** @type {RemoteFunctionResponse} */ (await response.json());
++							if (result.type === 'error') {
++								throw new HttpError(result.status ?? 500, result.error);
++							}
+ 
+-						if (result.type === 'redirect') {
+-							await goto(result.location);
+-							throw new Redirect(307, result.location);
+-						}
++							if (result.type === 'redirect') {
++								await goto(result.location);
++								throw new Redirect(307, result.location);
++							}
+ 
+-						const results = devalue.parse(result.result, app.decoders);
++							const results = devalue.parse(result.result, app.decoders);
+ 
+-						// Resolve individual queries
+-						// Maps guarantee insertion order so we can do it like this
+-						let i = 0;
++							// Resolve individual queries
++							// Maps guarantee insertion order so we can do it like this
++							let i = 0;
+ 
+-						for (const resolvers of batched.values()) {
+-							for (const { resolve, reject } of resolvers) {
+-								if (results[i].type === 'error') {
+-									reject(new HttpError(results[i].status, results[i].error));
+-								} else {
+-									resolve(results[i].data);
++							for (const resolvers of batched.values()) {
++								for (const { resolve, reject } of resolvers) {
++									if (results[i].type === 'error') {
++										reject(new HttpError(results[i].status, results[i].error));
++									} else {
++										resolve(results[i].data);
++									}
+ 								}
++								i++;
+ 							}
+-							i++;
+-						}
+-					} catch (error) {
+-						// Reject all queries in the batch
+-						for (const resolver of batched.values()) {
+-							for (const { reject } of resolver) {
+-								reject(error);
++						} catch (error) {
++							// Reject all queries in the batch
++							for (const resolver of batched.values()) {
++								for (const { reject } of resolver) {
++									reject(error);
++								}
+ 							}
+ 						}
+-					}
+-				}, 0);
+-			});
+-		});
++					}, 0);
++				})
++		);
++
++		return devalue.parse(serialized, app.decoders);
+ 	});
+ }
+ 
++/**
++ * @template Input
++ * @template Output
++ * @param {string} id
++ * @param {(key: string, payload: string) => Promise<Output>} fn
++ * @returns {RemoteQueryFunction<Input, Output>}
++ */
++function create_query_function(id, fn) {
++	return (arg) => new QueryProxy(id, arg, fn);
++}
++
+ /**
+  * @template T
+- * @implements {Partial<Promise<T>>}
++ * @implements {Promise<T>}
+  */
+ export class Query {
+-	/** @type {string} */
++	/**
++	 * @readonly
++	 * @type {string}
++	 */
+ 	_key;
+ 
+-	#init = false;
+ 	/** @type {() => Promise<T>} */
+ 	#fn;
+ 	#loading = $state(true);
+-	/** @type {Array<() => void>} */
++	/** @type {Array<(value: undefined) => void>} */
+ 	#latest = [];
+ 
+ 	/** @type {boolean} */
+ 	#ready = $state(false);
+ 	/** @type {T | undefined} */
+ 	#raw = $state.raw();
+-	/** @type {Promise<void>} */
+-	#promise;
++	/** @type {Promise<void> | null} */
++	#promise = $state.raw(null);
+ 	/** @type {Array<(old: T) => T>} */
+ 	#overrides = $state([]);
+ 
+@@ -173,16 +200,11 @@ export class Query {
+ 	/** @type {Promise<T>['then']} */
+ 	// @ts-expect-error TS doesn't understand that the promise returns something
+ 	#then = $derived.by(() => {
+-		const p = this.#promise;
++		const p = this.#get_promise();
+ 		this.#overrides.length;
+ 
+ 		return (resolve, reject) => {
+-			const result = (async () => {
+-				await p;
+-				// svelte-ignore await_reactivity_loss
+-				await tick();
+-				return /** @type {T} */ (this.#current);
+-			})();
++			const result = p.then(tick).then(() => /** @type {T} */ (this.#current));
+ 
+ 			if (resolve || reject) {
+ 				return result.then(resolve, reject);
+@@ -199,32 +221,27 @@ export class Query {
+ 	constructor(key, fn) {
+ 		this._key = key;
+ 		this.#fn = fn;
+-		this.#promise = $state.raw(this.#run());
++	}
++
++	#get_promise() {
++		void untrack(() => (this.#promise ??= this.#run()));
++		return /** @type {Promise<T>} */ (this.#promise);
++	}
++
++	#start() {
++		// there is a really weird bug with untrack and writes and initializations
++		// every time you see this comment, try removing the `tick.then` here and see
++		// if all the tests still pass with the latest svelte version
++		// if they do, congrats, you can remove tick.then
++		void tick().then(() => this.#get_promise());
+ 	}
+ 
+ 	#run() {
+-		// Prevent state_unsafe_mutation error on first run when the resource is created within the template
+-		if (this.#init) {
+-			this.#loading = true;
+-		} else {
+-			this.#init = true;
+-		}
++		this.#loading = true;
+ 
+-		// Don't use Promise.withResolvers, it's too new still
+-		/** @type {() => void} */
+-		let resolve;
+-		/** @type {(e?: any) => void} */
+-		let reject;
+-		/** @type {Promise<void>} */
+-		const promise = new Promise((res, rej) => {
+-			resolve = res;
+-			reject = rej;
+-		});
++		const { promise, resolve, reject } = with_resolvers();
+ 
+-		this.#latest.push(
+-			// @ts-expect-error it's defined at this point
+-			resolve
+-		);
++		this.#latest.push(resolve);
+ 
+ 		Promise.resolve(this.#fn())
+ 			.then((value) => {
+@@ -232,19 +249,19 @@ export class Query {
+ 				const idx = this.#latest.indexOf(resolve);
+ 				if (idx === -1) return;
+ 
+-				this.#latest.splice(0, idx).forEach((r) => r());
++				this.#latest.splice(0, idx).forEach((r) => r(undefined));
+ 				this.#ready = true;
+ 				this.#loading = false;
+ 				this.#raw = value;
+ 				this.#error = undefined;
+ 
+-				resolve();
++				resolve(undefined);
+ 			})
+ 			.catch((e) => {
+ 				const idx = this.#latest.indexOf(resolve);
+ 				if (idx === -1) return;
+ 
+-				this.#latest.splice(0, idx).forEach((r) => r());
++				this.#latest.splice(0, idx).forEach((r) => r(undefined));
+ 				this.#error = e;
+ 				this.#loading = false;
+ 				reject(e);
+@@ -281,10 +298,12 @@ export class Query {
+ 	}
+ 
+ 	get current() {
++		this.#start();
+ 		return this.#current;
+ 	}
+ 
+ 	get error() {
++		this.#start();
+ 		return this.#error;
+ 	}
+ 
+@@ -292,6 +311,7 @@ export class Query {
+ 	 * Returns true if the resource is loading or reloading.
+ 	 */
+ 	get loading() {
++		this.#start();
+ 		return this.#loading;
+ 	}
+ 
+@@ -299,6 +319,7 @@ export class Query {
+ 	 * Returns true once the resource has been loaded for the first time.
+ 	 */
+ 	get ready() {
++		this.#start();
+ 		return this.#ready;
+ 	}
+ 
+@@ -306,7 +327,7 @@ export class Query {
+ 	 * @returns {Promise<void>}
+ 	 */
+ 	refresh() {
+-		delete remote_responses[this._key];
++		delete query_responses[this._key];
+ 		return (this.#promise = this.#run());
+ 	}
+ 
+@@ -323,6 +344,7 @@ export class Query {
+ 
+ 	/**
+ 	 * @param {(old: T) => T} fn
++	 * @returns {{ _key: string, release: () => void }}
+ 	 */
+ 	withOverride(fn) {
+ 		this.#overrides.push(fn);
+@@ -338,4 +360,199 @@ export class Query {
+ 			}
+ 		};
+ 	}
++
++	get [Symbol.toStringTag]() {
++		return 'Query';
++	}
++}
++
++/**
++ * Manages the caching layer between the user and the actual {@link Query} instance.
++ *
++ * @template T
++ * @implements {Promise<T>}
++ */
++class QueryProxy {
++	_key;
++	#payload;
++	#fn;
++	#active = true;
++	/**
++	 * Whether this proxy was created in a tracking context.
++	 * @readonly
++	 */
++	#tracking = is_in_effect();
++
++	/**
++	 * @param {string} id
++	 * @param {any} arg
++	 * @param {(key: string, payload: string) => Promise<T>} fn
++	 */
++	constructor(id, arg, fn) {
++		this.#payload = stringify_remote_arg(arg, app.hooks.transport);
++		this._key = create_remote_key(id, this.#payload);
++		this.#fn = fn;
++
++		if (!this.#tracking) {
++			this.#active = false;
++			return;
++		}
++
++		const entry = this.#get_or_create_cache_entry();
++
++		$effect.pre(() => () => {
++			const die = this.#release(entry);
++			void tick().then(die);
++		});
++	}
++
++	/** @returns {RemoteQueryCacheEntry<T>} */
++	#get_or_create_cache_entry() {
++		let cached = query_map.get(this._key);
++
++		if (!cached) {
++			const c = (cached = {
++				count: 0,
++				resource: /** @type {Query<T>} */ (/** @type {unknown} */ (null)),
++				cleanup: /** @type {() => void} */ (/** @type {unknown} */ (null))
++			});
++
++			c.cleanup = $effect.root(() => {
++				c.resource = new Query(this._key, () => this.#fn(this._key, this.#payload));
++			});
++
++			query_map.set(this._key, cached);
++		}
++
++		cached.count += 1;
++
++		return cached;
++	}
++
++	/**
++	 * @param {RemoteQueryCacheEntry<T>} entry
++	 * @param {boolean} [deactivate]
++	 * @returns
++	 */
++	#release(entry, deactivate = true) {
++		this.#active &&= !deactivate;
++		entry.count -= 1;
++
++		return () => {
++			// have to get this again in case it was cleaned up by someone else, then re-added and now
++			// we're cleaning it up. this seems extremely unlikely but it literally can't hurt
++			const cached = query_map.get(this._key);
++			if (cached?.count === 0) {
++				cached.cleanup();
++				query_map.delete(this._key);
++			}
++		};
++	}
++
++	#get_cached_query() {
++		// TODO iterate on error messages
++		if (!this.#tracking) {
++			throw new Error(
++				'This query was not created in a reactive context and is limited to calling `.run`, `.refresh`, and `.set`.'
++			);
++		}
++
++		if (!this.#active) {
++			throw new Error(
++				'This query instance is no longer active and can no longer be used for reactive state access. ' +
++					'This typically means you created the query in a tracking context and stashed it somewhere outside of a tracking context.'
++			);
++		}
++
++		const cached = query_map.get(this._key);
++
++		if (!cached) {
++			// The only case where `this.#active` can be `true` is when we've added an entry to `query_map`, and the
++			// only way that entry can get removed is if this instance (and all others) have been deactivated.
++			// So if we get here, someone (us, check git blame and point fingers) did `entry.count -= 1` improperly.
++			throw new Error(
++				'No cached query found. This should be impossible. Please file a bug report.'
++			);
++		}
++
++		return cached.resource;
++	}
++
++	#safe_get_cached_query() {
++		return query_map.get(this._key)?.resource;
++	}
++
++	get current() {
++		return this.#get_cached_query().current;
++	}
++
++	get error() {
++		return this.#get_cached_query().error;
++	}
++
++	get loading() {
++		return this.#get_cached_query().loading;
++	}
++
++	get ready() {
++		return this.#get_cached_query().ready;
++	}
++
++	run() {
++		if (is_in_effect()) {
++			throw new Error(
++				'On the client, .run() can only be called outside render, e.g. in universal `load` functions and event handlers. In render, await the query directly'
++			);
++		}
++
++		if (Object.hasOwn(query_responses, this._key)) {
++			return Promise.resolve(query_responses[this._key]);
++		}
++		return this.#fn(this._key, this.#payload);
++	}
++
++	refresh() {
++		return this.#safe_get_cached_query()?.refresh() ?? Promise.resolve();
++	}
++
++	/** @type {Query<T>['set']} */
++	set(value) {
++		this.#safe_get_cached_query()?.set(value);
++	}
++
++	/** @type {Query<T>['withOverride']} */
++	withOverride(fn) {
++		const entry = this.#get_or_create_cache_entry();
++		const override = entry.resource.withOverride(fn);
++
++		return {
++			_key: override._key,
++			release: () => {
++				override.release();
++				this.#release(entry, false)();
++			}
++		};
++	}
++
++	/** @type {Query<T>['then']} */
++	get then() {
++		const cached = this.#get_cached_query();
++		return cached.then.bind(cached);
++	}
++
++	/** @type {Query<T>['catch']} */
++	get catch() {
++		const cached = this.#get_cached_query();
++		return cached.catch.bind(cached);
++	}
++
++	/** @type {Query<T>['finally']} */
++	get finally() {
++		const cached = this.#get_cached_query();
++		return cached.finally.bind(cached);
++	}
++
++	get [Symbol.toStringTag]() {
++		return 'QueryProxy';
++	}
+ }
+diff --git a/packages/kit/src/runtime/client/remote-functions/shared.svelte.js b/packages/kit/src/runtime/client/remote-functions/shared.svelte.js
+index 954ced584..eff2cfe00 100644
+--- a/packages/kit/src/runtime/client/remote-functions/shared.svelte.js
++++ b/packages/kit/src/runtime/client/remote-functions/shared.svelte.js
+@@ -2,11 +2,10 @@
+ /** @import { RemoteFunctionResponse } from 'types' */
+ /** @import { Query } from './query.svelte.js' */
+ import * as devalue from 'devalue';
+-import { app, goto, query_map, remote_responses } from '../client.js';
++import { app, goto, query_map } from '../client.js';
+ import { HttpError, Redirect } from '@sveltejs/kit/internal';
+-import { tick, untrack } from 'svelte';
+-import { create_remote_key, stringify_remote_arg } from '../../shared.js';
+-import { page } from '../state.svelte.js';
++import { untrack } from 'svelte';
++import { navigating, page } from '../state.svelte.js';
+ 
+ /**
+  * @returns {{ 'x-sveltekit-pathname': string, 'x-sveltekit-search': string }}
+@@ -15,10 +14,14 @@ export function get_remote_request_headers() {
+ 	// This will be the correct value of the current or soon-current url,
+ 	// even in forks because it's state-based - therefore not using window.location.
+ 	// Use untrack(...) to Avoid accidental reactive dependency on pathname/search
+-	return untrack(() => ({
+-		'x-sveltekit-pathname': page.url.pathname,
+-		'x-sveltekit-search': page.url.search
+-	}));
++	return untrack(() => {
++		const url = navigating.current?.to?.url ?? page.url;
++
++		return {
++			'x-sveltekit-pathname': url.pathname,
++			'x-sveltekit-search': url.search
++		};
++	});
+ }
+ 
+ /**
+@@ -51,77 +54,6 @@ export async function remote_request(url, headers) {
+ 	return result.result;
+ }
+ 
+-/**
+- * Client-version of the `query`/`prerender`/`cache` function from `$app/server`.
+- * @param {string} id
+- * @param {(key: string, args: string) => any} create
+- */
+-export function create_remote_function(id, create) {
+-	return (/** @type {any} */ arg) => {
+-		const payload = stringify_remote_arg(arg, app.hooks.transport);
+-		const cache_key = create_remote_key(id, payload);
+-		let entry = query_map.get(cache_key);
+-
+-		let tracking = true;
+-		try {
+-			$effect.pre(() => {
+-				if (entry) entry.count++;
+-				return () => {
+-					const entry = query_map.get(cache_key);
+-					if (entry) {
+-						entry.count--;
+-						void tick().then(() => {
+-							if (!entry.count && entry === query_map.get(cache_key)) {
+-								query_map.delete(cache_key);
+-								delete remote_responses[cache_key];
+-							}
+-						});
+-					}
+-				};
+-			});
+-		} catch {
+-			tracking = false;
+-		}
+-
+-		let resource = entry?.resource;
+-		if (!resource) {
+-			resource = create(cache_key, payload);
+-
+-			Object.defineProperty(resource, '_key', {
+-				value: cache_key
+-			});
+-
+-			query_map.set(
+-				cache_key,
+-				(entry = {
+-					count: tracking ? 1 : 0,
+-					resource
+-				})
+-			);
+-
+-			resource
+-				.then(() => {
+-					void tick().then(() => {
+-						if (
+-							!(/** @type {NonNullable<typeof entry>} */ (entry).count) &&
+-							entry === query_map.get(cache_key)
+-						) {
+-							// If no one is tracking this resource anymore, we can delete it from the cache
+-							query_map.delete(cache_key);
+-						}
+-					});
+-				})
+-				.catch(() => {
+-					// error delete the resource from the cache
+-					// TODO is that correct?
+-					query_map.delete(cache_key);
+-				});
+-		}
+-
+-		return resource;
+-	};
+-}
+-
+ /**
+  * @param {Array<Query<any> | RemoteQueryOverride>} updates
+  */
+diff --git a/packages/kit/src/runtime/server/endpoint.js b/packages/kit/src/runtime/server/endpoint.js
+index 67aaf1614..e79b5d083 100644
+--- a/packages/kit/src/runtime/server/endpoint.js
++++ b/packages/kit/src/runtime/server/endpoint.js
+@@ -42,7 +42,6 @@ export async function render_endpoint(event, event_state, mod, state) {
+ 	}
+ 
+ 	try {
+-		event_state.allows_commands = true;
+ 		const response = await with_request_store({ event, state: event_state }, () =>
+ 			handler(/** @type {import('@sveltejs/kit').RequestEvent<Record<string, any>>} */ (event))
+ 		);
+diff --git a/packages/kit/src/runtime/server/page/actions.js b/packages/kit/src/runtime/server/page/actions.js
+index 7890ca119..4172c526d 100644
+--- a/packages/kit/src/runtime/server/page/actions.js
++++ b/packages/kit/src/runtime/server/page/actions.js
+@@ -266,10 +266,11 @@ async function call_action(event, event_state, actions) {
+ 		},
+ 		fn: async (current) => {
+ 			const traced_event = merge_tracing(event, current);
+-			event_state.allows_commands = true;
++
+ 			const result = await with_request_store({ event: traced_event, state: event_state }, () =>
+ 				action(traced_event)
+ 			);
++
+ 			if (result instanceof ActionFailure) {
+ 				current.setAttributes({
+ 					'sveltekit.form_action.result.type': 'failure',
+diff --git a/packages/kit/src/runtime/server/page/load_data.js b/packages/kit/src/runtime/server/page/load_data.js
+index b322bfe81..d8c770018 100644
+--- a/packages/kit/src/runtime/server/page/load_data.js
++++ b/packages/kit/src/runtime/server/page/load_data.js
+@@ -233,7 +233,9 @@ export async function load_data({
+ 		},
+ 		fn: async (current) => {
+ 			const traced_event = merge_tracing(event, current);
+-			return await with_request_store({ event: traced_event, state: event_state }, () =>
++			const child_state = { ...event_state, is_in_universal_load: true };
++
++			return await with_request_store({ event: traced_event, state: child_state }, () =>
+ 				load.call(null, {
+ 					url: event.url,
+ 					params: event.params,
+diff --git a/packages/kit/src/runtime/server/page/render.js b/packages/kit/src/runtime/server/page/render.js
+index ff11a9cc9..26b8942dd 100644
+--- a/packages/kit/src/runtime/server/page/render.js
++++ b/packages/kit/src/runtime/server/page/render.js
+@@ -1,7 +1,7 @@
+ import * as devalue from 'devalue';
+ import { readable, writable } from 'svelte/store';
+ import { DEV } from 'esm-env';
+-import { text } from '@sveltejs/kit';
++import { isRedirect, text } from '@sveltejs/kit';
+ import * as paths from '$app/paths/internal/server';
+ import { hash } from '../../../utils/hash.js';
+ import { serialize_data } from './serialize_data.js';
+@@ -189,6 +189,10 @@ export async function render_response({
+ 			csp: csp.script_needs_nonce ? { nonce: csp.nonce } : { hash: csp.script_needs_hash },
+ 			transformError: error_components
+ 				? /** @param {unknown} e */ async (e) => {
++						if (isRedirect(e)) {
++							throw e;
++						}
++
+ 						const transformed = await handle_error_and_jsonify(event, event_state, options, e);
+ 						props.page.error = props.error = error = transformed;
+ 						props.page.status = status = get_status(e);
+@@ -218,8 +222,9 @@ export async function render_response({
+ 				};
+ 			}
+ 
+-			event_state.allows_commands = false;
+-			rendered = await with_request_store({ event, state: event_state }, async () => {
++			const state = { ...event_state, is_in_render: true };
++
++			rendered = await with_request_store({ event, state }, async () => {
+ 				// use relative paths during rendering, so that the resulting HTML is as
+ 				// portable as possible, but reset afterwards
+ 				if (paths.relative) paths.override({ base, assets });
+@@ -498,31 +503,41 @@ export async function render_response({
+ 			args.push(`{\n${indent}\t${hydrate.join(`,\n${indent}\t`)}\n${indent}}`);
+ 		}
+ 
+-		const { remote_data: remote_cache } = event_state;
++		const { remote } = event_state;
+ 
+-		let serialized_remote_data = '';
++		let serialized_query_data = '';
++		let serialized_prerender_data = '';
+ 
+-		if (remote_cache) {
++		if (remote.data) {
+ 			/** @type {Record<string, any>} */
+-			const remote = {};
++			const query = {};
+ 
+-			for (const [info, cache] of remote_cache) {
++			/** @type {Record<string, any>} */
++			const prerender = {};
++
++			for (const [info, cache] of remote.data) {
+ 				// remote functions without an `id` aren't exported, and thus
+ 				// cannot be called from the client
+ 				if (!info.id) continue;
+ 
+ 				for (const key in cache) {
++					const entry = cache[key];
++
++					if (!entry.serialize) continue;
++
+ 					const remote_key = create_remote_key(info.id, key);
+ 
+-					if (event_state.refreshes?.[remote_key] !== undefined) {
++					const store = info.type === 'prerender' ? prerender : query;
++
++					if (event_state.remote.refreshes?.[remote_key] !== undefined) {
+ 						// This entry was refreshed/set by a command or form action.
+ 						// Always await it so the mutation result is serialized.
+-						remote[remote_key] = await cache[key];
++						store[remote_key] = await entry.data;
+ 					} else {
+ 						// Don't block the response on pending remote data - if a query
+ 						// hasn't settled yet, it wasn't awaited in the template (or is behind a pending boundary).
+ 						const result = await Promise.race([
+-							Promise.resolve(cache[key]).then(
++							Promise.resolve(entry.data).then(
+ 								(v) => /** @type {const} */ ({ settled: true, value: v }),
+ 								(e) => /** @type {const} */ ({ settled: true, error: e })
+ 							),
+@@ -533,7 +548,7 @@ export async function render_response({
+ 
+ 						if (result.settled) {
+ 							if ('error' in result) throw result.error;
+-							remote[remote_key] = result.value;
++							store[remote_key] = result.value;
+ 						}
+ 					}
+ 				}
+@@ -549,9 +564,17 @@ export async function render_response({
+ 				}
+ 			};
+ 
+-			serialized_remote_data = `${global}.data = ${devalue.uneval(remote, replacer)};\n\n\t\t\t\t\t\t`;
++			if (Object.keys(query).length > 0) {
++				serialized_query_data = `${global}.query = ${devalue.uneval(query, replacer)};\n\n\t\t\t\t\t\t`;
++			}
++
++			if (Object.keys(prerender).length > 0) {
++				serialized_prerender_data = `${global}.prerender = ${devalue.uneval(prerender, replacer)};\n\n\t\t\t\t\t\t`;
++			}
+ 		}
+ 
++		const serialized_remote_data = `${serialized_query_data}${serialized_prerender_data}`;
++
+ 		// `client.app` is a proxy for `bundleStrategy === 'split'`
+ 		const boot = client.inline
+ 			? `${client.inline.script}
+diff --git a/packages/kit/src/runtime/server/remote.js b/packages/kit/src/runtime/server/remote.js
+index 8c1db8109..18bbc3790 100644
+--- a/packages/kit/src/runtime/server/remote.js
++++ b/packages/kit/src/runtime/server/remote.js
+@@ -196,7 +196,7 @@ async function handle_remote_call_internal(event, state, options, manifest, id)
+ 	 * @param {string[]=} client_refreshes
+ 	 */
+ 	async function serialize_refreshes(client_refreshes) {
+-		const refreshes = state.refreshes ?? {};
++		const refreshes = state.remote.refreshes ?? {};
+ 
+ 		if (client_refreshes) {
+ 			for (const key of client_refreshes) {
+diff --git a/packages/kit/src/runtime/server/respond.js b/packages/kit/src/runtime/server/respond.js
+index 23ed2a3d0..6ff2b13d8 100644
+--- a/packages/kit/src/runtime/server/respond.js
++++ b/packages/kit/src/runtime/server/respond.js
+@@ -39,7 +39,6 @@ import { server_data_serializer } from './page/data_serializer.js';
+ import { get_remote_id, handle_remote_call } from './remote.js';
+ import { record_span } from '../telemetry/record_span.js';
+ import { otel } from '../telemetry/otel.js';
+-import { MUTATIVE_METHODS } from '../../constants.js';
+ 
+ /* global __SVELTEKIT_ADAPTER_NAME__ */
+ 
+@@ -150,7 +149,14 @@ export async function internal_respond(request, options, manifest, state) {
+ 		tracing: {
+ 			record_span
+ 		},
+-		is_in_remote_function: false
++		remote: {
++			data: null,
++			forms: null,
++			refreshes: null
++		},
++		is_in_remote_function: false,
++		is_in_render: false,
++		is_in_universal_load: false
+ 	};
+ 
+ 	/** @type {import('@sveltejs/kit').RequestEvent} */
+@@ -420,7 +426,7 @@ export async function internal_respond(request, options, manifest, state) {
+ 						current: root_span
+ 					}
+ 				};
+-				event_state.allows_commands = MUTATIVE_METHODS.includes(request.method);
++
+ 				return await with_request_store({ event: traced_event, state: event_state }, () =>
+ 					options.hooks.handle({
+ 						event: traced_event,
+diff --git a/packages/kit/src/runtime/shared.js b/packages/kit/src/runtime/shared.js
+index dd6895571..a38f9249a 100644
+--- a/packages/kit/src/runtime/shared.js
++++ b/packages/kit/src/runtime/shared.js
+@@ -1,6 +1,7 @@
+ /** @import { Transport } from '@sveltejs/kit' */
+ import * as devalue from 'devalue';
+ import { base64_decode, base64_encode, text_decoder } from './utils.js';
++import * as svelte from 'svelte';
+ 
+ /**
+  * @param {string} route_id
+@@ -91,3 +92,17 @@ export function parse_remote_arg(string, transport) {
+ export function create_remote_key(id, payload) {
+ 	return id + '/' + payload;
+ }
++
++/**
++ * @template T
++ * @param {string} key
++ * @param {() => T} fn
++ * @returns {T}
++ * @deprecated TODO remove in SvelteKit 3.0
++ */
++export function unfriendly_hydratable(key, fn) {
++	if (!svelte.hydratable) {
++		throw new Error('Remote functions require Svelte 5.44.0 or later');
++	}
++	return svelte.hydratable(key, fn);
++}
+diff --git a/packages/kit/src/types/global-private.d.ts b/packages/kit/src/types/global-private.d.ts
+index c08d43b3d..dc3f9eb20 100644
+--- a/packages/kit/src/types/global-private.d.ts
++++ b/packages/kit/src/types/global-private.d.ts
+@@ -35,8 +35,10 @@ declare global {
+ 		assets?: string;
+ 		/** Public environment variables */
+ 		env?: Record<string, string>;
+-		/** Serialized data from remote functions */
+-		data?: Record<string, any>;
++		/** Serialized data from query/form/command functions */
++		query?: Record<string, any>;
++		/** Serialized data from prerender functions */
++		prerender?: Record<string, any>;
+ 		/** Create a placeholder promise */
+ 		defer?: (id: number) => Promise<any>;
+ 		/** Resolve a placeholder promise */
+diff --git a/packages/kit/src/types/internal.d.ts b/packages/kit/src/types/internal.d.ts
+index e1dbedb6e..3f54b262e 100644
+--- a/packages/kit/src/types/internal.d.ts
++++ b/packages/kit/src/types/internal.d.ts
+@@ -621,17 +621,20 @@ export type RecordSpan = <T>(options: {
+  * used for tracking things like remote function calls
+  */
+ export interface RequestState {
+-	prerendering: PrerenderOptions | undefined;
+-	transport: ServerHooks['transport'];
+-	handleValidationError: ServerHooks['handleValidationError'];
+-	tracing: {
++	readonly prerendering: PrerenderOptions | undefined;
++	readonly transport: ServerHooks['transport'];
++	readonly handleValidationError: ServerHooks['handleValidationError'];
++	readonly tracing: {
+ 		record_span: RecordSpan;
+ 	};
+-	is_in_remote_function: boolean;
+-	form_instances?: Map<any, any>;
+-	remote_data?: Map<RemoteInfo, Record<string, MaybePromise<any>>>;
+-	refreshes?: Record<string, Promise<any>>;
+-	allows_commands?: boolean;
++	readonly remote: {
++		data: null | Map<RemoteInfo, Record<string, { serialize: boolean; data: MaybePromise<any> }>>;
++		forms: null | Map<any, any>;
++		refreshes: null | Record<string, Promise<any>>;
++	};
++	readonly is_in_remote_function: boolean;
++	readonly is_in_render: boolean;
++	readonly is_in_universal_load: boolean;
+ }
+ 
+ export interface RequestStore {
+diff --git a/packages/kit/test/apps/async/src/routes/remote/+page.js b/packages/kit/test/apps/async/src/routes/remote/+page.js
+index 6d4bc8ecb..fcc293874 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/+page.js
++++ b/packages/kit/test/apps/async/src/routes/remote/+page.js
+@@ -2,6 +2,6 @@ import { echo } from './query-command.remote';
+ 
+ export async function load() {
+ 	return {
+-		echo_result: await echo('Hello world')
++		echo_result: await echo('Hello world').run()
+ 	};
+ }
+diff --git a/packages/kit/test/apps/async/src/routes/remote/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/+page.svelte
+index 33d95c0f6..dcecfad8e 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/+page.svelte
++++ b/packages/kit/test/apps/async/src/routes/remote/+page.svelte
+@@ -12,24 +12,23 @@
+ 	} from './query-command.remote.js';
+ 	import { q } from './accessing-env.remote';
+ 
+-	let { data } = $props();
++	const { data } = $props();
+ 
+ 	let command_result = $state(null);
+ 
+ 	// we just want it not to be treeshaken away
++	// eslint-disable-next-line @typescript-eslint/no-unused-expressions
+ 	q;
+ 
+-	const count = browser ? get_count() : null; // so that we get a remote request in the browser
++	const count = get_count();
+ </script>
+ 
+ <p id="echo-result">{data.echo_result}</p>
+-{#if browser}
+-	<p id="count-result">
+-		{await count} / {count.current} ({count.loading})
+-	</p>
+-	<!-- this is just here to check that it is re-requested after the command -->
+-	{await add({ a: 2, b: 2 })}
+-{/if}
++<p id="count-result">
++	{await count} / {count.current} ({count.loading})
++</p>
++<!-- this is just here to check that it is re-requested after the command -->
++{await add({ a: 2, b: 2 })}
+ <p id="command-result">{command_result}</p>
+ 
+ <!-- Test pending state for commands -->
+diff --git a/packages/kit/test/apps/async/src/routes/remote/batch-ssr/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/batch-ssr/+page.svelte
+new file mode 100644
+index 000000000..0507d7eff
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/batch-ssr/+page.svelte
+@@ -0,0 +1,28 @@
++<script>
++	import { get_todo } from './batch.remote.js';
++
++	const todo_1 = get_todo('1');
++	const todo_2 = get_todo('2');
++	const todo_3 = get_todo('error');
++
++	function get_message(error) {
++		if (error instanceof Error) return error.message;
++
++		if (typeof error === 'object' && error && 'message' in error) {
++			return String(error.message);
++		}
++
++		return String(error);
++	}
++</script>
++
++<p id="ssr-batch-result-1">{(await todo_1).title}</p>
++<p id="ssr-batch-result-2">{(await todo_2).title}</p>
++
++<svelte:boundary>
++	<p id="ssr-batch-result-3">{(await todo_3).title}</p>
++
++	{#snippet failed(error)}
++		<p id="ssr-batch-result-3">{get_message(error)}</p>
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/batch-ssr/batch.remote.js b/packages/kit/test/apps/async/src/routes/remote/batch-ssr/batch.remote.js
+new file mode 100644
+index 000000000..f01d02dbe
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/batch-ssr/batch.remote.js
+@@ -0,0 +1,20 @@
++import { query } from '$app/server';
++import { error } from '@sveltejs/kit';
++
++/** @type {ReadonlyMap<string, { id: string; title: string }>} */
++const TODOS = new Map([
++	['1', { id: '1', title: 'Buy groceries' }],
++	['2', { id: '2', title: 'Walk the dog' }]
++]);
++
++export const get_todo = query.batch('unchecked', (ids) => {
++	if (new Set(ids).size !== ids.length) {
++		throw new Error(`batch queries must be deduplicated, but got ${JSON.stringify(ids)}`);
++	}
++
++	return (id) => {
++		if (id === 'error') return error(404, { message: 'Not found' });
++
++		return TODOS.get(id);
++	};
++});
+diff --git a/packages/kit/test/apps/async/src/routes/remote/batch/+page.js b/packages/kit/test/apps/async/src/routes/remote/batch/+page.js
+deleted file mode 100644
+index d87494778..000000000
+--- a/packages/kit/test/apps/async/src/routes/remote/batch/+page.js
++++ /dev/null
+@@ -1,2 +0,0 @@
+-// TODO remove once we have async SSR
+-export const ssr = false;
+diff --git a/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
+index a914e7646..5bac7d52c 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
++++ b/packages/kit/test/apps/async/src/routes/remote/batch/+page.svelte
+@@ -20,10 +20,6 @@
+ 			<svelte:boundary>
+ 				<span id="batch-result-{idx + 1}">{(await promise).title}</span>
+ 
+-				{#snippet pending()}
+-					<span id="batch-result-{idx + 1}">Loading todo {id}...</span>
+-				{/snippet}
+-
+ 				{#snippet failed(error)}
+ 					<span id="batch-result-{idx + 1}"
+ 						>Error loading todo {id}: {(error as App.Error).message}</span
+diff --git a/packages/kit/test/apps/async/src/routes/remote/dev/preload/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/dev/preload/+page.svelte
+index 7f89d533c..e2fa823b8 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/dev/preload/+page.svelte
++++ b/packages/kit/test/apps/async/src/routes/remote/dev/preload/+page.svelte
+@@ -5,4 +5,4 @@
+ </script>
+ 
+ <p>{data.example}</p>
+-<button onclick={async () => (data.example = await example('baz'))}>Refresh</button>
++<button onclick={async () => (data.example = await example('baz').run())}>Refresh</button>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/+page.svelte
+new file mode 100644
+index 000000000..e5595400b
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/+page.svelte
+@@ -0,0 +1,46 @@
++<script lang="ts">
++	import { tick } from 'svelte';
++	import TrackedQuery from './TrackedQuery.svelte';
++	import type { RemoteQuery } from '@sveltejs/kit';
++
++	let show_child = $state(true);
++	let status = $state('child mounted');
++	let result = $state('');
++	let stored: RemoteQuery<number>;
++
++	function get_message(error) {
++		return error instanceof Error ? error.message : String(error);
++	}
++</script>
++
++<p id="status">{status}</p>
++<p id="result">{result}</p>
++
++{#if show_child}
++	<TrackedQuery expose={(query) => (stored = query)} />
++{/if}
++
++<button
++	id="unmount"
++	onclick={async () => {
++		show_child = false;
++		await tick();
++		status = 'child unmounted';
++	}}
++>
++	unmount child
++</button>
++
++<button
++	id="read-current"
++	onclick={async () => {
++		try {
++			await stored;
++			result = 'success :(';
++		} catch (error) {
++			result = get_message(error);
++		}
++	}}
++>
++	read current
++</button>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/TrackedQuery.svelte b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/TrackedQuery.svelte
+new file mode 100644
+index 000000000..e19d1f9b5
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/inactive/TrackedQuery.svelte
+@@ -0,0 +1,12 @@
++<script lang="ts">
++	import type { RemoteQuery } from '@sveltejs/kit';
++	import { get_count } from '../../query-command.remote.js';
++
++	const { expose }: { expose: (query: RemoteQuery<number>) => void } = $props();
++
++	const tracked = get_count();
++	// svelte-ignore state_referenced_locally
++	expose(tracked);
++</script>
++
++<p id="tracked-child">tracked query ready</p>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/not-tracked/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/not-tracked/+page.svelte
+new file mode 100644
+index 000000000..536a0acb9
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/not-tracked/+page.svelte
+@@ -0,0 +1,49 @@
++<script lang="ts">
++	import type { RemoteQuery } from '@sveltejs/kit';
++	import { get_count } from '../../query-command.remote.js';
++
++	let status = $state('idle');
++	let result = $state('');
++	let stored: RemoteQuery<number>;
++
++	function get_message(error) {
++		return error instanceof Error ? error.message : String(error);
++	}
++</script>
++
++<p id="status">{status}</p>
++<p id="result">{result}</p>
++
++<button
++	id="create"
++	onclick={() => {
++		stored = get_count();
++		status = 'query created';
++	}}
++>
++	create query
++</button>
++
++<button
++	id="run"
++	onclick={async () => {
++		result = String(await stored.run());
++		status = 'query run';
++	}}
++>
++	run query
++</button>
++
++<button
++	id="read-current"
++	onclick={async () => {
++		try {
++			await stored;
++			result = 'success! :(';
++		} catch (error) {
++			result = get_message(error);
++		}
++	}}
++>
++	read current
++</button>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/run-in-render/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/run-in-render/+page.svelte
+new file mode 100644
+index 000000000..843bf36dd
+--- /dev/null
++++ b/packages/kit/test/apps/async/src/routes/remote/query-runtime-errors/run-in-render/+page.svelte
+@@ -0,0 +1,21 @@
++<script>
++	import { get_count } from '../../query-command.remote.js';
++
++	function get_message(error) {
++		if (error instanceof Error) return error.message;
++
++		if (typeof error === 'object' && error && 'message' in error) {
++			return String(error.message);
++		}
++
++		return String(error);
++	}
++</script>
++
++<svelte:boundary>
++	<p>{get_count().run()}</p>
++
++	{#snippet failed(error)}
++		<p id="error">{get_message(error)}</p>
++	{/snippet}
++</svelte:boundary>
+diff --git a/packages/kit/test/apps/async/src/routes/remote/validation/+page.svelte b/packages/kit/test/apps/async/src/routes/remote/validation/+page.svelte
+index ae8e0ed1c..44f9bb70e 100644
+--- a/packages/kit/test/apps/async/src/routes/remote/validation/+page.svelte
++++ b/packages/kit/test/apps/async/src/routes/remote/validation/+page.svelte
+@@ -26,16 +26,16 @@
+ 	onclick={async () => {
+ 		status = 'pending';
+ 		try {
+-			validate_result(await validated_query_no_args());
++			validate_result(await validated_query_no_args().run());
+ 			validate_result(await validated_prerendered_query_no_args());
+ 			validate_result(await validated_command_no_args());
+ 
+-			validate_result(await validated_query_with_arg('valid'));
++			validate_result(await validated_query_with_arg('valid').run());
+ 			validate_result(await validated_prerendered_query_with_arg('valid'));
+ 			validate_result(await validated_command_with_arg('valid'));
+ 
+-			validate_result(await validated_batch_query_no_validation('valid'));
+-			validate_result(await validated_batch_query_with_validation('valid'));
++			validate_result(await validated_batch_query_no_validation('valid').run());
++			validate_result(await validated_batch_query_with_validation('valid').run());
+ 
+ 			status = 'success';
+ 		} catch (e) {
+@@ -51,7 +51,7 @@
+ 		status = 'pending';
+ 		try {
+ 			// @ts-expect-error
+-			await validated_query_no_args('invalid');
++			await validated_query_no_args('invalid').run();
+ 			status = 'error';
+ 		} catch {
+ 			try {
+@@ -78,7 +78,7 @@
+ 		status = 'pending';
+ 		try {
+ 			// @ts-expect-error
+-			await validated_query_with_arg(1);
++			await validated_query_with_arg(1).run();
+ 			status = 'error';
+ 		} catch (e) {
+ 			if (!isHttpError(e) || e.body.message !== 'Input must be a string') {
+@@ -106,7 +106,7 @@
+ 
+ 					try {
+ 						// @ts-expect-error
+-						await validated_batch_query_with_validation(123);
++						await validated_batch_query_with_validation(123).run();
+ 						status = 'error';
+ 					} catch (e) {
+ 						if (!isHttpError(e) || e.body.message !== 'Input must be a string') {
+@@ -128,13 +128,13 @@
+ 		status = 'pending';
+ 		try {
+ 			// @ts-expect-error
+-			validate_result(await validated_query_with_arg('valid', 'ignored'));
++			validate_result(await validated_query_with_arg('valid', 'ignored').run());
+ 			// @ts-expect-error
+ 			validate_result(await validated_prerendered_query_with_arg('valid', 'ignored'));
+ 			// @ts-expect-error
+ 			validate_result(await validated_command_with_arg('valid', 'ignored'));
+ 			// @ts-expect-error
+-			validate_result(await validated_batch_query_no_validation('valid', 'ignored'));
++			validate_result(await validated_batch_query_no_validation('valid', 'ignored').run());
+ 
+ 			status = 'success';
+ 		} catch (e) {
+diff --git a/packages/kit/test/apps/async/test/client.test.js b/packages/kit/test/apps/async/test/client.test.js
+index 63a76dc88..942931207 100644
+--- a/packages/kit/test/apps/async/test/client.test.js
++++ b/packages/kit/test/apps/async/test/client.test.js
+@@ -23,6 +23,8 @@ test.describe('remote functions', () => {
+ 		]);
+ 		await clicknav('a[href="/remote/dev/preload"]', { waitForURL: '/remote/dev/preload' });
+ 		await expect(page.locator('p')).toHaveText('foobar');
++		await page.getByRole('button', { name: 'Refresh' }).click();
++		await expect(page.locator('p')).toHaveText('foobaz');
+ 	});
+ });
+ 
+@@ -31,6 +33,7 @@ test.describe('remote function mutations', () => {
+ 	test.afterEach(async ({ page }) => {
+ 		if (page.url().endsWith('/remote')) {
+ 			await page.click('#reset-btn');
++			await expect(page.locator('#count-result')).toHaveText('0 / 0 (false)');
+ 		}
+ 	});
+ 
+@@ -52,7 +55,18 @@ test.describe('remote function mutations', () => {
+ 		await page.goto('/remote');
+ 		await expect(page.locator('#count-result')).toHaveText('0 / 0 (false)');
+ 		// only the calls in the template are done, not the one in the load function
+-		expect(request_count).toBe(2);
++		expect(request_count).toBe(0);
++	});
++
++	test('hydrated batch data is reused', async ({ page }) => {
++		let request_count = 0;
++		page.on('request', (r) => (request_count += r.url().includes('/_app/remote') ? 1 : 0));
++
++		await page.goto('/remote/batch-ssr');
++		await expect(page.locator('#ssr-batch-result-1')).toHaveText('Buy groceries');
++		await expect(page.locator('#ssr-batch-result-2')).toHaveText('Walk the dog');
++		await expect(page.locator('#ssr-batch-result-3')).toHaveText('Not found');
++		expect(request_count).toBe(0);
+ 	});
+ 
+ 	test('command returns correct sum but does not refresh data by default', async ({ page }) => {
+@@ -134,7 +148,7 @@ test.describe('remote function mutations', () => {
+ 		let request_count = 0;
+ 		page.on('request', (r) => (request_count += r.url().includes('/_app/remote') ? 1 : 0));
+ 
+-		page.click('#multiply-override-refresh-btn');
++		await page.click('#multiply-override-refresh-btn');
+ 		await expect(page.locator('#count-result')).toHaveText('6 / 6 (false)');
+ 		await expect(page.locator('#command-result')).toHaveText('5');
+ 		await expect(page.locator('#count-result')).toHaveText('5 / 5 (false)');
+@@ -179,16 +193,22 @@ test.describe('remote function mutations', () => {
+ 		expect(data.error).toContain('Cannot call a command');
+ 	});
+ 
+-	test('prerendered entries not called in prod', async ({ page }) => {
++	test('prerendered entries use prerender cache while live entries refetch', async ({ page }) => {
+ 		let request_count = 0;
+ 		page.on('request', (r) => (request_count += r.url().includes('/_app/remote') ? 1 : 0));
+ 		await page.goto('/remote/prerender');
+ 
+ 		await page.click('#fetch-prerendered');
+ 		await expect(page.locator('#fetch-prerendered')).toHaveText('yes');
++		expect(request_count).toBe(1);
++
++		await page.click('#fetch-prerendered');
++		await expect(page.locator('#fetch-prerendered')).toHaveText('yes');
++		expect(request_count).toBe(1);
+ 
+ 		await page.click('#fetch-not-prerendered');
+ 		await expect(page.locator('#fetch-not-prerendered')).toHaveText('d');
++		expect(request_count).toBe(2);
+ 	});
+ 
+ 	test('refreshAll reloads remote functions and load functions', async ({ page }) => {
+@@ -342,6 +362,48 @@ test.describe('remote function mutations', () => {
+ 		await expect(page.locator('#phrase')).toHaveText('i am your father');
+ 	});
+ 
++	test.describe('query runtime guardrails', () => {
++		test('query created outside tracking context can run but cannot expose reactive state', async ({
++			page
++		}) => {
++			await page.goto('/remote/query-runtime-errors/not-tracked');
++
++			await page.click('#create');
++			await expect(page.locator('#status')).toHaveText('query created');
++
++			await page.click('#run');
++			await expect(page.locator('#result')).toHaveText('0');
++
++			await page.click('#read-current');
++			await expect(page.locator('#result')).toContainText(
++				'This query was not created in a reactive context'
++			);
++		});
++
++		test('query becomes inactive after its tracking context is destroyed', async ({ page }) => {
++			await page.goto('/remote/query-runtime-errors/inactive');
++
++			await expect(page.locator('#tracked-child')).toHaveText('tracked query ready');
++			await page.click('#unmount');
++			await expect(page.locator('#status')).toHaveText('child unmounted');
++			await expect(page.locator('#tracked-child')).toHaveCount(0);
++
++			await page.click('#read-current');
++			await expect(page.locator('#result')).toContainText(
++				'This query instance is no longer active'
++			);
++		});
++
++		test('run is blocked during client render', async ({ page, app }) => {
++			await page.goto('/remote');
++			await app.goto('/remote/query-runtime-errors/run-in-render');
++
++			await expect(page.locator('#error')).toContainText(
++				'On the client, .run() can only be called outside render'
++			);
++		});
++	});
++
+ 	// TODO ditto
+ 	test('query works with transport', async ({ page }) => {
+ 		await page.goto('/remote/transport');
+diff --git a/packages/kit/test/apps/async/test/test.js b/packages/kit/test/apps/async/test/test.js
+index 2164e75ab..5bd7916d6 100644
+--- a/packages/kit/test/apps/async/test/test.js
++++ b/packages/kit/test/apps/async/test/test.js
+@@ -11,6 +11,22 @@ test.describe('remote functions', () => {
+ 		}
+ 	});
+ 
++	test('query.batch renders final values and errors on first load', async ({ page }) => {
++		await page.goto('/remote/batch-ssr');
++
++		await expect(page.locator('#ssr-batch-result-1')).toHaveText('Buy groceries');
++		await expect(page.locator('#ssr-batch-result-2')).toHaveText('Walk the dog');
++		await expect(page.locator('#ssr-batch-result-3')).toHaveText('Not found');
++		await expect(page.locator('body')).not.toContainText('Loading todo');
++	});
++
++	test('run is blocked during server render', async ({ page }) => {
++		await page.goto('/remote/query-runtime-errors/run-in-render');
++		await expect(page.locator('#error')).toContainText(
++			'On the server, .run() can only be called in universal `load` functions'
++		);
++	});
++
+ 	test('query redirects on page load (query in common layout)', async ({ page }) => {
+ 		await page.goto('/remote/query-redirect');
+ 		await page.click('a[href="/remote/query-redirect/from-common-layout"]');
+diff --git a/packages/kit/test/apps/options-2/src/routes/+page.svelte b/packages/kit/test/apps/options-2/src/routes/+page.svelte
+index c026409d9..33b8352a7 100644
+--- a/packages/kit/test/apps/options-2/src/routes/+page.svelte
++++ b/packages/kit/test/apps/options-2/src/routes/+page.svelte
+@@ -1,13 +1,13 @@
+ <script>
+-	import { base, assets } from '$app/paths';
++	import { resolve, asset } from '$app/paths';
+ </script>
+ 
+ <h1>Hello</h1>
+ 
+-<p data-testid="base">base: {base}</p>
+-<p data-testid="assets">assets: {assets}</p>
++<p data-testid="base">base: {resolve('/')}</p>
++<p data-testid="assets">assets: {asset('/')}</p>
+ 
+-<a href="{base}/hello" data-testid="link">Go to /hello</a>
++<a href={resolve('/hello')} data-testid="link">Go to /hello</a>
+ 
+ <style>
+ 	a {
+diff --git a/packages/kit/test/apps/options-2/src/routes/deeply/nested/page/+page.svelte b/packages/kit/test/apps/options-2/src/routes/deeply/nested/page/+page.svelte
+index ee77d1c9d..f645edd52 100644
+--- a/packages/kit/test/apps/options-2/src/routes/deeply/nested/page/+page.svelte
++++ b/packages/kit/test/apps/options-2/src/routes/deeply/nested/page/+page.svelte
+@@ -1,11 +1,11 @@
+ <script>
+-	import { base, assets } from '$app/paths';
++	import { resolve, asset } from '$app/paths';
+ </script>
+ 
+ <h1>Hello</h1>
+ 
+-<p data-testid="base">base: {base}</p>
+-<p data-testid="assets">assets: {assets}</p>
++<p data-testid="base">base: {resolve('/')}</p>
++<p data-testid="assets">assets: {asset('/')}</p>
+ 
+ <style>
+ 	p {
+diff --git a/packages/kit/test/apps/options-2/src/routes/remote/+page.svelte b/packages/kit/test/apps/options-2/src/routes/remote/+page.svelte
+index a7d595d09..66d315328 100644
+--- a/packages/kit/test/apps/options-2/src/routes/remote/+page.svelte
++++ b/packages/kit/test/apps/options-2/src/routes/remote/+page.svelte
+@@ -7,14 +7,14 @@
+ 
+ <p id="count">{count}</p>
+ 
+-<button onclick={async () => (count = await get_count())}>get count</button>
++<button onclick={async () => (count = await get_count().run())}>get count</button>
+ 
+ <button onclick={async () => (count = await set_count(0))} id="reset-btn">reset</button>
+ 
+ <form
+ 	{...set_count_form.enhance(async ({ submit }) => {
+ 		await submit().updates(get_count());
+-		count = await get_count();
++		count = await get_count().run();
+ 	})}
+ >
+ 	<input type="number" name="count" />
+diff --git a/packages/kit/test/apps/options-2/svelte.config.js b/packages/kit/test/apps/options-2/svelte.config.js
+index 1fee77785..3bea5d8ca 100644
+--- a/packages/kit/test/apps/options-2/svelte.config.js
++++ b/packages/kit/test/apps/options-2/svelte.config.js
+@@ -1,5 +1,10 @@
+ /** @type {import('@sveltejs/kit').Config} */
+ const config = {
++	compilerOptions: {
++		experimental: {
++			async: true
++		}
++	},
+ 	kit: {
+ 		paths: {
+ 			base: '/basepath',
+diff --git a/packages/kit/test/apps/options-2/test/test.js b/packages/kit/test/apps/options-2/test/test.js
+index f3df40146..c0cfc0fd1 100644
+--- a/packages/kit/test/apps/options-2/test/test.js
++++ b/packages/kit/test/apps/options-2/test/test.js
+@@ -30,13 +30,13 @@ test.describe('paths', () => {
+ 	test('uses relative paths during SSR', async ({ page, javaScriptEnabled }) => {
+ 		await page.goto('/basepath');
+ 
+-		let base = javaScriptEnabled ? '/basepath' : '.';
++		let base = javaScriptEnabled ? '/basepath/' : './';
+ 		expect(await page.textContent('[data-testid="base"]')).toBe(`base: ${base}`);
+ 		expect(await page.textContent('[data-testid="assets"]')).toBe(`assets: ${base}`);
+ 
+ 		await page.goto('/basepath/deeply/nested/page');
+ 
+-		base = javaScriptEnabled ? '/basepath' : '../..';
++		base = javaScriptEnabled ? '/basepath/' : '../../';
+ 		expect(await page.textContent('[data-testid="base"]')).toBe(`base: ${base}`);
+ 		expect(await page.textContent('[data-testid="assets"]')).toBe(`assets: ${base}`);
+ 	});
+diff --git a/packages/kit/types/index.d.ts b/packages/kit/types/index.d.ts
+index 48df55023..6b3ce5e4c 100644
+--- a/packages/kit/types/index.d.ts
++++ b/packages/kit/types/index.d.ts
+@@ -2076,14 +2076,14 @@ declare module '@sveltejs/kit' {
+ 	 * The return value of a remote `command` function. See [Remote functions](https://svelte.dev/docs/kit/remote-functions#command) for full documentation.
+ 	 */
+ 	export type RemoteCommand<Input, Output> = {
+-		(arg: undefined extends Input ? Input | void : Input): Promise<Awaited<Output>> & {
+-			updates(...queries: Array<RemoteQuery<any> | RemoteQueryOverride>): Promise<Awaited<Output>>;
++		(arg: undefined extends Input ? Input | void : Input): Promise<Output> & {
++			updates(...queries: Array<RemoteQuery<any> | RemoteQueryOverride>): Promise<Output>;
+ 		};
+ 		/** The number of pending command executions */
+ 		get pending(): number;
+ 	};
+ 
+-	export type RemoteResource<T> = Promise<Awaited<T>> & {
++	export type RemoteResource<T> = Promise<T> & {
+ 		/** The error in case the query fails. Most often this is a [`HttpError`](https://svelte.dev/docs/kit/@sveltejs-kit#HttpError) but it isn't guaranteed to be. */
+ 		get error(): any;
+ 		/** `true` before the first result is available and during refreshes */
+@@ -2096,12 +2096,18 @@ declare module '@sveltejs/kit' {
+ 			  }
+ 			| {
+ 					/** The current value of the query. Undefined until `ready` is `true` */
+-					get current(): Awaited<T>;
++					get current(): T;
+ 					ready: true;
+ 			  }
+ 		);
+ 
+ 	export type RemoteQuery<T> = RemoteResource<T> & {
++		/**
++		 * Returns a plain promise with the result.
++		 * Unlike awaiting the resource directly, this can only be used _outside_ render
++		 * (i.e. in load functions, event handlers and so on)
++		 */
++		run(): Promise<T>;
+ 		/**
+ 		 * On the client, this function will update the value of the query without re-fetching it.
+ 		 *
+@@ -2135,7 +2141,7 @@ declare module '@sveltejs/kit' {
+ 		 * </form>
+ 		 * ```
+ 		 */
+-		withOverride(update: (current: Awaited<T>) => Awaited<T>): RemoteQueryOverride;
++		withOverride(update: (current: T) => T): RemoteQueryOverride;
+ 	};
+ 
+ 	export interface RemoteQueryOverride {
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index f3c23bd88..eceaf5742 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -26,7 +26,7 @@ catalogs:
+       version: 0.213.0
+     '@opentelemetry/sdk-trace-node':
+       specifier: ^2.0.1
+-      version: 2.5.1
++      version: 2.6.0
+     '@playwright/test':
+       specifier: 1.58.2
+       version: 1.58.2
+@@ -97,8 +97,8 @@ catalogs:
+       specifier: ^3.0.0
+       version: 3.0.0
+     svelte:
+-      specifier: ^5.53.5
+-      version: 5.53.5
++      specifier: ^5.53.12
++      version: 5.53.12
+     svelte-check:
+       specifier: ^4.4.1
+       version: 4.4.3
+@@ -130,7 +130,7 @@ importers:
+         version: 1.58.2
+       '@sveltejs/eslint-config':
+         specifier: 'catalog:'
+-        version: 9.0.0(@eslint/js@10.0.1(eslint@10.0.0(jiti@2.4.2)))(@stylistic/eslint-plugin-js@2.1.0(eslint@10.0.0(jiti@2.4.2)))(eslint-config-prettier@9.1.0(eslint@10.0.0(jiti@2.4.2)))(eslint-plugin-n@17.24.0(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3))(eslint-plugin-svelte@3.15.0(eslint@10.0.0(jiti@2.4.2))(svelte@5.53.5)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(eslint@10.0.0(jiti@2.4.2))(typescript-eslint@8.56.1(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3))(typescript@5.8.3)
++        version: 9.0.0(@eslint/js@10.0.1(eslint@10.0.0(jiti@2.4.2)))(@stylistic/eslint-plugin-js@2.1.0(eslint@10.0.0(jiti@2.4.2)))(eslint-config-prettier@9.1.0(eslint@10.0.0(jiti@2.4.2)))(eslint-plugin-n@17.24.0(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3))(eslint-plugin-svelte@3.15.0(eslint@10.0.0(jiti@2.4.2))(svelte@5.53.12)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(eslint@10.0.0(jiti@2.4.2))(typescript-eslint@8.56.1(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3))(typescript@5.8.3)
+       '@svitejs/changesets-changelog-github-compact':
+         specifier: 'catalog:'
+         version: 1.2.0
+@@ -142,7 +142,7 @@ importers:
+         version: 3.8.1
+       prettier-plugin-svelte:
+         specifier: 'catalog:'
+-        version: 3.5.1(prettier@3.8.1)(svelte@5.53.5)
++        version: 3.5.1(prettier@3.8.1)(svelte@5.53.12)
+ 
+   packages/adapter-auto:
+     devDependencies:
+@@ -151,7 +151,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -200,13 +200,13 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       server-side-dep:
+         specifier: file:server-side-dep
+         version: file:packages/adapter-cloudflare/test/apps/pages/server-side-dep
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       vite:
+         specifier: 'catalog:'
+         version: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -221,13 +221,13 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       server-side-dep:
+         specifier: file:server-side-dep
+         version: file:packages/adapter-cloudflare/test/apps/workers/server-side-dep
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       vite:
+         specifier: 'catalog:'
+         version: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -273,7 +273,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -294,10 +294,10 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       vite:
+         specifier: 'catalog:'
+         version: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -309,10 +309,10 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       vite:
+         specifier: 'catalog:'
+         version: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -324,10 +324,10 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       vite:
+         specifier: 'catalog:'
+         version: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -355,7 +355,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -382,7 +382,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -391,7 +391,7 @@ importers:
+         version: 3.0.2
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       typescript:
+         specifier: ^5.3.3
+         version: 5.8.3
+@@ -406,13 +406,13 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       sirv-cli:
+         specifier: 'catalog:'
+         version: 3.0.0
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       vite:
+         specifier: 'catalog:'
+         version: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -424,13 +424,13 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       sirv-cli:
+         specifier: 'catalog:'
+         version: 3.0.0
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       vite:
+         specifier: 'catalog:'
+         version: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -449,7 +449,7 @@ importers:
+         version: link:../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -467,10 +467,10 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       typescript:
+         specifier: ^5.3.3
+         version: 5.8.3
+@@ -497,7 +497,7 @@ importers:
+         version: 0.34.4
+       svelte-parse-markup:
+         specifier: ^0.1.5
+-        version: 0.1.5(svelte@5.53.5)
++        version: 0.1.5(svelte@5.53.12)
+       vite-imagetools:
+         specifier: ^9.0.3
+         version: 9.0.3(rollup@4.59.0)
+@@ -507,7 +507,7 @@ importers:
+     devDependencies:
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/estree':
+         specifier: 'catalog:'
+         version: 1.0.8
+@@ -519,7 +519,7 @@ importers:
+         version: 4.59.0
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       typescript:
+         specifier: ^5.6.3
+         version: 5.8.3
+@@ -540,10 +540,10 @@ importers:
+         version: link:../../../../kit
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       vite:
+         specifier: 'catalog:'
+         version: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+@@ -595,7 +595,7 @@ importers:
+         version: 1.58.2
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/connect':
+         specifier: 'catalog:'
+         version: 3.4.38
+@@ -613,10 +613,10 @@ importers:
+         version: 4.59.0
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-preprocess:
+         specifier: 'catalog:'
+-        version: 6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.53.5)(typescript@5.8.3)
++        version: 6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.3.3
+         version: 5.8.3
+@@ -637,16 +637,16 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       dropcss:
+         specifier: 'catalog:'
+         version: 1.0.16
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -661,13 +661,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -688,22 +688,22 @@ importers:
+         version: 0.213.0(@opentelemetry/api@1.9.0)
+       '@opentelemetry/sdk-trace-node':
+         specifier: 'catalog:'
+-        version: 2.5.1(@opentelemetry/api@1.9.0)
++        version: 2.6.0(@opentelemetry/api@1.9.0)
+       '@sveltejs/kit':
+         specifier: workspace:^
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@vitest/browser-playwright':
+         specifier: 'catalog:'
+         version: 4.0.16(playwright@1.58.2)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))(vitest@4.0.16)
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       test-redirect-importer:
+         specifier: workspace:*
+         version: link:../../../../test-redirect-importer
+@@ -727,7 +727,7 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       e2e-test-dep-error:
+         specifier: file:./_test_dependencies/cjs-only
+         version: e2e-test-dep-cjs-only@file:packages/kit/test/apps/dev-only/_test_dependencies/cjs-only
+@@ -760,10 +760,10 @@ importers:
+         version: e2e-test-dep-cjs-only@file:packages/kit/test/apps/dev-only/_test_dependencies/cjs-only
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -778,13 +778,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -799,13 +799,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -820,13 +820,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -844,13 +844,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -868,13 +868,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -895,13 +895,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -916,13 +916,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -937,13 +937,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -967,13 +967,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -991,13 +991,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1015,13 +1015,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1039,13 +1039,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1060,13 +1060,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1081,13 +1081,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1102,13 +1102,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1123,13 +1123,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1144,13 +1144,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1165,13 +1165,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1186,13 +1186,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1207,13 +1207,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1228,13 +1228,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1249,13 +1249,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1270,13 +1270,13 @@ importers:
+         version: link:../../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1291,13 +1291,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1315,13 +1315,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1339,13 +1339,13 @@ importers:
+         version: link:../../..
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.4
+         version: 5.8.3
+@@ -1372,11 +1372,11 @@ importers:
+         version: 7.7.4
+       svelte2tsx:
+         specifier: ~0.7.33
+-        version: 0.7.33(svelte@5.53.5)(typescript@5.8.3)
++        version: 0.7.33(svelte@5.53.12)(typescript@5.8.3)
+     devDependencies:
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       '@types/node':
+         specifier: 'catalog:'
+         version: 18.19.119
+@@ -1388,10 +1388,10 @@ importers:
+         version: 3.8.1
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-preprocess:
+         specifier: 'catalog:'
+-        version: 6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.53.5)(typescript@5.8.3)
++        version: 6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.3.3
+         version: 5.8.3
+@@ -1439,22 +1439,22 @@ importers:
+         version: link:../../packages/package
+       '@sveltejs/vite-plugin-svelte':
+         specifier: 'catalog:'
+-        version: 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++        version: 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       prettier:
+         specifier: 'catalog:'
+         version: 3.8.1
+       prettier-plugin-svelte:
+         specifier: 'catalog:'
+-        version: 3.5.1(prettier@3.8.1)(svelte@5.53.5)
++        version: 3.5.1(prettier@3.8.1)(svelte@5.53.12)
+       publint:
+         specifier: 'catalog:'
+         version: 0.3.0
+       svelte:
+         specifier: 'catalog:'
+-        version: 5.53.5
++        version: 5.53.12
+       svelte-check:
+         specifier: 'catalog:'
+-        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3)
++        version: 4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3)
+       typescript:
+         specifier: ^5.5.0
+         version: 5.8.3
+@@ -2643,12 +2643,6 @@ packages:
+     peerDependencies:
+       '@opentelemetry/api': '>=1.0.0 <1.10.0'
+ 
+-  '@opentelemetry/context-async-hooks@2.5.1':
+-    resolution: {integrity: sha512-MHbu8XxCHcBn6RwvCt2Vpn1WnLMNECfNKYB14LI5XypcgH4IE0/DiVifVR9tAkwPMyLXN8dOoPJfya3IryLQVw==}
+-    engines: {node: ^18.19.0 || >=20.6.0}
+-    peerDependencies:
+-      '@opentelemetry/api': '>=1.0.0 <1.10.0'
+-
+   '@opentelemetry/context-async-hooks@2.6.0':
+     resolution: {integrity: sha512-L8UyDwqpTcbkIK5cgwDRDYDoEhQoj8wp8BwsO19w3LB1Z41yEQm2VJyNfAi9DrLP/YTqXqWpKHyZfR9/tFYo1Q==}
+     engines: {node: ^18.19.0 || >=20.6.0}
+@@ -2661,12 +2655,6 @@ packages:
+     peerDependencies:
+       '@opentelemetry/api': '>=1.0.0 <1.10.0'
+ 
+-  '@opentelemetry/core@2.5.1':
+-    resolution: {integrity: sha512-Dwlc+3HAZqpgTYq0MUyZABjFkcrKTePwuiFVLjahGD8cx3enqihmpAmdgNFO1R4m/sIe5afjJrA25Prqy4NXlA==}
+-    engines: {node: ^18.19.0 || >=20.6.0}
+-    peerDependencies:
+-      '@opentelemetry/api': '>=1.0.0 <1.10.0'
+-
+   '@opentelemetry/core@2.6.0':
+     resolution: {integrity: sha512-HLM1v2cbZ4TgYN6KEOj+Bbj8rAKriOdkF9Ed3tG25FoprSiQl7kYc+RRT6fUZGOvx0oMi5U67GoFdT+XUn8zEg==}
+     engines: {node: ^18.19.0 || >=20.6.0}
+@@ -2799,12 +2787,6 @@ packages:
+     peerDependencies:
+       '@opentelemetry/api': '>=1.0.0 <1.10.0'
+ 
+-  '@opentelemetry/resources@2.5.1':
+-    resolution: {integrity: sha512-BViBCdE/GuXRlp9k7nS1w6wJvY5fnFX5XvuEtWsTAOQFIO89Eru7lGW3WbfbxtCuZ/GbrJfAziXG0w0dpxL7eQ==}
+-    engines: {node: ^18.19.0 || >=20.6.0}
+-    peerDependencies:
+-      '@opentelemetry/api': '>=1.3.0 <1.10.0'
+-
+   '@opentelemetry/resources@2.6.0':
+     resolution: {integrity: sha512-D4y/+OGe3JSuYUCBxtH5T9DSAWNcvCb/nQWIga8HNtXTVPQn59j0nTBAgaAXxUVBDl40mG3Tc76b46wPlZaiJQ==}
+     engines: {node: ^18.19.0 || >=20.6.0}
+@@ -2835,12 +2817,6 @@ packages:
+     peerDependencies:
+       '@opentelemetry/api': '>=1.0.0 <1.10.0'
+ 
+-  '@opentelemetry/sdk-trace-base@2.5.1':
+-    resolution: {integrity: sha512-iZH3Gw8cxQn0gjpOjJMmKLd9GIaNh/E3v3ST67vyzLSxHBs14HsG4dy7jMYyC5WXGdBVEcM7U/XTF5hCQxjDMw==}
+-    engines: {node: ^18.19.0 || >=20.6.0}
+-    peerDependencies:
+-      '@opentelemetry/api': '>=1.3.0 <1.10.0'
+-
+   '@opentelemetry/sdk-trace-base@2.6.0':
+     resolution: {integrity: sha512-g/OZVkqlxllgFM7qMKqbPV9c1DUPhQ7d4n3pgZFcrnrNft9eJXZM2TNHTPYREJBrtNdRytYyvwjgL5geDKl3EQ==}
+     engines: {node: ^18.19.0 || >=20.6.0}
+@@ -2853,12 +2829,6 @@ packages:
+     peerDependencies:
+       '@opentelemetry/api': '>=1.0.0 <1.10.0'
+ 
+-  '@opentelemetry/sdk-trace-node@2.5.1':
+-    resolution: {integrity: sha512-9lopQ6ZoElETOEN0csgmtEV5/9C7BMfA7VtF4Jape3i954b6sTY2k3Xw3CxUTKreDck/vpAuJM+EDo4zheUw+A==}
+-    engines: {node: ^18.19.0 || >=20.6.0}
+-    peerDependencies:
+-      '@opentelemetry/api': '>=1.0.0 <1.10.0'
+-
+   '@opentelemetry/sdk-trace-node@2.6.0':
+     resolution: {integrity: sha512-YhswtasmsbIGEFvLGvR9p/y3PVRTfFf+mgY8van4Ygpnv4sA3vooAjvh+qAn9PNWxs4/IwGGqiQS0PPsaRJ0vQ==}
+     engines: {node: ^18.19.0 || >=20.6.0}
+@@ -3908,9 +3878,6 @@ packages:
+   dettle@1.0.5:
+     resolution: {integrity: sha512-ZVyjhAJ7sCe1PNXEGveObOH9AC8QvMga3HJIghHawtG7mE4K5pW9nz/vDGAr/U7a3LWgdOzEE7ac9MURnyfaTA==}
+ 
+-  devalue@5.6.3:
+-    resolution: {integrity: sha512-nc7XjUU/2Lb+SvEFVGcWLiKkzfw8+qHI7zn8WYXKkLMgfGSHbgCEaR6bJpev8Cm6Rmrb19Gfd/tZvGqx9is3wg==}
+-
+   devalue@5.6.4:
+     resolution: {integrity: sha512-Gp6rDldRsFh/7XuouDbxMH3Mx8GMCcgzIb1pDTvNyn8pZGQ22u+Wa+lGV9dQCltFQ7uVw0MhRyb8XDskNFOReA==}
+ 
+@@ -5598,8 +5565,8 @@ packages:
+       svelte: ^3.55 || ^4.0.0-next.0 || ^4.0 || ^5.0.0-next.0
+       typescript: ^4.9.4 || ^5.0.0
+ 
+-  svelte@5.53.5:
+-    resolution: {integrity: sha512-YkqERnF05g8KLdDZwZrF8/i1eSbj6Eoat8Jjr2IfruZz9StLuBqo8sfCSzjosNKd+ZrQ8DkKZDjpO5y3ht1Pow==}
++  svelte@5.53.12:
++    resolution: {integrity: sha512-4x/uk4rQe/d7RhfvS8wemTfNjQ0bJbKvamIzRBfTe2eHHjzBZ7PZicUQrC2ryj83xxEacfA1zHKd1ephD1tAxA==}
+     engines: {node: '>=18'}
+ 
+   svgo@4.0.0:
+@@ -7219,10 +7186,6 @@ snapshots:
+     dependencies:
+       '@opentelemetry/api': 1.9.0
+ 
+-  '@opentelemetry/context-async-hooks@2.5.1(@opentelemetry/api@1.9.0)':
+-    dependencies:
+-      '@opentelemetry/api': 1.9.0
+-
+   '@opentelemetry/context-async-hooks@2.6.0(@opentelemetry/api@1.9.0)':
+     dependencies:
+       '@opentelemetry/api': 1.9.0
+@@ -7232,11 +7195,6 @@ snapshots:
+       '@opentelemetry/api': 1.9.0
+       '@opentelemetry/semantic-conventions': 1.28.0
+ 
+-  '@opentelemetry/core@2.5.1(@opentelemetry/api@1.9.0)':
+-    dependencies:
+-      '@opentelemetry/api': 1.9.0
+-      '@opentelemetry/semantic-conventions': 1.36.0
+-
+   '@opentelemetry/core@2.6.0(@opentelemetry/api@1.9.0)':
+     dependencies:
+       '@opentelemetry/api': 1.9.0
+@@ -7417,12 +7375,6 @@ snapshots:
+       '@opentelemetry/core': 1.30.1(@opentelemetry/api@1.9.0)
+       '@opentelemetry/semantic-conventions': 1.28.0
+ 
+-  '@opentelemetry/resources@2.5.1(@opentelemetry/api@1.9.0)':
+-    dependencies:
+-      '@opentelemetry/api': 1.9.0
+-      '@opentelemetry/core': 2.5.1(@opentelemetry/api@1.9.0)
+-      '@opentelemetry/semantic-conventions': 1.36.0
+-
+   '@opentelemetry/resources@2.6.0(@opentelemetry/api@1.9.0)':
+     dependencies:
+       '@opentelemetry/api': 1.9.0
+@@ -7480,13 +7432,6 @@ snapshots:
+       '@opentelemetry/resources': 1.30.1(@opentelemetry/api@1.9.0)
+       '@opentelemetry/semantic-conventions': 1.28.0
+ 
+-  '@opentelemetry/sdk-trace-base@2.5.1(@opentelemetry/api@1.9.0)':
+-    dependencies:
+-      '@opentelemetry/api': 1.9.0
+-      '@opentelemetry/core': 2.5.1(@opentelemetry/api@1.9.0)
+-      '@opentelemetry/resources': 2.5.1(@opentelemetry/api@1.9.0)
+-      '@opentelemetry/semantic-conventions': 1.36.0
+-
+   '@opentelemetry/sdk-trace-base@2.6.0(@opentelemetry/api@1.9.0)':
+     dependencies:
+       '@opentelemetry/api': 1.9.0
+@@ -7504,13 +7449,6 @@ snapshots:
+       '@opentelemetry/sdk-trace-base': 1.30.1(@opentelemetry/api@1.9.0)
+       semver: 7.7.4
+ 
+-  '@opentelemetry/sdk-trace-node@2.5.1(@opentelemetry/api@1.9.0)':
+-    dependencies:
+-      '@opentelemetry/api': 1.9.0
+-      '@opentelemetry/context-async-hooks': 2.5.1(@opentelemetry/api@1.9.0)
+-      '@opentelemetry/core': 2.5.1(@opentelemetry/api@1.9.0)
+-      '@opentelemetry/sdk-trace-base': 2.5.1(@opentelemetry/api@1.9.0)
+-
+   '@opentelemetry/sdk-trace-node@2.6.0(@opentelemetry/api@1.9.0)':
+     dependencies:
+       '@opentelemetry/api': 1.9.0
+@@ -7746,32 +7684,32 @@ snapshots:
+     dependencies:
+       acorn: 8.16.0
+ 
+-  '@sveltejs/eslint-config@9.0.0(@eslint/js@10.0.1(eslint@10.0.0(jiti@2.4.2)))(@stylistic/eslint-plugin-js@2.1.0(eslint@10.0.0(jiti@2.4.2)))(eslint-config-prettier@9.1.0(eslint@10.0.0(jiti@2.4.2)))(eslint-plugin-n@17.24.0(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3))(eslint-plugin-svelte@3.15.0(eslint@10.0.0(jiti@2.4.2))(svelte@5.53.5)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(eslint@10.0.0(jiti@2.4.2))(typescript-eslint@8.56.1(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3))(typescript@5.8.3)':
++  '@sveltejs/eslint-config@9.0.0(@eslint/js@10.0.1(eslint@10.0.0(jiti@2.4.2)))(@stylistic/eslint-plugin-js@2.1.0(eslint@10.0.0(jiti@2.4.2)))(eslint-config-prettier@9.1.0(eslint@10.0.0(jiti@2.4.2)))(eslint-plugin-n@17.24.0(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3))(eslint-plugin-svelte@3.15.0(eslint@10.0.0(jiti@2.4.2))(svelte@5.53.12)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(eslint@10.0.0(jiti@2.4.2))(typescript-eslint@8.56.1(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3))(typescript@5.8.3)':
+     dependencies:
+       '@eslint/js': 10.0.1(eslint@10.0.0(jiti@2.4.2))
+       '@stylistic/eslint-plugin-js': 2.1.0(eslint@10.0.0(jiti@2.4.2))
+       eslint: 10.0.0(jiti@2.4.2)
+       eslint-config-prettier: 9.1.0(eslint@10.0.0(jiti@2.4.2))
+       eslint-plugin-n: 17.24.0(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3)
+-      eslint-plugin-svelte: 3.15.0(eslint@10.0.0(jiti@2.4.2))(svelte@5.53.5)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3))
++      eslint-plugin-svelte: 3.15.0(eslint@10.0.0(jiti@2.4.2))(svelte@5.53.12)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3))
+       globals: 17.3.0
+       typescript: 5.8.3
+       typescript-eslint: 8.56.1(eslint@10.0.0(jiti@2.4.2))(typescript@5.8.3)
+ 
+-  '@sveltejs/vite-plugin-svelte-inspector@5.0.2(@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)))(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))':
++  '@sveltejs/vite-plugin-svelte-inspector@5.0.2(@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)))(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))':
+     dependencies:
+-      '@sveltejs/vite-plugin-svelte': 6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++      '@sveltejs/vite-plugin-svelte': 6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       obug: 2.1.1
+-      svelte: 5.53.5
++      svelte: 5.53.12
+       vite: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+ 
+-  '@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))':
++  '@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))':
+     dependencies:
+-      '@sveltejs/vite-plugin-svelte-inspector': 5.0.2(@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)))(svelte@5.53.5)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
++      '@sveltejs/vite-plugin-svelte-inspector': 5.0.2(@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)))(svelte@5.53.12)(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+       deepmerge: 4.3.1
+       magic-string: 0.30.21
+       obug: 2.1.1
+-      svelte: 5.53.5
++      svelte: 5.53.12
+       vite: 6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0)
+       vitefu: 1.1.1(vite@6.4.1(@types/node@18.19.119)(jiti@2.4.2)(lightningcss@1.30.1)(yaml@2.8.0))
+ 
+@@ -8527,8 +8465,6 @@ snapshots:
+ 
+   dettle@1.0.5: {}
+ 
+-  devalue@5.6.3: {}
+-
+   devalue@5.6.4: {}
+ 
+   diff@4.0.4:
+@@ -8743,7 +8679,7 @@ snapshots:
+     transitivePeerDependencies:
+       - typescript
+ 
+-  eslint-plugin-svelte@3.15.0(eslint@10.0.0(jiti@2.4.2))(svelte@5.53.5)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)):
++  eslint-plugin-svelte@3.15.0(eslint@10.0.0(jiti@2.4.2))(svelte@5.53.12)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)):
+     dependencies:
+       '@eslint-community/eslint-utils': 4.9.1(eslint@10.0.0(jiti@2.4.2))
+       '@jridgewell/sourcemap-codec': 1.5.5
+@@ -8755,9 +8691,9 @@ snapshots:
+       postcss-load-config: 3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3))
+       postcss-safe-parser: 7.0.1(postcss@8.5.6)
+       semver: 7.7.4
+-      svelte-eslint-parser: 1.5.1(svelte@5.53.5)
++      svelte-eslint-parser: 1.5.1(svelte@5.53.12)
+     optionalDependencies:
+-      svelte: 5.53.5
++      svelte: 5.53.12
+     transitivePeerDependencies:
+       - ts-node
+ 
+@@ -9866,10 +9802,10 @@ snapshots:
+ 
+   prelude-ls@1.2.1: {}
+ 
+-  prettier-plugin-svelte@3.5.1(prettier@3.8.1)(svelte@5.53.5):
++  prettier-plugin-svelte@3.5.1(prettier@3.8.1)(svelte@5.53.12):
+     dependencies:
+       prettier: 3.8.1
+-      svelte: 5.53.5
++      svelte: 5.53.12
+ 
+   prettier@2.8.8: {}
+ 
+@@ -10258,19 +10194,19 @@ snapshots:
+ 
+   supports-preserve-symlinks-flag@1.0.0: {}
+ 
+-  svelte-check@4.4.3(picomatch@4.0.3)(svelte@5.53.5)(typescript@5.8.3):
++  svelte-check@4.4.3(picomatch@4.0.3)(svelte@5.53.12)(typescript@5.8.3):
+     dependencies:
+       '@jridgewell/trace-mapping': 0.3.25
+       chokidar: 4.0.3
+       fdir: 6.5.0(picomatch@4.0.3)
+       picocolors: 1.1.1
+       sade: 1.8.1
+-      svelte: 5.53.5
++      svelte: 5.53.12
+       typescript: 5.8.3
+     transitivePeerDependencies:
+       - picomatch
+ 
+-  svelte-eslint-parser@1.5.1(svelte@5.53.5):
++  svelte-eslint-parser@1.5.1(svelte@5.53.12):
+     dependencies:
+       eslint-scope: 8.4.0
+       eslint-visitor-keys: 4.2.1
+@@ -10280,30 +10216,30 @@ snapshots:
+       postcss-selector-parser: 7.1.1
+       semver: 7.7.4
+     optionalDependencies:
+-      svelte: 5.53.5
++      svelte: 5.53.12
+ 
+-  svelte-parse-markup@0.1.5(svelte@5.53.5):
++  svelte-parse-markup@0.1.5(svelte@5.53.12):
+     dependencies:
+-      svelte: 5.53.5
++      svelte: 5.53.12
+ 
+-  svelte-preprocess@6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.53.5)(typescript@5.8.3):
++  svelte-preprocess@6.0.0(postcss-load-config@3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3)))(postcss@8.5.6)(svelte@5.53.12)(typescript@5.8.3):
+     dependencies:
+       detect-indent: 6.1.0
+       strip-indent: 3.0.0
+-      svelte: 5.53.5
++      svelte: 5.53.12
+     optionalDependencies:
+       postcss: 8.5.6
+       postcss-load-config: 3.1.4(postcss@8.5.6)(ts-node@10.9.2(@types/node@18.19.119)(typescript@5.8.3))
+       typescript: 5.8.3
+ 
+-  svelte2tsx@0.7.33(svelte@5.53.5)(typescript@5.8.3):
++  svelte2tsx@0.7.33(svelte@5.53.12)(typescript@5.8.3):
+     dependencies:
+       dedent-js: 1.0.1
+       pascal-case: 3.1.2
+-      svelte: 5.53.5
++      svelte: 5.53.12
+       typescript: 5.8.3
+ 
+-  svelte@5.53.5:
++  svelte@5.53.12:
+     dependencies:
+       '@jridgewell/remapping': 2.3.5
+       '@jridgewell/sourcemap-codec': 1.5.5
+@@ -10314,7 +10250,7 @@ snapshots:
+       aria-query: 5.3.1
+       axobject-query: 4.1.0
+       clsx: 2.1.1
+-      devalue: 5.6.3
++      devalue: 5.6.4
+       esm-env: 1.2.2
+       esrap: 2.2.3
+       is-reference: 3.0.3
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index 711be79e2..7e2f8335a 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -46,7 +46,7 @@ catalog:
+   prettier-plugin-svelte: ^3.5.1
+   semver: ^7.5.4
+   sirv-cli: ^3.0.0
+-  svelte: ^5.53.5
++  svelte: ^5.53.12
+   svelte-check: ^4.4.1
+   svelte-preprocess: ^6.0.0
+   valibot: ^1.1.0

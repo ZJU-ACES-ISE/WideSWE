@@ -1,0 +1,33 @@
+task_id: mongodb_mongodbatlas_cloudformation_resources_terraform_provider_mongodbatlas_dc9616ecb793
+hidden_test_patches:
+- repo: mongodbatlas-cloudformation-resources
+  patch: hidden/patches/mongodbatlas-cloudformation-resources-hidden-tests.patch
+  test_profile: mongodbatlas_cloudformation_resources-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - cfn-resources/alert-configuration/cmd/resource/resource_test.go
+  hidden_file: *id001
+  semantic_changes: contract-aligned package-local conversion behavior
+  source: upstream test changes from mongodb/mongodbatlas-cloudformation-resources
+    PR 1658
+- repo: terraform-provider-mongodbatlas
+  patch: hidden/patches/terraform-provider-mongodbatlas-hidden-tests.patch
+  test_profile: terraform_provider_mongodbatlas-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - internal/service/alertconfiguration/model_test.go
+  - internal/service/alertconfiguration/resource_test.go
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from mongodb/terraform-provider-mongodbatlas PR 4408
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - mongodbatlas_cloudformation_resources-hidden
+    - terraform_provider_mongodbatlas-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

@@ -1,0 +1,540 @@
+diff --git a/awx/main/tests/data/sleep_task.py b/awx/main/tests/data/sleep_task.py
+index 1293db56d..8582a73c7 100644
+--- a/awx/main/tests/data/sleep_task.py
++++ b/awx/main/tests/data/sleep_task.py
+@@ -6,14 +6,13 @@ from dispatcherd.publish import task
+ from django.db import connection
+ 
+ from awx.main.dispatch import get_task_queuename
+-from awx.main.dispatch.publish import task as old_task
+ 
+ from ansible_base.lib.utils.db import advisory_lock
+ 
+ logger = logging.getLogger(__name__)
+ 
+ 
+-@old_task(queue=get_task_queuename)
++@task(queue=get_task_queuename)
+ def sleep_task(seconds=10, log=False):
+     if log:
+         logger.info('starting sleep_task')
+diff --git a/awx/main/tests/functional/dab_feature_flags/test_feature_flags_api.py b/awx/main/tests/functional/dab_feature_flags/test_feature_flags_api.py
+index 8007ff7b8..fb483000f 100644
+--- a/awx/main/tests/functional/dab_feature_flags/test_feature_flags_api.py
++++ b/awx/main/tests/functional/dab_feature_flags/test_feature_flags_api.py
+@@ -21,7 +21,7 @@ def test_feature_flags_list_endpoint_override(get, flag_val):
+     bob = User.objects.create(username='bob', password='test_user', is_superuser=True)
+ 
+     AAPFlag.objects.all().delete()
+-    flag_name = "FEATURE_DISPATCHERD_ENABLED"
++    flag_name = "FEATURE_INDIRECT_NODE_COUNTING_ENABLED"
+     setattr(settings, flag_name, flag_val)
+     seed_feature_flags()
+     url = "/api/v2/feature_flags/states/"
+diff --git a/awx/main/tests/functional/models/test_ha.py b/awx/main/tests/functional/models/test_ha.py
+index bf8c5309c..c8ee9dc0a 100644
+--- a/awx/main/tests/functional/models/test_ha.py
++++ b/awx/main/tests/functional/models/test_ha.py
+@@ -3,7 +3,10 @@ import pytest
+ # AWX
+ from awx.main.ha import is_ha_environment
+ from awx.main.models.ha import Instance
+-from awx.main.dispatch.pool import get_auto_max_workers
++try:
++    from awx.main.utils.common import get_auto_max_workers
++except ImportError:
++    from awx.main.dispatch.pool import get_auto_max_workers
+ 
+ # Django
+ from django.test.utils import override_settings
+diff --git a/awx/main/tests/functional/test_dispatch.py b/awx/main/tests/functional/test_dispatch.py
+index 382f858c2..44fad8b73 100644
+--- a/awx/main/tests/functional/test_dispatch.py
++++ b/awx/main/tests/functional/test_dispatch.py
+@@ -1,20 +1,11 @@
+ import datetime
+-import multiprocessing
+-import random
+-import signal
+-import time
+-import yaml
+ from unittest import mock
+-from flags.state import disable_flag, enable_flag
+ from django.utils.timezone import now as tz_now
+ import pytest
+ 
+ from awx.main.models import Job, WorkflowJob, Instance
+ from awx.main.dispatch import reaper
+-from awx.main.dispatch.pool import StatefulPoolWorker, WorkerPool, AutoscalePool
+-from awx.main.dispatch.publish import task
+-from awx.main.dispatch.worker import BaseWorker, TaskWorker
+-from awx.main.dispatch.periodic import Scheduler
++from dispatcherd.publish import task
+ 
+ '''
+ Prevent logger.<warn, debug, error> calls from triggering database operations
+@@ -57,294 +48,6 @@ def multiply(a, b):
+     return a * b
+ 
+ 
+-class SimpleWorker(BaseWorker):
+-    def perform_work(self, body, *args):
+-        pass
+-
+-
+-class ResultWriter(BaseWorker):
+-    def perform_work(self, body, result_queue):
+-        result_queue.put(body + '!!!')
+-
+-
+-class SlowResultWriter(BaseWorker):
+-    def perform_work(self, body, result_queue):
+-        time.sleep(3)
+-        super(SlowResultWriter, self).perform_work(body, result_queue)
+-
+-
+-@pytest.mark.usefixtures("disable_database_settings")
+-class TestPoolWorker:
+-    def setup_method(self, test_method):
+-        self.worker = StatefulPoolWorker(1000, self.tick, tuple())
+-
+-    def tick(self):
+-        self.worker.finished.put(self.worker.queue.get()['uuid'])
+-        time.sleep(0.5)
+-
+-    def test_qsize(self):
+-        assert self.worker.qsize == 0
+-        for i in range(3):
+-            self.worker.put({'task': 'abc123'})
+-        assert self.worker.qsize == 3
+-
+-    def test_put(self):
+-        assert len(self.worker.managed_tasks) == 0
+-        assert self.worker.messages_finished == 0
+-        self.worker.put({'task': 'abc123'})
+-
+-        assert len(self.worker.managed_tasks) == 1
+-        assert self.worker.messages_sent == 1
+-
+-    def test_managed_tasks(self):
+-        self.worker.put({'task': 'abc123'})
+-        self.worker.calculate_managed_tasks()
+-        assert len(self.worker.managed_tasks) == 1
+-
+-        self.tick()
+-        self.worker.calculate_managed_tasks()
+-        assert len(self.worker.managed_tasks) == 0
+-
+-    def test_current_task(self):
+-        self.worker.put({'task': 'abc123'})
+-        assert self.worker.current_task['task'] == 'abc123'
+-
+-    def test_quit(self):
+-        self.worker.quit()
+-        assert self.worker.queue.get() == 'QUIT'
+-
+-    def test_idle_busy(self):
+-        assert self.worker.idle is True
+-        assert self.worker.busy is False
+-        self.worker.put({'task': 'abc123'})
+-        assert self.worker.busy is True
+-        assert self.worker.idle is False
+-
+-
+-@pytest.mark.django_db
+-class TestWorkerPool:
+-    def setup_method(self, test_method):
+-        self.pool = WorkerPool(min_workers=3)
+-
+-    def teardown_method(self, test_method):
+-        self.pool.stop(signal.SIGTERM)
+-
+-    def test_worker(self):
+-        self.pool.init_workers(SimpleWorker().work_loop)
+-        assert len(self.pool) == 3
+-        for worker in self.pool.workers:
+-            assert worker.messages_sent == 0
+-            assert worker.alive is True
+-
+-    def test_single_task(self):
+-        self.pool.init_workers(SimpleWorker().work_loop)
+-        self.pool.write(0, 'xyz')
+-        assert self.pool.workers[0].messages_sent == 1  # worker at index 0 handled one task
+-        assert self.pool.workers[1].messages_sent == 0
+-        assert self.pool.workers[2].messages_sent == 0
+-
+-    def test_queue_preference(self):
+-        self.pool.init_workers(SimpleWorker().work_loop)
+-        self.pool.write(2, 'xyz')
+-        assert self.pool.workers[0].messages_sent == 0
+-        assert self.pool.workers[1].messages_sent == 0
+-        assert self.pool.workers[2].messages_sent == 1  # worker at index 2 handled one task
+-
+-    def test_worker_processing(self):
+-        result_queue = multiprocessing.Queue()
+-        self.pool.init_workers(ResultWriter().work_loop, result_queue)
+-        for i in range(10):
+-            self.pool.write(random.choice(range(len(self.pool))), 'Hello, Worker {}'.format(i))
+-        all_messages = [result_queue.get(timeout=1) for i in range(10)]
+-        all_messages.sort()
+-        assert all_messages == ['Hello, Worker {}!!!'.format(i) for i in range(10)]
+-
+-        total_handled = sum([worker.messages_sent for worker in self.pool.workers])
+-        assert total_handled == 10
+-
+-
+-@pytest.mark.django_db
+-class TestAutoScaling:
+-    def setup_method(self, test_method):
+-        self.pool = AutoscalePool(min_workers=2, max_workers=10)
+-
+-    def teardown_method(self, test_method):
+-        self.pool.stop(signal.SIGTERM)
+-
+-    def test_scale_up(self):
+-        result_queue = multiprocessing.Queue()
+-        self.pool.init_workers(SlowResultWriter().work_loop, result_queue)
+-
+-        # start with two workers, write an event to each worker and make it busy
+-        assert len(self.pool) == 2
+-        for i, w in enumerate(self.pool.workers):
+-            w.put('Hello, Worker {}'.format(0))
+-        assert len(self.pool) == 2
+-
+-        # wait for the subprocesses to start working on their tasks and be marked busy
+-        time.sleep(1)
+-        assert self.pool.should_grow
+-
+-        # write a third message, expect a new worker to spawn because all
+-        # workers are busy
+-        self.pool.write(0, 'Hello, Worker {}'.format(2))
+-        assert len(self.pool) == 3
+-
+-    def test_scale_down(self):
+-        self.pool.init_workers(ResultWriter().work_loop, multiprocessing.Queue())
+-
+-        # start with two workers, and scale up to 10 workers
+-        assert len(self.pool) == 2
+-        for i in range(8):
+-            self.pool.up()
+-        assert len(self.pool) == 10
+-
+-        # cleanup should scale down to 8 workers
+-        self.pool.cleanup()
+-        assert len(self.pool) == 2
+-
+-    def test_max_scale_up(self):
+-        self.pool.init_workers(ResultWriter().work_loop, multiprocessing.Queue())
+-
+-        assert len(self.pool) == 2
+-        for i in range(25):
+-            self.pool.up()
+-        assert self.pool.max_workers == 10
+-        assert self.pool.full is True
+-        assert len(self.pool) == 10
+-
+-    def test_equal_worker_distribution(self):
+-        # if all workers are busy, spawn new workers *before* adding messages
+-        # to an existing queue
+-        self.pool.init_workers(SlowResultWriter().work_loop, multiprocessing.Queue)
+-
+-        # start with two workers, write an event to each worker and make it busy
+-        assert len(self.pool) == 2
+-        for i in range(10):
+-            self.pool.write(0, 'Hello, World!')
+-        assert len(self.pool) == 10
+-        for w in self.pool.workers:
+-            assert w.busy
+-            assert len(w.managed_tasks) == 1
+-
+-        # the queue is full at 10, the _next_ write should put the message into
+-        # a worker's backlog
+-        assert len(self.pool) == 10
+-        for w in self.pool.workers:
+-            assert w.messages_sent == 1
+-        self.pool.write(0, 'Hello, World!')
+-        assert len(self.pool) == 10
+-        assert self.pool.workers[0].messages_sent == 2
+-
+-    @pytest.mark.timeout(20)
+-    def test_lost_worker_autoscale(self):
+-        # if a worker exits, it should be replaced automatically up to min_workers
+-        self.pool.init_workers(ResultWriter().work_loop, multiprocessing.Queue())
+-
+-        # start with two workers, kill one of them
+-        assert len(self.pool) == 2
+-        assert not self.pool.should_grow
+-        alive_pid = self.pool.workers[1].pid
+-        self.pool.workers[0].process.kill()
+-        self.pool.workers[0].process.join()  # waits for process to full terminate
+-
+-        # clean up and the dead worker
+-        self.pool.cleanup()
+-        assert len(self.pool) == 1
+-        assert self.pool.workers[0].pid == alive_pid
+-
+-        # the next queue write should replace the lost worker
+-        self.pool.write(0, 'Hello, Worker')
+-        assert len(self.pool) == 2
+-
+-
+-@pytest.mark.usefixtures("disable_database_settings")
+-class TestTaskDispatcher:
+-    @property
+-    def tm(self):
+-        return TaskWorker()
+-
+-    def test_function_dispatch(self):
+-        result = self.tm.perform_work({'task': 'awx.main.tests.functional.test_dispatch.add', 'args': [2, 2]})
+-        assert result == 4
+-
+-    def test_function_dispatch_must_be_decorated(self):
+-        result = self.tm.perform_work({'task': 'awx.main.tests.functional.test_dispatch.restricted', 'args': [2, 2]})
+-        assert isinstance(result, ValueError)
+-        assert str(result) == 'awx.main.tests.functional.test_dispatch.restricted is not decorated with @task()'  # noqa
+-
+-    def test_method_dispatch(self):
+-        result = self.tm.perform_work({'task': 'awx.main.tests.functional.test_dispatch.Adder', 'args': [2, 2]})
+-        assert result == 4
+-
+-    def test_method_dispatch_must_be_decorated(self):
+-        result = self.tm.perform_work({'task': 'awx.main.tests.functional.test_dispatch.Restricted', 'args': [2, 2]})
+-        assert isinstance(result, ValueError)
+-        assert str(result) == 'awx.main.tests.functional.test_dispatch.Restricted is not decorated with @task()'  # noqa
+-
+-    def test_python_function_cannot_be_imported(self):
+-        result = self.tm.perform_work(
+-            {
+-                'task': 'os.system',
+-                'args': ['ls'],
+-            }
+-        )
+-        assert isinstance(result, ValueError)
+-        assert str(result) == 'os.system is not a valid awx task'  # noqa
+-
+-    def test_undefined_function_cannot_be_imported(self):
+-        result = self.tm.perform_work({'task': 'awx.foo.bar'})
+-        assert isinstance(result, ModuleNotFoundError)
+-        assert str(result) == "No module named 'awx.foo'"  # noqa
+-
+-
+-@pytest.mark.django_db
+-class TestTaskPublisher:
+-    @pytest.fixture(autouse=True)
+-    def _disable_dispatcherd(self):
+-        flag_name = "FEATURE_DISPATCHERD_ENABLED"
+-        disable_flag(flag_name)
+-        yield
+-        enable_flag(flag_name)
+-
+-    def test_function_callable(self):
+-        assert add(2, 2) == 4
+-
+-    def test_method_callable(self):
+-        assert Adder().run(2, 2) == 4
+-
+-    def test_function_apply_async(self):
+-        message, queue = add.apply_async([2, 2], queue='foobar')
+-        assert message['args'] == [2, 2]
+-        assert message['kwargs'] == {}
+-        assert message['task'] == 'awx.main.tests.functional.test_dispatch.add'
+-        assert queue == 'foobar'
+-
+-    def test_method_apply_async(self):
+-        message, queue = Adder.apply_async([2, 2], queue='foobar')
+-        assert message['args'] == [2, 2]
+-        assert message['kwargs'] == {}
+-        assert message['task'] == 'awx.main.tests.functional.test_dispatch.Adder'
+-        assert queue == 'foobar'
+-
+-    def test_apply_async_queue_required(self):
+-        with pytest.raises(ValueError) as e:
+-            message, queue = add.apply_async([2, 2])
+-        assert "awx.main.tests.functional.test_dispatch.add: Queue value required and may not be None" == e.value.args[0]
+-
+-    def test_queue_defined_in_task_decorator(self):
+-        message, queue = multiply.apply_async([2, 2])
+-        assert queue == 'hard-math'
+-
+-    def test_queue_overridden_from_task_decorator(self):
+-        message, queue = multiply.apply_async([2, 2], queue='not-so-hard')
+-        assert queue == 'not-so-hard'
+-
+-    def test_apply_with_callable_queuename(self):
+-        message, queue = add.apply_async([2, 2], queue=lambda: 'called')
+-        assert queue == 'called'
+-
+-
+ yesterday = tz_now() - datetime.timedelta(days=1)
+ minute = tz_now() - datetime.timedelta(seconds=120)
+ now = tz_now()
+@@ -448,76 +151,3 @@ class TestJobReaper(object):
+         assert job.started > ref_time
+         assert job.status == 'running'
+         assert job.job_explanation == ''
+-
+-
+-@pytest.mark.django_db
+-class TestScheduler:
+-    def test_too_many_schedules_freak_out(self):
+-        with pytest.raises(RuntimeError):
+-            Scheduler({'job1': {'schedule': datetime.timedelta(seconds=1)}, 'job2': {'schedule': datetime.timedelta(seconds=1)}})
+-
+-    def test_spread_out(self):
+-        scheduler = Scheduler(
+-            {
+-                'job1': {'schedule': datetime.timedelta(seconds=16)},
+-                'job2': {'schedule': datetime.timedelta(seconds=16)},
+-                'job3': {'schedule': datetime.timedelta(seconds=16)},
+-                'job4': {'schedule': datetime.timedelta(seconds=16)},
+-            }
+-        )
+-        assert [job.offset for job in scheduler.jobs] == [0, 4, 8, 12]
+-
+-    def test_missed_schedule(self, mocker):
+-        scheduler = Scheduler({'job1': {'schedule': datetime.timedelta(seconds=10)}})
+-        assert scheduler.jobs[0].missed_runs(time.time() - scheduler.global_start) == 0
+-        mocker.patch('awx.main.dispatch.periodic.time.time', return_value=scheduler.global_start + 50)
+-        scheduler.get_and_mark_pending()
+-        assert scheduler.jobs[0].missed_runs(50) > 1
+-
+-    def test_advance_schedule(self, mocker):
+-        scheduler = Scheduler(
+-            {
+-                'job1': {'schedule': datetime.timedelta(seconds=30)},
+-                'joba': {'schedule': datetime.timedelta(seconds=20)},
+-                'jobb': {'schedule': datetime.timedelta(seconds=20)},
+-            }
+-        )
+-        for job in scheduler.jobs:
+-            # HACK: the offsets automatically added make this a hard test to write... so remove offsets
+-            job.offset = 0.0
+-        mocker.patch('awx.main.dispatch.periodic.time.time', return_value=scheduler.global_start + 29)
+-        to_run = scheduler.get_and_mark_pending()
+-        assert set(job.name for job in to_run) == set(['joba', 'jobb'])
+-        mocker.patch('awx.main.dispatch.periodic.time.time', return_value=scheduler.global_start + 39)
+-        to_run = scheduler.get_and_mark_pending()
+-        assert len(to_run) == 1
+-        assert to_run[0].name == 'job1'
+-
+-    @staticmethod
+-    def get_job(scheduler, name):
+-        for job in scheduler.jobs:
+-            if job.name == name:
+-                return job
+-
+-    def test_scheduler_debug(self, mocker):
+-        scheduler = Scheduler(
+-            {
+-                'joba': {'schedule': datetime.timedelta(seconds=20)},
+-                'jobb': {'schedule': datetime.timedelta(seconds=50)},
+-                'jobc': {'schedule': datetime.timedelta(seconds=500)},
+-                'jobd': {'schedule': datetime.timedelta(seconds=20)},
+-            }
+-        )
+-        rel_time = 119.9  # slightly under the 6th 20-second bin, to avoid offset problems
+-        current_time = scheduler.global_start + rel_time
+-        mocker.patch('awx.main.dispatch.periodic.time.time', return_value=current_time - 1.0e-8)
+-        self.get_job(scheduler, 'jobb').mark_run(rel_time)
+-        self.get_job(scheduler, 'jobd').mark_run(rel_time - 20.0)
+-
+-        output = scheduler.debug()
+-        data = yaml.safe_load(output)
+-        assert data['schedule_list']['jobc']['last_run_seconds_ago'] is None
+-        assert data['schedule_list']['joba']['missed_runs'] == 4
+-        assert data['schedule_list']['jobd']['missed_runs'] == 3
+-        assert data['schedule_list']['jobd']['completed_runs'] == 1
+-        assert data['schedule_list']['jobb']['next_run_in_seconds'] > 25.0
+diff --git a/awx/main/tests/functional/test_jobs.py b/awx/main/tests/functional/test_jobs.py
+index e71420f73..7d4a0ed5b 100644
+--- a/awx/main/tests/functional/test_jobs.py
++++ b/awx/main/tests/functional/test_jobs.py
+@@ -50,7 +50,7 @@ def test_job_capacity_and_with_inactive_node():
+     i.save()
+     with override_settings(CLUSTER_HOST_ID=i.hostname):
+         with mock.patch.object(redis.client.Redis, 'ping', lambda self: True):
+-            cluster_node_heartbeat()
++            cluster_node_heartbeat(None)
+         i = Instance.objects.get(id=i.id)
+         assert i.capacity == 0
+ 
+diff --git a/awx/main/tests/settings_for_test.py b/awx/main/tests/settings_for_test.py
+index b7d5cdf02..5634494c3 100644
+--- a/awx/main/tests/settings_for_test.py
++++ b/awx/main/tests/settings_for_test.py
+@@ -7,9 +7,6 @@ from awx.settings.development import *  # NOQA
+ # Some things make decisions based on settings.SETTINGS_MODULE, so this is done for that
+ SETTINGS_MODULE = 'awx.settings.development'
+ 
+-# Turn off task submission, because sqlite3 does not have pg_notify
+-DISPATCHER_MOCK_PUBLISH = True
+-
+ # Use SQLite for unit tests instead of PostgreSQL.  If the lines below are
+ # commented out, Django will create the test_awx-dev database in PostgreSQL to
+ # run unit tests.
+diff --git a/awx/main/tests/unit/settings/test_defaults.py b/awx/main/tests/unit/settings/test_defaults.py
+index a7f5eeeca..10cb5561a 100644
+--- a/awx/main/tests/unit/settings/test_defaults.py
++++ b/awx/main/tests/unit/settings/test_defaults.py
+@@ -1,20 +1,24 @@
+ import pytest
+ 
+ from django.conf import settings
+-from datetime import timedelta
+ 
+ 
+ @pytest.mark.parametrize(
+-    "job_name,function_path",
++    "task_name",
+     [
+-        ('tower_scheduler', 'awx.main.tasks.system.awx_periodic_scheduler'),
++        'awx.main.tasks.system.awx_periodic_scheduler',
+     ],
+ )
+-def test_CELERYBEAT_SCHEDULE(mocker, job_name, function_path):
+-    assert job_name in settings.CELERYBEAT_SCHEDULE
+-    assert 'schedule' in settings.CELERYBEAT_SCHEDULE[job_name]
+-    assert type(settings.CELERYBEAT_SCHEDULE[job_name]['schedule']) is timedelta
+-    assert settings.CELERYBEAT_SCHEDULE[job_name]['task'] == function_path
++def test_DISPATCHER_SCHEDULE(mocker, task_name):
++    assert task_name in settings.DISPATCHER_SCHEDULE
++    assert 'schedule' in settings.DISPATCHER_SCHEDULE[task_name]
++    assert type(settings.DISPATCHER_SCHEDULE[task_name]['schedule']) in (int, float)
++    assert settings.DISPATCHER_SCHEDULE[task_name]['task'] == task_name
+ 
+     # Ensures that the function exists
+-    mocker.patch(function_path)
++    mocker.patch(task_name)
++
++
++def test_legacy_dispatch_configuration_removed():
++    assert not hasattr(settings, 'FEATURE_DISPATCHERD_ENABLED')
++    assert not hasattr(settings, 'CELERYBEAT_SCHEDULE')
+diff --git a/awx/main/tests/unit/test_settings.py b/awx/main/tests/unit/test_settings.py
+index 42ad771b1..ee517d6a8 100644
+--- a/awx/main/tests/unit/test_settings.py
++++ b/awx/main/tests/unit/test_settings.py
+@@ -8,9 +8,7 @@ LOCAL_SETTINGS = (
+     'CACHES',
+     'DEBUG',
+     'NAMED_URL_GRAPH',
+-    'DISPATCHER_MOCK_PUBLISH',
+     # Platform flags are managed by the platform flags system and have environment-specific defaults
+-    'FEATURE_DISPATCHERD_ENABLED',
+     'FEATURE_INDIRECT_NODE_COUNTING_ENABLED',
+ )
+ 
+@@ -87,12 +85,9 @@ def test_development_defaults_feature_flags(monkeypatch):
+     spec.loader.exec_module(development_defaults)
+ 
+     # Also import through the development settings to ensure both paths are tested
+-    from awx.settings.development import FEATURE_INDIRECT_NODE_COUNTING_ENABLED, FEATURE_DISPATCHERD_ENABLED
++    from awx.settings.development import FEATURE_INDIRECT_NODE_COUNTING_ENABLED
+ 
+     # Verify the feature flags are set correctly in both the module and settings
+     assert hasattr(development_defaults, 'FEATURE_INDIRECT_NODE_COUNTING_ENABLED')
+     assert development_defaults.FEATURE_INDIRECT_NODE_COUNTING_ENABLED is True
+-    assert hasattr(development_defaults, 'FEATURE_DISPATCHERD_ENABLED')
+-    assert development_defaults.FEATURE_DISPATCHERD_ENABLED is True
+     assert FEATURE_INDIRECT_NODE_COUNTING_ENABLED is True
+-    assert FEATURE_DISPATCHERD_ENABLED is True

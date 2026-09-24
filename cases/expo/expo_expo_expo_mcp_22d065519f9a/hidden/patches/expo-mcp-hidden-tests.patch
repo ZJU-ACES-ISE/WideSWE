@@ -1,0 +1,154 @@
+diff --git a/packages/mcp-tunnel/src/__tests__/MockWebSocket.ts b/packages/mcp-tunnel/src/__tests__/MockWebSocket.ts
+new file mode 100644
+index 0000000..ea4c93a
+--- /dev/null
++++ b/packages/mcp-tunnel/src/__tests__/MockWebSocket.ts
+@@ -0,0 +1,57 @@
++export class MockWebSocket {
++  static instances: MockWebSocket[] = [];
++
++  private eventHandlers: Map<string, Function[]> = new Map();
++  readonly sent: string[] = [];
++
++  constructor(url: string, options?: { headers?: Record<string, string> }) {
++    MockWebSocket.instances.push(this);
++    setImmediate(() => {
++      this.trigger('open');
++    });
++  }
++
++  on(event: string, handler: Function) {
++    if (!this.eventHandlers.has(event)) {
++      this.eventHandlers.set(event, []);
++    }
++    this.eventHandlers.get(event)!.push(handler);
++  }
++
++  once(event: string, handler: Function) {
++    const onceHandler = (...args: any[]) => {
++      this.off(event, onceHandler);
++      handler(...args);
++    };
++    this.on(event, onceHandler);
++  }
++
++  off(event: string, handler: Function) {
++    const handlers = this.eventHandlers.get(event);
++    if (handlers) {
++      this.eventHandlers.set(
++        event,
++        handlers.filter((candidate) => candidate !== handler)
++      );
++    }
++  }
++
++  removeListener(event: string, handler: Function) {
++    this.off(event, handler);
++  }
++
++  send(data: string) {
++    this.sent.push(data);
++  }
++
++  close(code?: number, reason?: string) {
++    this.trigger('close', code ?? 1000, reason ?? 'Normal Closure');
++  }
++
++  trigger(event: string, ...args: any[]) {
++    const handlers = this.eventHandlers.get(event);
++    if (handlers) {
++      handlers.forEach((handler) => handler(...args));
++    }
++  }
++}
+diff --git a/packages/mcp-tunnel/src/__tests__/ReverseTunnelClientTransport.test.ts b/packages/mcp-tunnel/src/__tests__/ReverseTunnelClientTransport.test.ts
+new file mode 100644
+index 0000000..7dfe0a7
+--- /dev/null
++++ b/packages/mcp-tunnel/src/__tests__/ReverseTunnelClientTransport.test.ts
+@@ -0,0 +1,85 @@
++import { beforeEach, describe, expect, it, mock } from 'bun:test';
++import { ReverseTunnelClientTransport } from '../ReverseTunnelClientTransport';
++import { TunnelMcpServerProxy } from '../TunnelMcpServerProxy';
++import { MockWebSocket } from './MockWebSocket';
++
++mock.module('ws', () => ({
++  default: MockWebSocket,
++}));
++
++const mockLogger = {
++  debug: mock(),
++  log: mock(),
++  info: mock(),
++  warn: mock(),
++  error: mock(),
++  time: mock(),
++  timeEnd: mock(),
++};
++
++beforeEach(() => {
++  MockWebSocket.instances.length = 0;
++});
++
++describe(ReverseTunnelClientTransport, () => {
++  it('should send handshake with correct data when connected', async () => {
++    const projectRoot = '/app';
++    const devServerUrl = 'http://localhost:8081';
++    const server = new TunnelMcpServerProxy('ws://localhost:8080', {
++      projectRoot,
++      devServerUrl,
++      logger: mockLogger,
++    });
++
++    await server.start();
++    await new Promise((resolve) => setImmediate(resolve));
++
++    const messages = MockWebSocket.instances.flatMap((socket) =>
++      socket.sent.map((data) => JSON.parse(data))
++    );
++    expect(messages).toContainEqual({
++      jsonrpc: '2.0',
++      method: 'handshake',
++      params: { projectRoot, devServerUrl },
++    });
++  });
++
++  it('should reconnect by default on disconnection', async () => {
++    const projectRoot = '/app';
++    const devServerUrl = 'http://localhost:8081';
++    const transport = new ReverseTunnelClientTransport('ws://localhost:8080', {
++      projectRoot,
++      devServerUrl,
++      reconnectInterval: 100,
++      logger: mockLogger,
++    });
++
++    await transport.start();
++
++    const ws = MockWebSocket.instances[0];
++    ws.close();
++
++    // Wait a moment for reconnect logic to trigger
++    await new Promise((resolve) => setTimeout(resolve, 200));
++
++    expect(MockWebSocket.instances).toHaveLength(2);
++  });
++
++  it('should abort connection on server close 4003', async () => {
++    const projectRoot = '/app';
++    const devServerUrl = 'http://localhost:8081';
++    const transport = new ReverseTunnelClientTransport('ws://localhost:8080', {
++      projectRoot,
++      devServerUrl,
++      reconnectInterval: 100,
++      logger: mockLogger,
++    });
++    await transport.start();
++
++    const ws = MockWebSocket.instances[0];
++    ws.close(4003, 'Multiple tunnel clients are not supported yet');
++
++    await new Promise((resolve) => setTimeout(resolve, 200));
++    expect(MockWebSocket.instances).toHaveLength(1);
++  });
++});

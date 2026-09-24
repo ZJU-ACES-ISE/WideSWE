@@ -1,0 +1,16 @@
+services:
+  ansible-metrics-python:
+    image: ecosyncbench/base/ansible-django-py:3.12
+    working_dir: /workspace
+    volumes:
+      - ${ECOSYNC_WORKSPACE:?ECOSYNC_WORKSPACE required}:/workspace
+      - ${ECOSYNC_CACHE_ROOT:-/tmp/ecosyncbench-release120-runtime/cache/legacy/python-cache/ansible-metrics-service-utility}:/python-cache
+    environment:
+      ECOSYNC_PROFILE: ${ECOSYNC_PROFILE:-}
+      UV_CACHE_DIR: /python-cache/uv
+      PIP_CACHE_DIR: /python-cache/pip
+      UV_LINK_MODE: copy
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    command: ["/workspace/.ecosyncbench/run-ansible-metrics-profile.sh"]

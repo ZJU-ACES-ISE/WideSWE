@@ -1,0 +1,174 @@
+diff --git a/__tests__/context.test.ts b/__tests__/context.test.ts
+index f1e6cba..4196d1c 100644
+--- a/__tests__/context.test.ts
++++ b/__tests__/context.test.ts
+@@ -4,6 +4,7 @@ import * as os from 'os';
+ import * as path from 'path';
+ 
+ import {Bake} from '@docker/actions-toolkit/lib/buildx/bake.js';
++import {Build} from '@docker/actions-toolkit/lib/buildx/build.js';
+ import {Builder} from '@docker/actions-toolkit/lib/buildx/builder.js';
+ import {Buildx} from '@docker/actions-toolkit/lib/buildx/buildx.js';
+ import {Docker} from '@docker/actions-toolkit/lib/docker/docker.js';
+@@ -39,6 +40,71 @@ vi.spyOn(Bake.prototype, 'getDefinition').mockImplementation(async (): Promise<B
+   return <BakeDefinition>JSON.parse(fs.readFileSync(path.join(fixturesDir, 'bake-def.json'), {encoding: 'utf-8'}).trim());
+ });
+ 
++describe('getInputs', () => {
++  const originalEnv = process.env;
++
++  beforeEach(() => {
++    process.env = Object.keys(process.env).reduce((object, key) => {
++      if (!key.startsWith('INPUT_')) {
++        object[key] = process.env[key];
++      }
++      return object;
++    }, {});
++  });
++
++  afterEach(() => {
++    process.env = originalEnv;
++  });
++
++  function setRequiredBooleanInputs(): void {
++    setInput('no-cache', 'false');
++    setInput('pull', 'false');
++    setInput('load', 'false');
++    setInput('push', 'false');
++  }
++
++  function mockBuildGitContext(value: string): {mockRestore(): void} {
++    const instanceTarget = Build.prototype as unknown as {gitContext?: () => string | Promise<string>};
++    if (typeof instanceTarget.gitContext === 'function') {
++      return vi.spyOn(instanceTarget, 'gitContext').mockReturnValue(value);
++    }
++    const staticTarget = Build as unknown as {gitContext?: () => string | Promise<string>};
++    if (typeof staticTarget.gitContext === 'function') {
++      return vi.spyOn(staticTarget, 'gitContext').mockReturnValue(value);
++    }
++    throw new Error('Build.gitContext is not implemented');
++  }
++
++  test('uses Build git context when source input is empty', async () => {
++    const versionSpy = vi.spyOn(Buildx.prototype, 'version').mockResolvedValue('0.29.0');
++    try {
++      process.env.BUILDX_SEND_GIT_QUERY_AS_INPUT = 'true';
++      setRequiredBooleanInputs();
++      const inputs = await context.getInputs();
++      expect(inputs.source).toEqual({
++        remoteRef: 'https://github.com/docker/bake-action.git?ref=refs/heads/master'
++      });
++    } finally {
++      versionSpy.mockRestore();
++    }
++  });
++
++  test('renders defaultContext source templates from Build git context', async () => {
++    const gitContext = 'https://github.com/docker/bake-action.git#refs/heads/master';
++    const gitContextSpy = mockBuildGitContext(gitContext);
++    try {
++      setRequiredBooleanInputs();
++      setInput('source', '{{defaultContext}}:subdir');
++      const inputs = await context.getInputs();
++      expect(inputs.source).toEqual({
++        remoteRef: `${gitContext}:subdir`
++      });
++    } finally {
++      gitContextSpy.mockRestore();
++    }
++  });
++});
++
+ describe('getArgs', () => {
+   const originalEnv = process.env;
+   beforeEach(() => {
+@@ -343,6 +409,54 @@ describe('getArgs', () => {
+         ['BUILDX_NO_DEFAULT_ATTESTATIONS', '1']
+       ])
+     ],
++    [
++      15,
++      '0.29.0',
++      new Map<string, string>([
++        ['load', 'false'],
++        ['no-cache', 'false'],
++        ['push', 'false'],
++        ['pull', 'false'],
++        ['files', './foo.hcl'],
++      ]),
++      [
++        'bake',
++        'https://github.com/docker/bake-action.git?ref=refs/heads/master',
++        '--allow', 'fs=*',
++        '--file', './foo.hcl',
++        '--metadata-file', metadataJson,
++        '--set', `lint.attest=type=provenance,mode=min,inline-only=true,builder-id=https://github.com/docker/bake-action/actions/runs/123456789/attempts/1`,
++        '--set', `validate-docs.attest=type=provenance,mode=min,inline-only=true,builder-id=https://github.com/docker/bake-action/actions/runs/123456789/attempts/1`,
++        '--set', `validate-vendor.attest=type=provenance,mode=min,inline-only=true,builder-id=https://github.com/docker/bake-action/actions/runs/123456789/attempts/1`
++      ],
++      new Map<string, string>([
++        ['BUILDX_SEND_GIT_QUERY_AS_INPUT', 'true']
++      ])
++    ],
++    [
++      16,
++      '0.28.0',
++      new Map<string, string>([
++        ['load', 'false'],
++        ['no-cache', 'false'],
++        ['push', 'false'],
++        ['pull', 'false'],
++        ['files', './foo.hcl'],
++      ]),
++      [
++        'bake',
++        'https://github.com/docker/bake-action.git#refs/heads/master',
++        '--allow', 'fs=*',
++        '--file', './foo.hcl',
++        '--metadata-file', metadataJson,
++        '--set', `lint.attest=type=provenance,mode=min,inline-only=true,builder-id=https://github.com/docker/bake-action/actions/runs/123456789/attempts/1`,
++        '--set', `validate-docs.attest=type=provenance,mode=min,inline-only=true,builder-id=https://github.com/docker/bake-action/actions/runs/123456789/attempts/1`,
++        '--set', `validate-vendor.attest=type=provenance,mode=min,inline-only=true,builder-id=https://github.com/docker/bake-action/actions/runs/123456789/attempts/1`
++      ],
++      new Map<string, string>([
++        ['BUILDX_SEND_GIT_QUERY_AS_INPUT', 'true']
++      ])
++    ],
+   ])(
+     '[%d] given %o with %o as inputs, returns %o',
+     async (num: number, buildxVersion: string, inputs: Map<string, string>, expected: Array<string>, envs: Map<string, string> | undefined) => {
+diff --git a/test/config.hcl b/test/config.hcl
+index 6e48771..1d23558 100644
+--- a/test/config.hcl
++++ b/test/config.hcl
+@@ -6,21 +6,26 @@ group "release" {
+   targets = ["db", "app-plus"]
+ }
+ 
++# Special target: https://github.com/docker/metadata-action#bake-definition
++target "docker-metadata-action" {
++  tags = [
++    "localhost:5000/name/app:latest",
++    "localhost:5000/name/app:1.0.0"
++  ]
++}
++
+ target "db" {
+   context = "./test"
+   tags = ["docker.io/tonistiigi/db"]
+ }
+ 
+ target "app" {
++  inherits = ["docker-metadata-action"]
+   context = "./test"
+   dockerfile = "Dockerfile"
+   args = {
+     name = "foo"
+   }
+-  tags = [
+-    "localhost:5000/name/app:latest",
+-    "localhost:5000/name/app:1.0.0"
+-  ]
+ }
+ 
+ target "cross" {

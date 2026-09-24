@@ -1,0 +1,140 @@
+diff --git a/internal/pkg/agent/application/gateway/fleet/checkin_compression_contract_test.go b/internal/pkg/agent/application/gateway/fleet/checkin_compression_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d1dc28319b267f38d18c407ab2165df879c664ea
+--- /dev/null
++++ b/internal/pkg/agent/application/gateway/fleet/checkin_compression_contract_test.go
+@@ -0,0 +1,85 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License 2.0;
++// you may not use this file except in compliance with the Elastic License 2.0.
++
++package fleet
++
++import (
++	"compress/gzip"
++	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++
++	"github.com/elastic/elastic-agent-libs/config"
++	"github.com/elastic/elastic-agent/internal/pkg/agent/configuration"
++	"github.com/elastic/elastic-agent/internal/pkg/fleetapi/acker/noop"
++	"github.com/elastic/elastic-agent/pkg/core/logger"
++	"github.com/stretchr/testify/require"
++)
++
++func TestFleetCheckinCompressionWireContract(t *testing.T) {
++	tests := []struct {
++		name            string
++		compression     string
++		wantContentGzip bool
++	}{
++		{name: "default", wantContentGzip: true},
++		{name: "gzip", compression: "gzip", wantContentGzip: true},
++		{name: "none", compression: "none", wantContentGzip: false},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			checkinConfig := &configuration.FleetCheckin{}
++			if tc.compression != "" {
++				raw := config.MustNewConfigFrom(map[string]any{"compression": tc.compression})
++				require.NoError(t, raw.Unpack(checkinConfig))
++			}
++
++			testClient := newTestingClient()
++			testClient.Answer(func(_ context.Context, headers http.Header, body io.Reader) (*http.Response, error) {
++				requestBody := body
++				if tc.wantContentGzip {
++					require.Equal(t, "gzip", headers.Get("Content-Encoding"))
++					reader, err := gzip.NewReader(body)
++					require.NoError(t, err)
++					defer reader.Close()
++					requestBody = reader
++				} else {
++					require.Empty(t, headers.Get("Content-Encoding"))
++				}
++
++				var payload map[string]any
++				require.NoError(t, json.NewDecoder(requestBody).Decode(&payload))
++				return &http.Response{
++					StatusCode: http.StatusOK,
++					Body:       io.NopCloser(strings.NewReader(`{"actions":[]}`)),
++					Header:     make(http.Header),
++				}, nil
++			})
++
++			log, err := logger.New("checkin_compression_contract", false)
++			require.NoError(t, err)
++			stateStore := newStateStore(t, log)
++			rollbacks := newMockRollbacksSource(t)
++			rollbacks.EXPECT().Get().Return(nil, nil)
++
++			gateway, err := New(
++				log,
++				new(testAgentInfo),
++				testClient,
++				noop.New(),
++				stateStore,
++				NewCheckinStateFetcher(emptyStateFetcher),
++				checkinConfig,
++				rollbacks,
++			)
++			require.NoError(t, err)
++			_, _, err = gateway.execute(t.Context())
++			require.NoError(t, err)
++		})
++	}
++}
+diff --git a/internal/pkg/agent/configuration/checkin_compression_contract_test.go b/internal/pkg/agent/configuration/checkin_compression_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f38ddc800b072b4a1d8b07b5a3b218a2a9502c8b
+--- /dev/null
++++ b/internal/pkg/agent/configuration/checkin_compression_contract_test.go
+@@ -0,0 +1,43 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License 2.0;
++// you may not use this file except in compliance with the Elastic License 2.0.
++
++package configuration
++
++import (
++	"testing"
++
++	"github.com/elastic/elastic-agent-libs/config"
++	"github.com/stretchr/testify/require"
++)
++
++func TestFleetCheckinCompressionConfigContract(t *testing.T) {
++	for _, compression := range []string{"none", "gzip"} {
++		t.Run(compression, func(t *testing.T) {
++			checkin, err := unpackCheckinCompression(compression)
++			require.NoError(t, err)
++			require.NoError(t, checkin.Validate())
++		})
++	}
++
++	t.Run("unsupported", func(t *testing.T) {
++		checkin, err := unpackCheckinCompression("deflate")
++		if err == nil {
++			err = checkin.Validate()
++		}
++		require.Error(t, err)
++	})
++}
++
++func unpackCheckinCompression(compression string) (*FleetCheckin, error) {
++	raw, err := config.NewConfigFrom(map[string]any{"compression": compression})
++	if err != nil {
++		return nil, err
++	}
++
++	checkin := &FleetCheckin{}
++	if err := raw.Unpack(checkin); err != nil {
++		return nil, err
++	}
++	return checkin, nil
++}

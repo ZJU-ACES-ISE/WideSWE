@@ -1,0 +1,156 @@
+diff --git a/src/Illuminate/Database/Connection.php b/src/Illuminate/Database/Connection.php
+index 15dfae18c2..3b5a60e28a 100755
+--- a/src/Illuminate/Database/Connection.php
++++ b/src/Illuminate/Database/Connection.php
+@@ -203,6 +203,13 @@ class Connection implements ConnectionInterface
+      */
+     protected static $resolvers = [];
+ 
++    /**
++     * The last retrieved PDO read / write type.
++     *
++     * @var null|'read'|'write'
++     */
++    protected $latestPdoTypeRetrieved = null;
++
+     /**
+      * Create a new database connection instance.
+      *
+@@ -826,7 +833,8 @@ protected function runQueryCallback($query, $bindings, Closure $callback)
+                 $query,
+                 $this->prepareBindings($bindings),
+                 $e,
+-                $this->getConnectionDetails()
++                $this->getConnectionDetails(),
++                $this->latestReadWriteTypeUsed(),
+             );
+         }
+     }
+@@ -854,14 +862,16 @@ public function logQuery($query, $bindings, $time = null)
+     {
+         $this->totalQueryDuration += $time ?? 0.0;
+ 
+-        $this->event(new QueryExecuted($query, $bindings, $time, $this));
++        $readWriteType = $this->latestReadWriteTypeUsed();
++
++        $this->event(new QueryExecuted($query, $bindings, $time, $this, $readWriteType));
+ 
+         $query = $this->pretending === true
+             ? $this->queryGrammar?->substituteBindingsIntoRawSql($query, $bindings) ?? $query
+             : $query;
+ 
+         if ($this->loggingQueries) {
+-            $this->queryLog[] = compact('query', 'bindings', 'time');
++            $this->queryLog[] = compact('query', 'bindings', 'time', 'readWriteType');
+         }
+     }
+ 
+@@ -1234,6 +1244,8 @@ public function useWriteConnectionWhenReading($value = true)
+      */
+     public function getPdo()
+     {
++        $this->latestPdoTypeRetrieved = 'write';
++
+         if ($this->pdo instanceof Closure) {
+             return $this->pdo = call_user_func($this->pdo);
+         }
+@@ -1267,6 +1279,8 @@ public function getReadPdo()
+             return $this->getPdo();
+         }
+ 
++        $this->latestPdoTypeRetrieved = 'read';
++
+         if ($this->readPdo instanceof Closure) {
+             return $this->readPdo = call_user_func($this->readPdo);
+         }
+@@ -1642,6 +1656,16 @@ public function setReadWriteType($readWriteType)
+         return $this;
+     }
+ 
++    /**
++     * Retrieve the latest read / write type used.
++     *
++     * @return 'read'|'write'|null
++     */
++    protected function latestReadWriteTypeUsed()
++    {
++        return $this->readWriteType ?? $this->latestPdoTypeRetrieved;
++    }
++
+     /**
+      * Get the table prefix for the connection.
+      *
+diff --git a/src/Illuminate/Database/Events/QueryExecuted.php b/src/Illuminate/Database/Events/QueryExecuted.php
+index 960df9da09..d9209dfd59 100644
+--- a/src/Illuminate/Database/Events/QueryExecuted.php
++++ b/src/Illuminate/Database/Events/QueryExecuted.php
+@@ -39,6 +39,13 @@ class QueryExecuted
+      */
+     public $connectionName;
+ 
++    /**
++     * The PDO read / write type for the executed query.
++     *
++     * @var null|'read'|'write'
++     */
++    public $readWriteType;
++
+     /**
+      * Create a new event instance.
+      *
+@@ -46,14 +53,16 @@ class QueryExecuted
+      * @param  array  $bindings
+      * @param  float|null  $time
+      * @param  \Illuminate\Database\Connection  $connection
++     * @param  null|'read'|'write'  $readWriteType
+      */
+-    public function __construct($sql, $bindings, $time, $connection)
++    public function __construct($sql, $bindings, $time, $connection, $readWriteType = null)
+     {
+         $this->sql = $sql;
+         $this->time = $time;
+         $this->bindings = $bindings;
+         $this->connection = $connection;
+         $this->connectionName = $connection->getName();
++        $this->readWriteType = $readWriteType;
+     }
+ 
+     /**
+diff --git a/src/Illuminate/Database/QueryException.php b/src/Illuminate/Database/QueryException.php
+index fe032d8b61..b9251d2fe0 100644
+--- a/src/Illuminate/Database/QueryException.php
++++ b/src/Illuminate/Database/QueryException.php
+@@ -30,6 +30,13 @@ class QueryException extends PDOException
+      */
+     protected $bindings;
+ 
++    /**
++     * The PDO read / write type for the executed query.
++     *
++     * @var null|'read'|'write'
++     */
++    public $readWriteType;
++
+     /**
+      * The connection details for the query (host, port, database, etc.).
+      *
+@@ -44,9 +51,10 @@ class QueryException extends PDOException
+      * @param  string  $sql
+      * @param  array  $bindings
+      * @param  \Throwable  $previous
++     * @param  null|'read'|'write'  $readWriteType
+      * @param  array  $connectionDetails
+      */
+-    public function __construct($connectionName, $sql, array $bindings, Throwable $previous, array $connectionDetails = [])
++    public function __construct($connectionName, $sql, array $bindings, Throwable $previous, array $connectionDetails = [], $readWriteType = null)
+     {
+         parent::__construct('', 0, $previous);
+ 
+@@ -54,6 +62,7 @@ public function __construct($connectionName, $sql, array $bindings, Throwable $p
+         $this->sql = $sql;
+         $this->bindings = $bindings;
+         $this->connectionDetails = $connectionDetails;
++        $this->readWriteType = $readWriteType;
+         $this->code = $previous->getCode();
+         $this->message = $this->formatMessage($connectionName, $sql, $bindings, $previous);
+ 

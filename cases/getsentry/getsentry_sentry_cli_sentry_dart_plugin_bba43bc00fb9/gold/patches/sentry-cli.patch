@@ -1,0 +1,111 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ee6f90b3..fb88997e 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,6 +6,10 @@
+ 
+ - Add `--install-group` parameter to `sentry-cli build upload` for controlling update visibility between builds ([#3094](https://github.com/getsentry/sentry-cli/pull/3094))
+ 
++### Fixes
++
++- Fixed a bug where the `dart-symbol-map` command did not accept the `--url` argument ([#3108](https://github.com/getsentry/sentry-cli/pull/3108)).
++
+ ## 3.1.0
+ 
+ ### New Features
+diff --git a/src/commands/derive_parser.rs b/src/commands/derive_parser.rs
+index 2383260d..31d86215 100644
+--- a/src/commands/derive_parser.rs
++++ b/src/commands/derive_parser.rs
+@@ -18,6 +18,10 @@ pub(super) struct SentryCLI {
+     #[arg(help = "Use the given Sentry auth token")]
+     pub(super) auth_token: Option<AuthToken>,
+ 
++    #[arg(global = true, long, value_name = "URL")]
++    #[arg(help = "Fully qualified URL to the Sentry server.{n}[default: https://sentry.io/]")]
++    pub(super) url: Option<String>,
++
+     #[arg(global=true, ignore_case=true, value_parser=["trace", "debug", "info", "warn", "error"])]
+     #[arg(long, help = "Set the log output verbosity")]
+     pub(super) log_level: Option<String>,
+diff --git a/tests/integration/upload_dart_symbol_map.rs b/tests/integration/upload_dart_symbol_map.rs
+index 784ceeed..757bbb7a 100644
+--- a/tests/integration/upload_dart_symbol_map.rs
++++ b/tests/integration/upload_dart_symbol_map.rs
+@@ -102,3 +102,76 @@ fn command_upload_dart_symbol_map_invalid_mapping() {
+         .with_default_token()
+         .run_and_assert(AssertCommand::Failure);
+ }
++
++#[test]
++fn command_upload_dart_symbol_map_with_custom_url() {
++    let call_count = AtomicU8::new(0);
++
++    let manager = TestManager::new()
++        .mock_endpoint(
++            MockEndpointBuilder::new("GET", "/api/0/organizations/wat-org/chunk-upload/")
++                .with_response_file("dart_symbol_map/get-chunk-upload.json"),
++        )
++        .mock_endpoint(MockEndpointBuilder::new(
++            "POST",
++            "/api/0/organizations/wat-org/chunk-upload/",
++        ))
++        .mock_endpoint(
++            MockEndpointBuilder::new(
++                "POST",
++                "/api/0/projects/wat-org/wat-project/files/difs/assemble/",
++            )
++            .with_response_fn(move |_request| {
++                let value = match call_count.fetch_add(1, Ordering::Relaxed) {
++                    0 => serde_json::json!({
++                        "state": "not_found",
++                        "missingChunks": ["6aa44eb08e4a72d1cf32fe7c2504216fb1a3e862"]
++                    }),
++                    1 => serde_json::json!({
++                        "state": "created",
++                        "missingChunks": []
++                    }),
++                    2 => serde_json::json!({
++                        "state": "ok",
++                        "detail": serde_json::Value::Null,
++                        "missingChunks": [],
++                        "dif": {
++                            "id": "1",
++                            "uuid": "00000000-0000-0000-0000-000000000000",
++                            "debugId": "00000000-0000-0000-0000-000000000000",
++                            "objectName": "dartsymbolmap.json",
++                            "cpuName": "any",
++                            "headers": { "Content-Type": "application/octet-stream" },
++                            "size": 1,
++                            "sha1": "6aa44eb08e4a72d1cf32fe7c2504216fb1a3e862",
++                            "dateCreated": "1776-07-04T12:00:00.000Z",
++                            "data": {}
++                        }
++                    }),
++                    n => panic!(
++                        "Only 3 calls to the assemble endpoint expected, but there were {}.",
++                        n + 1
++                    ),
++                };
++                let response = serde_json::json!({
++                    "6aa44eb08e4a72d1cf32fe7c2504216fb1a3e862": value
++                });
++                serde_json::to_vec(&response).unwrap()
++            })
++            .expect(3),
++        );
++
++    let server_url = manager.server_url();
++
++    manager
++        .assert_cmd([
++            "--url",
++            &server_url,
++            "dart-symbol-map",
++            "upload",
++            "tests/integration/_fixtures/dart_symbol_map/dartsymbolmap.json",
++            "tests/integration/_fixtures/Sentry.Samples.Console.Basic.pdb",
++        ])
++        .with_default_token()
++        .run_and_assert(AssertCommand::Success);
++}

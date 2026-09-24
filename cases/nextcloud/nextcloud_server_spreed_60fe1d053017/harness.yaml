@@ -1,0 +1,31 @@
+task_id: nextcloud_server_spreed_60fe1d053017
+hidden_test_patches:
+- repo: server
+  patch: hidden/patches/server-hidden-tests.patch
+  test_profile: server-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/lib/Comments/CommentTest.php
+  hidden_file: *id001
+  semantic_changes: contract-aligned code-only mention parameter assertions
+  source: upstream test changes from nextcloud/server PR(s) 58974
+- repo: spreed
+  patch: hidden/patches/spreed-hidden-tests.patch
+  test_profile: spreed-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/php/Chat/Parser/UserMentionTest.php
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from nextcloud/spreed PR(s) 17355
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - server-hidden
+    - spreed-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

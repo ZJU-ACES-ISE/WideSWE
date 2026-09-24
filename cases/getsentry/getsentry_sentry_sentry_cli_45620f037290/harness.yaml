@@ -1,0 +1,31 @@
+task_id: getsentry_sentry_sentry_cli_45620f037290
+hidden_test_patches:
+- repo: sentry
+  patch: hidden/patches/sentry-hidden-tests.patch
+  test_profile: sentry-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/sentry/preprod/api/endpoints/test_preprod_artifact_snapshot.py
+  hidden_file: *id001
+  semantic_changes: Validate the public POST contract and observable objectstore write without requiring Gold database model names, relationships, response error keys, or manifest key layout.
+  source: upstream test changes from getsentry/sentry PR(s) 107825
+- repo: sentry-cli
+  patch: hidden/patches/sentry-cli-hidden-tests.patch
+  test_profile: sentry_cli-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/integration/build/mod.rs
+  hidden_file: *id002
+  semantic_changes: Validate command discovery and the prompt-visible experimental, app-id, and path help contract without exact help text or formatting.
+  source: upstream test changes from getsentry/sentry-cli PR(s) 3110
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - sentry-hidden
+    - sentry_cli-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

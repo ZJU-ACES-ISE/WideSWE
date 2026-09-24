@@ -1,0 +1,302 @@
+diff --git a/src/Enums/PackageSource.php b/src/Enums/PackageSource.php
+new file mode 100644
+index 0000000..04b7d78
+--- /dev/null
++++ b/src/Enums/PackageSource.php
+@@ -0,0 +1,9 @@
++<?php
++
++namespace Laravel\Roster\Enums;
++
++enum PackageSource: string
++{
++    case COMPOSER = 'composer';
++    case NPM = 'npm';
++}
+diff --git a/src/Enums/Packages.php b/src/Enums/Packages.php
+index 96f63e1..dea0c74 100644
+--- a/src/Enums/Packages.php
++++ b/src/Enums/Packages.php
+@@ -4,11 +4,8 @@
+ 
+ enum Packages: string
+ {
+-    // Compound
+-    case INERTIA = 'inertia';
+-    case WAYFINDER = 'wayfinder';
+-
+     // BACKEND
++    case AI = 'ai';
+     case BOOST = 'boost';
+     case BREEZE = 'breeze';
+     case CASHIER = 'cashier';
+@@ -45,7 +42,7 @@ enum Packages: string
+     case STATAMIC = 'statamic';
+     case TELESCOPE = 'telescope';
+     case VOLT = 'volt';
+-    case WAYFINDER_LARAVEL = 'wayfinder_laravel';
++    case WAYFINDER = 'wayfinder';
+     case ZIGGY = 'ziggy';
+ 
+     // NPM
+diff --git a/src/Package.php b/src/Package.php
+index 59ff725..1055641 100644
+--- a/src/Package.php
++++ b/src/Package.php
+@@ -3,6 +3,7 @@
+ namespace Laravel\Roster;
+ 
+ use Laravel\Roster\Enums\Packages;
++use Laravel\Roster\Enums\PackageSource;
+ 
+ class Package
+ {
+@@ -10,7 +11,17 @@ class Package
+ 
+     protected string $constraint = '';
+ 
+-    public function __construct(protected Packages $package, protected string $packageName, protected string $version, protected bool $dev = false) {}
++    protected ?PackageSource $source = null;
++
++    public function __construct(
++        protected Packages $package,
++        protected string $packageName,
++        protected string $version,
++        protected bool $dev = false,
++        protected ?string $path = null
++    ) {
++        //
++    }
+ 
+     public function setDev(bool $dev = true): self
+     {
+@@ -33,6 +44,20 @@ public function setConstraint(string $constraint = ''): self
+         return $this;
+     }
+ 
++    public function setSource(PackageSource $source): self
++    {
++        $this->source = $source;
++
++        return $this;
++    }
++
++    public function setPath(string $path): self
++    {
++        $this->path = $path;
++
++        return $this;
++    }
++
+     public function name(): string
+     {
+         return $this->package->name;
+@@ -73,6 +98,16 @@ public function isDev(): bool
+         return $this->dev;
+     }
+ 
++    public function source(): ?PackageSource
++    {
++        return $this->source;
++    }
++
++    public function path(): ?string
++    {
++        return $this->path;
++    }
++
+     public function rawName(): string
+     {
+         return $this->packageName;
+diff --git a/src/Roster.php b/src/Roster.php
+index 29c6a05..c77131c 100644
+--- a/src/Roster.php
++++ b/src/Roster.php
+@@ -133,6 +133,8 @@ public function json(): string
+             'packages' => $this->packages->map(fn (Package $package) => [
+                 'name' => $package->name(),
+                 'version' => $package->version(),
++                'source' => $package->source()?->value,
++                'path' => $package->path(),
+             ])->toArray(),
+             'nodePackageManager' => $this->nodePackageManager?->value,
+         ], JSON_PRETTY_PRINT) ?: '{}';
+diff --git a/src/Scanners/BasePackageScanner.php b/src/Scanners/BasePackageScanner.php
+index ac754ec..74f7246 100644
+--- a/src/Scanners/BasePackageScanner.php
++++ b/src/Scanners/BasePackageScanner.php
+@@ -7,6 +7,7 @@
+ use Laravel\Roster\Approach;
+ use Laravel\Roster\Enums\Approaches;
+ use Laravel\Roster\Enums\Packages;
++use Laravel\Roster\Enums\PackageSource;
+ use Laravel\Roster\Package;
+ 
+ abstract class BasePackageScanner
+@@ -14,16 +15,16 @@ abstract class BasePackageScanner
+     /**
+      * Map of package names to enums
+      *
+-     * @var array<string, Packages|Approaches|array<int, Packages|Approaches>>
++     * @var array<string, Packages|Approaches>
+      */
+     protected array $map = [
+         'alpinejs' => Packages::ALPINEJS,
+         'eslint' => Packages::ESLINT,
+-        '@inertiajs/react' => [Packages::INERTIA, Packages::INERTIA_REACT],
+-        '@inertiajs/svelte' => [Packages::INERTIA, Packages::INERTIA_SVELTE],
+-        '@inertiajs/vue3' => [Packages::INERTIA, Packages::INERTIA_VUE],
++        '@inertiajs/react' => Packages::INERTIA_REACT,
++        '@inertiajs/svelte' => Packages::INERTIA_SVELTE,
++        '@inertiajs/vue3' => Packages::INERTIA_VUE,
+         'laravel-echo' => Packages::ECHO,
+-        '@laravel/vite-plugin-wayfinder' => [Packages::WAYFINDER, Packages::WAYFINDER_VITE],
++        '@laravel/vite-plugin-wayfinder' => Packages::WAYFINDER_VITE,
+         'prettier' => Packages::PRETTIER,
+         'react' => Packages::REACT,
+         'tailwindcss' => Packages::TAILWINDCSS,
+@@ -78,10 +79,6 @@ protected function processDependencies(array $dependencies, Collection $mappedIt
+                 continue;
+             }
+ 
+-            if (! is_array($mappedPackage)) {
+-                $mappedPackage = [$mappedPackage];
+-            }
+-
+             if (! is_null($versionCb)) {
+                 $version = $versionCb($packageName, $version);
+             }
+@@ -96,14 +93,12 @@ protected function processDependencies(array $dependencies, Collection $mappedIt
+                 $packageIsDev = $directPackages[$packageName]['isDev'];
+             }
+ 
+-            foreach ($mappedPackage as $mapped) {
+-                $niceVersion = preg_replace('/[^0-9.]/', '', $version) ?? '';
+-                $mappedItems->push(match (get_class($mapped)) {
+-                    Packages::class => (new Package($mapped, $packageName, $niceVersion, $packageIsDev))->setDirect($direct)->setConstraint($constraint),
+-                    Approaches::class => new Approach($mapped),
+-                    default => throw new \InvalidArgumentException('Unsupported mapping')
+-                });
+-            }
++            $niceVersion = preg_replace('/[^0-9.]/', '', $version) ?? '';
++            $mappedItems->push(match (get_class($mappedPackage)) {
++                Packages::class => (new Package($mappedPackage, $packageName, $niceVersion, $packageIsDev))->setDirect($direct)->setConstraint($constraint)->setSource(PackageSource::NPM)->setPath($this->computePath($packageName)),
++                Approaches::class => new Approach($mappedPackage),
++                default => throw new \InvalidArgumentException('Unsupported mapping')
++            });
+         }
+     }
+ 
+@@ -152,6 +147,14 @@ protected function direct(): array
+         return $this->directPackages;
+     }
+ 
++    protected function computePath(string $packageName): string
++    {
++        $basePath = realpath($this->path) ?: $this->path;
++
++        return $basePath.DIRECTORY_SEPARATOR.'node_modules'.DIRECTORY_SEPARATOR
++            .str_replace('/', DIRECTORY_SEPARATOR, $packageName);
++    }
++
+     /**
+      * Common file validation logic
+      */
+diff --git a/src/Scanners/Composer.php b/src/Scanners/Composer.php
+index d8cc6d9..2846873 100644
+--- a/src/Scanners/Composer.php
++++ b/src/Scanners/Composer.php
+@@ -7,19 +7,23 @@
+ use Laravel\Roster\Approach;
+ use Laravel\Roster\Enums\Approaches;
+ use Laravel\Roster\Enums\Packages;
++use Laravel\Roster\Enums\PackageSource;
+ use Laravel\Roster\Package;
+ 
+ class Composer
+ {
++    protected string $vendorDir = 'vendor';
++
+     /**
+      * Map of composer package names to enums
+      *
+-     * @var array<string, Packages|Approaches|array<int, Packages|Approaches>|null>
++     * @var array<string, Packages|Approaches>
+      */
+     protected array $map = [
+         'filament/filament' => Packages::FILAMENT,
+-        'inertiajs/inertia-laravel' => [Packages::INERTIA, Packages::INERTIA_LARAVEL],
++        'inertiajs/inertia-laravel' => Packages::INERTIA_LARAVEL,
+         'larastan/larastan' => Packages::LARASTAN,
++        'laravel/ai' => Packages::AI,
+         'laravel/boost' => Packages::BOOST,
+         'laravel/breeze' => Packages::BREEZE,
+         'laravel/cashier' => Packages::CASHIER,
+@@ -45,7 +49,7 @@ class Composer
+         'laravel/scout' => Packages::SCOUT,
+         'laravel/socialite' => Packages::SOCIALITE,
+         'laravel/telescope' => Packages::TELESCOPE,
+-        'laravel/wayfinder' => [Packages::WAYFINDER, Packages::WAYFINDER_LARAVEL],
++        'laravel/wayfinder' => Packages::WAYFINDER,
+         'livewire/flux' => Packages::FLUXUI_FREE,
+         'livewire/flux-pro' => Packages::FLUXUI_PRO,
+         'livewire/livewire' => Packages::LIVEWIRE,
+@@ -137,6 +141,11 @@ protected function direct(): array
+             return $packages;
+         }
+ 
++        $config = $json['config'] ?? [];
++        $this->vendorDir = is_array($config) && isset($config['vendor-dir']) && is_string($config['vendor-dir'])
++            ? $config['vendor-dir']
++            : 'vendor';
++
+         foreach ((array) ($json['require'] ?? []) as $name => $constraint) {
+             $packages[$name] = [
+                 'constraint' => $constraint,
+@@ -174,25 +183,34 @@ private function processPackages(array $packages, Collection $mappedItems, bool
+                 continue;
+             }
+ 
+-            if (! is_array($mappedPackage)) {
+-                $mappedPackage = [$mappedPackage];
+-            }
+-
+             if (array_key_exists($packageName, $this->directPackages) === true) {
+                 $direct = true;
+                 $constraint = $this->directPackages[$packageName]['constraint'];
+             }
+ 
+-            foreach ($mappedPackage as $mapped) {
+-                $niceVersion = preg_replace('/[^0-9.]/', '', $version) ?? '';
+-                $mappedItems->push(match (get_class($mapped)) {
+-                    Packages::class => (new Package($mapped, $packageName, $niceVersion, $isDev))->setDirect($direct)->setConstraint($constraint),
+-                    Approaches::class => new Approach($mapped),
+-                    default => throw new \InvalidArgumentException('Unsupported mapping')
+-                });
+-            }
++            $niceVersion = preg_replace('/[^0-9.]/', '', $version) ?? '';
++            $mappedItems->push(match (get_class($mappedPackage)) {
++                Packages::class => (new Package($mappedPackage, $packageName, $niceVersion, $isDev))->setDirect($direct)->setConstraint($constraint)->setSource(PackageSource::COMPOSER)->setPath($this->computePath($packageName)),
++                Approaches::class => new Approach($mappedPackage),
++                default => throw new \InvalidArgumentException('Unsupported mapping')
++            });
+         }
+ 
+         return $mappedItems;
+     }
++
++    private function computePath(string $packageName): string
++    {
++        $vendorPath = str_replace('/', DIRECTORY_SEPARATOR, $this->vendorDir);
++
++        if (DIRECTORY_SEPARATOR === '/' && str_starts_with($vendorPath, DIRECTORY_SEPARATOR)
++            || DIRECTORY_SEPARATOR === '\\' && preg_match('/^[A-Za-z]:[\\\\\\/]/', $vendorPath)) {
++            return $vendorPath.DIRECTORY_SEPARATOR
++                .str_replace('/', DIRECTORY_SEPARATOR, $packageName);
++        }
++
++        return realpath(dirname($this->path)).DIRECTORY_SEPARATOR
++            .$vendorPath.DIRECTORY_SEPARATOR
++            .str_replace('/', DIRECTORY_SEPARATOR, $packageName);
++    }
+ }

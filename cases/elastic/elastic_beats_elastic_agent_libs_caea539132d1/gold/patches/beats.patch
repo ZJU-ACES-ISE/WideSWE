@@ -1,0 +1,968 @@
+diff --git a/NOTICE.txt b/NOTICE.txt
+index 46f28f119ba..6c818270bc5 100644
+--- a/NOTICE.txt
++++ b/NOTICE.txt
+@@ -12380,11 +12380,11 @@ SOFTWARE
+ 
+ --------------------------------------------------------------------------------
+ Dependency : github.com/elastic/elastic-agent-libs
+-Version: v0.21.4
++Version: v0.21.5
+ Licence type (autodetected): Apache-2.0
+ --------------------------------------------------------------------------------
+ 
+-Contents of probable licence file $GOMODCACHE/github.com/elastic/elastic-agent-libs@v0.21.4/LICENSE:
++Contents of probable licence file $GOMODCACHE/github.com/elastic/elastic-agent-libs@v0.21.5/LICENSE:
+ 
+                                  Apache License
+                            Version 2.0, January 2004
+diff --git a/filebeat/input/kafka/config.go b/filebeat/input/kafka/config.go
+index fe2cefad56b..2199f6d6e69 100644
+--- a/filebeat/input/kafka/config.go
++++ b/filebeat/input/kafka/config.go
+@@ -172,7 +172,7 @@ func newSaramaConfig(config kafkaInputConfig, logger *logp.Logger) (*sarama.Conf
+ 	k.Consumer.Group.Rebalance.Retry.Backoff = config.Rebalance.RetryBackoff
+ 	k.Consumer.Group.Rebalance.Retry.Max = config.Rebalance.MaxRetries
+ 
+-	tls, err := tlscommon.LoadTLSConfig(config.TLS)
++	tls, err := tlscommon.LoadTLSConfig(config.TLS, logger)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/filebeat/input/mqtt/client.go b/filebeat/input/mqtt/client.go
+index f5803d1d340..6790617692b 100644
+--- a/filebeat/input/mqtt/client.go
++++ b/filebeat/input/mqtt/client.go
+@@ -20,10 +20,11 @@ package mqtt
+ import (
+ 	libmqtt "github.com/eclipse/paho.mqtt.golang"
+ 
++	"github.com/elastic/elastic-agent-libs/logp"
+ 	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
+ )
+ 
+-func createClientOptions(config mqttInputConfig, onConnectHandler func(client libmqtt.Client)) (*libmqtt.ClientOptions, error) {
++func createClientOptions(config mqttInputConfig, onConnectHandler func(client libmqtt.Client), logger *logp.Logger) (*libmqtt.ClientOptions, error) {
+ 	clientOptions := libmqtt.NewClientOptions().
+ 		SetClientID(config.ClientID).
+ 		SetUsername(config.Username).
+@@ -37,7 +38,7 @@ func createClientOptions(config mqttInputConfig, onConnectHandler func(client li
+ 	}
+ 
+ 	if config.TLS != nil {
+-		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logger)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+diff --git a/filebeat/input/mqtt/input.go b/filebeat/input/mqtt/input.go
+index ec97f3271c4..43fcb3ac4f8 100644
+--- a/filebeat/input/mqtt/input.go
++++ b/filebeat/input/mqtt/input.go
+@@ -95,7 +95,7 @@ func newInput(
+ 	clientSubscriptions := createClientSubscriptions(config)
+ 	onMessageHandler := createOnMessageHandler(logger, out, inflightMessages)
+ 	onConnectHandler := createOnConnectHandler(logger, &inputContext, onMessageHandler, clientSubscriptions, newBackoff)
+-	clientOptions, err := createClientOptions(config, onConnectHandler)
++	clientOptions, err := createClientOptions(config, onConnectHandler, logger)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/filebeat/input/redis/input.go b/filebeat/input/redis/input.go
+index 1cb6ed8e330..24923e3861f 100644
+--- a/filebeat/input/redis/input.go
++++ b/filebeat/input/redis/input.go
+@@ -59,7 +59,7 @@ func NewInput(cfg *conf.C, connector channel.Connector, context input.Context, l
+ 	}
+ 
+ 	if config.TLS.IsEnabled() {
+-		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logger)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+diff --git a/filebeat/inputsource/tcp/server.go b/filebeat/inputsource/tcp/server.go
+index 49b1d75f9b1..85b5b4dc747 100644
+--- a/filebeat/inputsource/tcp/server.go
++++ b/filebeat/inputsource/tcp/server.go
+@@ -45,7 +45,7 @@ func New(
+ 	factory streaming.HandlerFactory,
+ 	logger *logp.Logger,
+ ) (*Server, error) {
+-	tlsConfig, err := tlscommon.LoadTLSServerConfig(config.TLS)
++	tlsConfig, err := tlscommon.LoadTLSServerConfig(config.TLS, logger)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/go.mod b/go.mod
+index 09daa3e068f..72db302d55c 100644
+--- a/go.mod
++++ b/go.mod
+@@ -176,7 +176,7 @@ require (
+ 	github.com/elastic/bayeux v1.0.5
+ 	github.com/elastic/ebpfevents v0.7.0
+ 	github.com/elastic/elastic-agent-autodiscover v0.10.0
+-	github.com/elastic/elastic-agent-libs v0.21.4
++	github.com/elastic/elastic-agent-libs v0.21.5
+ 	github.com/elastic/elastic-agent-system-metrics v0.11.11
+ 	github.com/elastic/go-elasticsearch/v8 v8.18.1
+ 	github.com/elastic/go-freelru v0.16.0
+diff --git a/go.sum b/go.sum
+index 9cd09143c89..ecb3ea3b6f1 100644
+--- a/go.sum
++++ b/go.sum
+@@ -364,8 +364,8 @@ github.com/elastic/elastic-agent-autodiscover v0.10.0 h1:WJ4zl9uSfk1kHmn2B/0byQB
+ github.com/elastic/elastic-agent-autodiscover v0.10.0/go.mod h1:Nf3zh9FcJ9nTTswTwDTUAqXmvQllOrNliM6xmORSxwE=
+ github.com/elastic/elastic-agent-client/v7 v7.15.0 h1:nDB7v8TBoNuD6IIzC3z7Q0y+7bMgXoT2DsHfolO2CHE=
+ github.com/elastic/elastic-agent-client/v7 v7.15.0/go.mod h1:6h+f9QdIr3GO2ODC0Y8+aEXRwzbA5W4eV4dd/67z7nI=
+-github.com/elastic/elastic-agent-libs v0.21.4 h1:Xf7zeJ2hiyt13VRhyH22/nsDmlY8/TEfFb36X9uvw34=
+-github.com/elastic/elastic-agent-libs v0.21.4/go.mod h1:xSeIP3NtOIT4N2pPS4EyURmS1Q8mK0lWZ8Wd1Du6q3w=
++github.com/elastic/elastic-agent-libs v0.21.5 h1:YTMwaBPgOPvQnxBPv7fLpUqjw2HgY3ymC9TwdzdOD8U=
++github.com/elastic/elastic-agent-libs v0.21.5/go.mod h1:xSeIP3NtOIT4N2pPS4EyURmS1Q8mK0lWZ8Wd1Du6q3w=
+ github.com/elastic/elastic-agent-system-metrics v0.11.11 h1:Qjh3Zef23PfGlG91AF+9ciNLNQf/8cDJ4CalnLZtV3g=
+ github.com/elastic/elastic-agent-system-metrics v0.11.11/go.mod h1:GNqmKfvOt8PwORjbS6GllNdMfkLpOWyTa7P8oQq4E5o=
+ github.com/elastic/elastic-transport-go/v8 v8.7.0 h1:OgTneVuXP2uip4BA658Xi6Hfw+PeIOod2rY3GVMGoVE=
+diff --git a/heartbeat/monitors/active/http/http.go b/heartbeat/monitors/active/http/http.go
+index ad9a9df98c0..919c59a5a2d 100644
+--- a/heartbeat/monitors/active/http/http.go
++++ b/heartbeat/monitors/active/http/http.go
+@@ -26,6 +26,7 @@ import (
+ 	"github.com/elastic/beats/v7/heartbeat/monitors/wrappers/wraputil"
+ 	"github.com/elastic/beats/v7/libbeat/version"
+ 	conf "github.com/elastic/elastic-agent-libs/config"
++	"github.com/elastic/elastic-agent-libs/logp"
+ 
+ 	"github.com/elastic/beats/v7/heartbeat/monitors/jobs"
+ 	"github.com/elastic/elastic-agent-libs/transport/httpcommon"
+@@ -91,7 +92,8 @@ func create(
+ 		}
+ 	} else {
+ 		// preload TLS configuration
+-		tls, err := tlscommon.LoadTLSConfig(config.Transport.TLS)
++		// TODO: Use local logger
++		tls, err := tlscommon.LoadTLSConfig(config.Transport.TLS, logp.NewLogger(""))
+ 		if err != nil {
+ 			return plugin.Plugin{}, err
+ 		}
+diff --git a/heartbeat/monitors/active/tcp/tcp.go b/heartbeat/monitors/active/tcp/tcp.go
+index 57305203b3a..b6a83c1dced 100644
+--- a/heartbeat/monitors/active/tcp/tcp.go
++++ b/heartbeat/monitors/active/tcp/tcp.go
+@@ -101,7 +101,8 @@ func (jf *jobFactory) loadConfig(commonCfg *conf.C) error {
+ 		return err
+ 	}
+ 
+-	jf.tlsConfig, err = tlscommon.LoadTLSConfig(jf.config.TLS)
++	// TOOD: use local logger
++	jf.tlsConfig, err = tlscommon.LoadTLSConfig(jf.config.TLS, logp.NewLogger(""))
+ 	if err != nil {
+ 		return err
+ 	}
+diff --git a/libbeat/common/transport/transptest/testing.go b/libbeat/common/transport/transptest/testing.go
+index 26e799ec84e..a6041c14a49 100644
+--- a/libbeat/common/transport/transptest/testing.go
++++ b/libbeat/common/transport/transptest/testing.go
+@@ -31,6 +31,8 @@ import (
+ 	"testing"
+ 	"time"
+ 
++	"github.com/elastic/elastic-agent-libs/logp"
++	"github.com/elastic/elastic-agent-libs/logp/logptest"
+ 	"github.com/elastic/elastic-agent-libs/transport"
+ 	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
+ )
+@@ -130,7 +132,7 @@ func NewMockServerTLS(t *testing.T, to time.Duration, cert string, proxy *transp
+ 			Certificate: cert + ".pem",
+ 			Key:         cert + ".key",
+ 		},
+-	})
++	}, logptest.NewTestingLogger(t, ""))
+ 	if err != nil {
+ 		t.Fatalf("failed to load certificate")
+ 	}
+@@ -177,7 +179,7 @@ func connectTLS(timeout time.Duration, certName string) TransportFactory {
+ 	return func(addr string, proxy *transport.ProxyConfig) (*transport.Client, error) {
+ 		tlsConfig, err := tlscommon.LoadTLSConfig(&tlscommon.Config{
+ 			CAs: []string{certName + ".pem"},
+-		})
++		}, logp.NewNopLogger())
+ 		if err != nil {
+ 			return nil, err
+ 		}
+diff --git a/libbeat/esleg/eslegclient/connection.go b/libbeat/esleg/eslegclient/connection.go
+index 19dcb756741..1d2116648a8 100644
+--- a/libbeat/esleg/eslegclient/connection.go
++++ b/libbeat/esleg/eslegclient/connection.go
+@@ -348,7 +348,7 @@ func (conn *Connection) Test(d testing.Driver) {
+ 			d.Warn("TLS", "secure connection disabled")
+ 		} else {
+ 			d.Run("TLS", func(d testing.Driver) {
+-				tls, err := tlscommon.LoadTLSConfig(conn.Transport.TLS)
++				tls, err := tlscommon.LoadTLSConfig(conn.Transport.TLS, conn.log)
+ 				if err != nil {
+ 					d.Fatal("load tls config", err)
+ 				}
+diff --git a/libbeat/otelbeat/oteltranslate/tls_otel.go b/libbeat/otelbeat/oteltranslate/tls_otel.go
+index 6e4853a8640..89d4803fc86 100644
+--- a/libbeat/otelbeat/oteltranslate/tls_otel.go
++++ b/libbeat/otelbeat/oteltranslate/tls_otel.go
+@@ -125,7 +125,7 @@ func TLSCommonToOTel(tlscfg *tlscommon.Config, logger *logp.Logger) (map[string]
+ 		certPem = string(certBytes)
+ 	}
+ 
+-	tlsConfig, err := tlscommon.LoadTLSConfig(tlscfg)
++	tlsConfig, err := tlscommon.LoadTLSConfig(tlscfg, logger)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("cannot load SSL configuration: %w", err)
+ 	}
+diff --git a/libbeat/outputs/kafka/config.go b/libbeat/outputs/kafka/config.go
+index 84a3b88157a..49e6a6637b1 100644
+--- a/libbeat/outputs/kafka/config.go
++++ b/libbeat/outputs/kafka/config.go
+@@ -218,7 +218,7 @@ func newSaramaConfig(log *logp.Logger, config *kafkaConfig) (*sarama.Config, err
+ 	k.Producer.Timeout = config.BrokerTimeout
+ 	k.Producer.CompressionLevel = config.CompressionLevel
+ 
+-	tls, err := tlscommon.LoadTLSConfig(config.TLS)
++	tls, err := tlscommon.LoadTLSConfig(config.TLS, log)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/libbeat/outputs/logstash/logstash.go b/libbeat/outputs/logstash/logstash.go
+index 5735f6b2eef..fd72fb07240 100644
+--- a/libbeat/outputs/logstash/logstash.go
++++ b/libbeat/outputs/logstash/logstash.go
+@@ -51,7 +51,7 @@ func makeLogstash(
+ 		return outputs.Fail(err)
+ 	}
+ 
+-	tls, err := tlscommon.LoadTLSConfig(lsConfig.TLS)
++	tls, err := tlscommon.LoadTLSConfig(lsConfig.TLS, beat.Logger)
+ 	if err != nil {
+ 		return outputs.Fail(err)
+ 	}
+diff --git a/libbeat/outputs/redis/redis.go b/libbeat/outputs/redis/redis.go
+index 3dab14e17b4..a157290425e 100644
+--- a/libbeat/outputs/redis/redis.go
++++ b/libbeat/outputs/redis/redis.go
+@@ -101,7 +101,7 @@ func makeRedis(
+ 		return outputs.Fail(err)
+ 	}
+ 
+-	tls, err := tlscommon.LoadTLSConfig(rConfig.TLS)
++	tls, err := tlscommon.LoadTLSConfig(rConfig.TLS, beat.Logger)
+ 	if err != nil {
+ 		return outputs.Fail(err)
+ 	}
+diff --git a/libbeat/processors/add_cloud_metadata/add_cloud_metadata.go b/libbeat/processors/add_cloud_metadata/add_cloud_metadata.go
+index f3bbb39c8a0..d21a6b3ca27 100644
+--- a/libbeat/processors/add_cloud_metadata/add_cloud_metadata.go
++++ b/libbeat/processors/add_cloud_metadata/add_cloud_metadata.go
+@@ -64,7 +64,7 @@ func New(c *cfg.C, log *logp.Logger) (beat.Processor, error) {
+ 		return nil, fmt.Errorf("failed to unpack add_cloud_metadata config: %w", err)
+ 	}
+ 
+-	tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
++	tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, log)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("TLS configuration load: %w", err)
+ 	}
+diff --git a/libbeat/processors/translate_ldap_attribute/translate_ldap_attribute.go b/libbeat/processors/translate_ldap_attribute/translate_ldap_attribute.go
+index d4d98ad3075..4b974211b91 100644
+--- a/libbeat/processors/translate_ldap_attribute/translate_ldap_attribute.go
++++ b/libbeat/processors/translate_ldap_attribute/translate_ldap_attribute.go
+@@ -67,7 +67,7 @@ func newFromConfig(c config, logger *logp.Logger) (*processor, error) {
+ 		searchTimeLimit: c.LDAPSearchTimeLimit,
+ 	}
+ 	if c.LDAPTLS != nil {
+-		tlsConfig, err := tlscommon.LoadTLSConfig(c.LDAPTLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(c.LDAPTLS, logger)
+ 		if err != nil {
+ 			return nil, fmt.Errorf("could not load provided LDAP TLS configuration: %w", err)
+ 		}
+diff --git a/metricbeat/helper/http.go b/metricbeat/helper/http.go
+index e6b82bca285..432e94f97af 100644
+--- a/metricbeat/helper/http.go
++++ b/metricbeat/helper/http.go
+@@ -26,6 +26,7 @@ import (
+ 	"io"
+ 	"net/http"
+ 
++	"github.com/elastic/elastic-agent-libs/logp"
+ 	"github.com/elastic/elastic-agent-libs/transport/httpcommon"
+ 	"github.com/elastic/elastic-agent-libs/useragent"
+ 
+@@ -58,11 +59,11 @@ func NewHTTP(base mb.BaseMetricSet) (*HTTP, error) {
+ 		return nil, err
+ 	}
+ 
+-	return NewHTTPFromConfig(config, base.HostData())
++	return NewHTTPFromConfig(config, base.HostData(), base.Logger())
+ }
+ 
+ // NewHTTPFromConfig newHTTPWithConfig creates a new http helper from some configuration
+-func NewHTTPFromConfig(config Config, hostData mb.HostData) (*HTTP, error) {
++func NewHTTPFromConfig(config Config, hostData mb.HostData, logger *logp.Logger) (*HTTP, error) {
+ 	headers := http.Header{}
+ 	if config.Headers == nil {
+ 		config.Headers = map[string]string{}
+@@ -83,6 +84,8 @@ func NewHTTPFromConfig(config Config, hostData mb.HostData) (*HTTP, error) {
+ 	}
+ 
+ 	client, err := config.Transport.Client(
++		// also sets a local logger for use by http transport
++		httpcommon.WithLogger(logger),
+ 		httpcommon.WithBaseDialer(dialer),
+ 		httpcommon.WithAPMHTTPInstrumentation(),
+ 		httpcommon.WithHeaderRoundTripper(map[string]string{"User-Agent": userAgent}),
+diff --git a/metricbeat/helper/server/http/http.go b/metricbeat/helper/server/http/http.go
+index 4cfce03a8f2..31d2683d693 100644
+--- a/metricbeat/helper/server/http/http.go
++++ b/metricbeat/helper/server/http/http.go
+@@ -61,7 +61,7 @@ func getDefaultHttpServer(mb mb.BaseMetricSet) (*HttpServer, error) {
+ 		return nil, err
+ 	}
+ 
+-	tlsConfig, err := tlscommon.LoadTLSServerConfig(config.TLS)
++	tlsConfig, err := tlscommon.LoadTLSServerConfig(config.TLS, mb.Logger())
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/metricbeat/module/aerospike/aerospike.go b/metricbeat/module/aerospike/aerospike.go
+index bf051ca9f4e..432c52b90c1 100644
+--- a/metricbeat/module/aerospike/aerospike.go
++++ b/metricbeat/module/aerospike/aerospike.go
+@@ -22,6 +22,7 @@ import (
+ 	"strconv"
+ 	"strings"
+ 
++	"github.com/elastic/elastic-agent-libs/logp"
+ 	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
+ 
+ 	as "github.com/aerospike/aerospike-client-go/v7"
+@@ -47,10 +48,10 @@ func DefaultConfig() Config {
+ 	return Config{}
+ }
+ 
+-func ParseClientPolicy(config Config) (*as.ClientPolicy, error) {
++func ParseClientPolicy(config Config, logger *logp.Logger) (*as.ClientPolicy, error) {
+ 	clientPolicy := as.NewClientPolicy()
+ 	if config.TLS.IsEnabled() {
+-		tlsconfig, err := tlscommon.LoadTLSConfig(config.TLS)
++		tlsconfig, err := tlscommon.LoadTLSConfig(config.TLS, logger)
+ 		if err != nil {
+ 			return nil, fmt.Errorf("could not initialize TLS configurations %w", err)
+ 		}
+diff --git a/metricbeat/module/aerospike/namespace/namespace.go b/metricbeat/module/aerospike/namespace/namespace.go
+index c94265ef9cb..e82425ec412 100644
+--- a/metricbeat/module/aerospike/namespace/namespace.go
++++ b/metricbeat/module/aerospike/namespace/namespace.go
+@@ -62,7 +62,7 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
+ 		return nil, fmt.Errorf("Invalid host format, expected hostname:port: %w", err)
+ 	}
+ 
+-	clientPolicy, err := aerospike.ParseClientPolicy(config)
++	clientPolicy, err := aerospike.ParseClientPolicy(config, base.Logger())
+ 	if err != nil {
+ 		return nil, fmt.Errorf("could not initialize aerospike client policy: %w", err)
+ 	}
+diff --git a/metricbeat/module/kafka/metricset.go b/metricbeat/module/kafka/metricset.go
+index 8de0bc37467..9fcbcc39811 100644
+--- a/metricbeat/module/kafka/metricset.go
++++ b/metricbeat/module/kafka/metricset.go
+@@ -42,7 +42,7 @@ func NewMetricSet(base mb.BaseMetricSet, options MetricSetOptions) (*MetricSet,
+ 		return nil, err
+ 	}
+ 
+-	tlsCfg, err := tlscommon.LoadTLSConfig(config.TLS)
++	tlsCfg, err := tlscommon.LoadTLSConfig(config.TLS, base.Logger())
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/metricbeat/module/mongodb/collstats/collstats.go b/metricbeat/module/mongodb/collstats/collstats.go
+index 34a6c5f5baf..93df4a5e5e1 100644
+--- a/metricbeat/module/mongodb/collstats/collstats.go
++++ b/metricbeat/module/mongodb/collstats/collstats.go
+@@ -64,7 +64,7 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
+ // format. It publishes the event which is then forwarded to the output. In case
+ // of an error set the Error field of mb.Event or simply call report.Error().
+ func (m *Metricset) Fetch(reporter mb.ReporterV2) error {
+-	client, err := mongodb.NewClient(m.Config, m.HostData().URI, m.Module().Config().Timeout, 0)
++	client, err := mongodb.NewClient(m.Config, m.HostData().URI, m.Module().Config().Timeout, 0, m.Logger())
+ 	if err != nil {
+ 		return fmt.Errorf("could not create mongodb client: %w", err)
+ 	}
+diff --git a/metricbeat/module/mongodb/dbstats/dbstats.go b/metricbeat/module/mongodb/dbstats/dbstats.go
+index 2e2635b2dd8..3ab74a072c6 100644
+--- a/metricbeat/module/mongodb/dbstats/dbstats.go
++++ b/metricbeat/module/mongodb/dbstats/dbstats.go
+@@ -64,7 +64,7 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
+ // format. It publishes the event which is then forwarded to the output. In case
+ // of an error set the Error field of mb.Event or simply call report.Error().
+ func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
+-	client, err := mongodb.NewClient(m.Config, m.HostData().URI, m.Module().Config().Timeout, 0)
++	client, err := mongodb.NewClient(m.Config, m.HostData().URI, m.Module().Config().Timeout, 0, m.Logger())
+ 	if err != nil {
+ 		return fmt.Errorf("could not create mongodb client: %w", err)
+ 	}
+diff --git a/metricbeat/module/mongodb/metrics/metrics.go b/metricbeat/module/mongodb/metrics/metrics.go
+index 0709d0cf23c..7110f3aec13 100644
+--- a/metricbeat/module/mongodb/metrics/metrics.go
++++ b/metricbeat/module/mongodb/metrics/metrics.go
+@@ -60,7 +60,7 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
+ // format. It publishes the event which is then forwarded to the output. In case
+ // of an error set the Error field of mb.Event or simply call report.Error().
+ func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
+-	client, err := mongodb.NewClient(m.Config, m.HostData().URI, m.Module().Config().Timeout, 0)
++	client, err := mongodb.NewClient(m.Config, m.HostData().URI, m.Module().Config().Timeout, 0, m.Logger())
+ 	if err != nil {
+ 		return fmt.Errorf("could not create mongodb client: %w", err)
+ 	}
+diff --git a/metricbeat/module/mongodb/mongodb.go b/metricbeat/module/mongodb/mongodb.go
+index 5b7262736e9..6250312b71b 100644
+--- a/metricbeat/module/mongodb/mongodb.go
++++ b/metricbeat/module/mongodb/mongodb.go
+@@ -33,6 +33,7 @@ import (
+ 	"github.com/elastic/beats/v7/metricbeat/mb"
+ 	"github.com/elastic/beats/v7/metricbeat/mb/parse"
+ 
++	"github.com/elastic/elastic-agent-libs/logp"
+ 	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
+ )
+ 
+@@ -119,7 +120,7 @@ func ParseURL(module mb.Module, host string) (mb.HostData, error) {
+ 	return parse.NewHostDataFromURL(u), nil
+ }
+ 
+-func NewClient(config ModuleConfig, uri string, timeout time.Duration, mode readpref.Mode) (*mongo.Client, error) {
++func NewClient(config ModuleConfig, uri string, timeout time.Duration, mode readpref.Mode, logger *logp.Logger) (*mongo.Client, error) {
+ 	clientOptions := options.Client()
+ 
+ 	// options.Credentials must be nil for the driver to work properly if no auth is provided. Zero values breaks
+@@ -153,7 +154,7 @@ func NewClient(config ModuleConfig, uri string, timeout time.Duration, mode read
+ 	clientOptions.SetConnectTimeout(timeout)
+ 
+ 	if config.TLS.IsEnabled() {
+-		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logger)
+ 		if err != nil {
+ 			return nil, fmt.Errorf("could not load provided TLS configuration: %w", err)
+ 		}
+diff --git a/metricbeat/module/mongodb/replstatus/replstatus.go b/metricbeat/module/mongodb/replstatus/replstatus.go
+index 0b381621b06..bd362cdae9e 100644
+--- a/metricbeat/module/mongodb/replstatus/replstatus.go
++++ b/metricbeat/module/mongodb/replstatus/replstatus.go
+@@ -57,7 +57,7 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
+ // format. It publishes the event which is then forwarded to the output. In case
+ // of an error set the Error field of mb.Event or simply call report.Error().
+ func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
+-	client, err := mongodb.NewClient(m.Metricset.Config, m.HostData().URI, m.Module().Config().Timeout, readpref.PrimaryMode)
++	client, err := mongodb.NewClient(m.Metricset.Config, m.HostData().URI, m.Module().Config().Timeout, readpref.PrimaryMode, m.Logger())
+ 	if err != nil {
+ 		return fmt.Errorf("could not create mongodb client: %w", err)
+ 	}
+diff --git a/metricbeat/module/mongodb/status/status.go b/metricbeat/module/mongodb/status/status.go
+index 922249f1fde..ea232d89883 100644
+--- a/metricbeat/module/mongodb/status/status.go
++++ b/metricbeat/module/mongodb/status/status.go
+@@ -63,7 +63,7 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
+ // It returns the event which is then forward to the output. In case of an error, a
+ // descriptive error must be returned.
+ func (m *MetricSet) Fetch(r mb.ReporterV2) error {
+-	client, err := mongodb.NewClient(m.Metricset.Config, m.HostData().URI, m.Module().Config().Timeout, readpref.PrimaryMode)
++	client, err := mongodb.NewClient(m.Metricset.Config, m.HostData().URI, m.Module().Config().Timeout, readpref.PrimaryMode, m.Logger())
+ 	if err != nil {
+ 		return fmt.Errorf("could not create mongodb client: %w", err)
+ 	}
+diff --git a/metricbeat/module/mysql/mysql.go b/metricbeat/module/mysql/mysql.go
+index 90ac25e86b5..7f1072c6cc1 100644
+--- a/metricbeat/module/mysql/mysql.go
++++ b/metricbeat/module/mysql/mysql.go
+@@ -64,7 +64,7 @@ func NewMetricset(base mb.BaseMetricSet) (*Metricset, error) {
+ 	}
+ 
+ 	if c.TLS.IsEnabled() {
+-		tlsConfig, err := tlscommon.LoadTLSConfig(c.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(c.TLS, base.Logger())
+ 		if err != nil {
+ 			return nil, fmt.Errorf("could not load provided TLS configuration: %w", err)
+ 		}
+diff --git a/metricbeat/module/mysql/query/query.go b/metricbeat/module/mysql/query/query.go
+index 22da633f627..223aaec52e5 100644
+--- a/metricbeat/module/mysql/query/query.go
++++ b/metricbeat/module/mysql/query/query.go
+@@ -82,7 +82,7 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
+ 	}
+ 
+ 	if b.Config.TLS.IsEnabled() {
+-		tlsConfig, err := tlscommon.LoadTLSConfig(b.Config.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(b.Config.TLS, base.Logger())
+ 		if err != nil {
+ 			return nil, fmt.Errorf("could not load provided TLS configuration: %w", err)
+ 		}
+diff --git a/metricbeat/module/redis/metricset.go b/metricbeat/module/redis/metricset.go
+index 08279134393..078e5dee9df 100644
+--- a/metricbeat/module/redis/metricset.go
++++ b/metricbeat/module/redis/metricset.go
+@@ -51,7 +51,7 @@ func NewMetricSet(base mb.BaseMetricSet) (*MetricSet, error) {
+ 	}
+ 
+ 	if config.TLS.IsEnabled() {
+-		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, base.Logger())
+ 		if err != nil {
+ 			return nil, fmt.Errorf("could not load provided TLS configuration: %w", err)
+ 		}
+diff --git a/x-pack/filebeat/input/cel/input.go b/x-pack/filebeat/input/cel/input.go
+index ee6b81d7bb2..6c21b8dd55d 100644
+--- a/x-pack/filebeat/input/cel/input.go
++++ b/x-pack/filebeat/input/cel/input.go
+@@ -785,7 +785,7 @@ func getLimit(which string, rateLimit map[string]interface{}, log *logp.Logger)
+ const lumberjackTimestamp = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]-[0-9][0-9]-[0-9][0-9].[0-9][0-9][0-9]"
+ 
+ func newClient(ctx context.Context, cfg config, log *logp.Logger, reg *monitoring.Registry) (*http.Client, *httplog.LoggingRoundTripper, error) {
+-	c, err := cfg.Resource.Transport.Client(clientOptions(cfg.Resource.URL.URL, cfg.Resource.KeepAlive.settings())...)
++	c, err := cfg.Resource.Transport.Client(clientOptions(cfg.Resource.URL.URL, cfg.Resource.KeepAlive.settings(), log)...)
+ 	if err != nil {
+ 		return nil, nil, err
+ 	}
+@@ -909,7 +909,7 @@ func wantClient(cfg config) bool {
+ 
+ // clientOption returns constructed client configuration options, including
+ // setting up http+unix and http+npipe transports if requested.
+-func clientOptions(u *url.URL, keepalive httpcommon.WithKeepaliveSettings) []httpcommon.TransportOption {
++func clientOptions(u *url.URL, keepalive httpcommon.WithKeepaliveSettings, log *logp.Logger) []httpcommon.TransportOption {
+ 	scheme, trans, ok := strings.Cut(u.Scheme, "+")
+ 	var dialer transport.Dialer
+ 	switch {
+@@ -935,6 +935,7 @@ func clientOptions(u *url.URL, keepalive httpcommon.WithKeepaliveSettings) []htt
+ 	}
+ 	u.Scheme = scheme
+ 	return []httpcommon.TransportOption{
++		httpcommon.WithLogger(log),
+ 		httpcommon.WithAPMHTTPInstrumentation(),
+ 		keepalive,
+ 		httpcommon.WithBaseDialer(dialer),
+diff --git a/x-pack/filebeat/input/entityanalytics/provider/activedirectory/activedirectory.go b/x-pack/filebeat/input/entityanalytics/provider/activedirectory/activedirectory.go
+index 9aa33050104..6eb2b39bd56 100644
+--- a/x-pack/filebeat/input/entityanalytics/provider/activedirectory/activedirectory.go
++++ b/x-pack/filebeat/input/entityanalytics/provider/activedirectory/activedirectory.go
+@@ -86,7 +86,7 @@ func (p *adInput) configure(cfg *config.C) (kvstore.Input, error) {
+ 		return nil, err
+ 	}
+ 	if p.cfg.TLS.IsEnabled() && u.Scheme == "ldaps" {
+-		tlsConfig, err := tlscommon.LoadTLSConfig(p.cfg.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(p.cfg.TLS, p.logger)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+diff --git a/x-pack/filebeat/input/entityanalytics/provider/activedirectory/conf.go b/x-pack/filebeat/input/entityanalytics/provider/activedirectory/conf.go
+index c9300f83b12..6c8ec77fb8c 100644
+--- a/x-pack/filebeat/input/entityanalytics/provider/activedirectory/conf.go
++++ b/x-pack/filebeat/input/entityanalytics/provider/activedirectory/conf.go
+@@ -6,8 +6,6 @@ package activedirectory
+ 
+ import (
+ 	"errors"
+-	"net"
+-	"net/url"
+ 	"strings"
+ 	"time"
+ 
+@@ -84,27 +82,7 @@ func (c *conf) Validate() error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	u, err := url.Parse(c.URL)
+-	if err != nil {
+-		return err
+-	}
+-	if c.TLS.IsEnabled() && u.Scheme == "ldaps" {
+-		_, err := tlscommon.LoadTLSConfig(c.TLS)
+-		if err != nil {
+-			return err
+-		}
+-		_, _, err = net.SplitHostPort(u.Host)
+-		var addrErr *net.AddrError
+-		switch {
+-		case err == nil:
+-		case errors.As(err, &addrErr):
+-			if addrErr.Err != "missing port in address" {
+-				return err
+-			}
+-		default:
+-			return err
+-		}
+-	}
++
+ 	return nil
+ }
+ 
+diff --git a/x-pack/filebeat/input/entityanalytics/provider/azuread/authenticator/oauth2/oauth2.go b/x-pack/filebeat/input/entityanalytics/provider/azuread/authenticator/oauth2/oauth2.go
+index f4c38fc909c..717970310c3 100644
+--- a/x-pack/filebeat/input/entityanalytics/provider/azuread/authenticator/oauth2/oauth2.go
++++ b/x-pack/filebeat/input/entityanalytics/provider/azuread/authenticator/oauth2/oauth2.go
+@@ -138,7 +138,7 @@ func New(cfg *config.C, logger *logp.Logger) (authenticator.Authenticator, error
+ 		return nil, fmt.Errorf("unable to unpack oauth2 Authenticator config: %w", err)
+ 	}
+ 
+-	client, err := c.Transport.Client()
++	client, err := c.Transport.Client(httpcommon.WithLogger(logger))
+ 	if err != nil {
+ 		return nil, fmt.Errorf("unable to create HTTP client: %w", err)
+ 	}
+diff --git a/x-pack/filebeat/input/entityanalytics/provider/azuread/fetcher/graph/graph.go b/x-pack/filebeat/input/entityanalytics/provider/azuread/fetcher/graph/graph.go
+index 5f3eb8b834e..2360eb6e3a6 100644
+--- a/x-pack/filebeat/input/entityanalytics/provider/azuread/fetcher/graph/graph.go
++++ b/x-pack/filebeat/input/entityanalytics/provider/azuread/fetcher/graph/graph.go
+@@ -369,7 +369,7 @@ func New(ctx context.Context, id string, cfg *config.C, logger *logp.Logger, aut
+ 		c.Tracer.Filename = strings.ReplaceAll(c.Tracer.Filename, "*", id)
+ 	}
+ 
+-	client, err := c.Transport.Client()
++	client, err := c.Transport.Client(httpcommon.WithLogger(logger))
+ 	if err != nil {
+ 		return nil, fmt.Errorf("unable to create HTTP client: %w", err)
+ 	}
+diff --git a/x-pack/filebeat/input/entityanalytics/provider/jamf/jamf.go b/x-pack/filebeat/input/entityanalytics/provider/jamf/jamf.go
+index a13d3400592..9b58f2ad06d 100644
+--- a/x-pack/filebeat/input/entityanalytics/provider/jamf/jamf.go
++++ b/x-pack/filebeat/input/entityanalytics/provider/jamf/jamf.go
+@@ -182,7 +182,7 @@ type noopReporter struct{}
+ func (noopReporter) UpdateStatus(status.Status, string) {}
+ 
+ func newClient(ctx context.Context, cfg conf, log *logp.Logger) (*http.Client, error) {
+-	c, err := cfg.Request.Transport.Client(clientOptions(cfg.Request.KeepAlive.settings())...)
++	c, err := cfg.Request.Transport.Client(clientOptions(cfg.Request.KeepAlive.settings(), log)...)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -266,8 +266,9 @@ func sanitizeFileName(name string) string {
+ 
+ // clientOption returns constructed client configuration options, including
+ // setting up http+unix and http+npipe transports if requested.
+-func clientOptions(keepalive httpcommon.WithKeepaliveSettings) []httpcommon.TransportOption {
++func clientOptions(keepalive httpcommon.WithKeepaliveSettings, log *logp.Logger) []httpcommon.TransportOption {
+ 	return []httpcommon.TransportOption{
++		httpcommon.WithLogger(log),
+ 		httpcommon.WithAPMHTTPInstrumentation(),
+ 		keepalive,
+ 	}
+diff --git a/x-pack/filebeat/input/entityanalytics/provider/okta/okta.go b/x-pack/filebeat/input/entityanalytics/provider/okta/okta.go
+index a0615f00853..6035f8aab01 100644
+--- a/x-pack/filebeat/input/entityanalytics/provider/okta/okta.go
++++ b/x-pack/filebeat/input/entityanalytics/provider/okta/okta.go
+@@ -187,7 +187,7 @@ type noopReporter struct{}
+ func (noopReporter) UpdateStatus(status.Status, string) {}
+ 
+ func newClient(ctx context.Context, cfg conf, log *logp.Logger) (*http.Client, error) {
+-	c, err := cfg.Request.Transport.Client(clientOptions(cfg.Request.KeepAlive.settings())...)
++	c, err := cfg.Request.Transport.Client(clientOptions(cfg.Request.KeepAlive.settings(), log)...)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -271,8 +271,9 @@ func sanitizeFileName(name string) string {
+ 
+ // clientOption returns constructed client configuration options, including
+ // setting up http+unix and http+npipe transports if requested.
+-func clientOptions(keepalive httpcommon.WithKeepaliveSettings) []httpcommon.TransportOption {
++func clientOptions(keepalive httpcommon.WithKeepaliveSettings, logger *logp.Logger) []httpcommon.TransportOption {
+ 	return []httpcommon.TransportOption{
++		httpcommon.WithLogger(logger),
+ 		httpcommon.WithAPMHTTPInstrumentation(),
+ 		keepalive,
+ 	}
+diff --git a/x-pack/filebeat/input/http_endpoint/input.go b/x-pack/filebeat/input/http_endpoint/input.go
+index ed700d64106..a24627dbdeb 100644
+--- a/x-pack/filebeat/input/http_endpoint/input.go
++++ b/x-pack/filebeat/input/http_endpoint/input.go
+@@ -61,16 +61,16 @@ func Plugin(log *logp.Logger) v2.Plugin {
+ 	}
+ }
+ 
+-func configure(cfg *conf.C, _ *logp.Logger) (v2.Input, error) {
++func configure(cfg *conf.C, logger *logp.Logger) (v2.Input, error) {
+ 	conf := defaultConfig()
+ 	if err := cfg.Unpack(&conf); err != nil {
+ 		return nil, err
+ 	}
+ 
+-	return newHTTPEndpoint(conf)
++	return newHTTPEndpoint(conf, logger)
+ }
+ 
+-func newHTTPEndpoint(config config) (*httpEndpoint, error) {
++func newHTTPEndpoint(config config, logger *logp.Logger) (*httpEndpoint, error) {
+ 	if err := config.Validate(); err != nil {
+ 		return nil, err
+ 	}
+@@ -78,7 +78,7 @@ func newHTTPEndpoint(config config) (*httpEndpoint, error) {
+ 	addr := net.JoinHostPort(config.ListenAddress, config.ListenPort)
+ 
+ 	var tlsConfig *tls.Config
+-	tlsConfigBuilder, err := tlscommon.LoadTLSServerConfig(config.TLS)
++	tlsConfigBuilder, err := tlscommon.LoadTLSServerConfig(config.TLS, logger)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/x-pack/filebeat/input/httpjson/input.go b/x-pack/filebeat/input/httpjson/input.go
+index 14a86247745..d9be835edb8 100644
+--- a/x-pack/filebeat/input/httpjson/input.go
++++ b/x-pack/filebeat/input/httpjson/input.go
+@@ -346,7 +346,7 @@ func newHTTPClient(ctx context.Context, authCfg *authConfig, requestCfg *request
+ const lumberjackTimestamp = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]-[0-9][0-9]-[0-9][0-9].[0-9][0-9][0-9]"
+ 
+ func newNetHTTPClient(ctx context.Context, cfg *requestConfig, log *logp.Logger, reg *monitoring.Registry) (*http.Client, error) {
+-	netHTTPClient, err := cfg.Transport.Client(clientOptions(cfg.URL.URL, cfg.KeepAlive.settings())...)
++	netHTTPClient, err := cfg.Transport.Client(clientOptions(cfg.URL.URL, cfg.KeepAlive.settings(), log)...)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -399,7 +399,7 @@ func newNetHTTPClient(ctx context.Context, cfg *requestConfig, log *logp.Logger,
+ 
+ // clientOption returns constructed client configuration options, including
+ // setting up http+unix and http+npipe transports if requested.
+-func clientOptions(u *url.URL, keepalive httpcommon.WithKeepaliveSettings) []httpcommon.TransportOption {
++func clientOptions(u *url.URL, keepalive httpcommon.WithKeepaliveSettings, logger *logp.Logger) []httpcommon.TransportOption {
+ 	scheme, trans, ok := strings.Cut(u.Scheme, "+")
+ 	var dialer transport.Dialer
+ 	switch {
+@@ -407,6 +407,7 @@ func clientOptions(u *url.URL, keepalive httpcommon.WithKeepaliveSettings) []htt
+ 		fallthrough
+ 	case !ok:
+ 		return []httpcommon.TransportOption{
++			httpcommon.WithLogger(logger),
+ 			httpcommon.WithAPMHTTPInstrumentation(),
+ 			keepalive,
+ 		}
+diff --git a/x-pack/filebeat/input/lumberjack/server.go b/x-pack/filebeat/input/lumberjack/server.go
+index f79716c3309..53c67d485cf 100644
+--- a/x-pack/filebeat/input/lumberjack/server.go
++++ b/x-pack/filebeat/input/lumberjack/server.go
+@@ -37,7 +37,7 @@ func newServer(c config, log *logp.Logger, pub func(beat.Event), stat status.Sta
+ 	if stat == nil {
+ 		stat = noopReporter{}
+ 	}
+-	ljSvr, bindAddress, err := newLumberjack(c)
++	ljSvr, bindAddress, err := newLumberjack(c, log)
+ 	if err != nil {
+ 		stat.UpdateStatus(status.Failed, "failed to start lumberjack server: "+err.Error())
+ 		return nil, err
+@@ -141,11 +141,11 @@ func makeEvent(remoteAddr string, tlsState *tls.ConnectionState, lumberjackEvent
+ 	return event
+ }
+ 
+-func newLumberjack(c config) (lj lumber.Server, bindAddress string, err error) {
++func newLumberjack(c config, logger *logp.Logger) (lj lumber.Server, bindAddress string, err error) {
+ 	// Setup optional TLS.
+ 	var tlsConfig *tls.Config
+ 	if c.TLS.IsEnabled() {
+-		elasticTLSConfig, err := tlscommon.LoadTLSServerConfig(c.TLS)
++		elasticTLSConfig, err := tlscommon.LoadTLSServerConfig(c.TLS, logger)
+ 		if err != nil {
+ 			return nil, "", err
+ 		}
+diff --git a/x-pack/filebeat/input/salesforce/input.go b/x-pack/filebeat/input/salesforce/input.go
+index 6858ff1ae02..6c5bee584ee 100644
+--- a/x-pack/filebeat/input/salesforce/input.go
++++ b/x-pack/filebeat/input/salesforce/input.go
+@@ -34,6 +34,7 @@ import (
+ 	"github.com/elastic/beats/v7/libbeat/statestore"
+ 	"github.com/elastic/elastic-agent-libs/logp"
+ 	"github.com/elastic/elastic-agent-libs/mapstr"
++	"github.com/elastic/elastic-agent-libs/transport/httpcommon"
+ 	"github.com/elastic/go-concert/ctxtool"
+ )
+ 
+@@ -536,7 +537,7 @@ func retryErrorHandler(max int, log *logp.Logger) retryablehttp.ErrorHandler {
+ }
+ 
+ func newClient(cfg config, log *logp.Logger) (*http.Client, error) {
+-	c, err := cfg.Resource.Transport.Client()
++	c, err := cfg.Resource.Transport.Client(httpcommon.WithLogger(log))
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/x-pack/filebeat/input/streaming/crowdstrike.go b/x-pack/filebeat/input/streaming/crowdstrike.go
+index df0376ac92b..53394c94471 100644
+--- a/x-pack/filebeat/input/streaming/crowdstrike.go
++++ b/x-pack/filebeat/input/streaming/crowdstrike.go
+@@ -101,7 +101,7 @@ func NewFalconHoseFollower(ctx context.Context, env v2.Context, cfg config, curs
+ 
+ 	cfg.Transport.Timeout = 0
+ 	cfg.Transport.IdleConnTimeout = 0
+-	s.plainClient, err = cfg.Transport.Client(httpcommon.WithAPMHTTPInstrumentation())
++	s.plainClient, err = cfg.Transport.Client(httpcommon.WithAPMHTTPInstrumentation(), httpcommon.WithLogger(log))
+ 	if err != nil {
+ 		stat.UpdateStatus(status.Failed, "failed to configure client: "+err.Error())
+ 		return nil, err
+diff --git a/x-pack/filebeat/input/streaming/websocket.go b/x-pack/filebeat/input/streaming/websocket.go
+index 8bae7beb312..965125e768c 100644
+--- a/x-pack/filebeat/input/streaming/websocket.go
++++ b/x-pack/filebeat/input/streaming/websocket.go
+@@ -428,7 +428,7 @@ func connectWebSocket(ctx context.Context, cfg config, url string, stat status.S
+ 	var response *http.Response
+ 	var err error
+ 	headers := formHeader(cfg)
+-	dialer, err := createWebSocketDialer(cfg)
++	dialer, err := createWebSocketDialer(cfg, log)
+ 	if err != nil {
+ 		return nil, nil, err
+ 	}
+@@ -534,7 +534,7 @@ func (s *websocketStream) Close() error {
+ 	return nil
+ }
+ 
+-func createWebSocketDialer(cfg config) (*websocket.Dialer, error) {
++func createWebSocketDialer(cfg config, logger *logp.Logger) (*websocket.Dialer, error) {
+ 	var tlsConfig *tls.Config
+ 	dialer := &websocket.Dialer{
+ 		Proxy: http.ProxyFromEnvironment,
+@@ -562,7 +562,7 @@ func createWebSocketDialer(cfg config) (*websocket.Dialer, error) {
+ 	}
+ 	// load TLS config if available
+ 	if cfg.Transport.TLS != nil {
+-		TLSConfig, err := tlscommon.LoadTLSConfig(cfg.Transport.TLS)
++		TLSConfig, err := tlscommon.LoadTLSConfig(cfg.Transport.TLS, logger)
+ 		if err != nil {
+ 			return nil, fmt.Errorf("failed to load TLS config: %w", err)
+ 		}
+diff --git a/x-pack/libbeat/common/aws/credentials.go b/x-pack/libbeat/common/aws/credentials.go
+index 2fa31d5d6a8..dc45a8c1976 100644
+--- a/x-pack/libbeat/common/aws/credentials.go
++++ b/x-pack/libbeat/common/aws/credentials.go
+@@ -80,7 +80,7 @@ func InitializeAWSConfig(beatsConfig ConfigAWS, logger *logp.Logger) (awssdk.Con
+ 	}
+ 	var tlsConfig *tls.Config
+ 	if beatsConfig.TLS != nil {
+-		TLSConfig, _ := tlscommon.LoadTLSConfig(beatsConfig.TLS)
++		TLSConfig, _ := tlscommon.LoadTLSConfig(beatsConfig.TLS, logger)
+ 		tlsConfig = TLSConfig.ToConfig()
+ 	}
+ 	awsConfig.HTTPClient = &http.Client{
+diff --git a/x-pack/libbeat/common/cloudfoundry/hub.go b/x-pack/libbeat/common/cloudfoundry/hub.go
+index 07f1000e533..8a4a0421a86 100644
+--- a/x-pack/libbeat/common/cloudfoundry/hub.go
++++ b/x-pack/libbeat/common/cloudfoundry/hub.go
+@@ -129,7 +129,7 @@ func (h *Hub) DopplerConsumerFromClient(client *cfclient.Client, callbacks Doppl
+ 	if dopplerAddress == "" {
+ 		dopplerAddress = client.Endpoint.DopplerEndpoint
+ 	}
+-	tlsConfig, err := tlscommon.LoadTLSConfig(h.cfg.Transport.TLS)
++	tlsConfig, err := tlscommon.LoadTLSConfig(h.cfg.Transport.TLS, h.log)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("loading tls config: %w", err)
+ 	}
+@@ -154,11 +154,11 @@ func (h *Hub) doerFromClient(client *cfclient.Client) (*authTokenDoer, error) {
+ 
+ // httpClient returns an HTTP client configured with the configuration TLS.
+ func (h *Hub) httpClient() (*http.Client, bool, error) {
+-	httpClient, err := h.cfg.Transport.Client(httpcommon.WithAPMHTTPInstrumentation())
++	httpClient, err := h.cfg.Transport.Client(httpcommon.WithAPMHTTPInstrumentation(), httpcommon.WithLogger(h.log))
+ 	if err != nil {
+ 		return nil, false, err
+ 	}
+ 
+-	tls, _ := tlscommon.LoadTLSConfig(h.cfg.Transport.TLS)
++	tls, _ := tlscommon.LoadTLSConfig(h.cfg.Transport.TLS, h.log)
+ 	return httpClient, tls.ToConfig().InsecureSkipVerify, nil
+ }
+diff --git a/x-pack/metricbeat/module/sql/query/dsn.go b/x-pack/metricbeat/module/sql/query/dsn.go
+index 3754d8f1995..f072b472fdf 100644
+--- a/x-pack/metricbeat/module/sql/query/dsn.go
++++ b/x-pack/metricbeat/module/sql/query/dsn.go
+@@ -15,6 +15,7 @@ import (
+ 	"github.com/godror/godror/dsn"
+ 
+ 	"github.com/elastic/beats/v7/metricbeat/mb"
++	"github.com/elastic/elastic-agent-libs/logp"
+ 	"github.com/elastic/elastic-agent-libs/transport/tlscommon"
+ )
+ 
+@@ -31,6 +32,15 @@ const mysqlTLSConfigKey = "custom"
+ 
+ // ParseDSN tries to parse the host
+ func ParseDSN(mod mb.Module, host string) (mb.HostData, error) {
++
++	logger := logp.NewLogger("")
++	// At the time of writing, mod always is of type *mb.BaseModule.
++	// If this assumption is ever broken, we use global logger then
++	sqlModule, ok := mod.(*mb.BaseModule)
++	if ok {
++		logger = sqlModule.Logger
++	}
++
+ 	// TODO: Add support for `username` and `password` as module options
+ 	config := ConnectionDetails{}
+ 	if err := mod.UnpackConfig(&config); err != nil {
+@@ -42,15 +52,15 @@ func ParseDSN(mod mb.Module, host string) (mb.HostData, error) {
+ 	}
+ 
+ 	if config.Driver == "mysql" {
+-		return mysqlParseDSN(config, host)
++		return mysqlParseDSN(config, host, logger)
+ 	}
+ 
+ 	if config.Driver == "postgres" {
+-		return postgresParseDSN(config, host)
++		return postgresParseDSN(config, host, logger)
+ 	}
+ 
+ 	if config.Driver == "mssql" {
+-		return mssqlParseDSN(config, host)
++		return mssqlParseDSN(config, host, logger)
+ 	}
+ 
+ 	return defaultParseDSN(config, host)
+@@ -96,7 +106,7 @@ func oracleParseDSN(config ConnectionDetails, host string) (mb.HostData, error)
+ 	}, nil
+ }
+ 
+-func mysqlParseDSN(config ConnectionDetails, host string) (mb.HostData, error) {
++func mysqlParseDSN(config ConnectionDetails, host string, logger *logp.Logger) (mb.HostData, error) {
+ 	c, err := mysql.ParseDSN(host)
+ 
+ 	if err != nil {
+@@ -108,7 +118,7 @@ func mysqlParseDSN(config ConnectionDetails, host string) (mb.HostData, error) {
+ 	if config.TLS.IsEnabled() {
+ 		c.TLSConfig = mysqlTLSConfigKey
+ 
+-		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logger)
+ 		if err != nil {
+ 			return mb.HostData{}, fmt.Errorf("could not load provided TLS configuration: %w", err)
+ 		}
+@@ -125,14 +135,14 @@ func mysqlParseDSN(config ConnectionDetails, host string) (mb.HostData, error) {
+ 	}, nil
+ }
+ 
+-func postgresParseDSN(config ConnectionDetails, host string) (mb.HostData, error) {
++func postgresParseDSN(config ConnectionDetails, host string, logger *logp.Logger) (mb.HostData, error) {
+ 	if config.TLS.IsEnabled() {
+ 		u, err := url.Parse(host)
+ 		if err != nil {
+ 			return mb.HostData{}, fmt.Errorf("error parsing URL: %w", sanitizeError(err, host))
+ 		}
+ 
+-		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logger)
+ 		if err != nil {
+ 			return mb.HostData{}, fmt.Errorf("could not load provided TLS configuration: %w", err)
+ 		}
+@@ -196,14 +206,14 @@ func postgresTranslateVerificationMode(mode tlscommon.TLSVerificationMode) (sslm
+ 	}
+ }
+ 
+-func mssqlParseDSN(config ConnectionDetails, host string) (mb.HostData, error) {
++func mssqlParseDSN(config ConnectionDetails, host string, logger *logp.Logger) (mb.HostData, error) {
+ 	if config.TLS.IsEnabled() {
+ 		u, err := url.Parse(host)
+ 		if err != nil {
+ 			return mb.HostData{}, fmt.Errorf("error parsing URL: %w", sanitizeError(err, host))
+ 		}
+ 
+-		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS)
++		tlsConfig, err := tlscommon.LoadTLSConfig(config.TLS, logger)
+ 		if err != nil {
+ 			return mb.HostData{}, fmt.Errorf("could not load provided TLS configuration: %w", err)
+ 		}

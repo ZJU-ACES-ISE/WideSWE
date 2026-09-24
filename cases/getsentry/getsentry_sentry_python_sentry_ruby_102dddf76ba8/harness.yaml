@@ -1,0 +1,32 @@
+task_id: getsentry_sentry_python_sentry_ruby_102dddf76ba8
+hidden_test_patches:
+- repo: sentry-python
+  patch: hidden/patches/sentry-python-hidden-tests.patch
+  test_profile: sentry_python-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/integrations/celery/test_celery.py
+  - tests/integrations/httpx/test_httpx.py
+  hidden_file: *id001
+  semantic_changes: Compare W3C baggage entries independently of header entry order while preserving the exact expected entry set.
+  source: upstream test changes from getsentry/sentry-python PR(s) 2191
+- repo: sentry-ruby
+  patch: hidden/patches/sentry-ruby-hidden-tests.patch
+  test_profile: sentry_ruby-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - sentry-ruby/spec/sentry/net/http_spec.rb
+  hidden_file: *id002
+  semantic_changes: Compare W3C baggage entries independently of header entry order while preserving the exact expected entry set.
+  source: upstream test changes from getsentry/sentry-ruby PR(s) 2896
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - sentry_python-hidden
+    - sentry_ruby-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

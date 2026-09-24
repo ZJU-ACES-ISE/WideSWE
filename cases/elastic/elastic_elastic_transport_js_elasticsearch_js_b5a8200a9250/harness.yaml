@@ -1,0 +1,51 @@
+task_id: elastic_elastic_transport_js_elasticsearch_js_b5a8200a9250
+hidden_test_patches:
+- repo: elastic-transport-js
+  patch: hidden/patches/elastic-transport-js-hidden-tests.patch
+  test_profile: elastic_transport_js-hidden
+  origin: independent_behavior_contract
+  source_file: &id001
+  - test/types/dual-package-imports.mts
+  - test/unit/commonjs-import.test.ts
+  - test/unit/esm-import.test.mjs
+  hidden_file: *id001
+  semantic_changes: replaced direct Gold artifact imports with package-level conditional
+    export, public subpath, API usability, and type-resolution contracts
+  source: independent prompt-visible behavior contract derived from elastic/elastic-transport-js
+    PR(s) 344
+- repo: elasticsearch-js
+  patch: hidden/patches/elasticsearch-js-hidden-tests.patch
+  test_profile: elasticsearch_js-hidden
+  origin: independent_behavior_contract
+  source_file: &id002
+  - test/unit/cjs-import.test.ts
+  hidden_file: *id002
+  semantic_changes: retained the upstream CommonJS compatibility assertions as
+    a separate regression profile
+  source: CommonJS compatibility behavior from elastic/elasticsearch-js PR(s)
+    3122
+- repo: elasticsearch-js
+  patch: hidden/patches/elasticsearch-js-esm-hidden-tests.patch
+  test_profile: elasticsearch_js-esm-hidden
+  origin: independent_behavior_contract
+  source_file: &id003
+  - test/esm/package.json
+  - test/esm/test-import.mjs
+  - test/types/dual-package-imports.mts
+  hidden_file: *id003
+  semantic_changes: replaced direct Gold artifact imports with package-level conditional
+    export, public API usability, and type-resolution contracts
+  source: independent prompt-visible behavior contract derived from elastic/elasticsearch-js
+    PR(s) 3122
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - elastic_transport_js-hidden
+    - elasticsearch_js-hidden
+    - elasticsearch_js-esm-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

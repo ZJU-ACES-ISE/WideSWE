@@ -1,0 +1,24 @@
+profiles:
+  apollo_rs-hidden:
+    repo: apollo-rs
+    workdir: repos/apollographql/apollo-rs
+    command: cargo test -p apollo-compiler --test main extensions -- --nocapture
+    status: implemented
+    test_files:
+    - crates/apollo-compiler/tests/extensions.rs
+    dependency_image: ecosyncbench/base/rust:1.95-bookworm
+    docker_service: rust195
+    patched_files:
+    - crates/apollo-compiler/tests/extensions.rs
+  router-hidden:
+    repo: router
+    workdir: repos/apollographql/router
+    command: cargo test -p apollo-federation --test main composition::hints -- --nocapture
+    status: implemented
+    test_files:
+    - apollo-federation/tests/composition/hints.rs
+    dependency_image: ecosyncbench/base/rust:1.95-bookworm
+    docker_service: rust195
+    patched_files:
+    - apollo-federation/tests/composition/hints.rs
+    public_smoke_command: cd apollo-federation && cargo test --test main composition::hints -- --nocapture

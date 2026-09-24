@@ -1,0 +1,127 @@
+diff --git a/packages/m365_defender/data_stream/event/_dev/test/policy/test-ecosync-client-secret.yml b/packages/m365_defender/data_stream/event/_dev/test/policy/test-ecosync-client-secret.yml
+new file mode 100644
+index 00000000..c981348c
+--- /dev/null
++++ b/packages/m365_defender/data_stream/event/_dev/test/policy/test-ecosync-client-secret.yml
+@@ -0,0 +1,14 @@
++data_stream:
++  vars:
++    eventhub: example
++    consumer_group: $Default
++    auth_type: client_secret
++    eventhub_namespace: example.servicebus.windows.net
++    tenant_id: example-tenant
++    client_id: example-client
++    client_secret: example-secret
++    authority_host: https://login.microsoftonline.us
++    storage_account: default
++    tags:
++      - forwarded
++      - m365_defender-event
+diff --git a/packages/m365_defender/data_stream/event/_dev/test/policy/semantic_policy_test.sh b/packages/m365_defender/data_stream/event/_dev/test/policy/semantic_policy_test.sh
+new file mode 100644
+index 00000000..92ea6762
+--- /dev/null
++++ b/packages/m365_defender/data_stream/event/_dev/test/policy/semantic_policy_test.sh
+@@ -0,0 +1,101 @@
++#!/usr/bin/env bash
++set -u
++
++policy_dir="${1:?policy directory required}"
++report="${2:?report path required}"
++baseline_dir="${3:?baseline directory required}"
++failures=0
++results=()
++
++record() {
++  local name="$1"
++  local message="${2:-}"
++  if [[ -z "$message" ]]; then
++    results+=("    <testcase classname=\"m365_defender.event.policy\" name=\"$name\"/>")
++  else
++    results+=("    <testcase classname=\"m365_defender.event.policy\" name=\"$name\"><failure message=\"$message\"/></testcase>")
++    failures=$((failures + 1))
++  fi
++}
++
++require_line() {
++  local file="$1"
++  local pattern="$2"
++  grep -Eq "$pattern" "$file" 2>/dev/null || return 1
++  return 0
++}
++
++check_connection_policy() {
++  local name="$1"
++  local file="$2"
++  local baseline="$3"
++  local error=""
++  local normalized
++  normalized="$(mktemp)"
++  awk '
++    /^[[:space:]]*-[[:space:]]+auth_type:/ {
++      prefix = $0
++      sub(/-[[:space:]]+auth_type:.*/, "", prefix)
++      replacement = prefix "- "
++      next
++    }
++    /^[[:space:]]+auth_type:/ { next }
++    replacement != "" {
++      sub(/^[[:space:]]+/, replacement)
++      replacement = ""
++    }
++    { print }
++  ' "$file" > "$normalized"
++  if ! cmp -s "$baseline" "$normalized"; then
++    error="generated policy changed outside the authentication fields"
++  elif ! require_line "$file" '^[[:space:]]*(-[[:space:]]+)?auth_type:[[:space:]]+connection_string[[:space:]]*$'; then
++    error="generated policy must emit auth_type connection_string"
++  elif ! require_line "$file" '^[[:space:]]+connection_string:[[:space:]]+'; then
++    error="generated policy must emit connection_string"
++  elif ! require_line "$file" '^[[:space:]]+storage_account_key:[[:space:]]+'; then
++    error="generated policy must emit storage_account_key"
++  fi
++  rm -f "$normalized"
++  record "$name" "$error"
++}
++
++check_client_secret_policy() {
++  local file="$1"
++  local error=""
++  for requirement in \
++    'auth_type|^[[:space:]]*(-[[:space:]]+)?auth_type:[[:space:]]+client_secret[[:space:]]*$' \
++    'eventhub_namespace|^[[:space:]]+eventhub_namespace:[[:space:]]+example.servicebus.windows.net[[:space:]]*$' \
++    'tenant_id|^[[:space:]]+tenant_id:[[:space:]]+[^[:space:]]' \
++    'client_id|^[[:space:]]+client_id:[[:space:]]+[^[:space:]]' \
++    'client_secret|^[[:space:]]+client_secret:[[:space:]]+[^[:space:]]' \
++    'authority_host|^[[:space:]]+authority_host:[[:space:]]+https://login.microsoftonline.us[[:space:]]*$' \
++    'storage_account|^[[:space:]]+storage_account:[[:space:]]+default[[:space:]]*$'; do
++    field="${requirement%%|*}"
++    pattern="${requirement#*|}"
++    if ! require_line "$file" "$pattern"; then
++      error="generated client-secret policy must emit $field"
++      break
++    fi
++  done
++  if [[ -z "$error" ]] && require_line "$file" '^[[:space:]]+connection_string:[[:space:]]+'; then
++    error="client-secret policy must not emit connection_string"
++  fi
++  if [[ -z "$error" ]] && require_line "$file" '^[[:space:]]+storage_account_key:[[:space:]]+'; then
++    error="client-secret policy must not emit storage_account_key"
++  fi
++  record "client secret policy fields" "$error"
++}
++
++check_connection_policy "default connection policy" "$policy_dir/test-default.expected" "$baseline_dir/test-default.expected"
++check_connection_policy "all-options connection policy" "$policy_dir/test-all.expected" "$baseline_dir/test-all.expected"
++check_client_secret_policy "$policy_dir/test-ecosync-client-secret.expected"
++
++mkdir -p "$(dirname "$report")"
++{
++  printf '<testsuites tests="3" failures="%d">\n' "$failures"
++  printf '  <testsuite name="m365_defender.event.policy" tests="3" failures="%d">\n' "$failures"
++  printf '%s\n' "${results[@]}"
++  printf '  </testsuite>\n</testsuites>\n'
++} > "$report"
++
++exit "$failures"

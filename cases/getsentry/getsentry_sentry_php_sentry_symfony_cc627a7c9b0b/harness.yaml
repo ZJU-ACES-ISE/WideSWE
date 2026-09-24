@@ -1,0 +1,61 @@
+task_id: getsentry_sentry_php_sentry_symfony_cc627a7c9b0b
+hidden_test_patches:
+- repo: sentry-php
+  patch: hidden/patches/sentry-php-hidden-tests.patch
+  test_profile: sentry_php-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/Fixtures/runtime/frankenphp/index.php
+  - tests/Fixtures/runtime/roadrunner-worker.php
+  - tests/Fixtures/runtime/roadrunner.rr.yaml
+  - tests/FunctionsTest.php
+  - tests/Integration/FrankenPhpWorkerModeIntegrationTest.php
+  - tests/Integration/RoadRunnerWorkerModeIntegrationTest.php
+  - tests/Integration/RuntimeContextWorkerModeIntegrationTestCase.php
+  - tests/SentrySdkTest.php
+  - tests/phpt-oom/php84/out_of_memory_fatal_error_increases_memory_limit.phpt
+  - tests/phpt-oom/php85/out_of_memory_fatal_error_increases_memory_limit.phpt
+  - tests/phpt/error_handler_captures_errors_not_silencable_on_php_8_and_up.phpt
+  - tests/phpt/error_handler_respects_capture_silenced_errors_option.phpt
+  - tests/phpt/error_handler_respects_error_types_option_regardless_of_error_reporting.phpt
+  - tests/phpt/error_listener_integration_respects_error_types_option.phpt
+  - tests/phpt/php84/error_handler_captures_fatal_error.phpt
+  - tests/phpt/php84/fatal_error_integration_captures_fatal_error.phpt
+  - tests/phpt/php84/fatal_error_integration_respects_error_types_option.phpt
+  - tests/phpt/php85/error_handler_captures_fatal_error.phpt
+  - tests/phpt/php85/fatal_error_integration_captures_fatal_error.phpt
+  - tests/phpt/php85/fatal_error_integration_respects_error_types_option.phpt
+  - tests/phpt/serialize_broken_class.phpt
+  - tests/phpt/serialize_callable_that_makes_autoloader_throw.phpt
+  - tests/phpt/test_callable_serialization.phpt
+  hidden_file: *id001
+  semantic_changes: Runtime isolation is observed through public hub, scope, propagation, and worker behavior without reflecting a Gold-private manager property or requiring an undisclosed context getter
+  source: upstream test changes from getsentry/sentry-php PR(s) 2011
+- repo: sentry-symfony
+  patch: hidden/patches/sentry-symfony-hidden-tests.patch
+  test_profile: sentry_symfony-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/DependencyInjection/ConfigurationTest.php
+  - tests/DependencyInjection/SentryExtensionTest.php
+  - tests/End2End/App/Controller/MainController.php
+  - tests/End2End/App/routing.yml
+  - tests/End2End/End2EndTest.php
+  - tests/End2End/RuntimeContextEnd2EndTest.php
+  - tests/End2End/TracingEnd2EndTest.php
+  - tests/EventListener/MessengerListenerTest.php
+  - tests/Integration/RequestFetcherTest.php
+  hidden_file: *id002
+  semantic_changes: Runtime isolation is validated through focused public configuration, messenger lifecycle, and end-to-end request behavior without fixing a listener class, service priority, or RequestFetcher internals
+  source: upstream test changes from getsentry/sentry-symfony PR(s) 997
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - sentry_php-hidden
+    - sentry_symfony-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

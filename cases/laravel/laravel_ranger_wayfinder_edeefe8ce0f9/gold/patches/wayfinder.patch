@@ -1,0 +1,33 @@
+diff --git a/src/Converters/Enums.php b/src/Converters/Enums.php
+index 536f621..51af19b 100644
+--- a/src/Converters/Enums.php
++++ b/src/Converters/Enums.php
+@@ -31,7 +31,11 @@ public function convert(Enum $enum): Result
+         $content = [];
+ 
+         foreach ($enum->cases as $case => $value) {
+-            $content[] = TypeScript::constant($case, TypeScript::quote($value))->export();
++            if (is_string($value)) {
++                $content[] = TypeScript::constant($case, TypeScript::quote($value))->export();
++            } else {
++                $content[] = TypeScript::constant($case, $value)->export();
++            }
+         }
+ 
+         $content[] = '';
+diff --git a/workbench/app/Enums/UnitEnum.php b/workbench/app/Enums/UnitEnum.php
+new file mode 100644
+index 0000000..cf4e568
+--- /dev/null
++++ b/workbench/app/Enums/UnitEnum.php
+@@ -0,0 +1,10 @@
++<?php
++
++namespace App\Enums;
++
++enum UnitEnum
++{
++    case None;
++    case Open;
++    case Done;
++}

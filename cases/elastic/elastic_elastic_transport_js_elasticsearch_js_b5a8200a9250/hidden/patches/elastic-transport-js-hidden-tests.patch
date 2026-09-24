@@ -1,0 +1,177 @@
+diff --git a/test/types/dual-package-imports.mts b/test/types/dual-package-imports.mts
+new file mode 100644
+index 0000000..f84934d
+--- /dev/null
++++ b/test/types/dual-package-imports.mts
+@@ -0,0 +1,21 @@
++/*
++ * Copyright Elasticsearch B.V. and contributors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import {
++  Serializer,
++  Transport,
++  type ConnectionOptions
++} from '@elastic/transport'
++import SerializerFromSubpath from '@elastic/transport/Serializer'
++
++const serializer: Serializer = new Serializer()
++const subpathSerializer: SerializerFromSubpath = new SerializerFromSubpath()
++const transportConstructor: typeof Transport = Transport
++const connectionOptions: ConnectionOptions | undefined = undefined
++
++void serializer
++void subpathSerializer
++void transportConstructor
++void connectionOptions
+diff --git a/test/unit/commonjs-import.test.ts b/test/unit/commonjs-import.test.ts
+new file mode 100644
+index 0000000..79dadc8
+--- /dev/null
++++ b/test/unit/commonjs-import.test.ts
+@@ -0,0 +1,70 @@
++/*
++ * Copyright Elasticsearch B.V. and contributors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import { execFileSync } from 'node:child_process'
++import { resolve } from 'node:path'
++import { test } from 'tap'
++
++const publicSubpaths = [
++  '@elastic/transport/Serializer',
++  '@elastic/transport/lib/Serializer',
++  '@elastic/transport/connection/BaseConnection',
++  '@elastic/transport/lib/connection/BaseConnection',
++  '@elastic/transport/pool/BaseConnectionPool',
++  '@elastic/transport/lib/pool/BaseConnectionPool',
++  '@elastic/transport/errors',
++  '@elastic/transport/lib/errors'
++]
++
++test('CommonJS package import exposes usable public APIs', async (t) => {
++  const transport = require('@elastic/transport')
++
++  for (const exported of [
++    'Transport',
++    'Diagnostic',
++    'Serializer',
++    'BaseConnection',
++    'HttpConnection',
++    'UndiciConnection',
++    'BaseConnectionPool',
++    'ClusterConnectionPool',
++    'CloudConnectionPool',
++    'WeightedConnectionPool',
++    'errors',
++    'events'
++  ]) {
++    t.ok(transport[exported], `${exported} is exported`)
++  }
++
++  const serializer = new transport.Serializer()
++  t.equal(typeof serializer.serialize, 'function')
++  t.equal(typeof serializer.deserialize, 'function')
++  t.ok(transport.errors.ResponseError)
++  t.ok(transport.errors.ConnectionError)
++  t.ok(transport.errors.TimeoutError)
++})
++
++test('existing CommonJS public subpaths remain loadable', async (t) => {
++  for (const specifier of publicSubpaths) {
++    t.ok(require(specifier), specifier)
++  }
++})
++
++test('published type declarations resolve for root and subpath imports', async (t) => {
++  const tsc = require.resolve('typescript/lib/tsc')
++  const fixture = resolve(__dirname, '../types/dual-package-imports.mts')
++
++  execFileSync(process.execPath, [
++    tsc,
++    '--noEmit',
++    '--strict',
++    '--skipLibCheck',
++    '--target', 'ES2022',
++    '--module', 'NodeNext',
++    '--moduleResolution', 'NodeNext',
++    fixture
++  ])
++  t.pass('TypeScript declarations resolve')
++})
+diff --git a/test/unit/esm-import.test.mjs b/test/unit/esm-import.test.mjs
+new file mode 100644
+index 0000000..0d6b9bb
+--- /dev/null
++++ b/test/unit/esm-import.test.mjs
+@@ -0,0 +1,68 @@
++/*
++ * Copyright Elasticsearch B.V. and contributors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import { createRequire } from 'node:module'
++import { pathToFileURL } from 'node:url'
++import { test } from 'tap'
++
++const require = createRequire(import.meta.url)
++const publicSubpaths = [
++  '@elastic/transport/Serializer',
++  '@elastic/transport/lib/Serializer',
++  '@elastic/transport/connection/BaseConnection',
++  '@elastic/transport/lib/connection/BaseConnection',
++  '@elastic/transport/pool/BaseConnectionPool',
++  '@elastic/transport/lib/pool/BaseConnectionPool',
++  '@elastic/transport/errors',
++  '@elastic/transport/lib/errors'
++]
++
++test('ESM package import exposes usable public APIs', async (t) => {
++  const transport = await import('@elastic/transport')
++
++  for (const exported of [
++    'Transport',
++    'Diagnostic',
++    'Serializer',
++    'BaseConnection',
++    'HttpConnection',
++    'UndiciConnection',
++    'BaseConnectionPool',
++    'ClusterConnectionPool',
++    'CloudConnectionPool',
++    'WeightedConnectionPool',
++    'errors',
++    'events'
++  ]) {
++    t.ok(transport[exported], `${exported} is exported`)
++  }
++
++  const serializer = new transport.Serializer()
++  t.equal(typeof serializer.serialize, 'function')
++  t.equal(typeof serializer.deserialize, 'function')
++  t.ok(transport.errors.ResponseError)
++  t.ok(transport.errors.ConnectionError)
++  t.ok(transport.errors.TimeoutError)
++})
++
++test('import and require use distinct package entry points', async (t) => {
++  const esmEntry = import.meta.resolve('@elastic/transport')
++  const cjsEntry = pathToFileURL(require.resolve('@elastic/transport')).href
++
++  t.not(esmEntry, cjsEntry)
++})
++
++test('existing public subpaths resolve in both module formats', async (t) => {
++  for (const specifier of publicSubpaths) {
++    const esmModule = await import(specifier)
++    const cjsModule = require(specifier)
++    const esmEntry = import.meta.resolve(specifier)
++    const cjsEntry = pathToFileURL(require.resolve(specifier)).href
++
++    t.ok(esmModule, `ESM: ${specifier}`)
++    t.ok(cjsModule, `CommonJS: ${specifier}`)
++    t.not(esmEntry, cjsEntry, `conditional export: ${specifier}`)
++  }
++})

@@ -1,0 +1,80 @@
+diff --git a/tests/Feature/RoutesTest.php b/tests/Feature/RoutesTest.php
+index ab9b410..87e45de 100644
+--- a/tests/Feature/RoutesTest.php
++++ b/tests/Feature/RoutesTest.php
+@@ -250,6 +250,17 @@ describe('explicit route key bindings', function () {
+     });
+ });
+ 
++describe('camelCase route model binding', function () {
++    it('resolves model binding for camelCase controller parameters with snake_case route parameters', function () {
++        $route = $this->routes->first(fn (Route $r) => str_contains($r->uri(), 'audit-entries'));
++        $params = $route->parameters();
++        $param = $params->first();
++
++        expect($param->name)->toBe('audit_entry');
++        expect($param->bound)->not->toBeNull();
++    });
++});
++
+ describe('controller method line numbers', function () {
+     it('returns line number for controller methods', function () {
+         $postRoute = $this->routes->first(fn (Route $r) => $r->name() === 'posts.index');
+diff --git a/workbench/app/Http/Controllers/AuditEntryController.php b/workbench/app/Http/Controllers/AuditEntryController.php
+new file mode 100644
+index 0000000..236c605
+--- /dev/null
++++ b/workbench/app/Http/Controllers/AuditEntryController.php
+@@ -0,0 +1,13 @@
++<?php
++
++namespace App\Http\Controllers;
++
++use App\Models\AuditEntry;
++
++class AuditEntryController
++{
++    public function show(AuditEntry $auditEntry)
++    {
++        //
++    }
++}
+diff --git a/workbench/app/Models/AuditEntry.php b/workbench/app/Models/AuditEntry.php
+new file mode 100644
+index 0000000..c1ea76e
+--- /dev/null
++++ b/workbench/app/Models/AuditEntry.php
+@@ -0,0 +1,13 @@
++<?php
++
++namespace App\Models;
++
++use Illuminate\Database\Eloquent\Model;
++
++/**
++ * @property int $id
++ */
++class AuditEntry extends Model
++{
++    //
++}
+diff --git a/workbench/routes/web.php b/workbench/routes/web.php
+index 659f945..aebaecc 100644
+--- a/workbench/routes/web.php
++++ b/workbench/routes/web.php
+@@ -1,6 +1,7 @@
+ <?php
+ 
+ use App\Http\Controllers\AnonymousMiddlewareController;
++use App\Http\Controllers\AuditEntryController;
+ use App\Http\Controllers\DisallowedMethodNameController;
+ use App\Http\Controllers\DomainController;
+ use App\Http\Controllers\InvokableController;
+@@ -45,6 +46,7 @@ Route::post('/optional/{parameter?}', [OptionalController::class, 'optional'])->
+ Route::post('/many-optional/{one?}/{two?}/{three?}', [OptionalController::class, 'manyOptional']);
+ 
+ Route::post('/users/{user}', [ModelBindingController::class, 'show']);
++Route::get('/audit-entries/{audit_entry}', [AuditEntryController::class, 'show']);
+ 
+ Route::middleware(UrlDefaultsMiddleware::class)->post('/with-defaults/{locale}', [UrlDefaultsController::class, 'onlyDefaults']);
+ Route::middleware(UrlDefaultsMiddleware::class)->post('/with-defaults/{locale}/also/{timezone}', [UrlDefaultsController::class, 'mixedDefaults']);

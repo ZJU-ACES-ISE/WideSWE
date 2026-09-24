@@ -1,0 +1,98 @@
+diff --git a/sentry-ruby/spec/sentry/transport/http_transport_spec.rb b/sentry-ruby/spec/sentry/transport/http_transport_spec.rb
+index 4070bddd..54a87c42 100644
+--- a/sentry-ruby/spec/sentry/transport/http_transport_spec.rb
++++ b/sentry-ruby/spec/sentry/transport/http_transport_spec.rb
+@@ -291,6 +291,93 @@ RSpec.describe Sentry::HTTPTransport do
+   end
+ 
+   describe "failed request handling" do
++    context "receive 413 response" do
++      let(:string_io) { StringIO.new }
++
++      before do
++        configuration.sdk_logger = Logger.new(string_io)
++      end
++
++      context "with response body" do
++        let(:fake_response) { build_fake_response("413", body: { detail: "Envelope too large" }) }
++
++        it "reports the size rejection with the body" do
++          sentry_stub_request(fake_response)
++
++          error = nil
++          begin
++            subject.send_data(data)
++          rescue Sentry::ExternalError => e
++            error = e
++          end
++
++          combined_output = [error&.message, string_io.string].compact.join("\n")
++          expect(combined_output).to match(
++            /HTTP 413: Envelope dropped due to exceeded size limit.*(?:\n|.)*Envelope too large/
++          )
++        end
++
++        it "logs a warning message with body" do
++          sentry_stub_request(fake_response)
++
++          begin
++            subject.send_data(data)
++          rescue Sentry::ExternalError
++            nil
++          end
++          expect(string_io.string).to include("HTTP 413: Envelope dropped due to exceeded size limit")
++          expect(string_io.string).to include("Envelope too large")
++        end
++      end
++
++      context "with empty response body" do
++        let(:fake_response) do
++          Net::HTTPResponse.new("1.0", "413", "").tap do |response|
++            allow(response).to receive(:body).and_return("")
++          end
++        end
++
++        it "reports the size rejection without a body" do
++          sentry_stub_request(fake_response)
++
++          error = nil
++          begin
++            subject.send_data(data)
++          rescue Sentry::ExternalError => e
++            error = e
++          end
++
++          combined_output = [error&.message, string_io.string].compact.join("\n")
++          expect(combined_output).to include(
++            "HTTP 413: Envelope dropped due to exceeded size limit"
++          )
++        end
++      end
++
++      context "records client reports via send_envelope" do
++        let(:fake_response) { build_fake_response("413", body: { detail: "too large" }) }
++
++        it "records send_error for each item without retrying" do
++          request_count = 0
++          sentry_stub_request(fake_response) { request_count += 1 }
++
++          configuration.send_client_reports = true
++          reporting_client = Sentry::Client.new(configuration)
++          transport = reporting_client.transport
++          envelope = transport.envelope_from_event(reporting_client.event_from_message("too large"))
++
++          begin
++            reporting_client.send_envelope(envelope)
++          rescue StandardError
++            nil
++          end
++
++          expect(transport.discarded_events[[:send_error, "error"]]).to eq(1)
++          expect(request_count).to eq(1)
++        end
++      end
++    end
++
+     context "receive 4xx responses" do
+       let(:fake_response) { build_fake_response("404") }
+ 

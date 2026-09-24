@@ -1,0 +1,41 @@
+diff --git a/composer.json b/composer.json
+index 30283a276f..c84f849b67 100644
+--- a/composer.json
++++ b/composer.json
+@@ -55,6 +55,7 @@
+         "symfony/polyfill-intl-normalizer": "~1.0",
+         "symfony/polyfill-mbstring": "~1.0",
+         "symfony/polyfill-php83": "^1.28",
++        "symfony/polyfill-php84": "^1.30",
+         "symfony/polyfill-uuid": "^1.15"
+     },
+     "replace": {
+diff --git a/src/Symfony/Component/Serializer/DependencyInjection/SerializerPass.php b/src/Symfony/Component/Serializer/DependencyInjection/SerializerPass.php
+index 994f61246a..f5f2cc3853 100644
+--- a/src/Symfony/Component/Serializer/DependencyInjection/SerializerPass.php
++++ b/src/Symfony/Component/Serializer/DependencyInjection/SerializerPass.php
+@@ -89,6 +89,10 @@ class SerializerPass implements CompilerPassInterface
+         foreach ($container->findTaggedServiceIds($tagName) as $serviceId => $tags) {
+             $definition = $container->getDefinition($serviceId);
+ 
++            if (array_any($tags, $closure = fn (array $tag) => (bool) $tag)) {
++                $tags = array_filter($tags, $closure);
++            }
++
+             foreach ($tags as $tag) {
+                 $names = (array) ($tag['serializer'] ?? []);
+ 
+diff --git a/src/Symfony/Component/Serializer/composer.json b/src/Symfony/Component/Serializer/composer.json
+index 1c4d384b6b..529566255d 100644
+--- a/src/Symfony/Component/Serializer/composer.json
++++ b/src/Symfony/Component/Serializer/composer.json
+@@ -18,7 +18,8 @@
+     "require": {
+         "php": ">=8.2",
+         "symfony/deprecation-contracts": "^2.5|^3",
+-        "symfony/polyfill-ctype": "~1.8"
++        "symfony/polyfill-ctype": "~1.8",
++        "symfony/polyfill-php84": "^1.30"
+     },
+     "require-dev": {
+         "phpdocumentor/reflection-docblock": "^3.2|^4.0|^5.0",

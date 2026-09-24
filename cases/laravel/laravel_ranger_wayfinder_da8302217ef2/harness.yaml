@@ -1,0 +1,41 @@
+task_id: laravel_ranger_wayfinder_da8302217ef2
+hidden_test_patches:
+- repo: ranger
+  patch: hidden/patches/ranger-hidden-tests.patch
+  test_profile: ranger-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/Feature/RoutesTest.php
+  - workbench/app/Http/Controllers/AuditEntryController.php
+  - workbench/app/Models/AuditEntry.php
+  - workbench/routes/web.php
+  hidden_file: *id001
+  semantic_changes:
+  - Includes the upstream controller, model, and route test fixtures so the test
+    does not require candidates to create Gold's fixture paths.
+  source: upstream test changes from laravel/ranger PR(s) 25
+- repo: wayfinder
+  patch: hidden/patches/wayfinder-hidden-tests.patch
+  test_profile: wayfinder-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/CamelCaseRouteParameter.test.ts
+  - workbench/app/Http/Controllers/AuditEntryController.php
+  - workbench/app/Models/AuditEntry.php
+  - workbench/routes/web.php
+  hidden_file: *id002
+  semantic_changes:
+  - Includes the upstream controller, model, and route test fixtures so the test
+    does not require candidates to create Gold's fixture paths.
+  source: upstream test changes from laravel/wayfinder PR(s) 183
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - ranger-hidden
+    - wayfinder-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

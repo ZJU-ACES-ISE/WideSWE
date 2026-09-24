@@ -1,0 +1,36 @@
+task_id: prisma_prisma_prisma_engines_a2fd903b2a40
+hidden_test_patches:
+- repo: prisma
+  patch: hidden/patches/prisma-hidden-tests.patch
+  test_profile: prisma-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - packages/config/src/__tests__/fixtures/loadConfigFromFile/enums/prisma.config.ts
+  - packages/config/src/__tests__/loadConfigFromFile.test.ts
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from prisma/prisma PR(s) 27726
+- repo: prisma-engines
+  patch: hidden/patches/prisma-engines-hidden-tests.patch
+  test_profile: prisma_engines-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - schema-engine/sql-migration-tests/tests/migrations/diff.rs
+  - schema-engine/sql-migration-tests/tests/migrations/migration_persistence_tests.rs
+  - schema-engine/sql-migration-tests/tests/migrations/schema_filter.rs
+  - schema-engine/sql-migration-tests/tests/migrations/soft_resets.rs
+  - schema-engine/sql-migration-tests/tests/schema_push/mod.rs
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from prisma/prisma-engines PR(s) 5559
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - prisma-hidden
+    - prisma_engines-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

@@ -1,0 +1,33 @@
+task_id: getsentry_relay_sentry_c32abe62a9e3
+hidden_test_patches:
+- repo: relay
+  patch: hidden/patches/relay-hidden-tests.patch
+  test_profile: relay-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/integration/test_spans_standalone.py
+  - tests/integration/test_spansv2.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from getsentry/relay PR 5947
+- repo: sentry
+  patch: hidden/patches/sentry-hidden-tests.patch
+  test_profile: sentry-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/sentry/relay/snapshots/test_config/test_get_project_config/REGION.pysnap
+  - tests/sentry/relay/test_config.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry PR 115203
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - relay-hidden
+    - sentry-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

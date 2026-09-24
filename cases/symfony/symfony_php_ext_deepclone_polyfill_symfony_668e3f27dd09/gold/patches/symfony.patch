@@ -1,0 +1,746 @@
+diff --git a/composer.json b/composer.json
+index a00805443d..49d3bdbf75 100644
+--- a/composer.json
++++ b/composer.json
+@@ -49,7 +49,7 @@
+         "psr/log": "^1|^2|^3",
+         "symfony/contracts": "^3.7",
+         "symfony/polyfill-ctype": "^1.8",
+-        "symfony/polyfill-deepclone": "^1.34",
++        "symfony/polyfill-deepclone": "^1.35",
+         "symfony/polyfill-intl-grapheme": "^1.33",
+         "symfony/polyfill-intl-icu": "^1.0",
+         "symfony/polyfill-intl-idn": "^1.10",
+diff --git a/src/Symfony/Component/DependencyInjection/Tests/Fixtures/php/lazy_autowire_attribute_with_intersection.php b/src/Symfony/Component/DependencyInjection/Tests/Fixtures/php/lazy_autowire_attribute_with_intersection.php
+index 2f0fb9fff6..dee81892f6 100644
+--- a/src/Symfony/Component/DependencyInjection/Tests/Fixtures/php/lazy_autowire_attribute_with_intersection.php
++++ b/src/Symfony/Component/DependencyInjection/Tests/Fixtures/php/lazy_autowire_attribute_with_intersection.php
+@@ -91,5 +91,4 @@ class objectProxy1fd6daa implements \Symfony\Component\DependencyInjection\Tests
+ }
+ 
+ // Help opcache.preload discover always-needed symbols
+-class_exists(\Symfony\Component\VarExporter\Internal\Hydrator::class);
+ class_exists(\Symfony\Component\VarExporter\Internal\LazyObjectRegistry::class);
+diff --git a/src/Symfony/Component/DependencyInjection/Tests/Fixtures/php/services_dedup_lazy.php b/src/Symfony/Component/DependencyInjection/Tests/Fixtures/php/services_dedup_lazy.php
+index 2c6142d0e7..7bbc260802 100644
+--- a/src/Symfony/Component/DependencyInjection/Tests/Fixtures/php/services_dedup_lazy.php
++++ b/src/Symfony/Component/DependencyInjection/Tests/Fixtures/php/services_dedup_lazy.php
+@@ -109,5 +109,4 @@ class stdClassProxyAa01f12 extends \stdClass implements \Symfony\Component\VarEx
+ }
+ 
+ // Help opcache.preload discover always-needed symbols
+-class_exists(\Symfony\Component\VarExporter\Internal\Hydrator::class);
+ class_exists(\Symfony\Component\VarExporter\Internal\LazyObjectRegistry::class);
+diff --git a/src/Symfony/Component/VarExporter/Hydrator.php b/src/Symfony/Component/VarExporter/Hydrator.php
+index b718921d9f..e1773a6319 100644
+--- a/src/Symfony/Component/VarExporter/Hydrator.php
++++ b/src/Symfony/Component/VarExporter/Hydrator.php
+@@ -11,8 +11,6 @@
+ 
+ namespace Symfony\Component\VarExporter;
+ 
+-use Symfony\Component\VarExporter\Internal\Hydrator as InternalHydrator;
+-
+ /**
+  * Utility class to hydrate the properties of an object.
+  *
+@@ -47,32 +45,15 @@ final class Hydrator
+      *
+      * @template T of object
+      *
+-     * @param T                                         $instance         The object to hydrate
+-     * @param array<string, mixed>                      $properties       The properties to set on the instance
+-     * @param array<class-string, array<string, mixed>> $scopedProperties The properties to set on the instance,
+-     *                                                                    keyed by their declaring class
++     * @param T                                         $instance    The object to hydrate
++     * @param array<string, mixed>                      $mangledVars The properties to set on the instance
++     * @param array<class-string, array<string, mixed>> $scopedVars  The properties to set on the instance,
++     *                                                               keyed by their declaring class
+      *
+      * @return T
+      */
+-    public static function hydrate(object $instance, array $properties = [], array $scopedProperties = []): object
++    public static function hydrate(object $instance, array $mangledVars = [], array $scopedVars = []): object
+     {
+-        if ($properties) {
+-            $class = $instance::class;
+-            $propertyScopes = InternalHydrator::$propertyScopes[$class] ??= InternalHydrator::getPropertyScopes($class);
+-
+-            foreach ($properties as $name => &$value) {
+-                [$scope, $name, $writeScope] = $propertyScopes[$name] ?? [$class, $name, $class];
+-                $scopedProperties[$writeScope ?? $scope][$name] = &$value;
+-            }
+-            unset($value);
+-        }
+-
+-        foreach ($scopedProperties as $scope => $properties) {
+-            if ($properties) {
+-                (InternalHydrator::$simpleHydrators[$scope] ??= InternalHydrator::getSimpleHydrator($scope))($properties, $instance);
+-            }
+-        }
+-
+-        return $instance;
++        return deepclone_hydrate($instance, $scopedVars, $mangledVars);
+     }
+ }
+diff --git a/src/Symfony/Component/VarExporter/Instantiator.php b/src/Symfony/Component/VarExporter/Instantiator.php
+index 776d6826e7..09032a8090 100644
+--- a/src/Symfony/Component/VarExporter/Instantiator.php
++++ b/src/Symfony/Component/VarExporter/Instantiator.php
+@@ -11,9 +11,9 @@
+ 
+ namespace Symfony\Component\VarExporter;
+ 
++use Symfony\Component\VarExporter\Exception\ClassNotFoundException;
+ use Symfony\Component\VarExporter\Exception\ExceptionInterface;
+ use Symfony\Component\VarExporter\Exception\NotInstantiableTypeException;
+-use Symfony\Component\VarExporter\Internal\Registry;
+ 
+ /**
+  * A utility class to create objects without calling their constructor.
+@@ -29,35 +29,23 @@ final class Instantiator
+      *
+      * @template T of object
+      *
+-     * @param class-string<T>                           $class            The class of the instance to create
+-     * @param array<string, mixed>                      $properties       The properties to set on the instance
+-     * @param array<class-string, array<string, mixed>> $scopedProperties The properties to set on the instance,
+-     *                                                                    keyed by their declaring class
++     * @param class-string<T>                           $class       The class of the instance to create
++     * @param array<string, mixed>                      $mangledVars The properties to set on the instance
++     * @param array<class-string, array<string, mixed>> $scopedVars  The properties to set on the instance,
++     *                                                               keyed by their declaring class
+      *
+      * @return T
+      *
+      * @throws ExceptionInterface When the instance cannot be created
+      */
+-    public static function instantiate(string $class, array $properties = [], array $scopedProperties = []): object
++    public static function instantiate(string $class, array $mangledVars = [], array $scopedVars = []): object
+     {
+-        if (!\array_key_exists($class, Registry::$cloneable)) {
+-            Registry::getClassReflector($class);
++        try {
++            return deepclone_hydrate($class, $scopedVars, $mangledVars);
++        } catch (\DeepClone\ClassNotFoundException $e) {
++            throw new ClassNotFoundException($e);
++        } catch (\DeepClone\NotInstantiableException $e) {
++            throw new NotInstantiableTypeException($e);
+         }
+-
+-        $reflector = Registry::$reflectors[$class] ??= Registry::getClassReflector($class, Registry::$instantiableWithoutConstructor[$class], Registry::$cloneable[$class]);
+-
+-        if (Registry::$cloneable[$class]) {
+-            $instance = clone Registry::$prototypes[$class];
+-        } elseif (Registry::$instantiableWithoutConstructor[$class]) {
+-            $instance = $reflector->newInstanceWithoutConstructor();
+-        } elseif (null === Registry::$prototypes[$class]) {
+-            throw new NotInstantiableTypeException($class);
+-        } elseif ($reflector->implementsInterface('Serializable') && !method_exists($class, '__unserialize')) {
+-            $instance = unserialize('C:'.\strlen($class).':"'.$class.'":0:{}');
+-        } else {
+-            $instance = unserialize('O:'.\strlen($class).':"'.$class.'":0:{}');
+-        }
+-
+-        return $properties || $scopedProperties ? Hydrator::hydrate($instance, $properties, $scopedProperties) : $instance;
+     }
+ }
+diff --git a/src/Symfony/Component/VarExporter/Internal/Hydrator.php b/src/Symfony/Component/VarExporter/Internal/Hydrator.php
+deleted file mode 100644
+index 0980311155..0000000000
+--- a/src/Symfony/Component/VarExporter/Internal/Hydrator.php
++++ /dev/null
+@@ -1,328 +0,0 @@
+-<?php
+-
+-/*
+- * This file is part of the Symfony package.
+- *
+- * (c) Fabien Potencier <fabien@symfony.com>
+- *
+- * For the full copyright and license information, please view the LICENSE
+- * file that was distributed with this source code.
+- */
+-
+-namespace Symfony\Component\VarExporter\Internal;
+-
+-use Symfony\Component\VarExporter\Exception\ClassNotFoundException;
+-
+-/**
+- * @author Nicolas Grekas <p@tchwork.com>
+- *
+- * @internal
+- */
+-class Hydrator
+-{
+-    public const PROPERTY_HAS_HOOKS = 1;
+-    public const PROPERTY_NOT_BY_REF = 2;
+-
+-    public static array $hydrators = [];
+-    public static array $simpleHydrators = [];
+-    public static array $propertyScopes = [];
+-
+-    public function __construct(
+-        public readonly Registry $registry,
+-        public readonly ?Values $values,
+-        public readonly array $properties,
+-        public readonly mixed $value,
+-        public readonly array $wakeups,
+-    ) {
+-    }
+-
+-    public static function hydrate($objects, $values, $properties, $value, $wakeups)
+-    {
+-        foreach ($properties as $class => $vars) {
+-            (self::$hydrators[$class] ??= self::getHydrator($class))($vars, $objects);
+-        }
+-        foreach ($wakeups as $k => $v) {
+-            if (\is_array($v)) {
+-                $objects[-$k]->__unserialize($v);
+-            } else {
+-                $objects[$v]->__wakeup();
+-            }
+-        }
+-
+-        return $value;
+-    }
+-
+-    public static function getHydrator($class)
+-    {
+-        $baseHydrator = self::$hydrators['stdClass'] ??= static function ($properties, $objects) {
+-            foreach ($properties as $name => $values) {
+-                foreach ($values as $i => $v) {
+-                    $objects[$i]->$name = $v;
+-                }
+-            }
+-        };
+-
+-        switch ($class) {
+-            case 'stdClass':
+-                return $baseHydrator;
+-
+-            case 'TypeError':
+-                $class = 'Error';
+-                break;
+-
+-            case 'ErrorException':
+-                $class = 'Exception';
+-                break;
+-
+-            case 'SplObjectStorage':
+-                return static function ($properties, $objects) {
+-                    foreach ($properties as $name => $values) {
+-                        if ("\0" === $name) {
+-                            foreach ($values as $i => $v) {
+-                                for ($j = 0; $j < \count($v); ++$j) {
+-                                    $objects[$i][$v[$j]] = $v[++$j];
+-                                }
+-                            }
+-                            continue;
+-                        }
+-                        foreach ($values as $i => $v) {
+-                            $objects[$i]->$name = $v;
+-                        }
+-                    }
+-                };
+-        }
+-
+-        if (!$classReflector = Registry::$reflectors[$class] ?? null) {
+-            if (!class_exists($class) && !interface_exists($class, false) && !trait_exists($class, false)) {
+-                throw new ClassNotFoundException($class);
+-            }
+-            $classReflector = Registry::$reflectors[$class] = new \ReflectionClass($class);
+-        }
+-
+-        switch ($class) {
+-            case 'ArrayIterator':
+-            case 'ArrayObject':
+-                $constructor = $classReflector->getConstructor()->invokeArgs(...);
+-
+-                return static function ($properties, $objects) use ($constructor) {
+-                    foreach ($properties as $name => $values) {
+-                        if ("\0" !== $name) {
+-                            foreach ($values as $i => $v) {
+-                                $objects[$i]->$name = $v;
+-                            }
+-                        }
+-                    }
+-                    foreach ($properties["\0"] ?? [] as $i => $v) {
+-                        $constructor($objects[$i], $v);
+-                    }
+-                };
+-        }
+-
+-        if (!$classReflector->isInternal()) {
+-            return $baseHydrator->bindTo(null, $class);
+-        }
+-
+-        if ($classReflector->name !== $class) {
+-            return self::$hydrators[$classReflector->name] ??= self::getHydrator($classReflector->name);
+-        }
+-
+-        $propertySetters = [];
+-        foreach ($classReflector->getProperties() as $propertyReflector) {
+-            if (!$propertyReflector->isStatic()) {
+-                $propertySetters[$propertyReflector->name] = $propertyReflector->setValue(...);
+-            }
+-        }
+-
+-        if (!$propertySetters) {
+-            return $baseHydrator;
+-        }
+-
+-        return static function ($properties, $objects) use ($propertySetters) {
+-            foreach ($properties as $name => $values) {
+-                if ($setValue = $propertySetters[$name] ?? null) {
+-                    foreach ($values as $i => $v) {
+-                        $setValue($objects[$i], $v);
+-                    }
+-                    continue;
+-                }
+-                foreach ($values as $i => $v) {
+-                    $objects[$i]->$name = $v;
+-                }
+-            }
+-        };
+-    }
+-
+-    public static function getSimpleHydrator($class)
+-    {
+-        $baseHydrator = self::$simpleHydrators['stdClass'] ??= (function ($properties, $object) {
+-            $notByRef = (array) $this;
+-
+-            foreach ($properties as $name => &$value) {
+-                if (!$noRef = $notByRef[$name] ?? false) {
+-                    $object->$name = $value;
+-                    $object->$name = &$value;
+-                } elseif (true !== $noRef) {
+-                    $noRef($object, $value);
+-                } else {
+-                    $object->$name = $value;
+-                }
+-            }
+-        })->bindTo(new \stdClass());
+-
+-        switch ($class) {
+-            case 'stdClass':
+-                return $baseHydrator;
+-
+-            case 'TypeError':
+-                $class = 'Error';
+-                break;
+-
+-            case 'ErrorException':
+-                $class = 'Exception';
+-                break;
+-
+-            case 'SplObjectStorage':
+-                return static function ($properties, $object) {
+-                    foreach ($properties as $name => &$value) {
+-                        if ("\0" !== $name) {
+-                            $object->$name = $value;
+-                            $object->$name = &$value;
+-                            continue;
+-                        }
+-                        for ($i = 0; $i < \count($value); ++$i) {
+-                            $object[$value[$i]] = $value[++$i];
+-                        }
+-                    }
+-                };
+-        }
+-
+-        if (!$classReflector = Registry::$reflectors[$class] ?? null) {
+-            if (!class_exists($class) && !interface_exists($class, false) && !trait_exists($class, false)) {
+-                throw new ClassNotFoundException($class);
+-            }
+-            $classReflector = Registry::$reflectors[$class] = new \ReflectionClass($class);
+-        }
+-
+-        switch ($class) {
+-            case 'ArrayIterator':
+-            case 'ArrayObject':
+-                $constructor = $classReflector->getConstructor()->invokeArgs(...);
+-
+-                return static function ($properties, $object) use ($constructor) {
+-                    foreach ($properties as $name => &$value) {
+-                        if ("\0" === $name) {
+-                            $constructor($object, $value);
+-                        } else {
+-                            $object->$name = $value;
+-                            $object->$name = &$value;
+-                        }
+-                    }
+-                };
+-        }
+-
+-        if (!$classReflector->isInternal()) {
+-            $notByRef = new \stdClass();
+-            foreach ($classReflector->getProperties() as $propertyReflector) {
+-                if ($propertyReflector->isStatic()) {
+-                    continue;
+-                }
+-                if (!$propertyReflector->isAbstract() && $propertyReflector->getHooks()) {
+-                    $notByRef->{$propertyReflector->name} = $propertyReflector->setRawValue(...);
+-                } elseif ($propertyReflector->isReadOnly()) {
+-                    $notByRef->{$propertyReflector->name} = static function ($object, $value) use ($propertyReflector) {
+-                        if (!$propertyReflector->isInitialized($object)) {
+-                            $propertyReflector->setValue($object, $value);
+-                        }
+-                    };
+-                }
+-            }
+-
+-            return $baseHydrator->bindTo($notByRef, $class);
+-        }
+-
+-        if ($classReflector->name !== $class) {
+-            return self::$simpleHydrators[$classReflector->name] ??= self::getSimpleHydrator($classReflector->name);
+-        }
+-
+-        $propertySetters = [];
+-        foreach ($classReflector->getProperties() as $propertyReflector) {
+-            if (!$propertyReflector->isStatic()) {
+-                $propertySetters[$propertyReflector->name] = $propertyReflector->setValue(...);
+-            }
+-        }
+-
+-        if (!$propertySetters) {
+-            return $baseHydrator;
+-        }
+-
+-        return static function ($properties, $object) use ($propertySetters) {
+-            foreach ($properties as $name => &$value) {
+-                if ($setValue = $propertySetters[$name] ?? null) {
+-                    $setValue($object, $value);
+-                } else {
+-                    $object->$name = $value;
+-                    $object->$name = &$value;
+-                }
+-            }
+-        };
+-    }
+-
+-    public static function getPropertyScopes($class): array
+-    {
+-        $propertyScopes = [];
+-        $r = Registry::$reflectors[$class] ?? new \ReflectionClass($class);
+-
+-        foreach ($r->getProperties() as $property) {
+-            $flags = $property->getModifiers();
+-
+-            if (\ReflectionProperty::IS_STATIC & $flags) {
+-                continue;
+-            }
+-            $name = $property->name;
+-            $access = ($flags << 2) | ($flags & \ReflectionProperty::IS_READONLY ? self::PROPERTY_NOT_BY_REF : 0);
+-
+-            if (!$property->isAbstract() && $h = $property->getHooks()) {
+-                $access |= self::PROPERTY_HAS_HOOKS | (isset($h['get']) && !$h['get']->returnsReference() ? self::PROPERTY_NOT_BY_REF : 0);
+-            }
+-
+-            if (\ReflectionProperty::IS_PRIVATE & $flags) {
+-                $propertyScopes["\0$class\0$name"] = $propertyScopes[$name] = [$class, $name, null, $access, $property];
+-
+-                continue;
+-            }
+-
+-            $propertyScopes[$name] = [$class, $name, null, $access, $property];
+-
+-            if ($flags & \ReflectionProperty::IS_PRIVATE_SET) {
+-                $propertyScopes[$name][2] = $property->class;
+-            }
+-
+-            if (\ReflectionProperty::IS_PROTECTED & $flags) {
+-                $propertyScopes["\0*\0$name"] = $propertyScopes[$name];
+-            }
+-        }
+-
+-        while ($r = $r->getParentClass()) {
+-            $class = $r->name;
+-
+-            foreach ($r->getProperties(\ReflectionProperty::IS_PRIVATE) as $property) {
+-                $flags = $property->getModifiers();
+-
+-                if (\ReflectionProperty::IS_STATIC & $flags) {
+-                    continue;
+-                }
+-                $name = $property->name;
+-                $access = ($flags << 2) | ($flags & \ReflectionProperty::IS_READONLY ? self::PROPERTY_NOT_BY_REF : 0);
+-
+-                if ($h = $property->getHooks()) {
+-                    $access |= self::PROPERTY_HAS_HOOKS | (isset($h['get']) && !$h['get']->returnsReference() ? self::PROPERTY_NOT_BY_REF : 0);
+-                }
+-
+-                $propertyScopes["\0$class\0$name"] = [$class, $name, null, $access, $property];
+-                $propertyScopes[$name] ??= $propertyScopes["\0$class\0$name"];
+-            }
+-        }
+-
+-        return $propertyScopes;
+-    }
+-}
+diff --git a/src/Symfony/Component/VarExporter/Internal/LazyDecoratorTrait.php b/src/Symfony/Component/VarExporter/Internal/LazyDecoratorTrait.php
+index bd8e4d14c4..515b89f03f 100644
+--- a/src/Symfony/Component/VarExporter/Internal/LazyDecoratorTrait.php
++++ b/src/Symfony/Component/VarExporter/Internal/LazyDecoratorTrait.php
+@@ -33,7 +33,7 @@ trait LazyDecoratorTrait
+         $class = $instance ? $instance::class : static::class;
+ 
+         if (self::class === $class && \defined($class.'::LAZY_OBJECT_PROPERTY_SCOPES')) {
+-            Hydrator::$propertyScopes[$class] ??= $class::LAZY_OBJECT_PROPERTY_SCOPES;
++            Registry::$propertyScopes[$class] ??= $class::LAZY_OBJECT_PROPERTY_SCOPES;
+         }
+ 
+         $instance ??= (Registry::$classReflectors[$class] ??= ($r = new \ReflectionClass($class))->hasProperty('lazyObjectState')
+@@ -88,11 +88,11 @@ trait LazyDecoratorTrait
+         $instance = $this->lazyObjectState->realInstance;
+         $class = $this::class;
+ 
+-        $propertyScopes = Hydrator::$propertyScopes[$class] ??= Hydrator::getPropertyScopes($class);
++        $propertyScopes = Registry::$propertyScopes[$class] ??= Registry::getPropertyScopes($class);
+         $notByRef = 0;
+ 
+         if ([, , , $access] = $propertyScopes[$name] ?? null) {
+-            $notByRef = $access & Hydrator::PROPERTY_NOT_BY_REF || ($access >> 2) & \ReflectionProperty::IS_PRIVATE_SET;
++            $notByRef = $access & Registry::PROPERTY_NOT_BY_REF || ($access >> 2) & \ReflectionProperty::IS_PRIVATE_SET;
+         }
+ 
+         if ($notByRef || 2 !== ((Registry::$parentGet[$class] ??= Registry::getParentGet($class)) ?: 2)) {
+diff --git a/src/Symfony/Component/VarExporter/Internal/LazyObjectRegistry.php b/src/Symfony/Component/VarExporter/Internal/LazyObjectRegistry.php
+index 75b182a1a5..81734d0290 100644
+--- a/src/Symfony/Component/VarExporter/Internal/LazyObjectRegistry.php
++++ b/src/Symfony/Component/VarExporter/Internal/LazyObjectRegistry.php
+@@ -20,6 +20,9 @@ namespace Symfony\Component\VarExporter\Internal;
+  */
+ class LazyObjectRegistry
+ {
++    public const PROPERTY_HAS_HOOKS = 1;
++    public const PROPERTY_NOT_BY_REF = 2;
++
+     /**
+      * @var array<class-string, \ReflectionClass>
+      */
+@@ -45,6 +48,67 @@ class LazyObjectRegistry
+      */
+     public static array $parentGet = [];
+ 
++    public static array $propertyScopes = [];
++
++    public static function getPropertyScopes($class): array
++    {
++        $propertyScopes = [];
++        $r = new \ReflectionClass($class);
++
++        foreach ($r->getProperties() as $property) {
++            $flags = $property->getModifiers();
++
++            if (\ReflectionProperty::IS_STATIC & $flags) {
++                continue;
++            }
++            $name = $property->name;
++            $access = ($flags << 2) | ($flags & \ReflectionProperty::IS_READONLY ? self::PROPERTY_NOT_BY_REF : 0);
++
++            if (!$property->isAbstract() && $h = $property->getHooks()) {
++                $access |= self::PROPERTY_HAS_HOOKS | (isset($h['get']) && !$h['get']->returnsReference() ? self::PROPERTY_NOT_BY_REF : 0);
++            }
++
++            if (\ReflectionProperty::IS_PRIVATE & $flags) {
++                $propertyScopes["\0$class\0$name"] = $propertyScopes[$name] = [$class, $name, null, $access, $property];
++
++                continue;
++            }
++
++            $propertyScopes[$name] = [$class, $name, null, $access, $property];
++
++            if ($flags & \ReflectionProperty::IS_PRIVATE_SET) {
++                $propertyScopes[$name][2] = $property->class;
++            }
++
++            if (\ReflectionProperty::IS_PROTECTED & $flags) {
++                $propertyScopes["\0*\0$name"] = $propertyScopes[$name];
++            }
++        }
++
++        while ($r = $r->getParentClass()) {
++            $class = $r->name;
++
++            foreach ($r->getProperties(\ReflectionProperty::IS_PRIVATE) as $property) {
++                $flags = $property->getModifiers();
++
++                if (\ReflectionProperty::IS_STATIC & $flags) {
++                    continue;
++                }
++                $name = $property->name;
++                $access = ($flags << 2) | ($flags & \ReflectionProperty::IS_READONLY ? self::PROPERTY_NOT_BY_REF : 0);
++
++                if ($h = $property->getHooks()) {
++                    $access |= self::PROPERTY_HAS_HOOKS | (isset($h['get']) && !$h['get']->returnsReference() ? self::PROPERTY_NOT_BY_REF : 0);
++                }
++
++                $propertyScopes["\0$class\0$name"] = [$class, $name, null, $access, $property];
++                $propertyScopes[$name] ??= $propertyScopes["\0$class\0$name"];
++            }
++        }
++
++        return $propertyScopes;
++    }
++
+     public static function getClassResetters($class)
+     {
+         $classProperties = [];
+@@ -53,7 +117,7 @@ class LazyObjectRegistry
+         if ((self::$classReflectors[$class] ??= new \ReflectionClass($class))->isInternal()) {
+             $propertyScopes = [];
+         } else {
+-            $propertyScopes = Hydrator::$propertyScopes[$class] ??= Hydrator::getPropertyScopes($class);
++            $propertyScopes = self::$propertyScopes[$class] ??= self::getPropertyScopes($class);
+         }
+ 
+         foreach ($propertyScopes as $key => [$scope, $name, $writeScope, $access]) {
+@@ -63,7 +127,7 @@ class LazyObjectRegistry
+                 continue;
+             }
+ 
+-            if ($access & Hydrator::PROPERTY_HAS_HOOKS) {
++            if ($access & self::PROPERTY_HAS_HOOKS) {
+                 $hookedProperties[$k] = true;
+             } else {
+                 $classProperties[$writeScope ?? $scope][$name] = $key;
+diff --git a/src/Symfony/Component/VarExporter/Internal/Values.php b/src/Symfony/Component/VarExporter/Internal/Values.php
+deleted file mode 100644
+index 4f20a821c9..0000000000
+--- a/src/Symfony/Component/VarExporter/Internal/Values.php
++++ /dev/null
+@@ -1,25 +0,0 @@
+-<?php
+-
+-/*
+- * This file is part of the Symfony package.
+- *
+- * (c) Fabien Potencier <fabien@symfony.com>
+- *
+- * For the full copyright and license information, please view the LICENSE
+- * file that was distributed with this source code.
+- */
+-
+-namespace Symfony\Component\VarExporter\Internal;
+-
+-/**
+- * @author Nicolas Grekas <p@tchwork.com>
+- *
+- * @internal
+- */
+-class Values
+-{
+-    public function __construct(
+-        public readonly array $values,
+-    ) {
+-    }
+-}
+diff --git a/src/Symfony/Component/VarExporter/ProxyHelper.php b/src/Symfony/Component/VarExporter/ProxyHelper.php
+index d198569f4a..b3a3f29924 100644
+--- a/src/Symfony/Component/VarExporter/ProxyHelper.php
++++ b/src/Symfony/Component/VarExporter/ProxyHelper.php
+@@ -12,7 +12,6 @@
+ namespace Symfony\Component\VarExporter;
+ 
+ use Symfony\Component\VarExporter\Exception\LogicException;
+-use Symfony\Component\VarExporter\Internal\Hydrator;
+ use Symfony\Component\VarExporter\Internal\LazyDecoratorTrait;
+ use Symfony\Component\VarExporter\Internal\LazyObjectRegistry;
+ 
+@@ -48,7 +47,7 @@ final class ProxyHelper
+             }
+         }
+ 
+-        $propertyScopes = $class ? Hydrator::$propertyScopes[$class->name] ??= Hydrator::getPropertyScopes($class->name) : [];
++        $propertyScopes = $class ? LazyObjectRegistry::$propertyScopes[$class->name] ??= LazyObjectRegistry::getPropertyScopes($class->name) : [];
+         $abstractProperties = [];
+         $hookedProperties = [];
+         foreach ($propertyScopes as $key => [$scope, $name, , $access]) {
+@@ -60,12 +59,12 @@ final class ProxyHelper
+             }
+ 
+             if ($flags & \ReflectionProperty::IS_ABSTRACT) {
+-                $abstractProperties[$name] = $propertyScopes[$k][4] ?? Hydrator::$propertyScopes[$class->name][$k][4] = new \ReflectionProperty($scope, $name);
++                $abstractProperties[$name] = $propertyScopes[$k][4] ?? LazyObjectRegistry::$propertyScopes[$class->name][$k][4] = new \ReflectionProperty($scope, $name);
+                 continue;
+             }
+             $abstractProperties[$name] = false;
+ 
+-            if (!($access & Hydrator::PROPERTY_HAS_HOOKS)) {
++            if (!($access & LazyObjectRegistry::PROPERTY_HAS_HOOKS)) {
+                 continue;
+             }
+ 
+@@ -73,7 +72,7 @@ final class ProxyHelper
+                 throw new LogicException(\sprintf('Cannot generate lazy proxy: property "%s::$%s" is final.', $class->name, $name));
+             }
+ 
+-            $p = $propertyScopes[$k][4] ?? Hydrator::$propertyScopes[$class->name][$k][4] = new \ReflectionProperty($scope, $name);
++            $p = $propertyScopes[$k][4] ?? LazyObjectRegistry::$propertyScopes[$class->name][$k][4] = new \ReflectionProperty($scope, $name);
+             $hookedProperties[$name] = [$p, $p->getHooks()];
+         }
+ 
+@@ -148,7 +147,6 @@ final class ProxyHelper
+             $body = \array_slice(file($trait->getFileName()), $trait->getStartLine() - 1, $trait->getEndLine() - $trait->getStartLine());
+             $body[0] = str_replace('): mixed', '): '.$type, $body[0]);
+             $methods['__get'] = strtr(implode('', $body).'    }', [
+-                'Hydrator' => '\\'.Hydrator::class,
+                 'Registry' => '\\'.LazyObjectRegistry::class,
+             ]);
+             break;
+@@ -264,7 +262,6 @@ final class ProxyHelper
+             {$hooks}{$body}}
+ 
+             // Help opcache.preload discover always-needed symbols
+-            class_exists(\Symfony\Component\VarExporter\Internal\Hydrator::class);
+             class_exists(\Symfony\Component\VarExporter\Internal\LazyObjectRegistry::class);
+ 
+             EOPHP;
+diff --git a/src/Symfony/Component/VarExporter/Tests/InstantiatorTest.php b/src/Symfony/Component/VarExporter/Tests/InstantiatorTest.php
+index be01ca4688..fa1aff0972 100644
+--- a/src/Symfony/Component/VarExporter/Tests/InstantiatorTest.php
++++ b/src/Symfony/Component/VarExporter/Tests/InstantiatorTest.php
+@@ -30,7 +30,7 @@ class InstantiatorTest extends TestCase
+     public function testFailingInstantiation(string $class)
+     {
+         $this->expectException(NotInstantiableTypeException::class);
+-        $this->expectExceptionMessageMatches('/Type ".*" is not instantiable\./');
++        $this->expectExceptionMessageMatches('/".*" is not instantiable\./');
+         Instantiator::instantiate($class);
+     }
+ 
+diff --git a/src/Symfony/Component/VarExporter/Tests/ProxyHelperTest.php b/src/Symfony/Component/VarExporter/Tests/ProxyHelperTest.php
+index aab2886267..50cc92032f 100644
+--- a/src/Symfony/Component/VarExporter/Tests/ProxyHelperTest.php
++++ b/src/Symfony/Component/VarExporter/Tests/ProxyHelperTest.php
+@@ -150,7 +150,6 @@ class ProxyHelperTest extends TestCase
+             }
+ 
+             // Help opcache.preload discover always-needed symbols
+-            class_exists(\Symfony\Component\VarExporter\Internal\Hydrator::class);
+             class_exists(\Symfony\Component\VarExporter\Internal\LazyObjectRegistry::class);
+ 
+             EOPHP;
+@@ -196,7 +195,6 @@ class ProxyHelperTest extends TestCase
+             }
+ 
+             // Help opcache.preload discover always-needed symbols
+-            class_exists(\Symfony\Component\VarExporter\Internal\Hydrator::class);
+             class_exists(\Symfony\Component\VarExporter\Internal\LazyObjectRegistry::class);
+ 
+             EOPHP;
+diff --git a/src/Symfony/Component/VarExporter/composer.json b/src/Symfony/Component/VarExporter/composer.json
+index 165274d3dc..6ffedff104 100644
+--- a/src/Symfony/Component/VarExporter/composer.json
++++ b/src/Symfony/Component/VarExporter/composer.json
+@@ -17,7 +17,7 @@
+     ],
+     "require": {
+         "php": ">=8.4.1",
+-        "symfony/polyfill-deepclone": "^1.34"
++        "symfony/polyfill-deepclone": "^1.35"
+     },
+     "require-dev": {
+         "symfony/property-access": "^7.4|^8.0",

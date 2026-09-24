@@ -1,0 +1,202 @@
+diff --git a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/authorization/AuthorizationPoller.java b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/authorization/AuthorizationPoller.java
+index dcf8c3f7130..7378b962ec2 100644
+--- a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/authorization/AuthorizationPoller.java
++++ b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/authorization/AuthorizationPoller.java
+@@ -37,6 +37,7 @@ import org.elasticsearch.xpack.inference.services.elastic.ccm.CCMFeature;
+ import org.elasticsearch.xpack.inference.services.elastic.ccm.CCMService;
+ 
+ import java.util.EnumSet;
++import java.util.HashSet;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Objects;
+@@ -328,11 +329,33 @@ public class AuthorizationPoller extends AllocatedPersistentTask {
+         SubscribableListener.<ElasticInferenceServiceAuthorizationModel>newForked(
+             authModelListener -> authorizationHandler.getAuthorization(authModelListener, sender)
+         )
++            .<ElasticInferenceServiceAuthorizationModel>andThen(
++                (nextListener, authModel) -> deleteRemovedEndpoints(authModel, nextListener)
++            )
+             .andThenApply(this::selectEndpointsToPersist)
+             .<Void>andThen((storeListener, inferenceIdsToPersist) -> storePreconfiguredModels(inferenceIdsToPersist, storeListener))
+             .addListener(listener);
+     }
+ 
++    private void deleteRemovedEndpoints(
++        ElasticInferenceServiceAuthorizationModel authModel,
++        ActionListener<ElasticInferenceServiceAuthorizationModel> listener
++    ) {
++        var toDelete = new HashSet<>(authModel.getRemovedEndpoints());
++        toDelete.retainAll(modelRegistry.getInferenceIds());
++
++        if (toDelete.isEmpty()) {
++            listener.onResponse(authModel);
++            return;
++        }
++
++        logger.info("Deleting removed EIS inference endpoints: {}", toDelete);
++        modelRegistry.deleteModels(toDelete, ActionListener.wrap(success -> listener.onResponse(authModel), e -> {
++            logger.atWarn().withThrowable(e).log("Failed to delete removed EIS inference endpoints: {}", toDelete);
++            listener.onResponse(authModel);
++        }));
++    }
++
+     private List<Model> selectEndpointsToPersist(ElasticInferenceServiceAuthorizationModel authModel) {
+         logger.debug("Received authorization response, {}", authModel);
+ 
+diff --git a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/authorization/ElasticInferenceServiceAuthorizationModel.java b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/authorization/ElasticInferenceServiceAuthorizationModel.java
+index ac2ad285c20..7a931a38ac5 100644
+--- a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/authorization/ElasticInferenceServiceAuthorizationModel.java
++++ b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/authorization/ElasticInferenceServiceAuthorizationModel.java
+@@ -62,11 +62,12 @@ public class ElasticInferenceServiceAuthorizationModel {
+         String baseEisUrl
+     ) {
+         var components = new ElasticInferenceServiceComponents(baseEisUrl);
+-        return createInternal(responseEntity.authorizedEndpoints(), components);
++        return createInternal(responseEntity.authorizedEndpoints(), responseEntity.removedEndpoints(), components);
+     }
+ 
+     private static ElasticInferenceServiceAuthorizationModel createInternal(
+         List<ElasticInferenceServiceAuthorizationResponseEntity.AuthorizedEndpoint> responseEndpoints,
++        Set<String> removedEndpoints,
+         ElasticInferenceServiceComponents components
+     ) {
+         var validEndpoints = new ArrayList<ElasticInferenceServiceModel>();
+@@ -77,7 +78,7 @@ public class ElasticInferenceServiceAuthorizationModel {
+             }
+         }
+ 
+-        return new ElasticInferenceServiceAuthorizationModel(validEndpoints);
++        return new ElasticInferenceServiceAuthorizationModel(validEndpoints, removedEndpoints);
+     }
+ 
+     private static ElasticInferenceServiceModel createModel(
+@@ -285,14 +286,19 @@ public class ElasticInferenceServiceAuthorizationModel {
+      * Returns an object indicating that the cluster is not authorized for any endpoints from EIS.
+      */
+     public static ElasticInferenceServiceAuthorizationModel unauthorized() {
+-        return new ElasticInferenceServiceAuthorizationModel(List.of());
++        return new ElasticInferenceServiceAuthorizationModel(List.of(), Set.of());
+     }
+ 
+     private final Map<String, ElasticInferenceServiceModel> authorizedEndpoints;
+     private final EnumSet<TaskType> taskTypes;
++    private final Set<String> removedEndpoints;
+ 
+     // Default for testing
+     ElasticInferenceServiceAuthorizationModel(List<ElasticInferenceServiceModel> authorizedEndpoints) {
++        this(authorizedEndpoints, Set.of());
++    }
++
++    ElasticInferenceServiceAuthorizationModel(List<ElasticInferenceServiceModel> authorizedEndpoints, Set<String> removedEndpoints) {
+         Objects.requireNonNull(authorizedEndpoints);
+         this.authorizedEndpoints = authorizedEndpoints.stream()
+             .collect(
+@@ -305,6 +311,7 @@ public class ElasticInferenceServiceAuthorizationModel {
+         var taskTypesSet = EnumSet.noneOf(TaskType.class);
+         taskTypesSet.addAll(this.authorizedEndpoints.values().stream().map(ElasticInferenceServiceModel::getTaskType).toList());
+         this.taskTypes = taskTypesSet;
++        this.removedEndpoints = Objects.requireNonNull(removedEndpoints);
+     }
+ 
+     /**
+@@ -335,24 +342,35 @@ public class ElasticInferenceServiceAuthorizationModel {
+         return Set.copyOf(authorizedEndpoints.keySet());
+     }
+ 
++    public Set<String> getRemovedEndpoints() {
++        return removedEndpoints;
++    }
++
+     public List<Model> getEndpoints(Set<String> endpointIds) {
+         return endpointIds.stream().<Model>map(authorizedEndpoints::get).filter(Objects::nonNull).toList();
+     }
+ 
+     @Override
+     public String toString() {
+-        return Strings.format("AuthorizationModel{authorizedEndpoints=%s, taskTypes=%s}", authorizedEndpoints, taskTypes);
++        return Strings.format(
++            "AuthorizationModel{authorizedEndpoints=%s, taskTypes=%s, removedEndpoints=%s}",
++            authorizedEndpoints,
++            taskTypes,
++            removedEndpoints
++        );
+     }
+ 
+     @Override
+     public boolean equals(Object o) {
+         if (o == null || getClass() != o.getClass()) return false;
+         ElasticInferenceServiceAuthorizationModel that = (ElasticInferenceServiceAuthorizationModel) o;
+-        return Objects.equals(authorizedEndpoints, that.authorizedEndpoints) && Objects.equals(taskTypes, that.taskTypes);
++        return Objects.equals(authorizedEndpoints, that.authorizedEndpoints)
++            && Objects.equals(taskTypes, that.taskTypes)
++            && Objects.equals(removedEndpoints, that.removedEndpoints);
+     }
+ 
+     @Override
+     public int hashCode() {
+-        return Objects.hash(authorizedEndpoints, taskTypes);
++        return Objects.hash(authorizedEndpoints, taskTypes, removedEndpoints);
+     }
+ }
+diff --git a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/response/ElasticInferenceServiceAuthorizationResponseEntity.java b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/response/ElasticInferenceServiceAuthorizationResponseEntity.java
+index fcfda933b96..3be464e17d3 100644
+--- a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/response/ElasticInferenceServiceAuthorizationResponseEntity.java
++++ b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elastic/response/ElasticInferenceServiceAuthorizationResponseEntity.java
+@@ -29,6 +29,8 @@ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Objects;
++import java.util.Set;
++import java.util.stream.Collectors;
+ 
+ import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg;
+ import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
+@@ -42,18 +44,22 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstr
+  * Because of this, we don't need to register this class as a named writeable in the NamedWriteableRegistry. It will never be
+  * sent over the wire between nodes.
+  */
+-public record ElasticInferenceServiceAuthorizationResponseEntity(List<AuthorizedEndpoint> authorizedEndpoints)
++public record ElasticInferenceServiceAuthorizationResponseEntity(List<AuthorizedEndpoint> authorizedEndpoints, Set<String> removedEndpoints)
+     implements
+         InferenceServiceResults {
+ 
+     private static final String INFERENCE_ENDPOINTS = "inference_endpoints";
++    private static final String REMOVED_ENDPOINTS = "removed_endpoints";
+ 
+     @SuppressWarnings("unchecked")
+     public static ConstructingObjectParser<ElasticInferenceServiceAuthorizationResponseEntity, Void> PARSER =
+         new ConstructingObjectParser<>(
+             ElasticInferenceServiceAuthorizationResponseEntity.class.getSimpleName(),
+             true,
+-            args -> new ElasticInferenceServiceAuthorizationResponseEntity((List<AuthorizedEndpoint>) args[0])
++            args -> new ElasticInferenceServiceAuthorizationResponseEntity(
++                (List<AuthorizedEndpoint>) args[0],
++                args[1] != null ? ((List<String>) args[1]).stream().collect(Collectors.toUnmodifiableSet()) : Set.of()
++            )
+         );
+ 
+     static {
+@@ -62,6 +68,7 @@ public record ElasticInferenceServiceAuthorizationResponseEntity(List<Authorized
+             AuthorizedEndpoint.AUTHORIZED_ENDPOINT_PARSER::apply,
+             new ParseField(INFERENCE_ENDPOINTS)
+         );
++        PARSER.declareStringArray(optionalConstructorArg(), new ParseField(REMOVED_ENDPOINTS));
+     }
+ 
+     public record AuthorizedEndpoint(
+@@ -171,8 +178,13 @@ public record ElasticInferenceServiceAuthorizationResponseEntity(List<Authorized
+         }
+     }
+ 
+-    public ElasticInferenceServiceAuthorizationResponseEntity(List<AuthorizedEndpoint> authorizedEndpoints) {
++    public ElasticInferenceServiceAuthorizationResponseEntity(List<AuthorizedEndpoint> authorizedEndpoints, Set<String> removedEndpoints) {
+         this.authorizedEndpoints = Objects.requireNonNull(authorizedEndpoints);
++        this.removedEndpoints = Objects.requireNonNull(removedEndpoints);
++    }
++
++    public ElasticInferenceServiceAuthorizationResponseEntity(List<AuthorizedEndpoint> authorizedEndpoints) {
++        this(authorizedEndpoints, Set.of());
+     }
+ 
+     public static ElasticInferenceServiceAuthorizationResponseEntity fromResponse(Request request, HttpResult response) throws IOException {

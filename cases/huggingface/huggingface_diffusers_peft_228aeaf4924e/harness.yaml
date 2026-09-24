@@ -1,0 +1,41 @@
+task_id: huggingface_diffusers_peft_228aeaf4924e
+agent_runtime_source_masks:
+- /usr/local/lib/python3.12/site-packages/peft
+- /usr/local/lib/python3.12/site-packages/peft-0.19.1.dist-info
+agent_python_source_paths:
+- repos/huggingface/peft/src
+agent_python_distribution_metadata:
+  peft: 0.16.1.dev0
+hidden_test_patches:
+- repo: diffusers
+  patch: hidden/patches/diffusers-hidden-tests.patch
+  test_profile: diffusers-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/lora/utils.py
+  - tests/models/transformers/test_models_transformer_flux.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from huggingface/diffusers PR(s) 11999
+- repo: peft
+  patch: hidden/patches/peft-hidden-tests.patch
+  test_profile: peft-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/test_low_level_api.py
+  hidden_file: *id002
+  semantic_changes: warning and ValueError message text are not constrained; the
+    observable warning/rejection behavior and all adapter-targeting assertions remain
+    unchanged
+  source: upstream test changes from huggingface/peft PR(s) 2637
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - diffusers-hidden
+    - peft-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

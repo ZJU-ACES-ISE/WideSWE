@@ -1,0 +1,45 @@
+diff --git a/src/mongocrypt-ctx-encrypt.c b/src/mongocrypt-ctx-encrypt.c
+index af4a0df..8f5c65b 100644
+--- a/src/mongocrypt-ctx-encrypt.c
++++ b/src/mongocrypt-ctx-encrypt.c
+@@ -1096,7 +1096,10 @@ static bool _fle2_finalize(mongocrypt_ctx_t *ctx, mongocrypt_binary_t *out) {
+ 
+     BSON_ASSERT(context_uses_fle2(ctx));
+     BSON_ASSERT(ctx->state == MONGOCRYPT_CTX_READY);
+-    BSON_ASSERT(!ectx->explicit);
++
++    if (ectx->explicit) {
++        return _mongocrypt_ctx_fail_w_msg(ctx, "explicit encryption is not yet supported. See MONGOCRYPT-409.");
++    }
+ 
+     if (!_mongocrypt_buffer_to_bson(&ectx->original_cmd, &original_cmd_bson)) {
+         return _mongocrypt_ctx_fail_w_msg(ctx, "malformed bson in original_cmd");
+@@ -1300,7 +1303,7 @@ static bool _fle2_finalize_explicit(mongocrypt_ctx_t *ctx, mongocrypt_binary_t *
+ 
+     if (ctx->opts.rangeopts.set && ctx->opts.query_type.set) {
+         // RangeOpts with query type is a special case. The result contains two
+-        // ciphertext values of FLE2RangeFindSpec.
++        // ciphertext values.
+         return FLE2RangeFindDriverSpec_to_ciphertexts(ctx, out);
+     }
+ 
+@@ -1339,7 +1342,8 @@ static bool _fle2_finalize_explicit(mongocrypt_ctx_t *ctx, mongocrypt_binary_t *
+ 
+     if (ctx->opts.rangeopts.set) {
+         // Process the RangeOpts and the input 'v' document into a new 'v'.
+-        // The new 'v' document will be a FLE2RangeInsertSpec.
++        // The new 'v' document will be a FLE2RangeFindSpec or
++        // FLE2RangeInsertSpec.
+         bson_t old_v;
+ 
+         if (!_mongocrypt_buffer_to_bson(&ectx->original_cmd, &old_v)) {
+@@ -2168,7 +2172,8 @@ _check_cmd_for_auto_encrypt(mongocrypt_binary_t *cmd, bool *bypass, char **targe
+         eligible = true;
+     } else if (0 == strcmp(cmd_name, "hello")) {
+         *bypass = true;
+-    } else if (0 == strcmp(cmd_name, "buildInfo")) {
++    } else if (0 == strcmp(cmd_name, "buildInfo") || 0 == strcmp(cmd_name, "buildinfo")) {
++        // Accept either case form to match server behavior.
+         *bypass = true;
+     } else if (0 == strcmp(cmd_name, "getCmdLineOpts")) {
+         *bypass = true;

@@ -1,0 +1,539 @@
+diff --git a/tests/coverage/dashboard_reports/test_dashboard_models_extended.py b/tests/coverage/dashboard_reports/test_dashboard_models_extended.py
+index bdcc3ba..a22e2c6 100644
+--- a/tests/coverage/dashboard_reports/test_dashboard_models_extended.py
++++ b/tests/coverage/dashboard_reports/test_dashboard_models_extended.py
+@@ -265,20 +265,20 @@ def test_daily_subscription_cost_year_boundary():
+ @pytest.mark.unit
+ @pytest.mark.django_db
+ def test_per_second_subscription_cost():
+-    """per_second_subscription_cost is daily / 86400."""
++    """per_second_subscription_cost returns 0 (quantized) when no jobs exist in the period."""
+     from apps.dashboard_reports.models import SubscriptionCost
+ 
+     SubscriptionCost.objects.all().delete()
+     cost = SubscriptionCost.get()
+     per_sec = cost.per_second_subscription_cost()
+-    daily = cost.daily_subscription_cost()
+-    assert abs(per_sec - daily / decimal.Decimal(86400)) < decimal.Decimal("0.000001")
++    assert isinstance(per_sec, decimal.Decimal)
++    assert per_sec == decimal.Decimal("0").quantize(decimal.Decimal("0.0000000001"))
+ 
+ 
+ @pytest.mark.unit
+ @pytest.mark.django_db
+ def test_per_second_subscription_cost_with_dates():
+-    """per_second_subscription_cost passes date args through to daily_subscription_cost."""
++    """per_second_subscription_cost with no jobs in range returns 0 (quantized)."""
+     from apps.dashboard_reports.models import SubscriptionCost
+ 
+     SubscriptionCost.objects.all().delete()
+@@ -287,7 +287,7 @@ def test_per_second_subscription_cost_with_dates():
+     end = datetime(2024, 5, 31, tzinfo=UTC)
+     per_sec = cost.per_second_subscription_cost(start=start, end=end)
+     assert isinstance(per_sec, decimal.Decimal)
+-    assert per_sec > 0
++    assert per_sec == decimal.Decimal("0").quantize(decimal.Decimal("0.0000000001"))
+ 
+ 
+ # ---------------------------------------------------------------------------
+diff --git a/tests/coverage/general/test_final_push.py b/tests/coverage/general/test_final_push.py
+index dc62e82..1a4d2cb 100644
+--- a/tests/coverage/general/test_final_push.py
++++ b/tests/coverage/general/test_final_push.py
+@@ -83,15 +83,15 @@ def test_handle_run_command_calls_start_services():
+ @pytest.mark.django_db
+ def test_subscription_cost_per_second():
+     import decimal
+-    from datetime import date
++    from datetime import UTC, datetime, timezone
+ 
+     from apps.dashboard_reports.models import SubscriptionCost
+ 
+     SubscriptionCost.objects.all().delete()
+     cost = SubscriptionCost.get()
+     result = cost.per_second_subscription_cost(
+-        start=date(2024, 1, 1),
+-        end=date(2024, 1, 31),
++        start=datetime(2024, 1, 1, tzinfo=UTC),
++        end=datetime(2024, 1, 31, tzinfo=UTC),
+     )
+     assert isinstance(result, decimal.Decimal)
+ 
+diff --git a/tests/unit/dashboard_reports/test_daily_subscription_cost.py b/tests/unit/dashboard_reports/test_daily_subscription_cost.py
+index 301d78a..a02582a 100644
+--- a/tests/unit/dashboard_reports/test_daily_subscription_cost.py
++++ b/tests/unit/dashboard_reports/test_daily_subscription_cost.py
+@@ -1,10 +1,18 @@
+ import datetime
+ import decimal
++from datetime import UTC
+ from unittest.mock import patch
+ 
+ import pytest
+ 
+-from apps.dashboard_reports.models import SubscriptionCost, _get_month_overlap_days, _month_range_iter
++from apps.dashboard_reports.models import (
++    JobData,
++    JobStatusChoices,
++    SubscriptionCost,
++    TemplateMetadata,
++    _get_month_overlap_days,
++    _month_range_iter,
++)
+ 
+ 
+ @pytest.mark.unit
+@@ -186,51 +194,280 @@ class TestDailySubscriptionCost:
+         expected = decimal.Decimal("310") / decimal.Decimal(31)
+         assert result == expected
+ 
+-    def test_per_second_subscription_cost_standard(self):
+-        """Test per_second_subscription_cost with default monthly cost and no date range."""
+-        subscription_cost = SubscriptionCost.objects.create(
+-            monthly_subscription_cost=3000.00,
+-            engineer_avg_hourly_rate=60.00,
+-            include_template_creation_time_in_costs=True,
++@pytest.mark.unit
++@pytest.mark.django_db(transaction=True, reset_sequences=True)
++class TestPerSecondSubscriptionCost:
++    """
++    Tests for SubscriptionCost.per_second_subscription_cost().
++
++    The method returns cost_per_elapsed_second (currency / second) where:
++      cost_per_elapsed_second * total_elapsed_seconds_in_period == total_period_cost
++
++    This distributes the proportional monthly subscription cost across all
++    successful/failed job elapsed seconds in the period.
++    """
++
++    @pytest.fixture()
++    def subscription_cost(self) -> "SubscriptionCost":
++        db = SubscriptionCost.get()
++        db.monthly_subscription_cost = decimal.Decimal("2000.00")
++        db.save()
++        return db
++
++    @pytest.fixture()
++    def jobs_in_march(self, subscription_cost: "SubscriptionCost"):
++        """Two successful jobs in March 2025, each with elapsed=500 seconds."""
++
++        TemplateMetadata.objects.create(template_id=101, template_name="Test Template")
++        JobData.objects.create(
++            job_id=1001,
++            template_name="Test Template",
++            template_id=101,
++            status=JobStatusChoices.SUCCESSFUL,
++            started=datetime.datetime(2025, 3, 1, 10, 0, 0, tzinfo=datetime.UTC),
++            finished=datetime.datetime(2025, 3, 1, 10, 8, 20, tzinfo=datetime.UTC),
++            elapsed=decimal.Decimal("500"),
+         )
+-        daily_cost = subscription_cost.daily_subscription_cost()
+-        expected = daily_cost / decimal.Decimal(86400)
+-        result = subscription_cost.per_second_subscription_cost()
++        JobData.objects.create(
++            job_id=1002,
++            template_name="Test Template",
++            template_id=101,
++            status=JobStatusChoices.SUCCESSFUL,
++            started=datetime.datetime(2025, 3, 15, 12, 0, 0, tzinfo=datetime.UTC),
++            finished=datetime.datetime(2025, 3, 15, 12, 8, 20, tzinfo=datetime.UTC),
++            elapsed=decimal.Decimal("500"),
++        )
++
++    def test_full_month_weighted_cost(self, subscription_cost: "SubscriptionCost", jobs_in_march: None) -> None:
++        """Full March: period_cost == monthly_cost; total_elapsed == 1000s → rate = 2000/1000 = 2."""
++        start = datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC)
++        end = datetime.datetime(2025, 3, 31, tzinfo=datetime.UTC)
++
++        result = subscription_cost.per_second_subscription_cost(start, end)
++
++        expected = (decimal.Decimal("2000") / decimal.Decimal("1000")).quantize(decimal.Decimal("0.0000000001"))
++        assert result == expected
++
++    def test_partial_month_weighted_cost(self, subscription_cost, jobs_in_march):
++        start = datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC)
++        end = datetime.datetime(2025, 3, 15, tzinfo=datetime.UTC)
++
++        result = subscription_cost.per_second_subscription_cost(start, end)
++
++        period_cost = decimal.Decimal("2000") * decimal.Decimal("15") / decimal.Decimal("31")
++        expected = (period_cost / decimal.Decimal("1000")).quantize(
++            decimal.Decimal("0.0000000001")
++        )  # both jobs are in range
+         assert result == expected
+ 
+-    def test_per_second_subscription_cost_zero(self):
+-        """Test per_second_subscription_cost with zero monthly cost."""
+-        subscription_cost = SubscriptionCost.objects.create(
+-            monthly_subscription_cost=0.00,
+-            engineer_avg_hourly_rate=60.00,
+-            include_template_creation_time_in_costs=True,
++    def test_multi_month_weighted_cost(self, subscription_cost: "SubscriptionCost") -> None:
++        """Feb + March full months: period_cost = 4000, total_elapsed = 200+300 = 500 → rate = 8."""
++
++        TemplateMetadata.objects.create(template_id=202, template_name="Multi Month Template")
++        JobData.objects.create(
++            job_id=2001,
++            template_name="Multi Month Template",
++            template_id=202,
++            status=JobStatusChoices.SUCCESSFUL,
++            started=datetime.datetime(2025, 2, 10, tzinfo=datetime.UTC),
++            finished=datetime.datetime(2025, 2, 10, 1, 0, 0, tzinfo=datetime.UTC),
++            elapsed=decimal.Decimal("200"),
+         )
+-        result = subscription_cost.per_second_subscription_cost()
+-        assert result == decimal.Decimal("0.00")
+-
+-    def test_per_second_subscription_cost_custom_dates(self):
+-        """Test per_second_subscription_cost with custom start/end dates."""
+-        subscription_cost = SubscriptionCost.objects.create(
+-            monthly_subscription_cost=3100.00,
+-            engineer_avg_hourly_rate=60.00,
+-            include_template_creation_time_in_costs=True,
++        JobData.objects.create(
++            job_id=2002,
++            template_name="Multi Month Template",
++            template_id=202,
++            status=JobStatusChoices.SUCCESSFUL,
++            started=datetime.datetime(2025, 3, 10, tzinfo=datetime.UTC),
++            finished=datetime.datetime(2025, 3, 10, 1, 0, 0, tzinfo=datetime.UTC),
++            elapsed=decimal.Decimal("300"),
++        )
++
++        start = datetime.datetime(2025, 2, 1, tzinfo=datetime.UTC)
++        end = datetime.datetime(2025, 3, 31, tzinfo=datetime.UTC)
++
++        result = subscription_cost.per_second_subscription_cost(start, end)
++
++        # Feb (28/28) + Mar (31/31) = 2000 + 2000 = 4000; total_elapsed = 500
++        expected = (decimal.Decimal("4000") / decimal.Decimal("500")).quantize(decimal.Decimal("0.0000000001"))
++        assert result == expected
++
++    def test_no_jobs_returns_fallback(self, subscription_cost):
++        start = datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
++        end = datetime.datetime(2025, 1, 31, tzinfo=datetime.UTC)
++
++        result = subscription_cost.per_second_subscription_cost(start, end)
++
++        assert result == decimal.Decimal("0").quantize(decimal.Decimal("0.0000000001"))
++
++    def test_zero_monthly_cost_returns_zero_rate(
++        self, subscription_cost: "SubscriptionCost", jobs_in_march: None
++    ) -> None:
++        """Zero monthly cost → period_cost = 0 → rate = 0."""
++        subscription_cost.monthly_subscription_cost = decimal.Decimal("0.00")
++        subscription_cost.save()
++
++        start = datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC)
++        end = datetime.datetime(2025, 3, 31, tzinfo=datetime.UTC)
++
++        result = subscription_cost.per_second_subscription_cost(start, end)
++
++        assert result == decimal.Decimal("0").quantize(decimal.Decimal("0.0000000001"))
++
++    def test_failed_jobs_are_included(self, subscription_cost: "SubscriptionCost") -> None:
++        """Failed jobs must be included in the elapsed total."""
++
++        TemplateMetadata.objects.create(template_id=303, template_name="Failed Template")
++        JobData.objects.create(
++            job_id=3001,
++            template_name="Failed Template",
++            template_id=303,
++            status=JobStatusChoices.FAILED,
++            started=datetime.datetime(2025, 3, 5, tzinfo=datetime.UTC),
++            finished=datetime.datetime(2025, 3, 5, 1, 0, 0, tzinfo=datetime.UTC),
++            elapsed=decimal.Decimal("1000"),
+         )
+-        start = datetime.datetime(2026, 3, 1, tzinfo=datetime.UTC)
+-        end = datetime.datetime(2026, 3, 31, tzinfo=datetime.UTC)
+-        daily_cost = subscription_cost.daily_subscription_cost(start=start, end=end)
+-        expected = daily_cost / decimal.Decimal(86400)
+-        result = subscription_cost.per_second_subscription_cost(start=start, end=end)
++
++        start = datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC)
++        end = datetime.datetime(2025, 3, 31, tzinfo=datetime.UTC)
++
++        result = subscription_cost.per_second_subscription_cost(start, end)
++
++        expected = (decimal.Decimal("2000") / decimal.Decimal("1000")).quantize(decimal.Decimal("0.0000000001"))
+         assert result == expected
+ 
+-    def test_per_second_subscription_cost_decimal_precision(self):
+-        """Test per_second_subscription_cost with decimal precision."""
+-        subscription_cost = SubscriptionCost.objects.create(
+-            monthly_subscription_cost=1234.56,
+-            engineer_avg_hourly_rate=60.00,
+-            include_template_creation_time_in_costs=True,
++    def test_start_greater_than_end_is_swapped(
++        self, subscription_cost: "SubscriptionCost", jobs_in_march: None
++    ) -> None:
++        """Reversed start/end should give same result as normal order."""
++        result_normal = subscription_cost.per_second_subscription_cost(
++            datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC),
++            datetime.datetime(2025, 3, 31, tzinfo=datetime.UTC),
++        )
++        result_reversed = subscription_cost.per_second_subscription_cost(
++            datetime.datetime(2025, 3, 31, tzinfo=datetime.UTC),
++            datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC),
++        )
++        assert result_normal == result_reversed
++
++    def test_cost_distribution_invariant(self, subscription_cost: "SubscriptionCost", jobs_in_march: None) -> None:
++        """
++        Core invariant: cost_per_second * total_elapsed ≈ period_cost.
++        Tolerance is one quantization unit per elapsed second.
++        """
++        start = datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC)
++        end = datetime.datetime(2025, 3, 31, tzinfo=datetime.UTC)
++
++        rate = subscription_cost.per_second_subscription_cost(start, end)
++        total_elapsed = decimal.Decimal("1000")  # two jobs × 500s each
++        reconstructed = rate * total_elapsed
++
++        expected_period_cost = decimal.Decimal("2000")
++        tolerance = decimal.Decimal("0.0000000001") * total_elapsed
++
++        assert abs(reconstructed - expected_period_cost) <= tolerance, (
++            f"Invariant broken: |{reconstructed} - {expected_period_cost}| > {tolerance}"
+         )
+-        daily_cost = subscription_cost.daily_subscription_cost()
++
++    def test_no_date_defaults_to_current_month(self, monkeypatch, subscription_cost: "SubscriptionCost") -> None:
++        """
++        When start/end are None the method defaults to the current full calendar month.
++        A job finishing within that month must be included in the elapsed sum.
++        """
++
++        fixed_now = datetime.datetime(2025, 6, 15, 12, 0, 0, tzinfo=datetime.UTC)
++
++        class FrozenDateTime(datetime.datetime):
++            @classmethod
++            def now(cls, tz=None):
++                return fixed_now
++
++        monkeypatch.setattr("apps.dashboard_reports.models.datetime", FrozenDateTime)
++
++        TemplateMetadata.objects.create(template_id=404, template_name="June Template")
++        JobData.objects.create(
++            job_id=4001,
++            template_name="June Template",
++            template_id=404,
++            status=JobStatusChoices.SUCCESSFUL,
++            started=datetime.datetime(2025, 6, 10, 0, 0, 0, tzinfo=datetime.UTC),
++            finished=datetime.datetime(2025, 6, 10, 0, 16, 40, tzinfo=datetime.UTC),
++            elapsed=decimal.Decimal("1000"),
++        )
++
+         result = subscription_cost.per_second_subscription_cost()
+-        # Check that result is a Decimal and matches expected precision
+-        assert isinstance(result, decimal.Decimal)
+-        assert result == daily_cost / decimal.Decimal(86400)
++
++        # Full June (30 days) → period_cost = monthly_cost; elapsed = 1000s
++        expected = (decimal.Decimal("2000") / decimal.Decimal("1000")).quantize(decimal.Decimal("0.0000000001"))
++        assert result == expected
++
++    def test_pending_and_cancelled_jobs_are_excluded(self, subscription_cost: "SubscriptionCost") -> None:
++        """Jobs with status other than SUCCESSFUL or FAILED must not contribute to the elapsed sum."""
++
++        TemplateMetadata.objects.create(template_id=505, template_name="Mixed Status Template")
++        # This job should be counted
++        JobData.objects.create(
++            job_id=5001,
++            template_name="Mixed Status Template",
++            template_id=505,
++            status=JobStatusChoices.SUCCESSFUL,
++            started=datetime.datetime(2025, 4, 1, tzinfo=datetime.UTC),
++            finished=datetime.datetime(2025, 4, 1, 0, 16, 40, tzinfo=datetime.UTC),
++            elapsed=decimal.Decimal("1000"),
++        )
++        # These jobs must NOT be counted
++        for job_id, status in [
++            (5002, JobStatusChoices.PENDING),
++            (5003, JobStatusChoices.RUNNING),
++            (5004, JobStatusChoices.CANCELED),
++        ]:
++            JobData.objects.create(
++                job_id=job_id,
++                template_name="Mixed Status Template",
++                template_id=505,
++                status=status,
++                started=datetime.datetime(2025, 4, 2, tzinfo=datetime.UTC),
++                finished=datetime.datetime(2025, 4, 2, 1, 0, 0, tzinfo=datetime.UTC),
++                elapsed=decimal.Decimal("9999"),
++            )
++
++        start = datetime.datetime(2025, 4, 1, tzinfo=datetime.UTC)
++        end = datetime.datetime(2025, 4, 30, tzinfo=datetime.UTC)
++
++        result = subscription_cost.per_second_subscription_cost(start, end)
++
++        # Only the SUCCESSFUL job's 1000s should count; period_cost = 2000 (full April)
++        expected = (decimal.Decimal("2000") / decimal.Decimal("1000")).quantize(decimal.Decimal("0.0000000001"))
++        assert result == expected
++
++    def test_cross_year_boundary_cost(self, subscription_cost: "SubscriptionCost") -> None:
++        """Full Dec + full Jan spanning a year boundary should sum two full monthly costs."""
++
++        TemplateMetadata.objects.create(template_id=606, template_name="Year Boundary Template")
++        JobData.objects.create(
++            job_id=6001,
++            template_name="Year Boundary Template",
++            template_id=606,
++            status=JobStatusChoices.SUCCESSFUL,
++            started=datetime.datetime(2024, 12, 15, tzinfo=datetime.UTC),
++            finished=datetime.datetime(2024, 12, 15, 1, 0, 0, tzinfo=datetime.UTC),
++            elapsed=decimal.Decimal("400"),
++        )
++        JobData.objects.create(
++            job_id=6002,
++            template_name="Year Boundary Template",
++            template_id=606,
++            status=JobStatusChoices.SUCCESSFUL,
++            started=datetime.datetime(2025, 1, 15, tzinfo=datetime.UTC),
++            finished=datetime.datetime(2025, 1, 15, 1, 0, 0, tzinfo=datetime.UTC),
++            elapsed=decimal.Decimal("600"),
++        )
++
++        start = datetime.datetime(2024, 12, 1, tzinfo=datetime.UTC)
++        end = datetime.datetime(2025, 1, 31, tzinfo=datetime.UTC)
++
++        result = subscription_cost.per_second_subscription_cost(start, end)
++
++        # Dec (31/31) + Jan (31/31) = 2000 + 2000 = 4000; total_elapsed = 1000s
++        expected = (decimal.Decimal("4000") / decimal.Decimal("1000")).quantize(decimal.Decimal("0.0000000001"))
++        assert result == expected
+diff --git a/tests/unit/dashboard_reports/test_export_urls.py b/tests/unit/dashboard_reports/test_export_urls.py
+index 644e65e..0f74188 100644
+--- a/tests/unit/dashboard_reports/test_export_urls.py
++++ b/tests/unit/dashboard_reports/test_export_urls.py
+@@ -17,6 +17,7 @@ from apps.dashboard_reports.models import (
+ )
+ 
+ FIXED_DAILY_SUBSCRIPTION_COST = decimal.Decimal("161.29")
++FIXED_PER_SECOND_COST = decimal.Decimal("0.001")
+ 
+ 
+ def get_now() -> datetime.datetime:
+@@ -174,8 +175,8 @@ class TestExportEndpointGeneral:
+     @pytest.fixture(autouse=True)
+     def fixed_subscription_cost(self):
+         with patch(
+-            "apps.dashboard_reports.models.SubscriptionCost.daily_subscription_cost",
+-            return_value=FIXED_DAILY_SUBSCRIPTION_COST,
++            "apps.dashboard_reports.models.SubscriptionCost.per_second_subscription_cost",
++            return_value=FIXED_PER_SECOND_COST,
+         ):
+             yield
+ 
+@@ -274,8 +275,8 @@ class TestExportSummaryCSV:
+     @pytest.fixture(autouse=True)
+     def fixed_subscription_cost(self):
+         with patch(
+-            "apps.dashboard_reports.models.SubscriptionCost.daily_subscription_cost",
+-            return_value=FIXED_DAILY_SUBSCRIPTION_COST,
++            "apps.dashboard_reports.models.SubscriptionCost.per_second_subscription_cost",
++            return_value=FIXED_PER_SECOND_COST,
+         ):
+             yield
+ 
+@@ -393,8 +394,8 @@ class TestExportROICSV:
+     @pytest.fixture(autouse=True)
+     def fixed_subscription_cost(self):
+         with patch(
+-            "apps.dashboard_reports.models.SubscriptionCost.daily_subscription_cost",
+-            return_value=FIXED_DAILY_SUBSCRIPTION_COST,
++            "apps.dashboard_reports.models.SubscriptionCost.per_second_subscription_cost",
++            return_value=FIXED_PER_SECOND_COST,
+         ):
+             yield
+ 
+@@ -487,8 +488,8 @@ class TestExportTrendsCSV:
+     @pytest.fixture(autouse=True)
+     def fixed_subscription_cost(self):
+         with patch(
+-            "apps.dashboard_reports.models.SubscriptionCost.daily_subscription_cost",
+-            return_value=FIXED_DAILY_SUBSCRIPTION_COST,
++            "apps.dashboard_reports.models.SubscriptionCost.per_second_subscription_cost",
++            return_value=FIXED_PER_SECOND_COST,
+         ):
+             yield
+ 
+diff --git a/tests/unit/dashboard_reports/test_report_view_data.py b/tests/unit/dashboard_reports/test_report_view_data.py
+index 77ee2de..9f00269 100644
+--- a/tests/unit/dashboard_reports/test_report_view_data.py
++++ b/tests/unit/dashboard_reports/test_report_view_data.py
+@@ -27,6 +27,7 @@ _VALID_PERIOD_DAYS = frozenset({7, 14, 30, 60, 90})
+ # which causes test failures in months with fewer days (e.g. April=30, February=28).
+ # 161.29 = 5000 (default monthly_subscription_cost) / 31 days — matches the expected cost constants.
+ FIXED_DAILY_SUBSCRIPTION_COST = decimal.Decimal("161.29")
++FIXED_PER_SECOND_SUBSCRIPTION_COST = FIXED_DAILY_SUBSCRIPTION_COST / decimal.Decimal(86400)
+ 
+ 
+ def get_now() -> datetime.datetime:
+@@ -501,8 +502,8 @@ class TestReportViewData:
+     @pytest.fixture(autouse=True)
+     def fixed_subscription_cost(self):
+         with patch(
+-            "apps.dashboard_reports.models.SubscriptionCost.daily_subscription_cost",
+-            return_value=FIXED_DAILY_SUBSCRIPTION_COST,
++            "apps.dashboard_reports.models.SubscriptionCost.per_second_subscription_cost",
++            return_value=FIXED_PER_SECOND_SUBSCRIPTION_COST,
+         ):
+             yield
+ 
+@@ -612,8 +613,8 @@ class TestDashboardReportViewSetEndpoints:
+     @pytest.fixture(autouse=True)
+     def fixed_subscription_cost(self):
+         with patch(
+-            "apps.dashboard_reports.models.SubscriptionCost.daily_subscription_cost",
+-            return_value=FIXED_DAILY_SUBSCRIPTION_COST,
++            "apps.dashboard_reports.models.SubscriptionCost.per_second_subscription_cost",
++            return_value=FIXED_PER_SECOND_SUBSCRIPTION_COST,
+         ):
+             yield
+ 
+@@ -850,8 +851,8 @@ class TestReportViewDataNoCreationTime:
+     @pytest.fixture(autouse=True)
+     def fixed_subscription_cost(self):
+         with patch(
+-            "apps.dashboard_reports.models.SubscriptionCost.daily_subscription_cost",
+-            return_value=FIXED_DAILY_SUBSCRIPTION_COST,
++            "apps.dashboard_reports.models.SubscriptionCost.per_second_subscription_cost",
++            return_value=FIXED_PER_SECOND_SUBSCRIPTION_COST,
+         ):
+             yield
+ 
+diff --git a/tests/unit/dashboard_reports/test_report_views.py b/tests/unit/dashboard_reports/test_report_views.py
+index 4c17d22..9056d2c 100644
+--- a/tests/unit/dashboard_reports/test_report_views.py
++++ b/tests/unit/dashboard_reports/test_report_views.py
+@@ -1,3 +1,4 @@
++import decimal
+ from datetime import UTC, datetime, timedelta
+ from unittest.mock import MagicMock, patch
+ 
+@@ -431,16 +432,22 @@ class TestDashboardReportViewSet:
+         assert result["job_chart"]["items"][0]["value"] == 5
+ 
+     # Test details endpoint logic with mocks
++    @patch("apps.dashboard_reports.viewsets.dashboard_report.SubscriptionCost.get")
+     @patch("apps.dashboard_reports.viewsets.dashboard_report.JobData.objects")
+     @patch("apps.dashboard_reports.viewsets.dashboard_report.JobHostSummary.objects")
+     @patch.object(DashboardReportViewSet, "get_chart_data")
+     @patch.object(DashboardReportViewSet, "get_serializer")
+-    def test_details(self, mock_serializer, mock_chart, mock_host_objects, mock_jobdata, viewset, factory):
++    def test_details(
++        self, mock_serializer, mock_chart, mock_host_objects, mock_jobdata, mock_subcost, viewset, factory
++    ):
+         class TestViewSet(DashboardReportViewSet):
+             def details(self, request, *args, **kwargs):
+                 return super().details.__wrapped__(self, request, *args, **kwargs)
+ 
+         test_viewset = TestViewSet()
++        mock_subcost.return_value.cost_employee_per_minute = 1
++        mock_subcost.return_value.per_second_subscription_cost.return_value = decimal.Decimal("0.001")
++        mock_subcost.return_value.include_template_creation_time_in_costs = True
+         mock_jobdata.all.return_value = MagicMock()
+         # unique hosts: JobHostSummary.objects.filter(...).values(...).distinct().count()
+         mock_host_objects.filter.return_value.values.return_value.distinct.return_value.count.return_value = 2

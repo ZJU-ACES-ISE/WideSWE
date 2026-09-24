@@ -1,0 +1,874 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 1d75f0e2d..4c334573a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@
+ **Features**:
+ 
+ - Enable OTLP endpoints by default. ([#5951](https://github.com/getsentry/relay/pull/5951))
++- Enable performance score calculation for V2 spans. ([#5947](https://github.com/getsentry/relay/pull/5947))
+ 
+ **Bug Fixes**:
+ 
+diff --git a/relay-conventions/sentry-conventions b/relay-conventions/sentry-conventions
+index 1c4b73be4..108b899c2 160000
+--- a/relay-conventions/sentry-conventions
++++ b/relay-conventions/sentry-conventions
+@@ -1 +1 @@
+-Subproject commit 1c4b73be4d87161300d96ec948e52462804d59c1
++Subproject commit 108b899c2ec3f78726ade12837a067783df0c551
+diff --git a/relay-event-normalization/src/event.rs b/relay-event-normalization/src/event.rs
+index 43cb8784f..93ea1cede 100644
+--- a/relay-event-normalization/src/event.rs
++++ b/relay-event-normalization/src/event.rs
+@@ -13,13 +13,16 @@ use regex::Regex;
+ use relay_base_schema::metrics::{
+     DurationUnit, FractionUnit, MetricUnit, can_be_valid_metric_name,
+ };
+-use relay_conventions::consts::{APP__VITALS__START__TYPE, APP__VITALS__START__VALUE};
++use relay_conventions::consts::{
++    APP__VITALS__START__TYPE, APP__VITALS__START__VALUE, SCORE__TOTAL,
++};
++use relay_conventions::interpolate;
+ use relay_event_schema::processor::{self, ProcessingAction, ProcessingState, Processor};
+ use relay_event_schema::protocol::{
+-    AsPair, AutoInferSetting, ClientSdkInfo, Context, ContextInner, Contexts, DebugImage,
+-    DeviceClass, Event, EventId, EventType, Exception, Headers, IpAddr, Level, LogEntry,
+-    Measurement, Measurements, PerformanceScoreContext, ReplayContext, Request, Span, SpanStatus,
+-    Tags, Timestamp, TraceContext, User, VALID_PLATFORMS,
++    AsPair, Attributes, AutoInferSetting, ClientSdkInfo, Context, ContextInner, Contexts,
++    DebugImage, DeviceClass, Event, EventId, EventType, Exception, Headers, IpAddr, Level,
++    LogEntry, Measurement, Measurements, PerformanceScoreContext, ReplayContext, Request, Span,
++    SpanStatus, SpanV2, Tags, Timestamp, TraceContext, User, VALID_PLATFORMS,
+ };
+ use relay_protocol::{
+     Annotated, Empty, Error, ErrorKind, FiniteF64, FromValue, Getter, Meta, Object, Remark,
+@@ -858,8 +861,84 @@ pub fn normalize_measurements(
+     }
+ }
+ 
++/// Trait for containers that behave like a collection of [`Measurement`]s.
++///
++/// This exists to make [`normalize_performance_score`] work for both
++/// [`Measurements`] and [`Attributes`].
++pub trait MeasurementsLike {
++    /// Returns `true` if this collection contains the named measurement.
++    fn contains_measurement(&self, key: &str) -> bool;
++    /// Gets the value of the named measurement if this collection contains it.
++    fn get_measurement_value(&self, key: &str) -> Option<FiniteF64>;
++    /// Inserts a measurement into this collection.
++    fn insert_measurement(&mut self, key: String, value: Measurement);
++}
++
++impl MeasurementsLike for Measurements {
++    fn contains_measurement(&self, key: &str) -> bool {
++        self.contains_key(key)
++    }
++
++    fn get_measurement_value(&self, key: &str) -> Option<FiniteF64> {
++        self.get_value(key)
++    }
++
++    fn insert_measurement(&mut self, key: String, value: Measurement) {
++        self.insert(key, value.into());
++    }
++}
++
++impl MeasurementsLike for Attributes {
++    fn contains_measurement(&self, key: &str) -> bool {
++        self.0
++            .contains_key(relay_conventions::canonical(key).unwrap_or(key))
++    }
++
++    fn get_measurement_value(&self, key: &str) -> Option<FiniteF64> {
++        let value = self.get_value(relay_conventions::canonical(key).unwrap_or(key))?;
++        match value {
++            Value::F64(v) => FiniteF64::new(*v),
++            Value::U64(v) => FiniteF64::new(*v as f64),
++            Value::I64(v) => FiniteF64::new(*v as f64),
++            _ => None,
++        }
++    }
++
++    fn insert_measurement(&mut self, key: String, measurement: Measurement) {
++        self.0
++            .insert(key, measurement.value.map_value(|v| v.to_f64().into()));
++    }
++}
++
++/// Trait for types that provide mutable access to a collection of [`Measurement`]s.
++///
++/// This exists to make [`normalize_performance_score`] work for [`Event`]s,
++/// [`V1 Spans`](Span), and [`V2 Spans`](SpanV2).
+ pub trait MutMeasurements {
+-    fn measurements(&mut self) -> &mut Annotated<Measurements>;
++    type MeasurementsContainer: MeasurementsLike;
++    fn measurements(&mut self) -> &mut Annotated<Self::MeasurementsContainer>;
++}
++
++impl MutMeasurements for Event {
++    type MeasurementsContainer = Measurements;
++    fn measurements(&mut self) -> &mut Annotated<Self::MeasurementsContainer> {
++        &mut self.measurements
++    }
++}
++
++impl MutMeasurements for Span {
++    type MeasurementsContainer = Measurements;
++    fn measurements(&mut self) -> &mut Annotated<Self::MeasurementsContainer> {
++        &mut self.measurements
++    }
++}
++
++impl MutMeasurements for SpanV2 {
++    type MeasurementsContainer = Attributes;
++
++    fn measurements(&mut self) -> &mut Annotated<Self::MeasurementsContainer> {
++        &mut self.attributes
++    }
+ }
+ 
+ /// Computes performance score measurements for an event.
+@@ -882,7 +961,7 @@ pub fn normalize_performance_score(
+             if let Some(measurements) = event.measurements().value_mut() {
+                 let mut should_add_total = false;
+                 if profile.score_components.iter().any(|c| {
+-                    !measurements.contains_key(c.measurement.as_str())
++                    !measurements.contains_measurement(c.measurement.as_str())
+                         && c.weight.abs() >= f64::EPSILON
+                         && !c.optional
+                 }) {
+@@ -896,7 +975,7 @@ pub fn normalize_performance_score(
+                 for component in &profile.score_components {
+                     // Skip optional components if they are not present on the event.
+                     if component.optional
+-                        && !measurements.contains_key(component.measurement.as_str())
++                        && !measurements.contains_measurement(component.measurement.as_str())
+                     {
+                         continue;
+                     }
+@@ -911,7 +990,9 @@ pub fn normalize_performance_score(
+                     // Optional measurements that are not present are given a weight of 0.
+                     let mut normalized_component_weight = FiniteF64::ZERO;
+ 
+-                    if let Some(value) = measurements.get_value(component.measurement.as_str()) {
++                    if let Some(value) =
++                        measurements.get_measurement_value(component.measurement.as_str())
++                    {
+                         normalized_component_weight = component.weight.saturating_div(weight_total);
+                         let cdf = utils::calculate_cdf_score(
+                             value.to_f64().max(0.0), // Webvitals can't be negative, but we need to clamp in case of bad data.
+@@ -921,13 +1002,12 @@ pub fn normalize_performance_score(
+ 
+                         let cdf = Annotated::try_from(cdf);
+ 
+-                        measurements.insert(
+-                            format!("score.ratio.{}", component.measurement),
++                        measurements.insert_measurement(
++                            interpolate::score__ratio__key(&component.measurement),
+                             Measurement {
+                                 value: cdf.clone(),
+                                 unit: (MetricUnit::Fraction(FractionUnit::Ratio)).into(),
+-                            }
+-                            .into(),
++                            },
+                         );
+ 
+                         let component_score =
+@@ -941,34 +1021,31 @@ pub fn normalize_performance_score(
+                             should_add_total = true;
+                         }
+ 
+-                        measurements.insert(
+-                            format!("score.{}", component.measurement),
++                        measurements.insert_measurement(
++                            interpolate::score__key(&component.measurement),
+                             Measurement {
+                                 value: component_score,
+                                 unit: (MetricUnit::Fraction(FractionUnit::Ratio)).into(),
+-                            }
+-                            .into(),
++                            },
+                         );
+                     }
+ 
+-                    measurements.insert(
+-                        format!("score.weight.{}", component.measurement),
++                    measurements.insert_measurement(
++                        interpolate::score__weight__key(&component.measurement),
+                         Measurement {
+                             value: normalized_component_weight.into(),
+                             unit: (MetricUnit::Fraction(FractionUnit::Ratio)).into(),
+-                        }
+-                        .into(),
++                        },
+                     );
+                 }
+                 if should_add_total {
+                     version.clone_from(&profile.version);
+-                    measurements.insert(
+-                        "score.total".to_owned(),
++                    measurements.insert_measurement(
++                        SCORE__TOTAL.to_owned(),
+                         Measurement {
+                             value: score_total.into(),
+                             unit: (MetricUnit::Fraction(FractionUnit::Ratio)).into(),
+-                        }
+-                        .into(),
++                        },
+                     );
+                 }
+             }
+@@ -1012,18 +1089,6 @@ fn normalize_trace_context_tags(event: &mut Event) {
+     }
+ }
+ 
+-impl MutMeasurements for Event {
+-    fn measurements(&mut self) -> &mut Annotated<Measurements> {
+-        &mut self.measurements
+-    }
+-}
+-
+-impl MutMeasurements for Span {
+-    fn measurements(&mut self) -> &mut Annotated<Measurements> {
+-        &mut self.measurements
+-    }
+-}
+-
+ /// Compute additional measurements derived from existing ones.
+ ///
+ /// The added measurements are:
+@@ -1584,6 +1649,7 @@ mod tests {
+     use serde_json::json;
+ 
+     use super::*;
++    use crate::eap;
+     use crate::{ClientHints, MeasurementsConfig, ModelCostV2, ModelMetadataEntry};
+ 
+     const IOS_MOBILE_EVENT: &str = r#"
+@@ -3241,7 +3307,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn test_computed_performance_score() {
++    fn test_computed_performance_score_transaction() {
+         let json = r#"
+         {
+             "type": "transaction",
+@@ -3402,6 +3468,181 @@ mod tests {
+         "###);
+     }
+ 
++    /// A version of `test_computed_performance_score_transaction` for
++    /// V2 spans. Results are _mutatis mutandis_ the same.
++    ///
++    /// The `"condition"` on the profile is written as a disjunction,
++    /// checking for the browser name in both `event.context` and in
++    /// `span.attributes`.
++    #[test]
++    fn test_computed_performance_score_spanv2() {
++        let json = r#"
++        {
++            "end_timestamp": "2021-04-26T08:00:05+0100",
++            "start_timestamp": "2021-04-26T08:00:00+0100",
++            "attributes": {
++                "browser.name": {"value": "Chrome", "type": "string"},
++                "browser.version": {"value": "120.1.1", "type": "string"},
++                "fid": {"value": 213, "type": "double"},
++                "browser.web_vital.fcp.value": {"value": 1237.0, "type": "double"},
++                "lcp": {"value": 6596, "type": "double"},
++                "browser.web_vital.cls.value": {"value": 0.11, "type": "double"}
++            }
++        }
++        "#;
++
++        let mut span = Annotated::<SpanV2>::from_json(json).unwrap().0.unwrap();
++
++        let performance_score: PerformanceScoreConfig = serde_json::from_value(json!({
++            "profiles": [
++                {
++                    "name": "Desktop",
++                    "scoreComponents": [
++                        {
++                            "measurement": "fcp",
++                            "weight": 0.15,
++                            "p10": 900,
++                            "p50": 1600
++                        },
++                        {
++                            "measurement": "lcp",
++                            "weight": 0.30,
++                            "p10": 1200,
++                            "p50": 2400
++                        },
++                        {
++                            "measurement": "fid",
++                            "weight": 0.30,
++                            "p10": 100,
++                            "p50": 300
++                        },
++                        {
++                            "measurement": "cls",
++                            "weight": 0.25,
++                            "p10": 0.1,
++                            "p50": 0.25
++                        },
++                        {
++                            "measurement": "ttfb",
++                            "weight": 0.0,
++                            "p10": 0.2,
++                            "p50": 0.4
++                        },
++                    ],
++                    "condition": {
++                        "op": "or",
++                        "inner": [{
++                            "op":"eq",
++                            "name": "event.context.browser.name",
++                            "value": "Chrome"
++                        }, {
++                            "op":"eq",
++                            "name": "span.attributes.browser.name.value",
++                            "value": "Chrome"
++                        }]
++                    }
++                }
++            ]
++        }))
++        .unwrap();
++
++        eap::normalize_attribute_names(&mut span.attributes);
++        normalize_performance_score(&mut span, Some(&performance_score));
++
++        insta::assert_ron_snapshot!(SerializableAnnotated(&Annotated::new(span)), {}, @r###"
++        {
++          "start_timestamp": 1619420400.0,
++          "end_timestamp": 1619420405.0,
++          "attributes": {
++            "browser.name": {
++              "type": "string",
++              "value": "Chrome",
++            },
++            "browser.version": {
++              "type": "string",
++              "value": "120.1.1",
++            },
++            "browser.web_vital.cls.value": {
++              "type": "double",
++              "value": 0.11,
++            },
++            "browser.web_vital.fcp.value": {
++              "type": "double",
++              "value": 1237.0,
++            },
++            "browser.web_vital.lcp.value": {
++              "type": "double",
++              "value": 6596,
++            },
++            "fid": {
++              "type": "double",
++              "value": 213,
++            },
++            "lcp": {
++              "type": "double",
++              "value": 6596,
++            },
++            "score.cls": {
++              "type": "double",
++              "value": 0.21864170607444863,
++            },
++            "score.fcp": {
++              "type": "double",
++              "value": 0.10750855443790831,
++            },
++            "score.fid": {
++              "type": "double",
++              "value": 0.19657361348282545,
++            },
++            "score.lcp": {
++              "type": "double",
++              "value": 0.009238896571386584,
++            },
++            "score.ratio.cls": {
++              "type": "double",
++              "value": 0.8745668242977945,
++            },
++            "score.ratio.fcp": {
++              "type": "double",
++              "value": 0.7167236962527221,
++            },
++            "score.ratio.fid": {
++              "type": "double",
++              "value": 0.6552453782760849,
++            },
++            "score.ratio.lcp": {
++              "type": "double",
++              "value": 0.03079632190462195,
++            },
++            "score.total": {
++              "type": "double",
++              "value": 0.531962770566569,
++            },
++            "score.weight.cls": {
++              "type": "double",
++              "value": 0.25,
++            },
++            "score.weight.fcp": {
++              "type": "double",
++              "value": 0.15,
++            },
++            "score.weight.fid": {
++              "type": "double",
++              "value": 0.3,
++            },
++            "score.weight.lcp": {
++              "type": "double",
++              "value": 0.3,
++            },
++            "score.weight.ttfb": {
++              "type": "double",
++              "value": 0.0,
++            },
++          },
++        }
++        "###);
++    }
++
+     // Test performance score is calculated correctly when the sum of weights is under 1.
+     // The expected result should normalize the weights to a sum of 1 and scale the weight measurements accordingly.
+     #[test]
+diff --git a/relay-event-normalization/src/normalize/utils.rs b/relay-event-normalization/src/normalize/utils.rs
+index 632598c57..46eaa02a7 100644
+--- a/relay-event-normalization/src/normalize/utils.rs
++++ b/relay-event-normalization/src/normalize/utils.rs
+@@ -191,7 +191,11 @@ fn calculate_cdf_sigma(p10: f64, p50: f64) -> f64 {
+     (p10.ln() - p50.ln()).abs() / (SQRT_2 * 0.9061938024368232)
+ }
+ 
+-/// Calculates a log-normal CDF score based on a log-normal with a specific p10 and p50
++/// Computes the [cumulative distribution function](https://en.wikipedia.org/wiki/Cumulative_distribution_function)
++/// of a [log-normal distribution](https://en.wikipedia.org/wiki/Log-normal_distribution) with the given p10 and p50.
++///
++/// In other words, if `X` is log-normally distributed with 10th and 50th percentile `p10` and `p50`,
++/// then `calculate_cdf_score(x, p10, p50) = P(X ≤ x)`.
+ pub fn calculate_cdf_score(value: f64, p10: f64, p50: f64) -> f64 {
+     0.5 * (1.0 - erf((f64::ln(value) - f64::ln(p50)) / (SQRT_2 * calculate_cdf_sigma(p50, p10))))
+ }
+diff --git a/relay-server/src/processing/spans/process.rs b/relay-server/src/processing/spans/process.rs
+index 889f720af..019b1ef60 100644
+--- a/relay-server/src/processing/spans/process.rs
++++ b/relay-server/src/processing/spans/process.rs
+@@ -207,6 +207,7 @@ fn normalize_span(
+             user_agent: meta.user_agent(),
+             hints: meta.client_hints(),
+         });
++        let performance_score = ctx.project_info.config().performance_score.as_ref();
+ 
+         validate_timestamps(span)?;
+ 
+@@ -230,6 +231,7 @@ fn normalize_span(
+         if ctx.is_processing() {
+             eap::normalize_ai(&mut span.attributes, duration, model_metdata);
+         }
++        relay_event_normalization::normalize_performance_score(span, performance_score);
+         eap::normalize_attribute_values(&mut span.attributes, allowed_hosts);
+         eap::write_legacy_attributes(&mut span.attributes);
+     };
+diff --git a/tests/integration/test_spans_standalone.py b/tests/integration/test_spans_standalone.py
+index f19851fc8..ce97e8afb 100644
+--- a/tests/integration/test_spans_standalone.py
++++ b/tests/integration/test_spans_standalone.py
+@@ -6,6 +6,95 @@ from .asserts import time_within_delta, time_within
+ 
+ import pytest
+ 
++# Some profiles from Sentry
++performance_score_profiles = [
++    {
++        "name": "Chrome",
++        "scoreComponents": [
++            {
++                "measurement": "fcp",
++                "weight": 0.15,
++                "p10": 900.0,
++                "p50": 1600.0,
++                "optional": True,
++            },
++            {
++                "measurement": "lcp",
++                "weight": 0.30,
++                "p10": 1200.0,
++                "p50": 2400.0,
++                "optional": True,
++            },
++            {
++                "measurement": "cls",
++                "weight": 0.15,
++                "p10": 0.1,
++                "p50": 0.25,
++                "optional": True,
++            },
++            {
++                "measurement": "ttfb",
++                "weight": 0.10,
++                "p10": 200.0,
++                "p50": 400.0,
++                "optional": True,
++            },
++        ],
++        "condition": {
++            "op": "or",
++            "inner": [
++                {
++                    "op": "eq",
++                    "name": "event.contexts.browser.name",
++                    "value": "Chrome",
++                },
++                {
++                    "op": "eq",
++                    "name": "span.attributes.browser.name.value",
++                    "value": "Chrome",
++                },
++            ],
++        },
++    },
++    {
++        "name": "Chrome INP",
++        "scoreComponents": [
++            {
++                "measurement": "inp",
++                "weight": 1.0,
++                "p10": 200.0,
++                "p50": 500.0,
++                "optional": False,
++            },
++        ],
++        "condition": {
++            "op": "or",
++            "inner": [
++                {
++                    "op": "eq",
++                    "name": "event.contexts.browser.name",
++                    "value": "Chrome",
++                },
++                {
++                    "op": "eq",
++                    "name": "event.contexts.browser.name",
++                    "value": "Google Chrome",
++                },
++                {
++                    "op": "eq",
++                    "name": "span.attributes.browser.name.value",
++                    "value": "Chrome",
++                },
++                {
++                    "op": "eq",
++                    "name": "span.attributes.browser.name.value",
++                    "value": "Google Chrome",
++                },
++            ],
++        },
++    },
++]
++
+ 
+ def envelope_with_spans(*payloads: dict, trace_info=None) -> Envelope:
+     envelope = Envelope()
+@@ -71,6 +160,9 @@ def test_lcp_span(
+ 
+     project_id = 42
+     project_config = mini_sentry.add_full_project_config(project_id)
++    project_config["config"]["performanceScore"] = {
++        "profiles": performance_score_profiles
++    }
+     if mode == "v2":
+         project_config["config"].setdefault("features", []).append(
+             "projects:span-v2-experimental-processing"
+@@ -169,6 +261,35 @@ def test_lcp_span(
+                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 "
+                 "Safari/537.36",
+             },
++            # Attributes computed by performace score normalization
++            "score.lcp": {
++                "type": "double",
++                "value": 0.9968400718909384,
++            },
++            "score.ratio.lcp": {
++                "type": "double",
++                "value": 0.9968400718909384,
++            },
++            "score.total": {
++                "type": "double",
++                "value": 0.9968400718909384,
++            },
++            "score.weight.cls": {
++                "type": "double",
++                "value": 0.0,
++            },
++            "score.weight.fcp": {
++                "type": "double",
++                "value": 0.0,
++            },
++            "score.weight.lcp": {
++                "type": "double",
++                "value": 1.0,
++            },
++            "score.weight.ttfb": {
++                "type": "double",
++                "value": 0.0,
++            },
+             **lcp_backfill,
+             **attributes,
+         },
+@@ -233,6 +354,9 @@ def test_cls_span(
+ 
+     project_id = 42
+     project_config = mini_sentry.add_full_project_config(project_id)
++    project_config["config"]["performanceScore"] = {
++        "profiles": performance_score_profiles
++    }
+     if mode == "v2":
+         project_config["config"].setdefault("features", []).append(
+             "projects:span-v2-experimental-processing"
+@@ -332,6 +456,35 @@ def test_cls_span(
+                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 "
+                 "Safari/537.36",
+             },
++            # Attributes computed by performace score normalization
++            "score.cls": {
++                "type": "double",
++                "value": 0.8999999314038525,
++            },
++            "score.ratio.cls": {
++                "type": "double",
++                "value": 0.8999999314038525,
++            },
++            "score.total": {
++                "type": "double",
++                "value": 0.8999999314038525,
++            },
++            "score.weight.cls": {
++                "type": "double",
++                "value": 1.0,
++            },
++            "score.weight.fcp": {
++                "type": "double",
++                "value": 0.0,
++            },
++            "score.weight.lcp": {
++                "type": "double",
++                "value": 0.0,
++            },
++            "score.weight.ttfb": {
++                "type": "double",
++                "value": 0.0,
++            },
+             **cls_backfill,
+             **attributes,
+         },
+@@ -396,6 +549,9 @@ def test_inp_span(
+ 
+     project_id = 42
+     project_config = mini_sentry.add_full_project_config(project_id)
++    project_config["config"]["performanceScore"] = {
++        "profiles": performance_score_profiles
++    }
+     if mode == "v2":
+         project_config["config"].setdefault("features", []).append(
+             "projects:span-v2-experimental-processing"
+@@ -475,6 +631,23 @@ def test_inp_span(
+                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 "
+                 "Safari/537.36",
+             },
++            # Attributes computed by performace score normalization
++            "score.inp": {
++                "type": "double",
++                "value": 0.9859595387898855,
++            },
++            "score.ratio.inp": {
++                "type": "double",
++                "value": 0.9859595387898855,
++            },
++            "score.total": {
++                "type": "double",
++                "value": 0.9859595387898855,
++            },
++            "score.weight.inp": {
++                "type": "double",
++                "value": 1.0,
++            },
+             **inp_backfill,
+             **attributes,
+         },
+diff --git a/tests/integration/test_spansv2.py b/tests/integration/test_spansv2.py
+index 8c05c6679..b37470878 100644
+--- a/tests/integration/test_spansv2.py
++++ b/tests/integration/test_spansv2.py
+@@ -1735,3 +1735,167 @@ def test_time_corrections(mini_sentry, relay, delta, error):
+         "trace_id": "5b8efff798038103d269b633813fc60c",
+         "span_id": "eee19b7ec3c1b175",
+     }
++
++
++# This test's performance score logic has been ported
++# from test_spans.py::test_span_ingestion_with_performance_scores
++def test_spansv2_ingestion_with_performance_scores(
++    mini_sentry, relay_with_processing, spans_consumer
++):
++    spans_consumer = spans_consumer()
++    relay = relay_with_processing()
++
++    project_id = 42
++    project_config = mini_sentry.add_full_project_config(project_id)
++    project_config["config"]["features"] = ["projects:span-v2-experimental-processing"]
++    project_config["config"]["performanceScore"] = {
++        "profiles": [
++            {
++                "name": "Desktop",
++                "scoreComponents": [
++                    {"measurement": "fcp", "weight": 0.15, "p10": 900, "p50": 1600},
++                    {"measurement": "lcp", "weight": 0.30, "p10": 1200, "p50": 2400},
++                    {"measurement": "fid", "weight": 0.30, "p10": 100, "p50": 300},
++                    {"measurement": "cls", "weight": 0.25, "p10": 0.1, "p50": 0.25},
++                    {"measurement": "ttfb", "weight": 0.0, "p10": 0.2, "p50": 0.4},
++                ],
++                "condition": {
++                    "op": "or",
++                    "inner": [
++                        {
++                            "op": "eq",
++                            "name": "event.contexts.browser.name",
++                            "value": "Firefox",
++                        },
++                        {
++                            "op": "eq",
++                            "name": "span.attributes.browser.name.value",
++                            "value": "Firefox",
++                        },
++                    ],
++                },
++            },
++            {
++                "name": "Desktop INP",
++                "scoreComponents": [
++                    {"measurement": "inp", "weight": 1.0, "p10": 200, "p50": 400},
++                ],
++                "condition": {
++                    "op": "or",
++                    "inner": [
++                        {
++                            "op": "eq",
++                            "name": "event.contexts.browser.name",
++                            "value": "Firefox",
++                        },
++                        {
++                            "op": "eq",
++                            "name": "span.attributes.browser.name.value",
++                            "value": "Firefox",
++                        },
++                    ],
++                },
++            },
++        ],
++    }
++
++    ts = datetime.now(timezone.utc)
++
++    envelope = envelope_with_spans(
++        {
++            "start_timestamp": ts.timestamp(),
++            "end_timestamp": ts.timestamp() + 0.5,
++            "trace_id": "5b8efff798038103d269b633813fc60c",
++            "span_id": "eee19b7ec3c1b175",
++            "is_segment": True,
++            "name": "some op",
++            "status": "ok",
++            "attributes": {
++                "sentry.op": {"value": "ui.interaction.click", "type": "string"},
++                "sentry.segment.id": {"value": "bd429c44b67a3eb1", "type": "string"},
++                "cls": {"value": 100.0, "type": "double"},
++                "fcp": {"value": 200.0, "type": "double"},
++                "fid": {"value": 300.0, "type": "double"},
++                "lcp": {"value": 400.0, "type": "double"},
++                "ttfb": {"value": 500.0, "type": "double"},
++            },
++        },
++        {
++            "start_timestamp": ts.timestamp(),
++            "end_timestamp": ts.timestamp() + 0.5,
++            "trace_id": "5b8efff798038103d269b633813fc60c",
++            "span_id": "eee19b7ec3c1b176",
++            "is_segment": True,
++            "name": "some op",
++            "status": "ok",
++            "attributes": {
++                "sentry.op": {"value": "ui.interaction.click", "type": "string"},
++                "sentry.profile_id": {
++                    "value": "3d9428087fda4ba0936788b70a7587d0",
++                    "type": "string",
++                },
++                "sentry.segment.id": {"value": "cd429c44b67a3eb1", "type": "string"},
++                "inp": {"value": 100.0, "type": "double"},
++            },
++        },
++        metadata={
++            "version": 2,
++            "ingest_settings": {
++                "infer_user_agent": "auto",
++            },
++        },
++        trace_info={
++            "trace_id": "5b8efff798038103d269b633813fc60c",
++            "public_key": project_config["publicKeys"][0]["publicKey"],
++            "release": "foo@1.0",
++            "environment": "prod",
++            "transaction": "/my/fancy/endpoint",
++        },
++    )
++    relay.send_envelope(project_id, envelope)
++
++    spans = spans_consumer.get_spans(timeout=10.0, n=2)
++
++    for span in spans:
++        span.pop("received", None)
++
++    # endpoint might overtake envelope
++    spans.sort(key=lambda msg: msg["span_id"])
++
++    expected_scores = [
++        {
++            "score.fcp": 0.14999972769539766,
++            "score.fid": 0.14999999985,
++            "score.lcp": 0.29986141375718806,
++            "score.ratio.cls": 0.0,
++            "score.ratio.fcp": 0.9999981846359844,
++            "score.ratio.fid": 0.4999999995,
++            "score.ratio.lcp": 0.9995380458572936,
++            "score.ratio.ttfb": 0.0,
++            "score.total": 0.5998611413025857,
++            "score.ttfb": 0.0,
++            "score.weight.cls": 0.25,
++            "score.weight.fcp": 0.15,
++            "score.weight.fid": 0.3,
++            "score.weight.lcp": 0.3,
++            "score.weight.ttfb": 0.0,
++            "cls": 100.0,
++            "fcp": 200.0,
++            "fid": 300.0,
++            "lcp": 400.0,
++            "ttfb": 500.0,
++            "score.cls": 0.0,
++        },
++        {
++            "inp": 100.0,
++            "score.inp": 0.9948129113413748,
++            "score.ratio.inp": 0.9948129113413748,
++            "score.total": 0.9948129113413748,
++            "score.weight.inp": 1.0,
++        },
++    ]
++
++    assert len(spans) == len(expected_scores)
++    for span, scores in zip(spans, expected_scores):
++        for key, score in scores.items():
++            assert span["attributes"][key]["value"] == score

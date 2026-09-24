@@ -10,11 +10,9 @@ repository passes all required checks.
 
 ![Task success on 120 WIDESWE tasks: GPT-5.6-sol with Codex CLI 42.50%; Qwen 3.8 Max with Claude Code 37.50%; Claude Opus 5 with Claude Code 35.00%; GPT-5.6-sol with Claude Code 32.50%; DeepSeek V4 Pro with Claude Code 26.67%; GLM 5.3 with Claude Code 20.00%; Gemini 3.8 Flash with Claude Code 10.83%.](assets/task_success.png)
 
-The task definitions are published in the
-[WIDESWE Hugging Face dataset](https://huggingface.co/datasets/wwww369/WIDESWE).
-This repository contains the evaluation harness, Claude Code and Codex adapters,
-container definitions, and the reusable portion of the data-construction
-pipeline.
+This repository contains all 120 task definitions, the evaluation harness,
+Claude Code and Codex adapters, container definitions, and the reusable portion
+of the data-construction pipeline.
 
 ## Requirements
 
@@ -34,43 +32,34 @@ python -m pip install -r requirements.txt
 
 ## Prepare Release120
 
-Download the task definitions and create the flat task index expected by the
-harness:
-
-```bash
-python scripts/download_dataset.py --output-dir data/release120
-export ECOSYNC_TASKS_DIR="$PWD/data/release120/tasks"
-```
-
-The downloader stores the Hugging Face snapshot at `data/release120/`. The
-original hierarchy remains under
-`data/release120/cases/<ecosystem>/<case_id>/`; the script also creates
-`data/release120/tasks/<case_id>` symlinks so the harness can address cases by
-ID. The whole `data/` directory is excluded from Git.
+Task definitions are stored under `cases/<ecosystem>/<case_id>/` and indexed by
+`release120.tsv`. The repository includes a flat symlink index under
+`benchmark/tasks/`, which is the harness default, so no dataset download step is
+required.
 
 Fetch the exact source revisions referenced by all cases:
 
 ```bash
 python scripts/fetch_sources.py \
-  --tasks-dir "$ECOSYNC_TASKS_DIR" \
+  --tasks-dir benchmark/tasks \
   --output-dir "$HOME/.cache/wideswe/source-repos"
 export ECOSYNC_SOURCE_REPOS_ROOT="$HOME/.cache/wideswe/source-repos"
 ```
 
-`ECOSYNC_TASKS_DIR` points to case metadata and test definitions.
+`benchmark/tasks` points to the bundled case metadata and test definitions.
 `ECOSYNC_SOURCE_REPOS_ROOT` points to the local cache of pinned upstream Git
 revisions. Agent and evaluator workspaces are created from these two roots;
-neither directory should be copied into this repository.
+the source cache should not be copied into this repository.
 
 The `ECOSYNC_*` environment-variable prefix and `.ecosyncbench` workspace
 metadata directory are retained as a compatibility interface for the frozen
 Release120 images. They are implementation identifiers; the benchmark and
 release name is WIDESWE.
 
-Pull the frozen images referenced by a case:
+Build the frozen environment images referenced by a case:
 
 ```bash
-python benchmark/harness/pull_images.py --task CASE_ID
+python benchmark/harness/ecosync_harness.py build-env --task CASE_ID
 ```
 
 ## Configure An Agent
@@ -139,5 +128,8 @@ workspaces are removed by default after their durable artifacts are saved.
 - `benchmark/harness/`: workspace preparation, agent orchestration, and evaluation.
 - `benchmark/agents/`: Claude Code and Codex adapters and pinned runtime builders.
 - `benchmark/images/`: base and dependency image definitions.
+- `benchmark/tasks/`: flat index of the 120 bundled tasks.
+- `cases/`: prompts, pinned revisions, environments, gold patches, and hidden tests.
+- `release120.tsv`: canonical task order and summary metadata.
 - `data_mining/`: reusable case-discovery and construction scripts.
-- `scripts/`: dataset and source-repository bootstrap tools.
+- `scripts/`: source-repository bootstrap and release utility scripts.

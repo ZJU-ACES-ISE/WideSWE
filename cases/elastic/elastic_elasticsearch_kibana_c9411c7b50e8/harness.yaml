@@ -1,0 +1,31 @@
+task_id: elastic_elasticsearch_kibana_c9411c7b50e8
+hidden_test_patches:
+- repo: elasticsearch
+  patch: hidden/patches/elasticsearch-hidden-tests.patch
+  test_profile: elasticsearch-hidden
+  origin: contract_test
+  source_file: &id001
+  - x-pack/plugin/esql/src/test/java/org/elasticsearch/xpack/esql/optimizer/promql/PromqlBucketsContractTests.java
+  hidden_file: *id001
+  semantic_changes: none
+  source: prompt-visible behavior from elastic/elasticsearch PR(s) 142582
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: contract_test
+  source_file: &id002
+  - src/platform/packages/shared/kbn-esql-language/src/commands/registry/promql/buckets_contract.ecosync.test.ts
+  hidden_file: *id002
+  semantic_changes: none
+  source: prompt-visible behavior from elastic/kibana PR(s) 253630
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - elasticsearch-hidden
+    - kibana-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

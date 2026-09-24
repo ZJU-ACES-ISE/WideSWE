@@ -1,0 +1,120 @@
+diff --git a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStaticTests.cs b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStaticTests.cs
+index 570dac8f8..3fb7d889e 100644
+--- a/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStaticTests.cs
++++ b/src/NetAnalyzers/UnitTests/Microsoft.CodeQuality.Analyzers/QualityGuidelines/MarkMembersAsStaticTests.cs
+@@ -1322,7 +1322,7 @@ public class C1
+         get;
+     }
+ 
+-    public string [|P4|] // Because of the error there is no generated field
++    public string P4 // Because of the error there is no generated field
+     {
+         [DebuggerStepThrough]
+         {|CS8051:set|};
+@@ -1500,7 +1500,7 @@ public class Test
+             }.RunAsync();
+         }
+ 
+-        [Fact(Skip = "Need update of roslyn to parse primary constructors properly"), WorkItem(6573, "https://github.com/dotnet/roslyn-analyzers/issues/6573")]
++        [Fact, WorkItem(6573, "https://github.com/dotnet/roslyn-analyzers/issues/6573")]
+         public Task PrimaryConstructor()
+         {
+             return new VerifyCS.Test
+@@ -1529,5 +1529,53 @@ public class Test
+                 LanguageVersion = LanguageVersion.Preview
+             }.RunAsync();
+         }
++
++        [Fact, WorkItem(78858, "https://github.com/dotnet/roslyn/issues/78858")]
++        public Task ExtensionMembers_Instance()
++        {
++            return new VerifyCS.Test
++            {
++                TestCode = """
++                    public static class E
++                    {
++                        extension(int x)
++                        {
++                            public int M() => x + 1;
++                            public int P => x + 1;
++                        }
++                    }
++                    """,
++                LanguageVersion = LanguageVersion.Preview,
++            }.RunAsync();
++        }
++
++        [Fact, WorkItem(78858, "https://github.com/dotnet/roslyn/issues/78858")]
++        public Task ExtensionMembers_Static()
++        {
++            return new VerifyCS.Test
++            {
++                TestCode = """
++                    public static class E
++                    {
++                        extension(int x)
++                        {
++                            public int [|M|]() => 1;
++                            public int [|P|] => 2;
++                        }
++                    }
++                    """,
++                FixedCode = """
++                    public static class E
++                    {
++                        extension(int x)
++                        {
++                            public static int M() => 1;
++                            public static int P => 2;
++                        }
++                    }
++                    """,
++                LanguageVersion = LanguageVersion.Preview,
++            }.RunAsync();
++        }
+     }
+ }
+diff --git a/src/NetAnalyzers/UnitTests/Microsoft.NetCore.Analyzers/InteropServices/DynamicInterfaceCastableImplementationTests.cs b/src/NetAnalyzers/UnitTests/Microsoft.NetCore.Analyzers/InteropServices/DynamicInterfaceCastableImplementationTests.cs
+index c4c57e83b..9f3685965 100644
+--- a/src/NetAnalyzers/UnitTests/Microsoft.NetCore.Analyzers/InteropServices/DynamicInterfaceCastableImplementationTests.cs
++++ b/src/NetAnalyzers/UnitTests/Microsoft.NetCore.Analyzers/InteropServices/DynamicInterfaceCastableImplementationTests.cs
+@@ -586,8 +586,7 @@ interface I2 : I
+ {
+     void I.Method() {}
+ 
+-    private static void Method2(I2 @this)
+-    { }
++    private static void Method2(I2 @this) { }
+ }";
+ 
+             await VerifyCSCodeFixAsync(source, codeFix);
+@@ -787,8 +786,7 @@ interface I2 : I
+ {
+     void I.Method() {}
+ 
+-    public static void Method2(I2 @this)
+-    { }
++    public static void Method2(I2 @this) { }
+ }";
+ 
+             await VerifyCSCodeFixAsync(source, codeFix);
+@@ -826,8 +824,7 @@ interface I2 : I
+ {
+     void I.Method() {}
+ 
+-    public static void Method2(I2 @this)
+-    { }
++    public static void Method2(I2 @this) { }
+ }";
+ 
+             await VerifyCSCodeFixAsync(source, codeFix);
+@@ -865,8 +862,7 @@ interface I2 : I
+ {
+     void I.Method() {}
+ 
+-    protected static void Method2(I2 @this)
+-    { }
++    protected static void Method2(I2 @this) { }
+ }";
+ 
+             await VerifyCSCodeFixAsync(source, codeFix);

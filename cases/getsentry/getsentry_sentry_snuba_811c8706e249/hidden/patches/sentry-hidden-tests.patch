@@ -1,0 +1,159 @@
+diff --git a/tests/sentry/middleware/test_access_log_middleware.py b/tests/sentry/middleware/test_access_log_middleware.py
+index 0847b0c8d0f..26479d70656 100644
+--- a/tests/sentry/middleware/test_access_log_middleware.py
++++ b/tests/sentry/middleware/test_access_log_middleware.py
+@@ -1,4 +1,5 @@
+ import logging
++from unittest import mock
+ from urllib.parse import unquote
+ 
+ import pytest
+@@ -6,6 +7,8 @@ from django.test import override_settings
+ from django.urls import re_path, reverse
+ from rest_framework.permissions import AllowAny
+ from rest_framework.response import Response
++from snuba_sdk import Entity, Function, Query, Request
++from urllib3.response import HTTPResponse
+ 
+ from sentry.api.base import Endpoint
+ from sentry.api.bases.organization import ControlSiloOrganizationEndpoint, OrganizationEndpoint
+@@ -15,8 +18,11 @@ from sentry.models.apitoken import ApiToken
+ from sentry.ratelimits.config import RateLimitConfig
+ from sentry.silo.base import SiloMode
+ from sentry.testutils.cases import APITestCase
++from sentry.testutils.helpers import override_options
+ from sentry.testutils.silo import all_silo_test, assume_test_silo_mode, control_silo_test
+ from sentry.types.ratelimit import RateLimit, RateLimitCategory
++from sentry.utils import json
++from sentry.utils.snuba import bulk_snuba_queries
+ 
+ 
+ class DummyEndpoint(Endpoint):
+@@ -33,6 +39,62 @@ class DummyFailEndpoint(Endpoint):
+         raise Exception("this is bad yo")
+ 
+ 
++class SnubaRateLimitedEndpoint(Endpoint):
++    permission_classes = (AllowAny,)
++    quota_allowance = {
++        "details": {
++            "ConcurrentRateLimitAllocationPolicy": {"rejection_threshold": 40}
++        },
++        "summary": {
++            "rejected_by": {
++                "policy": "ConcurrentRateLimitAllocationPolicy",
++                "quota_used": 41,
++                "rejection_threshold": 40,
++                "quota_unit": "no_units",
++                "storage_key": "test_storage_key",
++            },
++            "throttled_by": {},
++        },
++    }
++    legacy_quota_allowance = {"details": {"summary": quota_allowance["summary"]}}
++
++    def get(self, request):
++        mock_response = mock.Mock(spec=HTTPResponse)
++        mock_response.status = 429
++        mock_response.data = json.dumps(
++            {
++                "quota_allowance": self.quota_allowance,
++                "error": {
++                    "message": "Query could not run due to allocation policies",
++                    "stats": {"quota_allowance": self.legacy_quota_allowance},
++                }
++            }
++        ).encode()
++        snuba_request = Request(
++            dataset="events",
++            app_id="test",
++            query=Query(
++                match=Entity("events"),
++                select=[Function("count", parameters=[], alias="count")],
++            ),
++        )
++        with mock.patch(
++            "sentry.utils.snuba._snuba_query",
++            return_value=(
++                "test_referrer",
++                mock_response,
++                lambda value: value,
++                lambda value: value,
++            ),
++        ):
++            bulk_snuba_queries([snuba_request], referrer="test_referrer")
++
++
++class SnubaRateLimitedWithoutQuotaDetailsEndpoint(SnubaRateLimitedEndpoint):
++    quota_allowance = {"details": {}, "summary": {}}
++    legacy_quota_allowance = {"details": {"summary": {}}}
++
++
+ class RateLimitedEndpoint(Endpoint):
+     permission_classes = (AllowAny,)
+     enforce_rate_limit = True
+@@ -83,6 +145,14 @@ urlpatterns = [
+     re_path(r"^/dummy$", DummyEndpoint.as_view(), name="dummy-endpoint"),
+     re_path(r"^api/0/internal/test$", DummyEndpoint.as_view(), name="internal-dummy-endpoint"),
+     re_path(r"^/dummyfail$", DummyFailEndpoint.as_view(), name="dummy-fail-endpoint"),
++    re_path(
++        r"^snubaratelimit$", SnubaRateLimitedEndpoint.as_view(), name="snuba-ratelimit-endpoint"
++    ),
++    re_path(
++        r"^snubaratelimitwithoutdetails$",
++        SnubaRateLimitedWithoutQuotaDetailsEndpoint.as_view(),
++        name="snuba-ratelimit-without-details-endpoint",
++    ),
+     re_path(r"^/dummyratelimit$", RateLimitedEndpoint.as_view(), name="ratelimit-endpoint"),
+     re_path(
+         r"^/dummyratelimitconcurrent$",
+@@ -154,6 +224,49 @@ class LogCaptureAPITestCase(APITestCase):
+         return next(log for log in self.captured_logs if log.path == tested_log_path)
+ 
+ 
++@all_silo_test
++class TestAccessLogSnubaRateLimited(LogCaptureAPITestCase):
++    endpoint = "snuba-ratelimit-endpoint"
++
++    def test_access_log_snuba_rate_limited(self):
++        """Test that Snuba rate limits are properly logged by access log middleware."""
++        self._caplog.set_level(logging.INFO, logger="sentry")
++        with override_options({"issues.use-snuba-error-data": 1.0}):
++            self.get_error_response(status_code=429)
++        self.assert_access_log_recorded()
++
++        assert self.captured_logs[0].rate_limit_type == "RateLimitType.SNUBA"
++        assert self.captured_logs[0].rate_limited == "True"
++
++        # All the types from the standard rate limit metadata should not be set
++        assert self.captured_logs[0].remaining == "None"
++        assert self.captured_logs[0].concurrent_limit == "None"
++        assert self.captured_logs[0].concurrent_requests == "None"
++        assert self.captured_logs[0].limit == "None"
++        assert self.captured_logs[0].reset_time == "None"
++
++        # Snuba rate limit specific fields should be set
++        assert self.captured_logs[0].snuba_policy == "ConcurrentRateLimitAllocationPolicy"
++        assert self.captured_logs[0].snuba_quota_unit == "no_units"
++        assert self.captured_logs[0].snuba_storage_key == "test_storage_key"
++        assert self.captured_logs[0].snuba_quota_used == "41"
++        assert self.captured_logs[0].snuba_rejection_threshold == "40"
++
++
++@all_silo_test
++class TestAccessLogSnubaRateLimitedWithoutQuotaDetails(LogCaptureAPITestCase):
++    endpoint = "snuba-ratelimit-without-details-endpoint"
++
++    def test_access_log_snuba_rate_limited_without_quota_details(self):
++        self._caplog.set_level(logging.INFO, logger="sentry")
++        with override_options({"issues.use-snuba-error-data": 1.0}):
++            self.get_error_response(status_code=429)
++        self.assert_access_log_recorded()
++
++        assert self.captured_logs[0].rate_limit_type == "RateLimitType.SNUBA"
++        assert self.captured_logs[0].rate_limited == "True"
++
++
+ @all_silo_test
+ @override_settings(SENTRY_SELF_HOSTED=False)
+ class TestAccessLogRateLimited(LogCaptureAPITestCase):

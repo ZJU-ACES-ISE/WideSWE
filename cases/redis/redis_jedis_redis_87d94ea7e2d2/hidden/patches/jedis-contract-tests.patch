@@ -1,0 +1,258 @@
+diff --git a/src/test/java/redis/clients/jedis/commands/jedis/StreamDeletionContractTest.java b/src/test/java/redis/clients/jedis/commands/jedis/StreamDeletionContractTest.java
+new file mode 100644
+index 000000000..8f4a1b2c3
+--- /dev/null
++++ b/src/test/java/redis/clients/jedis/commands/jedis/StreamDeletionContractTest.java
+@@ -0,0 +1,252 @@
++package redis.clients.jedis.commands.jedis;
++
++import static java.util.Collections.singletonMap;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static redis.clients.jedis.StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY;
++
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.lang.reflect.Modifier;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedClass;
++import org.junit.jupiter.params.provider.MethodSource;
++
++import redis.clients.jedis.Jedis;
++import redis.clients.jedis.Pipeline;
++import redis.clients.jedis.RedisProtocol;
++import redis.clients.jedis.Response;
++import redis.clients.jedis.StreamEntryID;
++import redis.clients.jedis.UnifiedJedis;
++import redis.clients.jedis.params.XAddParams;
++import redis.clients.jedis.params.XReadGroupParams;
++import redis.clients.jedis.params.XTrimParams;
++
++@ParameterizedClass
++@MethodSource("redis.clients.jedis.commands.CommandsTestsParameters#respVersions")
++public class StreamDeletionContractTest extends JedisCommandsTestBase {
++
++  private static final String KEY = "{stream-deletion-contract}";
++  private static final String GROUP = "contract-group";
++  private static final String CONSUMER = "contract-consumer";
++  private static final String POLICY_CLASS =
++      "redis.clients.jedis.args.StreamDeletionPolicy";
++  private static final String RESULT_CLASS =
++      "redis.clients.jedis.resps.StreamEntryDeletionResult";
++
++  public StreamDeletionContractTest(RedisProtocol protocol) {
++    super(protocol);
++  }
++
++  @Test
++  public void exposesRequiredTypesAndApiFamilies() throws Exception {
++    Class<?> policyType = Class.forName(POLICY_CLASS);
++    Class<?> resultType = Class.forName(RESULT_CLASS);
++
++    assertEquals(setOf("KEEP_REFERENCES", "DELETE_REFERENCES", "ACKNOWLEDGED"),
++        enumNames(policyType));
++    assertEquals(setOf("NOT_FOUND", "DELETED", "ACKNOWLEDGED_NOT_DELETED"),
++        enumNames(resultType));
++
++    for (Class<?> api : Arrays.asList(Jedis.class, UnifiedJedis.class, Pipeline.class)) {
++      for (boolean binary : Arrays.asList(false, true)) {
++        assertNotNull(findStreamMethod(api, "xdelex", binary, false, false, policyType));
++        assertNotNull(findStreamMethod(api, "xdelex", binary, false, true, policyType));
++        assertNotNull(findStreamMethod(api, "xackdel", binary, true, false, policyType));
++        assertNotNull(findStreamMethod(api, "xackdel", binary, true, true, policyType));
++      }
++    }
++
++    assertNotNull(findPolicySetter(XAddParams.class, policyType));
++    assertNotNull(findPolicySetter(XTrimParams.class, policyType));
++  }
++
++  @Test
++  public void xdelexReturnsOneMappedResultPerStringId() throws Exception {
++    jedis.xadd(KEY, new XAddParams().id("1-0"), singletonMap("field", "one"));
++
++    List<?> results = invokeDirect("xdelex", false, false, null,
++        new StreamEntryID("1-0"), new StreamEntryID("9-0"));
++
++    assertResultNames(results, "DELETED", "NOT_FOUND");
++    assertEquals(0L, jedis.xlen(KEY));
++  }
++
++  @Test
++  public void xdelexSupportsBinaryKeysAndIds() throws Exception {
++    byte[] key = (KEY + "-binary").getBytes();
++    byte[] id = "1-0".getBytes();
++    jedis.xadd(key, new XAddParams().id("1-0"),
++        singletonMap("field".getBytes(), "value".getBytes()));
++
++    Method method = findStreamMethod(jedis.getClass(), "xdelex", true, false, false,
++        Class.forName(POLICY_CLASS));
++    List<?> results = asList(invoke(method, jedis, key, new byte[][] {id}));
++
++    assertResultNames(results, "DELETED");
++    assertEquals(0L, jedis.xlen(key));
++  }
++
++  @Test
++  public void xackdelAcknowledgesAndReturnsMappedResults() throws Exception {
++    jedis.xgroupCreate(KEY, GROUP, new StreamEntryID("0-0"), true);
++    jedis.xadd(KEY, new XAddParams().id("1-0"), singletonMap("field", "one"));
++    jedis.xreadGroup(GROUP, CONSUMER, XReadGroupParams.xReadGroupParams().count(1),
++        singletonMap(KEY, XREADGROUP_UNDELIVERED_ENTRY));
++
++    List<?> results = invokeDirect("xackdel", false, true, null,
++        new StreamEntryID("1-0"), new StreamEntryID("9-0"));
++
++    assertResultNames(results, "DELETED", "NOT_FOUND");
++    assertEquals(0L, jedis.xlen(KEY));
++  }
++
++  @Test
++  public void pipelineReturnsMappedDeletionResults() throws Exception {
++    jedis.xadd(KEY, new XAddParams().id("1-0"), singletonMap("field", "one"));
++    Pipeline pipeline = jedis.pipelined();
++    try {
++      Method method = findStreamMethod(pipeline.getClass(), "xdelex", false, false, false,
++          Class.forName(POLICY_CLASS));
++      Object queued = invoke(method, pipeline, KEY,
++          new StreamEntryID[] {new StreamEntryID("1-0")});
++      assertTrue(queued instanceof Response);
++      pipeline.sync();
++      assertResultNames(asList(((Response<?>) queued).get()), "DELETED");
++    } finally {
++      pipeline.close();
++    }
++  }
++
++  @Test
++  public void xaddAndXtrimParamsAcceptDeletionPolicies() throws Exception {
++    Class<?> policyType = Class.forName(POLICY_CLASS);
++    Object acknowledged = enumConstant(policyType, "ACKNOWLEDGED");
++    Object deleteReferences = enumConstant(policyType, "DELETE_REFERENCES");
++
++    jedis.xadd(KEY, new XAddParams().id("1-0"), singletonMap("field", "one"));
++    jedis.xadd(KEY, new XAddParams().id("2-0"), singletonMap("field", "two"));
++    jedis.xadd(KEY, new XAddParams().id("3-0"), singletonMap("field", "three"));
++    jedis.xgroupCreate(KEY, GROUP, new StreamEntryID("0-0"), false);
++
++    XAddParams xadd = new XAddParams().maxLen(1).id("4-0");
++    xadd = (XAddParams) invoke(findPolicySetter(XAddParams.class, policyType),
++        xadd, acknowledged);
++    jedis.xadd(KEY, xadd, singletonMap("field", "four"));
++    assertEquals(4L, jedis.xlen(KEY));
++
++    XTrimParams xtrim = XTrimParams.xTrimParams().maxLen(1);
++    Object configured = invoke(findPolicySetter(XTrimParams.class, policyType),
++        xtrim, deleteReferences);
++    assertTrue(configured instanceof XTrimParams);
++  }
++
++  private List<?> invokeDirect(String name, boolean binary, boolean hasGroup, Object policy,
++      StreamEntryID... ids) throws Exception {
++    Class<?> policyType = Class.forName(POLICY_CLASS);
++    Method method = findStreamMethod(jedis.getClass(), name, binary, hasGroup,
++        policy != null, policyType);
++    List<Object> args = new ArrayList<>();
++    args.add(KEY);
++    if (hasGroup) {
++      args.add(GROUP);
++    }
++    if (policy != null) {
++      args.add(policy);
++    }
++    args.add(ids);
++    return asList(invoke(method, jedis, args.toArray()));
++  }
++
++  private static Method findStreamMethod(Class<?> api, String name, boolean binary,
++      boolean hasGroup, boolean hasPolicy, Class<?> policyType) throws NoSuchMethodException {
++    Class<?> keyType = binary ? byte[].class : String.class;
++    Class<?> idsType = binary ? byte[][].class : StreamEntryID[].class;
++    int expectedCount = 2 + (hasGroup ? 1 : 0) + (hasPolicy ? 1 : 0);
++
++    for (Method method : api.getMethods()) {
++      if (!method.getName().equals(name) || !Modifier.isPublic(method.getModifiers())) {
++        continue;
++      }
++      Class<?>[] parameters = method.getParameterTypes();
++      if (parameters.length != expectedCount || parameters[0] != keyType) {
++        continue;
++      }
++      int index = 1;
++      if (hasGroup && parameters[index++] != keyType) {
++        continue;
++      }
++      if (hasPolicy && parameters[index++] != policyType) {
++        continue;
++      }
++      if (parameters[index] == idsType) {
++        return method;
++      }
++    }
++    throw new NoSuchMethodException(api.getName() + "#" + name);
++  }
++
++  private static Method findPolicySetter(Class<?> paramsType, Class<?> policyType)
++      throws NoSuchMethodException {
++    for (Method method : paramsType.getMethods()) {
++      if (Modifier.isPublic(method.getModifiers())
++          && !Modifier.isStatic(method.getModifiers())
++          && method.getParameterCount() == 1
++          && method.getParameterTypes()[0] == policyType
++          && paramsType.isAssignableFrom(method.getReturnType())) {
++        return method;
++      }
++    }
++    throw new NoSuchMethodException(paramsType.getName() + " policy setter");
++  }
++
++  private static Object invoke(Method method, Object target, Object... args) throws Exception {
++    try {
++      return method.invoke(target, args);
++    } catch (InvocationTargetException error) {
++      Throwable cause = error.getCause();
++      if (cause instanceof Exception) {
++        throw (Exception) cause;
++      }
++      throw error;
++    }
++  }
++
++  private static List<?> asList(Object value) {
++    assertTrue(value instanceof List);
++    return (List<?>) value;
++  }
++
++  private static void assertResultNames(List<?> values, String... expected) {
++    List<String> actual = new ArrayList<>();
++    for (Object value : values) {
++      assertEquals(RESULT_CLASS, value.getClass().getName());
++      actual.add(((Enum<?>) value).name());
++    }
++    assertEquals(Arrays.asList(expected), actual);
++  }
++
++  @SuppressWarnings({"rawtypes", "unchecked"})
++  private static Object enumConstant(Class<?> type, String name) {
++    return Enum.valueOf((Class<? extends Enum>) type.asSubclass(Enum.class), name);
++  }
++
++  private static Set<String> enumNames(Class<?> type) {
++    Set<String> names = new HashSet<>();
++    for (Object value : type.getEnumConstants()) {
++      names.add(((Enum<?>) value).name());
++    }
++    return names;
++  }
++
++  private static Set<String> setOf(String... values) {
++    return new HashSet<>(Arrays.asList(values));
++  }
++}

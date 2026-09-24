@@ -1,0 +1,1737 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 73e3d84..013ca5c 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,11 @@
+ # Changelog
+ 
++## Unreleased
++
++### Features
++
++- feat(react-router): Use `sentryOnError` on `HydratedRouter` instead of mutating `root.tsx` ErrorBoundary
++
+ ## 6.12.0
+ 
+ ### Features
+diff --git a/e2e-tests/tests/react-router.test.ts b/e2e-tests/tests/react-router.test.ts
+index 362d04e..e4f761a 100644
+--- a/e2e-tests/tests/react-router.test.ts
++++ b/e2e-tests/tests/react-router.test.ts
+@@ -161,12 +161,9 @@ describe('React Router', () => {
+       ]);
+     });
+ 
+-    test('root file contains Sentry ErrorBoundary', () => {
+-      checkFileContents(`${projectDir}/app/root.tsx`, [
+-        'import * as Sentry from',
+-        '@sentry/react-router',
+-        'export function ErrorBoundary',
+-        'Sentry.captureException(error)',
++    test('entry.client file contains onError prop on HydratedRouter', () => {
++      checkFileContents(`${projectDir}/app/entry.client.tsx`, [
++        'onError={Sentry.sentryOnError}',
+       ]);
+     });
+ 
+diff --git a/src/react-router/codemods/client.entry.ts b/src/react-router/codemods/client.entry.ts
+index e730fb6..fa7d611 100644
+--- a/src/react-router/codemods/client.entry.ts
++++ b/src/react-router/codemods/client.entry.ts
+@@ -2,8 +2,8 @@
+ /* eslint-disable @typescript-eslint/no-unsafe-member-access */
+ 
+ import * as recast from 'recast';
+-import * as path from 'path';
+ import type { namedTypes as t } from 'ast-types';
++import type { ExpressionKind } from 'ast-types/lib/gen/kinds';
+ 
+ // @ts-expect-error - clack is ESM and TS complains about that. It works though
+ import clack from '@clack/prompts';
+@@ -21,30 +21,28 @@ export async function instrumentClientEntry(
+   enableReplay: boolean,
+   enableLogs: boolean,
+   useInstrumentationAPI = false,
++  useOnError = false,
+ ): Promise<void> {
+   const clientEntryAst = await loadFile(clientEntryPath);
+ 
+-  if (hasSentryContent(clientEntryAst.$ast as t.Program)) {
+-    const filename = path.basename(clientEntryPath);
+-    clack.log.info(`Sentry initialization found in ${chalk.cyan(filename)}`);
+-    return;
+-  }
++  const alreadyHasSentry = hasSentryContent(clientEntryAst.$ast as t.Program);
+ 
+-  clientEntryAst.imports.$add({
+-    from: '@sentry/react-router',
+-    imported: '*',
+-    local: 'Sentry',
+-  });
++  if (!alreadyHasSentry) {
++    clientEntryAst.imports.$add({
++      from: '@sentry/react-router',
++      imported: '*',
++      local: 'Sentry',
++    });
+ 
+-  let initContent: string;
++    let initContent: string;
+ 
+-  if (useInstrumentationAPI && enableTracing) {
+-    const integrations = ['tracing'];
+-    if (enableReplay) {
+-      integrations.push('Sentry.replayIntegration()');
+-    }
++    if (useInstrumentationAPI && enableTracing) {
++      const integrations = ['tracing'];
++      if (enableReplay) {
++        integrations.push('Sentry.replayIntegration()');
++      }
+ 
+-    initContent = `
++      initContent = `
+ const tracing = Sentry.reactRouterTracingIntegration({ useInstrumentationAPI: true });
+ 
+ Sentry.init({
+@@ -59,63 +57,95 @@ Sentry.init({
+       : ''
+   }
+ });`;
+-  } else {
+-    const integrations = [];
+-    if (enableTracing) {
+-      integrations.push('Sentry.reactRouterTracingIntegration()');
+-    }
+-    if (enableReplay) {
+-      integrations.push('Sentry.replayIntegration()');
+-    }
++    } else {
++      const integrations = [];
++      if (enableTracing) {
++        integrations.push('Sentry.reactRouterTracingIntegration()');
++      }
++      if (enableReplay) {
++        integrations.push('Sentry.replayIntegration()');
++      }
+ 
+-    initContent = `
++      initContent = `
+ Sentry.init({
+   dsn: "${dsn}",
+   sendDefaultPii: true,
+   integrations: [${integrations.join(', ')}],
+   ${enableLogs ? 'enableLogs: true,' : ''}
+   tracesSampleRate: ${enableTracing ? '1.0' : '0'},${
+-      enableTracing
+-        ? '\n  tracePropagationTargets: [/^\\//, /^https:\\/\\/yourserver\\.io\\/api/],'
+-        : ''
+-    }${
+-      enableReplay
+-        ? '\n  replaysSessionSampleRate: 0.1,\n  replaysOnErrorSampleRate: 1.0,'
+-        : ''
+-    }
++        enableTracing
++          ? '\n  tracePropagationTargets: [/^\\//, /^https:\\/\\/yourserver\\.io\\/api/],'
++          : ''
++      }${
++        enableReplay
++          ? '\n  replaysSessionSampleRate: 0.1,\n  replaysOnErrorSampleRate: 1.0,'
++          : ''
++      }
+ });`;
++    }
++
++    (clientEntryAst.$ast as t.Program).body.splice(
++      getAfterImportsInsertionIndex(clientEntryAst.$ast as t.Program),
++      0,
++      ...recast.parse(initContent).program.body,
++    );
+   }
+ 
+-  (clientEntryAst.$ast as t.Program).body.splice(
+-    getAfterImportsInsertionIndex(clientEntryAst.$ast as t.Program),
+-    0,
+-    ...recast.parse(initContent).program.body,
+-  );
++  const useInstrAPI = useInstrumentationAPI && enableTracing;
++  const addInstrProp = useInstrAPI && !alreadyHasSentry;
+ 
+-  if (useInstrumentationAPI && enableTracing) {
+-    const hydratedRouterFound = addInstrumentationPropsToHydratedRouter(
+-      clientEntryAst.$ast as t.Program,
+-    );
++  if (addInstrProp) {
++    addInstrumentationPropsToHydratedRouter(clientEntryAst.$ast as t.Program);
++  }
++
++  if (useOnError) {
++    addOnErrorToHydratedRouter(clientEntryAst.$ast as t.Program);
++  }
+ 
+-    if (!hydratedRouterFound) {
+-      clack.log.warn(
+-        `Could not find ${chalk.cyan(
+-          'HydratedRouter',
+-        )} component in your client entry file.\n` +
+-          `To use the Instrumentation API, manually add the ${chalk.cyan(
+-            'unstable_instrumentations',
+-          )} prop:\n` +
+-          `  ${chalk.green(
+-            '<HydratedRouter unstable_instrumentations={[tracing.clientInstrumentation]} />',
+-          )}`,
+-      );
++  // Emit a single warning if HydratedRouter wasn't found for any prop we tried to add
++  if (
++    (addInstrProp || useOnError) &&
++    !hasHydratedRouter(clientEntryAst.$ast as t.Program)
++  ) {
++    const props: string[] = [];
++    if (useOnError) {
++      props.push('onError={Sentry.sentryOnError}');
+     }
++    if (addInstrProp) {
++      props.push('unstable_instrumentations={[tracing.clientInstrumentation]}');
++    }
++    clack.log.warn(
++      `Could not find ${chalk.cyan(
++        'HydratedRouter',
++      )} component in your client entry file.\n` +
++        `Manually add the following props:\n` +
++        `  ${chalk.green(`<HydratedRouter ${props.join(' ')} />`)}`,
++    );
+   }
+ 
+   await writeFile(clientEntryAst.$ast, clientEntryPath);
+ }
+ 
+-function addInstrumentationPropsToHydratedRouter(ast: t.Program): boolean {
++function hasHydratedRouter(ast: t.Program): boolean {
++  let found = false;
++  recast.visit(ast, {
++    visitJSXElement(path) {
++      const name = path.node.openingElement.name;
++      if (name.type === 'JSXIdentifier' && name.name === 'HydratedRouter') {
++        found = true;
++        return false;
++      }
++      this.traverse(path);
++    },
++  });
++  return found;
++}
++
++function addPropToHydratedRouter(
++  ast: t.Program,
++  propName: string,
++  propValue: ExpressionKind,
++): boolean {
+   let found = false;
+ 
+   recast.visit(ast, {
+@@ -128,30 +158,23 @@ function addInstrumentationPropsToHydratedRouter(ast: t.Program): boolean {
+       ) {
+         found = true;
+ 
+-        const hasInstrumentationsProp = openingElement.attributes?.some(
++        const hasProp = openingElement.attributes?.some(
+           (attr) =>
+             attr.type === 'JSXAttribute' &&
+             attr.name.type === 'JSXIdentifier' &&
+-            attr.name.name === 'unstable_instrumentations',
++            attr.name.name === propName,
+         );
+ 
+-        if (!hasInstrumentationsProp) {
+-          const instrumentationsProp = recast.types.builders.jsxAttribute(
+-            recast.types.builders.jsxIdentifier('unstable_instrumentations'),
+-            recast.types.builders.jsxExpressionContainer(
+-              recast.types.builders.arrayExpression([
+-                recast.types.builders.memberExpression(
+-                  recast.types.builders.identifier('tracing'),
+-                  recast.types.builders.identifier('clientInstrumentation'),
+-                ),
+-              ]),
+-            ),
++        if (!hasProp) {
++          const prop = recast.types.builders.jsxAttribute(
++            recast.types.builders.jsxIdentifier(propName),
++            recast.types.builders.jsxExpressionContainer(propValue),
+           );
+ 
+           if (!openingElement.attributes) {
+             openingElement.attributes = [];
+           }
+-          openingElement.attributes.push(instrumentationsProp);
++          openingElement.attributes.push(prop);
+         }
+ 
+         return false;
+@@ -163,3 +186,27 @@ function addInstrumentationPropsToHydratedRouter(ast: t.Program): boolean {
+ 
+   return found;
+ }
++
++function addOnErrorToHydratedRouter(ast: t.Program): boolean {
++  return addPropToHydratedRouter(
++    ast,
++    'onError',
++    recast.types.builders.memberExpression(
++      recast.types.builders.identifier('Sentry'),
++      recast.types.builders.identifier('sentryOnError'),
++    ),
++  );
++}
++
++function addInstrumentationPropsToHydratedRouter(ast: t.Program): boolean {
++  return addPropToHydratedRouter(
++    ast,
++    'unstable_instrumentations',
++    recast.types.builders.arrayExpression([
++      recast.types.builders.memberExpression(
++        recast.types.builders.identifier('tracing'),
++        recast.types.builders.identifier('clientInstrumentation'),
++      ),
++    ]),
++  );
++}
+diff --git a/src/react-router/codemods/root.ts b/src/react-router/codemods/root.ts
+deleted file mode 100644
+index 3b429f6..0000000
+--- a/src/react-router/codemods/root.ts
++++ /dev/null
+@@ -1,204 +0,0 @@
+-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+-/* eslint-disable @typescript-eslint/no-unsafe-call */
+-/* eslint-disable @typescript-eslint/no-unsafe-argument */
+-import * as recast from 'recast';
+-import * as path from 'path';
+-
+-import type { ExportNamedDeclaration } from '@babel/types';
+-import type { namedTypes as t } from 'ast-types';
+-
+-import {
+-  loadFile,
+-  writeFile,
+-  // @ts-expect-error - magicast is ESM and TS complains about that. It works though
+-} from 'magicast';
+-
+-import { ERROR_BOUNDARY_TEMPLATE } from '../templates';
+-import {
+-  hasSentryContent,
+-  safeGetFunctionBody,
+-  safeInsertBeforeReturn,
+-} from '../../utils/ast-utils';
+-import { debug } from '../../utils/debug';
+-
+-function hasCaptureExceptionCall(node: t.Node): boolean {
+-  let found = false;
+-  recast.visit(node, {
+-    visitCallExpression(path) {
+-      const callee = path.value.callee;
+-      if (
+-        (callee.type === 'MemberExpression' &&
+-          callee.object?.name === 'Sentry' &&
+-          callee.property?.name === 'captureException') ||
+-        (callee.type === 'Identifier' && callee.name === 'captureException')
+-      ) {
+-        found = true;
+-      }
+-      this.traverse(path);
+-    },
+-  });
+-  return found;
+-}
+-
+-function addCaptureExceptionCall(functionNode: t.Node): void {
+-  const captureExceptionCall = recast.parse(
+-    `if (error && error instanceof Error) {\n  Sentry.captureException(error);\n}`,
+-  ).program.body[0];
+-
+-  const functionBody = safeGetFunctionBody(functionNode);
+-  if (functionBody) {
+-    if (!safeInsertBeforeReturn(functionBody, captureExceptionCall)) {
+-      functionBody.push(captureExceptionCall);
+-    }
+-  } else {
+-    debug('Could not safely access ErrorBoundary function body');
+-  }
+-}
+-
+-function findErrorBoundaryInExports(
+-  namedExports: ExportNamedDeclaration[],
+-): boolean {
+-  return namedExports.some((namedExport) => {
+-    const declaration = namedExport.declaration;
+-
+-    if (!declaration) {
+-      return namedExport.specifiers?.some(
+-        (spec) =>
+-          spec.type === 'ExportSpecifier' &&
+-          spec.exported?.type === 'Identifier' &&
+-          spec.exported.name === 'ErrorBoundary',
+-      );
+-    }
+-
+-    if (declaration.type === 'FunctionDeclaration') {
+-      return declaration.id?.name === 'ErrorBoundary';
+-    }
+-
+-    if (declaration.type === 'VariableDeclaration') {
+-      return declaration.declarations.some((decl) => {
+-        // @ts-expect-error - id should always have a name in this case
+-        return decl.id?.name === 'ErrorBoundary';
+-      });
+-    }
+-
+-    return false;
+-  });
+-}
+-
+-export async function instrumentRoot(rootFileName: string): Promise<void> {
+-  const filePath = path.join(process.cwd(), 'app', rootFileName);
+-  const rootRouteAst = await loadFile(filePath);
+-
+-  const exportsAst = rootRouteAst.exports.$ast as t.Program;
+-  const namedExports = exportsAst.body.filter(
+-    (node) => node.type === 'ExportNamedDeclaration',
+-  ) as ExportNamedDeclaration[];
+-
+-  const foundErrorBoundary = findErrorBoundaryInExports(namedExports);
+-  const alreadyHasSentry = hasSentryContent(rootRouteAst.$ast as t.Program);
+-
+-  if (!alreadyHasSentry) {
+-    rootRouteAst.imports.$add({
+-      from: '@sentry/react-router',
+-      imported: '*',
+-      local: 'Sentry',
+-    });
+-  }
+-
+-  if (!foundErrorBoundary) {
+-    const hasIsRouteErrorResponseImport = rootRouteAst.imports.$items.some(
+-      (item) =>
+-        item.imported === 'isRouteErrorResponse' &&
+-        item.from === 'react-router',
+-    );
+-
+-    if (!hasIsRouteErrorResponseImport) {
+-      rootRouteAst.imports.$add({
+-        from: 'react-router',
+-        imported: 'isRouteErrorResponse',
+-        local: 'isRouteErrorResponse',
+-      });
+-    }
+-
+-    recast.visit(rootRouteAst.$ast, {
+-      visitExportDefaultDeclaration(path) {
+-        const implementation = recast.parse(ERROR_BOUNDARY_TEMPLATE).program
+-          .body[0];
+-
+-        path.insertBefore(
+-          recast.types.builders.exportDeclaration(false, implementation),
+-        );
+-
+-        this.traverse(path);
+-      },
+-    });
+-  } else {
+-    recast.visit(rootRouteAst.$ast, {
+-      visitExportNamedDeclaration(path) {
+-        const declaration = path.value.declaration;
+-        if (!declaration) {
+-          this.traverse(path);
+-          return;
+-        }
+-
+-        let functionToInstrument = null;
+-
+-        if (
+-          declaration.type === 'FunctionDeclaration' &&
+-          declaration.id?.name === 'ErrorBoundary'
+-        ) {
+-          functionToInstrument = declaration;
+-        } else if (
+-          declaration.type === 'VariableDeclaration' &&
+-          declaration.declarations?.[0]?.id?.name === 'ErrorBoundary'
+-        ) {
+-          const init = declaration.declarations[0].init;
+-          if (
+-            init &&
+-            (init.type === 'FunctionExpression' ||
+-              init.type === 'ArrowFunctionExpression')
+-          ) {
+-            functionToInstrument = init;
+-          }
+-        }
+-
+-        if (
+-          functionToInstrument &&
+-          !hasCaptureExceptionCall(functionToInstrument)
+-        ) {
+-          addCaptureExceptionCall(functionToInstrument);
+-        }
+-
+-        this.traverse(path);
+-      },
+-
+-      visitVariableDeclaration(path) {
+-        if (path.value.declarations?.[0]?.id?.name === 'ErrorBoundary') {
+-          const init = path.value.declarations[0].init;
+-          if (
+-            init &&
+-            (init.type === 'FunctionExpression' ||
+-              init.type === 'ArrowFunctionExpression') &&
+-            !hasCaptureExceptionCall(init)
+-          ) {
+-            addCaptureExceptionCall(init);
+-          }
+-        }
+-        this.traverse(path);
+-      },
+-
+-      visitFunctionDeclaration(path) {
+-        if (
+-          path.value.id?.name === 'ErrorBoundary' &&
+-          !hasCaptureExceptionCall(path.value)
+-        ) {
+-          addCaptureExceptionCall(path.value);
+-        }
+-        this.traverse(path);
+-      },
+-    });
+-  }
+-
+-  await writeFile(rootRouteAst.$ast, filePath);
+-}
+diff --git a/src/react-router/react-router-wizard.ts b/src/react-router/react-router-wizard.ts
+index 03a6a9c..30e1bdf 100644
+--- a/src/react-router/react-router-wizard.ts
++++ b/src/react-router/react-router-wizard.ts
+@@ -27,9 +27,9 @@ import {
+   isReactRouterV7,
+   getReactRouterVersion,
+   supportsInstrumentationAPI,
++  supportsOnError,
+   runReactRouterReveal,
+   initializeSentryOnEntryClient,
+-  instrumentRootRoute,
+   createServerInstrumentationFile,
+   updatePackageJsonScripts,
+   instrumentSentryOnEntryServer,
+@@ -39,7 +39,6 @@ import {
+ import {
+   getManualClientEntryContent,
+   getManualServerEntryContent,
+-  getManualRootContent,
+   getManualServerInstrumentContent,
+   getManualReactRouterConfigContent,
+   getManualViteConfigContent,
+@@ -205,6 +204,27 @@ Please create your entry files manually using React Router v7 commands.`);
+ 
+   Sentry.setTag('use-instrumentation-api', useInstrumentationAPI);
+ 
++  let useOnError = true;
++
++  if (!supportsOnError(packageJson)) {
++    Sentry.setTag('on-error-version-guard', true);
++    const detectedVersion = getReactRouterVersion(packageJson) ?? 'unknown';
++    clack.log.warn(
++      `The ${chalk.cyan(
++        'onError',
++      )} prop on HydratedRouter requires React Router ${chalk.cyan(
++        '>=7.11.0',
++      )} (detected ${chalk.cyan(detectedVersion)}).\n` +
++        `Skipping automatic error handler setup. Please upgrade React Router and follow the manual setup guide:\n` +
++        chalk.dim(
++          'https://docs.sentry.io/platforms/javascript/guides/react-router/',
++        ),
++    );
++    useOnError = false;
++  }
++
++  Sentry.setTag('use-on-error', useOnError);
++
+   await traceStep('Initialize Sentry on client entry', async () => {
+     try {
+       await initializeSentryOnEntryClient(
+@@ -214,6 +234,7 @@ Please create your entry files manually using React Router v7 commands.`);
+         featureSelection.logs,
+         typeScriptDetected,
+         useInstrumentationAPI,
++        useOnError,
+       );
+     } catch (e) {
+       clack.log.warn(
+@@ -230,6 +251,7 @@ Please create your entry files manually using React Router v7 commands.`);
+         featureSelection.replay,
+         featureSelection.logs,
+         useInstrumentationAPI,
++        useOnError,
+       );
+ 
+       await showCopyPasteInstructions({
+@@ -242,25 +264,6 @@ Please create your entry files manually using React Router v7 commands.`);
+     }
+   });
+ 
+-  await traceStep('Instrument root route', async () => {
+-    try {
+-      await instrumentRootRoute(typeScriptDetected);
+-    } catch (e) {
+-      clack.log.warn(`Could not instrument root route automatically.`);
+-
+-      const rootFilename = `app/root.${typeScriptDetected ? 'tsx' : 'jsx'}`;
+-      const manualRootContent = getManualRootContent(typeScriptDetected);
+-
+-      await showCopyPasteInstructions({
+-        filename: rootFilename,
+-        codeSnippet: manualRootContent,
+-        hint: 'This adds error boundary integration to capture exceptions in your React Router app',
+-      });
+-
+-      debug(e);
+-    }
+-  });
+-
+   await traceStep('Instrument server entry', async () => {
+     try {
+       await instrumentSentryOnEntryServer(
+diff --git a/src/react-router/sdk-setup.ts b/src/react-router/sdk-setup.ts
+index d3a802e..b7e8f51 100644
+--- a/src/react-router/sdk-setup.ts
++++ b/src/react-router/sdk-setup.ts
+@@ -11,7 +11,6 @@ import type { PackageDotJson } from '../utils/package-json';
+ import { getPackageVersion } from '../utils/package-json';
+ import { debug } from '../utils/debug';
+ import { getSentryInstrumentationServerContent } from './templates';
+-import { instrumentRoot } from './codemods/root';
+ import { instrumentServerEntry } from './codemods/server-entry';
+ import { getPackageDotJson } from '../utils/clack';
+ import { instrumentClientEntry } from './codemods/client.entry';
+@@ -168,6 +167,24 @@ export function getReactRouterVersion(
+   return coerced ? coerced.version : rangeVersion;
+ }
+ 
++export function supportsOnError(packageJson: PackageDotJson): boolean {
++  const reactRouterVersion = getPackageVersion(
++    '@react-router/dev',
++    packageJson,
++  );
++  if (!reactRouterVersion) {
++    return false;
++  }
++
++  const minVer = minVersion(reactRouterVersion);
++
++  if (!minVer) {
++    return false;
++  }
++
++  return gte(minVer, '7.11.0');
++}
++
+ export function supportsInstrumentationAPI(
+   packageJson: PackageDotJson,
+ ): boolean {
+@@ -195,6 +212,7 @@ export async function initializeSentryOnEntryClient(
+   enableLogs: boolean,
+   isTS: boolean,
+   useInstrumentationAPI = false,
++  useOnError = false,
+ ): Promise<void> {
+   const clientEntryPath = getAppFilePath('entry.client', isTS);
+   const clientEntryFilename = path.basename(clientEntryPath);
+@@ -208,6 +226,7 @@ export async function initializeSentryOnEntryClient(
+     enableReplay,
+     enableLogs,
+     useInstrumentationAPI,
++    useOnError,
+   );
+ 
+   clack.log.success(
+@@ -215,20 +234,6 @@ export async function initializeSentryOnEntryClient(
+   );
+ }
+ 
+-export async function instrumentRootRoute(isTS: boolean): Promise<void> {
+-  const rootPath = getAppFilePath('root', isTS);
+-  const rootFilename = path.basename(rootPath);
+-
+-  if (!fs.existsSync(rootPath)) {
+-    throw new Error(
+-      `${rootFilename} not found in app directory. Please ensure your React Router v7 app has a root.tsx/jsx file in the app folder.`,
+-    );
+-  }
+-
+-  await instrumentRoot(rootFilename);
+-  clack.log.success(`Updated ${chalk.cyan(rootFilename)} with ErrorBoundary.`);
+-}
+-
+ export function createServerInstrumentationFile(
+   dsn: string,
+   selectedFeatures: {
+diff --git a/src/react-router/templates.ts b/src/react-router/templates.ts
+index e7c68df..d35def5 100644
+--- a/src/react-router/templates.ts
++++ b/src/react-router/templates.ts
+@@ -1,50 +1,5 @@
+ import { makeCodeSnippet } from '../utils/clack';
+ 
+-function generateErrorBoundaryTemplate(
+-  isTypeScript: boolean,
+-  forManualInstructions = false,
+-): string {
+-  const typeAnnotations = isTypeScript
+-    ? { stack: ': string | undefined', props: ': Route.ErrorBoundaryProps' }
+-    : { stack: '', props: '' };
+-
+-  const commentLine = forManualInstructions
+-    ? '// you only want to capture non 404-errors that reach the boundary\n    '
+-    : '// Only capture non-404 errors (all errors here are already non-RouteErrorResponse)\n    ';
+-
+-  return `function ErrorBoundary({ error }${typeAnnotations.props}) {
+-  let message = "Oops!";
+-  let details = "An unexpected error occurred.";
+-  let stack${typeAnnotations.stack};
+-
+-  if (isRouteErrorResponse(error)) {
+-    message = error.status === 404 ? "404" : "Error";
+-    details =
+-      error.status === 404
+-        ? "The requested page could not be found."
+-        : error.statusText || details;
+-  } else if (error && error instanceof Error) {
+-    ${commentLine}Sentry.captureException(error);
+-    details = error.message;
+-    stack = error.stack;
+-  }
+-
+-  return (
+-    <main>
+-      <h1>{message}</h1>
+-      <p>{details}</p>
+-      {stack && (
+-        <pre>
+-          <code>{stack}</code>
+-        </pre>
+-      )}
+-    </main>
+-  );
+-}`;
+-}
+-
+-export const ERROR_BOUNDARY_TEMPLATE = generateErrorBoundaryTemplate(false);
+-
+ export const EXAMPLE_PAGE_TEMPLATE_TSX = `import type { Route } from "./+types/sentry-example-page";
+ 
+ export async function loader() {
+@@ -131,6 +86,7 @@ export const getManualClientEntryContent = (
+   enableReplay: boolean,
+   enableLogs: boolean,
+   useInstrumentationAPI = false,
++  useOnError = false,
+ ) => {
+   if (useInstrumentationAPI && enableTracing) {
+     const integrations = ['tracing'];
+@@ -181,7 +137,9 @@ startTransition(() => {
+     document,
+     <StrictMode>
+       ${plus(
+-        '<HydratedRouter unstable_instrumentations={[tracing.clientInstrumentation]} />',
++        `<HydratedRouter${
++          useOnError ? ' onError={Sentry.sentryOnError}' : ''
++        } unstable_instrumentations={[tracing.clientInstrumentation]} />`,
+       )}
+     </StrictMode>
+   );
+@@ -240,7 +198,11 @@ startTransition(() => {
+   hydrateRoot(
+     document,
+     <StrictMode>
+-      <HydratedRouter />
++      ${plus(
++        `<HydratedRouter${
++          useOnError ? ' onError={Sentry.sentryOnError}' : ''
++        } />`,
++      )}
+     </StrictMode>
+   );
+ });`),
+@@ -317,48 +279,6 @@ export default handleRequest;`),
+   );
+ };
+ 
+-export const getManualRootContent = (isTs: boolean) => {
+-  const typeAnnotations = isTs
+-    ? { stack: ': string | undefined', props: ': Route.ErrorBoundaryProps' }
+-    : { stack: '', props: '' };
+-
+-  return makeCodeSnippet(true, (unchanged, plus) =>
+-    unchanged(`${plus("import * as Sentry from '@sentry/react-router';")}
+-
+-export function ErrorBoundary({ error }${typeAnnotations.props}) {
+-  let message = "Oops!";
+-  let details = "An unexpected error occurred.";
+-  let stack${typeAnnotations.stack};
+-
+-  if (isRouteErrorResponse(error)) {
+-    message = error.status === 404 ? "404" : "Error";
+-    details =
+-      error.status === 404
+-        ? "The requested page could not be found."
+-        : error.statusText || details;
+-  } else if (error && error instanceof Error) {
+-    // you only want to capture non 404-errors that reach the boundary
+-    ${plus('Sentry.captureException(error);')}
+-    details = error.message;
+-    stack = error.stack;
+-  }
+-
+-  return (
+-    <main>
+-      <h1>{message}</h1>
+-      <p>{details}</p>
+-      {stack && (
+-        <pre>
+-          <code>{stack}</code>
+-        </pre>
+-      )}
+-    </main>
+-  );
+-}
+-// ...`),
+-  );
+-};
+-
+ export const getManualServerInstrumentContent = (
+   dsn: string,
+   enableTracing: boolean,
+diff --git a/test/react-router/codemods/client-entry.test.ts b/test/react-router/codemods/client-entry.test.ts
+index 63e07de..35fe128 100644
+--- a/test/react-router/codemods/client-entry.test.ts
++++ b/test/react-router/codemods/client-entry.test.ts
+@@ -52,7 +52,15 @@ describe('instrumentClientEntry', () => {
+ 
+     fs.writeFileSync(tmpFile, basicContent);
+ 
+-    await instrumentClientEntry(tmpFile, 'test-dsn', true, true, true);
++    await instrumentClientEntry(
++      tmpFile,
++      'test-dsn',
++      true,
++      true,
++      true,
++      false,
++      true,
++    );
+ 
+     const modifiedContent = fs.readFileSync(tmpFile, 'utf8');
+ 
+@@ -65,6 +73,7 @@ describe('instrumentClientEntry', () => {
+     expect(modifiedContent).toContain('Sentry.reactRouterTracingIntegration()');
+     expect(modifiedContent).toContain('Sentry.replayIntegration(');
+     expect(modifiedContent).toContain('enableLogs: true');
++    expect(modifiedContent).toContain('onError={Sentry.sentryOnError}');
+   });
+ 
+   it('should add Sentry initialization with only tracing enabled', async () => {
+@@ -165,7 +174,7 @@ describe('instrumentClientEntry', () => {
+     expect(modifiedContent).not.toContain('enableLogs: true');
+   });
+ 
+-  it('should not modify file when Sentry content already exists', async () => {
++  it('should not add Sentry.init when Sentry content already exists but still add onError', async () => {
+     const withSentryContent = fs.readFileSync(
+       path.join(fixturesDir, 'with-sentry.tsx'),
+       'utf8',
+@@ -173,12 +182,24 @@ describe('instrumentClientEntry', () => {
+ 
+     fs.writeFileSync(tmpFile, withSentryContent);
+ 
+-    await instrumentClientEntry(tmpFile, 'test-dsn', true, true, true);
++    await instrumentClientEntry(
++      tmpFile,
++      'test-dsn',
++      true,
++      true,
++      true,
++      false,
++      true,
++    );
+ 
+     const modifiedContent = fs.readFileSync(tmpFile, 'utf8');
+ 
+-    // Content should remain unchanged
+-    expect(modifiedContent).toBe(withSentryContent);
++    // Should not duplicate Sentry.init
++    const initCount = (modifiedContent.match(/Sentry\.init\(/g) || []).length;
++    expect(initCount).toBe(1);
++
++    // Should still add onError prop to HydratedRouter
++    expect(modifiedContent).toContain('onError={Sentry.sentryOnError}');
+   });
+ 
+   it('should insert Sentry initialization after imports', async () => {
+diff --git a/test/react-router/codemods/fixtures/root/fully-configured.tsx b/test/react-router/codemods/fixtures/root/fully-configured.tsx
+deleted file mode 100644
+index bc44c41..0000000
+--- a/test/react-router/codemods/fixtures/root/fully-configured.tsx
++++ /dev/null
+@@ -1,35 +0,0 @@
+-import * as Sentry from '@sentry/react-router';
+-import { Outlet, isRouteErrorResponse } from 'react-router';
+-
+-export function ErrorBoundary({ error }) {
+-  let message = "Oops!";
+-  let details = "An unexpected error occurred.";
+-  let stack;
+-
+-  if (isRouteErrorResponse(error)) {
+-    message = error.status === 404 ? "404" : "Error";
+-    details =
+-      error.status === 404
+-        ? "The requested page could not be found."
+-        : error.statusText || details;
+-  } else if (error && error instanceof Error) {
+-    // you only want to capture non 404-errors that reach the boundary
+-    Sentry.captureException(error);
+-  }
+-
+-  return (
+-    <main>
+-      <h1>{message}</h1>
+-      <p>{error.message}</p>
+-      {stack && (
+-        <pre>
+-          <code>{error.stack}</code>
+-        </pre>
+-      )}
+-    </main>
+-  );
+-}
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/function-declaration-separate-export.tsx b/test/react-router/codemods/fixtures/root/function-declaration-separate-export.tsx
+deleted file mode 100644
+index 6b91818..0000000
+--- a/test/react-router/codemods/fixtures/root/function-declaration-separate-export.tsx
++++ /dev/null
+@@ -1,16 +0,0 @@
+-import { Outlet } from 'react-router';
+-
+-function ErrorBoundary({ error }) {
+-  return (
+-    <div>
+-      <h1>Something went wrong!</h1>
+-      <p>{error.message}</p>
+-    </div>
+-  );
+-}
+-
+-export { ErrorBoundary };
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/function-expression-error-boundary.tsx b/test/react-router/codemods/fixtures/root/function-expression-error-boundary.tsx
+deleted file mode 100644
+index 870e261..0000000
+--- a/test/react-router/codemods/fixtures/root/function-expression-error-boundary.tsx
++++ /dev/null
+@@ -1,16 +0,0 @@
+-import { Outlet } from 'react-router';
+-
+-const ErrorBoundary = function({ error }) {
+-  return (
+-    <div>
+-      <h1>Something went wrong!</h1>
+-      <p>{error.message}</p>
+-    </div>
+-  );
+-};
+-
+-export { ErrorBoundary };
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/no-error-boundary.tsx b/test/react-router/codemods/fixtures/root/no-error-boundary.tsx
+deleted file mode 100644
+index 8783fed..0000000
+--- a/test/react-router/codemods/fixtures/root/no-error-boundary.tsx
++++ /dev/null
+@@ -1,5 +0,0 @@
+-import { Outlet } from 'react-router';
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/no-isrouteerrorresponse.tsx b/test/react-router/codemods/fixtures/root/no-isrouteerrorresponse.tsx
+deleted file mode 100644
+index 8783fed..0000000
+--- a/test/react-router/codemods/fixtures/root/no-isrouteerrorresponse.tsx
++++ /dev/null
+@@ -1,5 +0,0 @@
+-import { Outlet } from 'react-router';
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/root-no-error-boundary.tsx b/test/react-router/codemods/fixtures/root/root-no-error-boundary.tsx
+deleted file mode 100644
+index 0292421..0000000
+--- a/test/react-router/codemods/fixtures/root/root-no-error-boundary.tsx
++++ /dev/null
+@@ -1,14 +0,0 @@
+-import { Outlet } from 'react-router';
+-
+-export default function RootLayout() {
+-  return (
+-    <html>
+-      <head>
+-        <title>React Router App</title>
+-      </head>
+-      <body>
+-        <Outlet />
+-      </body>
+-    </html>
+-  );
+-}
+diff --git a/test/react-router/codemods/fixtures/root/root-with-error-boundary.tsx b/test/react-router/codemods/fixtures/root/root-with-error-boundary.tsx
+deleted file mode 100644
+index 1a15072..0000000
+--- a/test/react-router/codemods/fixtures/root/root-with-error-boundary.tsx
++++ /dev/null
+@@ -1,25 +0,0 @@
+-import { Outlet, useRouteError } from 'react-router';
+-
+-export default function RootLayout() {
+-  return (
+-    <html>
+-      <head>
+-        <title>React Router App</title>
+-      </head>
+-      <body>
+-        <Outlet />
+-      </body>
+-    </html>
+-  );
+-}
+-
+-export function ErrorBoundary() {
+-  const error = useRouteError();
+-
+-  return (
+-    <div>
+-      <h1>Something went wrong!</h1>
+-      <p>{error?.message || 'An unexpected error occurred'}</p>
+-    </div>
+-  );
+-}
+diff --git a/test/react-router/codemods/fixtures/root/with-direct-capture-exception.tsx b/test/react-router/codemods/fixtures/root/with-direct-capture-exception.tsx
+deleted file mode 100644
+index b389262..0000000
+--- a/test/react-router/codemods/fixtures/root/with-direct-capture-exception.tsx
++++ /dev/null
+@@ -1,19 +0,0 @@
+-import { captureException } from '@sentry/react-router';
+-import { Outlet } from 'react-router';
+-
+-export function ErrorBoundary({ error }) {
+-  if (error && error instanceof Error) {
+-    captureException(error);
+-  }
+-
+-  return (
+-    <div>
+-      <h1>Something went wrong!</h1>
+-      <p>{error.message}</p>
+-    </div>
+-  );
+-}
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/with-existing-sentry.tsx b/test/react-router/codemods/fixtures/root/with-existing-sentry.tsx
+deleted file mode 100644
+index 198b2be..0000000
+--- a/test/react-router/codemods/fixtures/root/with-existing-sentry.tsx
++++ /dev/null
+@@ -1,6 +0,0 @@
+-import * as Sentry from '@sentry/react-router';
+-import { Outlet } from 'react-router';
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/with-function-error-boundary.tsx b/test/react-router/codemods/fixtures/root/with-function-error-boundary.tsx
+deleted file mode 100644
+index e9b032b..0000000
+--- a/test/react-router/codemods/fixtures/root/with-function-error-boundary.tsx
++++ /dev/null
+@@ -1,14 +0,0 @@
+-import { Outlet } from 'react-router';
+-
+-export function ErrorBoundary({ error }) {
+-  return (
+-    <div>
+-      <h1>Something went wrong!</h1>
+-      <p>{error.message}</p>
+-    </div>
+-  );
+-}
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/with-isrouteerrorresponse.tsx b/test/react-router/codemods/fixtures/root/with-isrouteerrorresponse.tsx
+deleted file mode 100644
+index 59bf524..0000000
+--- a/test/react-router/codemods/fixtures/root/with-isrouteerrorresponse.tsx
++++ /dev/null
+@@ -1,5 +0,0 @@
+-import { Outlet, isRouteErrorResponse } from 'react-router';
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/with-sentry-error-boundary.tsx b/test/react-router/codemods/fixtures/root/with-sentry-error-boundary.tsx
+deleted file mode 100644
+index 2423ddf..0000000
+--- a/test/react-router/codemods/fixtures/root/with-sentry-error-boundary.tsx
++++ /dev/null
+@@ -1,19 +0,0 @@
+-import * as Sentry from '@sentry/react-router';
+-import { Outlet } from 'react-router';
+-
+-export function ErrorBoundary({ error }) {
+-  if (error && error instanceof Error) {
+-    Sentry.captureException(error);
+-  }
+-
+-  return (
+-    <div>
+-      <h1>Something went wrong!</h1>
+-      <p>{error.message}</p>
+-    </div>
+-  );
+-}
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/fixtures/root/with-variable-error-boundary.tsx b/test/react-router/codemods/fixtures/root/with-variable-error-boundary.tsx
+deleted file mode 100644
+index e8d1743..0000000
+--- a/test/react-router/codemods/fixtures/root/with-variable-error-boundary.tsx
++++ /dev/null
+@@ -1,14 +0,0 @@
+-import { Outlet } from 'react-router';
+-
+-export const ErrorBoundary = ({ error }) => {
+-  return (
+-    <div>
+-      <h1>Something went wrong!</h1>
+-      <p>{error.message}</p>
+-    </div>
+-  );
+-};
+-
+-export default function App() {
+-  return <Outlet />;
+-}
+diff --git a/test/react-router/codemods/root.test.ts b/test/react-router/codemods/root.test.ts
+deleted file mode 100644
+index 2242e9b..0000000
+--- a/test/react-router/codemods/root.test.ts
++++ /dev/null
+@@ -1,303 +0,0 @@
+-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+-import * as fs from 'fs';
+-import * as path from 'path';
+-import { instrumentRoot } from '../../../src/react-router/codemods/root';
+-
+-vi.mock('@clack/prompts', () => {
+-  const mock = {
+-    log: {
+-      warn: vi.fn(),
+-      info: vi.fn(),
+-      success: vi.fn(),
+-    },
+-  };
+-  return {
+-    default: mock,
+-    ...mock,
+-  };
+-});
+-
+-vi.mock('../../../src/utils/debug', () => ({
+-  debug: vi.fn(),
+-}));
+-
+-describe('instrumentRoot', () => {
+-  const fixturesDir = path.join(__dirname, 'fixtures', 'root');
+-  let tmpDir: string;
+-  let appDir: string;
+-
+-  beforeEach(() => {
+-    vi.clearAllMocks();
+-
+-    // Create unique tmp directory for each test
+-    tmpDir = path.join(
+-      fixturesDir,
+-      'tmp',
+-      `test-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+-    );
+-    appDir = path.join(tmpDir, 'app');
+-
+-    // Ensure tmp and app directories exist
+-    fs.mkdirSync(appDir, { recursive: true });
+-
+-    // Mock process.cwd() to return the tmp directory
+-    vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+-  });
+-
+-  afterEach(() => {
+-    // Clean up tmp directory
+-    if (fs.existsSync(tmpDir)) {
+-      fs.rmSync(tmpDir, { recursive: true });
+-    }
+-    vi.restoreAllMocks();
+-  });
+-
+-  it('should add ErrorBoundary when no ErrorBoundary exists and no Sentry content', async () => {
+-    // Copy fixture to tmp directory for testing
+-    const srcFile = path.join(fixturesDir, 'no-error-boundary.tsx');
+-
+-    // Create app directory and copy file
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    // Mock process.cwd() to return tmpDir
+-
+-    await instrumentRoot('root.tsx');
+-
+-    // Check that the file was modified correctly
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    expect(modifiedContent).toContain(
+-      'import * as Sentry from "@sentry/react-router";',
+-    );
+-    expect(modifiedContent).toContain(
+-      "import { Outlet, isRouteErrorResponse } from 'react-router';",
+-    );
+-    expect(modifiedContent).toContain(
+-      'export function ErrorBoundary({ error })',
+-    );
+-    expect(modifiedContent).toContain('Sentry.captureException(error);');
+-    expect(modifiedContent).toContain('if (isRouteErrorResponse(error))');
+-  });
+-
+-  it('should add Sentry.captureException to existing function declaration ErrorBoundary', async () => {
+-    const srcFile = path.join(fixturesDir, 'with-function-error-boundary.tsx');
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    expect(modifiedContent).toContain(
+-      'import * as Sentry from "@sentry/react-router";',
+-    );
+-    expect(modifiedContent).toContain('Sentry.captureException(error);');
+-    expect(modifiedContent).toContain('error instanceof Error');
+-  });
+-
+-  it('should add Sentry.captureException to existing variable declaration ErrorBoundary', async () => {
+-    const srcFile = path.join(fixturesDir, 'with-variable-error-boundary.tsx');
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    expect(modifiedContent).toContain(
+-      'import * as Sentry from "@sentry/react-router";',
+-    );
+-    // Now properly handles variable declaration ErrorBoundary
+-    expect(modifiedContent).toContain('Sentry.captureException(error);');
+-    expect(modifiedContent).toContain('error instanceof Error');
+-  });
+-
+-  it('should not modify file when ErrorBoundary already has Sentry.captureException', async () => {
+-    const srcFile = path.join(fixturesDir, 'with-sentry-error-boundary.tsx');
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    // Should not add duplicate Sentry.captureException
+-    const captureExceptionOccurrences = (
+-      modifiedContent.match(/Sentry\.captureException/g) || []
+-    ).length;
+-    expect(captureExceptionOccurrences).toBe(1);
+-  });
+-
+-  it('should not add Sentry import when Sentry content already exists', async () => {
+-    const srcFile = path.join(fixturesDir, 'with-existing-sentry.tsx');
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    // Should not duplicate Sentry imports
+-    const sentryImportOccurrences = (
+-      modifiedContent.match(/import.*@sentry\/react-router/g) || []
+-    ).length;
+-    expect(sentryImportOccurrences).toBe(1);
+-  });
+-
+-  it('should add isRouteErrorResponse import when not present and ErrorBoundary is added', async () => {
+-    const srcFile = path.join(fixturesDir, 'no-isrouteerrorresponse.tsx');
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    expect(modifiedContent).toContain(
+-      "import { Outlet, isRouteErrorResponse } from 'react-router';",
+-    );
+-    expect(modifiedContent).toContain(
+-      'export function ErrorBoundary({ error })',
+-    );
+-  });
+-
+-  it('should not add duplicate isRouteErrorResponse import when already present', async () => {
+-    const srcFile = path.join(fixturesDir, 'with-isrouteerrorresponse.tsx');
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    // Should not duplicate isRouteErrorResponse imports
+-    const isRouteErrorResponseOccurrences = (
+-      modifiedContent.match(/isRouteErrorResponse/g) || []
+-    ).length;
+-    expect(isRouteErrorResponseOccurrences).toBe(2); // One import, one usage in template
+-  });
+-
+-  it('should handle ErrorBoundary with alternative function declaration syntax', async () => {
+-    const srcFile = path.join(
+-      fixturesDir,
+-      'function-expression-error-boundary.tsx',
+-    );
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    expect(modifiedContent).toContain(
+-      'import * as Sentry from "@sentry/react-router";',
+-    );
+-    expect(modifiedContent).toContain('Sentry.captureException(error);');
+-    expect(modifiedContent).toContain('error instanceof Error');
+-  });
+-
+-  it('should handle function declaration with separate export', async () => {
+-    const srcFile = path.join(
+-      fixturesDir,
+-      'function-declaration-separate-export.tsx',
+-    );
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    expect(modifiedContent).toContain(
+-      'import * as Sentry from "@sentry/react-router";',
+-    );
+-    expect(modifiedContent).toContain('Sentry.captureException(error);');
+-    expect(modifiedContent).toContain('error instanceof Error');
+-
+-    // Should preserve function declaration syntax
+-    expect(modifiedContent).toMatch(/function ErrorBoundary\(/);
+-    expect(modifiedContent).toContain('export { ErrorBoundary }');
+-  });
+-
+-  it('should handle ErrorBoundary with captureException imported directly', async () => {
+-    const srcFile = path.join(fixturesDir, 'with-direct-capture-exception.tsx');
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    // Should not add duplicate captureException calls
+-    const captureExceptionOccurrences = (
+-      modifiedContent.match(/captureException/g) || []
+-    ).length;
+-    expect(captureExceptionOccurrences).toBe(2); // One import, one usage
+-  });
+-
+-  it('should not modify an already properly configured file', async () => {
+-    const srcFile = path.join(fixturesDir, 'fully-configured.tsx');
+-
+-    fs.copyFileSync(srcFile, path.join(appDir, 'root.tsx'));
+-
+-    await instrumentRoot('root.tsx');
+-
+-    const modifiedContent = fs.readFileSync(
+-      path.join(appDir, 'root.tsx'),
+-      'utf8',
+-    );
+-
+-    // Should not add duplicate imports or modify existing Sentry configuration
+-    const sentryImportOccurrences = (
+-      modifiedContent.match(/import.*@sentry\/react-router/g) || []
+-    ).length;
+-    expect(sentryImportOccurrences).toBe(1);
+-
+-    const captureExceptionOccurrences = (
+-      modifiedContent.match(/Sentry\.captureException/g) || []
+-    ).length;
+-    expect(captureExceptionOccurrences).toBe(1);
+-
+-    const errorBoundaryOccurrences = (
+-      modifiedContent.match(/export function ErrorBoundary/g) || []
+-    ).length;
+-    expect(errorBoundaryOccurrences).toBe(1);
+-
+-    expect(modifiedContent).toContain(
+-      "import * as Sentry from '@sentry/react-router';",
+-    );
+-    expect(modifiedContent).toContain(
+-      "import { Outlet, isRouteErrorResponse } from 'react-router';",
+-    );
+-  });
+-});
+diff --git a/test/react-router/sdk-setup.test.ts b/test/react-router/sdk-setup.test.ts
+index 53c6dc7..836b21b 100644
+--- a/test/react-router/sdk-setup.test.ts
++++ b/test/react-router/sdk-setup.test.ts
+@@ -103,6 +103,7 @@ import {
+   isReactRouterV7,
+   getReactRouterVersion,
+   supportsInstrumentationAPI,
++  supportsOnError,
+   runReactRouterReveal,
+   createServerInstrumentationFile,
+   tryRevealAndGetManualInstructions,
+@@ -249,6 +250,63 @@ describe('React Router SDK Setup', () => {
+     });
+   });
+ 
++  describe('supportsOnError', () => {
++    it('should return true for React Router v7.11.0 or higher', () => {
++      expect(
++        supportsOnError({
++          dependencies: { '@react-router/dev': '7.11.0' },
++        }),
++      ).toBe(true);
++      expect(
++        supportsOnError({
++          dependencies: { '@react-router/dev': '^7.11.0' },
++        }),
++      ).toBe(true);
++      expect(
++        supportsOnError({
++          dependencies: { '@react-router/dev': '7.12.0' },
++        }),
++      ).toBe(true);
++      expect(
++        supportsOnError({
++          dependencies: { '@react-router/dev': '8.0.0' },
++        }),
++      ).toBe(true);
++      expect(
++        supportsOnError({
++          devDependencies: { '@react-router/dev': '7.11.0' },
++        }),
++      ).toBe(true);
++    });
++
++    it('should return false for React Router versions below v7.11.0', () => {
++      expect(
++        supportsOnError({
++          dependencies: { '@react-router/dev': '7.10.0' },
++        }),
++      ).toBe(false);
++      expect(
++        supportsOnError({
++          dependencies: { '@react-router/dev': '7.0.0' },
++        }),
++      ).toBe(false);
++      expect(
++        supportsOnError({
++          dependencies: { '@react-router/dev': '7.8.2' },
++        }),
++      ).toBe(false);
++    });
++
++    it('should return false when @react-router/dev is not installed', () => {
++      expect(
++        supportsOnError({
++          dependencies: { react: '^18.0.0' },
++        }),
++      ).toBe(false);
++      expect(supportsOnError({})).toBe(false);
++    });
++  });
++
+   describe('generateServerInstrumentation', () => {
+     it('should generate server instrumentation file with all features enabled', () => {
+       const dsn = 'https://sentry.io/123';
+diff --git a/test/react-router/templates.test.ts b/test/react-router/templates.test.ts
+index 5f6beed..074488e 100644
+--- a/test/react-router/templates.test.ts
++++ b/test/react-router/templates.test.ts
+@@ -24,12 +24,10 @@ vi.mock('../../src/utils/clack', () => {
+ });
+ 
+ import {
+-  ERROR_BOUNDARY_TEMPLATE,
+   EXAMPLE_PAGE_TEMPLATE_TSX,
+   EXAMPLE_PAGE_TEMPLATE_JSX,
+   getManualClientEntryContent,
+   getManualServerEntryContent,
+-  getManualRootContent,
+   getManualServerInstrumentContent,
+   getManualReactRouterConfigContent,
+ } from '../../src/react-router/templates';
+@@ -40,18 +38,6 @@ describe('React Router Templates', () => {
+   });
+ 
+   describe('Template Constants', () => {
+-    it('should have correct ERROR_BOUNDARY_TEMPLATE content', () => {
+-      expect(ERROR_BOUNDARY_TEMPLATE).toContain(
+-        'function ErrorBoundary({ error })',
+-      );
+-      expect(ERROR_BOUNDARY_TEMPLATE).toContain('isRouteErrorResponse(error)');
+-      expect(ERROR_BOUNDARY_TEMPLATE).toContain(
+-        'Sentry.captureException(error)',
+-      );
+-      expect(ERROR_BOUNDARY_TEMPLATE).toContain('error.status === 404');
+-      expect(ERROR_BOUNDARY_TEMPLATE).toContain('An unexpected error occurred');
+-    });
+-
+     it('should have correct EXAMPLE_PAGE_TEMPLATE_TSX content', () => {
+       expect(EXAMPLE_PAGE_TEMPLATE_TSX).toContain('import type { Route }');
+       expect(EXAMPLE_PAGE_TEMPLATE_TSX).toContain(
+@@ -86,17 +72,16 @@ describe('React Router Templates', () => {
+   });
+ 
+   describe('getManualClientEntryContent', () => {
+-    it('should generate manual client entry with all features enabled', () => {
++    it('should generate manual client entry with all features enabled and onError', () => {
+       const dsn = 'https://test.sentry.io/123';
+-      const enableTracing = true;
+-      const enableReplay = true;
+-      const enableLogs = true;
+ 
+       const result = getManualClientEntryContent(
+         dsn,
+-        enableTracing,
+-        enableReplay,
+-        enableLogs,
++        true,
++        true,
++        true,
++        false,
++        true,
+       );
+ 
+       expect(result).toContain(
+@@ -111,7 +96,15 @@ describe('React Router Templates', () => {
+       expect(result).toContain('replaysSessionSampleRate: 0.1');
+       expect(result).toContain('replaysOnErrorSampleRate: 1.0');
+       expect(result).toContain('tracePropagationTargets');
+-      expect(result).toContain('<HydratedRouter />');
++      expect(result).toContain('onError={Sentry.sentryOnError}');
++    });
++
++    it('should not include onError when useOnError is false', () => {
++      const dsn = 'https://test.sentry.io/123';
++
++      const result = getManualClientEntryContent(dsn, true, true, true);
++
++      expect(result).not.toContain('onError={Sentry.sentryOnError}');
+     });
+ 
+     it('should generate manual client entry with tracing disabled', () => {
+@@ -181,17 +174,14 @@ describe('React Router Templates', () => {
+     describe('Instrumentation API', () => {
+       it('should generate client entry with instrumentation API enabled', () => {
+         const dsn = 'https://test.sentry.io/123';
+-        const enableTracing = true;
+-        const enableReplay = false;
+-        const enableLogs = false;
+-        const useInstrumentationAPI = true;
+ 
+         const result = getManualClientEntryContent(
+           dsn,
+-          enableTracing,
+-          enableReplay,
+-          enableLogs,
+-          useInstrumentationAPI,
++          true,
++          false,
++          false,
++          true,
++          true,
+         );
+ 
+         expect(result).toContain(
+@@ -202,21 +192,19 @@ describe('React Router Templates', () => {
+         expect(result).toContain(
+           'unstable_instrumentations={[tracing.clientInstrumentation]}',
+         );
++        expect(result).toContain('onError={Sentry.sentryOnError}');
+       });
+ 
+       it('should generate client entry with instrumentation API and replay enabled', () => {
+         const dsn = 'https://test.sentry.io/123';
+-        const enableTracing = true;
+-        const enableReplay = true;
+-        const enableLogs = false;
+-        const useInstrumentationAPI = true;
+ 
+         const result = getManualClientEntryContent(
+           dsn,
+-          enableTracing,
+-          enableReplay,
+-          enableLogs,
+-          useInstrumentationAPI,
++          true,
++          true,
++          false,
++          true,
++          true,
+         );
+ 
+         expect(result).toContain(
+@@ -227,21 +215,19 @@ describe('React Router Templates', () => {
+         expect(result).toContain(
+           'unstable_instrumentations={[tracing.clientInstrumentation]}',
+         );
++        expect(result).toContain('onError={Sentry.sentryOnError}');
+       });
+ 
+       it('should not use instrumentation API when explicitly disabled', () => {
+         const dsn = 'https://test.sentry.io/123';
+-        const enableTracing = true;
+-        const enableReplay = false;
+-        const enableLogs = false;
+-        const useInstrumentationAPI = false;
+ 
+         const result = getManualClientEntryContent(
+           dsn,
+-          enableTracing,
+-          enableReplay,
+-          enableLogs,
+-          useInstrumentationAPI,
++          true,
++          false,
++          false,
++          false,
++          true,
+         );
+ 
+         expect(result).not.toContain(
+@@ -249,6 +235,7 @@ describe('React Router Templates', () => {
+         );
+         expect(result).toContain('Sentry.reactRouterTracingIntegration()');
+         expect(result).not.toContain('unstable_instrumentations');
++        expect(result).toContain('onError={Sentry.sentryOnError}');
+       });
+     });
+   });
+@@ -298,40 +285,6 @@ describe('React Router Templates', () => {
+     });
+   });
+ 
+-  describe('getManualRootContent', () => {
+-    it('should generate manual root content for TypeScript', () => {
+-      const isTs = true;
+-      const result = getManualRootContent(isTs);
+-
+-      expect(result).toContain(
+-        "+ import * as Sentry from '@sentry/react-router'",
+-      );
+-      expect(result).toContain(
+-        'export function ErrorBoundary({ error }: Route.ErrorBoundaryProps)',
+-      );
+-      expect(result).toContain('let stack: string | undefined');
+-      expect(result).toContain('isRouteErrorResponse(error)');
+-      expect(result).toContain('+ Sentry.captureException(error)');
+-      expect(result).toContain('details = error.message');
+-      expect(result).toContain('error.status === 404');
+-    });
+-
+-    it('should generate manual root content for JavaScript', () => {
+-      const isTs = false;
+-      const result = getManualRootContent(isTs);
+-
+-      expect(result).toContain(
+-        "+ import * as Sentry from '@sentry/react-router'",
+-      );
+-      expect(result).toContain('export function ErrorBoundary({ error })');
+-      expect(result).not.toContain(': Route.ErrorBoundaryProps');
+-      expect(result).toContain('let stack');
+-      expect(result).not.toContain(': string | undefined');
+-      expect(result).toContain('isRouteErrorResponse(error)');
+-      expect(result).toContain('+ Sentry.captureException(error)');
+-    });
+-  });
+-
+   describe('getManualServerInstrumentContent', () => {
+     it('should generate server instrumentation with all features enabled', () => {
+       const dsn = 'https://test.sentry.io/123';

@@ -1,0 +1,42 @@
+task_id: storybookjs_mcp_storybook_365af0fa39df
+hidden_test_patches:
+- repo: mcp
+  patch: hidden/patches/mcp-contract-tests.patch
+  test_profile: mcp-hidden
+  origin: upstream_test_diff
+  clean_overlay: true
+  source_file: &id001
+  - apps/internal-storybook/tests/mcp-endpoint.e2e.test.ts
+  hidden_file: *id001
+  semantic_changes: Retains endpoint-level discovery, all-story, focused, a11y,
+    disabled-a11y, no-match, and concurrency behavior. Removes unrelated eval,
+    telemetry, instruction, preview, and Gold-private helper tests; output checks
+    require result semantics rather than exact descriptions or Markdown layout.
+  source: contract-aligned behavior from storybookjs/mcp PR(s) 131
+- repo: storybook
+  patch: hidden/patches/storybook-contract-tests.patch
+  test_profile: storybook-hidden
+  origin: upstream_test_diff
+  clean_overlay: true
+  source_file: &id002
+  - code/addons/vitest/src/node/test-manager.test.ts
+  - code/builders/builder-vite/src/vite-config.test.ts
+  - code/core/src/core-server/utils/index-json.test.ts
+  - code/frameworks/angular/src/server/framework-preset-angular-cli.test.ts
+  hidden_file: *id002
+  semantic_changes: Retains focused-run filtering, same-name isolation, parent-child
+    results, public trigger constants, and existing regressions. Test fixtures expose
+    both legacy and in-memory index inputs and both index-route channel keys so the
+    tests do not require Gold's internal migration path.
+  source: contract-aligned behavior from storybookjs/storybook PR(s) 33206
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - mcp-hidden
+    - storybook-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

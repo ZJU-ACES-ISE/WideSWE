@@ -1,0 +1,211 @@
+diff --git a/packages/config/src/PrismaConfig.ts b/packages/config/src/PrismaConfig.ts
+index 96fbb4293..4ac0b9fa7 100644
+--- a/packages/config/src/PrismaConfig.ts
++++ b/packages/config/src/PrismaConfig.ts
+@@ -120,6 +120,28 @@ if (false) {
+   __testTablesConfigShapeValueB satisfies (typeof TablesConfigShape)['Type']
+ }
+ 
++export type EnumsConfigShape = {
++  /**
++   * List of enums that are externally managed.
++   * Prisma will not modify the structure of these enums and not generate migrations for those enums.
++   * These enums will still be represented in schema.prisma file and be available in the client API.
++   */
++  external?: string[]
++}
++
++const EnumsConfigShape = Shape.Struct({
++  external: Shape.optional(Shape.mutable(Shape.Array(Shape.String))),
++})
++
++declare const __testEnumsConfigShapeValueA: (typeof EnumsConfigShape)['Type']
++declare const __testEnumsConfigShapeValueB: EnumsConfigShape
++
++// eslint-disable-next-line no-constant-condition
++if (false) {
++  __testEnumsConfigShapeValueA satisfies EnumsConfigShape
++  __testEnumsConfigShapeValueB satisfies (typeof EnumsConfigShape)['Type']
++}
++
+ export type ViewsConfigShape = {
+   /**
+    * The path to the directory where Prisma should look for the view definitions, where *.sql files will be loaded.
+@@ -200,6 +222,7 @@ const PrismaConfigShape = Shape.Struct({
+   adapter: Shape.optional(SqlMigrationAwareDriverAdapterFactoryShape),
+   migrations: Shape.optional(MigrationsConfigShape),
+   tables: Shape.optional(TablesConfigShape),
++  enums: Shape.optional(EnumsConfigShape),
+   views: Shape.optional(ViewsConfigShape),
+   typedSql: Shape.optional(TypedSqlConfigShape),
+ })
+@@ -233,6 +256,10 @@ export type PrismaConfig = {
+    * Configuration for the database table entities.
+    */
+   tables?: Simplify<TablesConfigShape>
++  /**
++   * Configuration for the database enum entities.
++   */
++  enums?: Simplify<EnumsConfigShape>
+   /**
+    * Configuration for the database view entities.
+    */
+@@ -274,6 +301,13 @@ function validateExperimentalFeatures(config: PrismaConfig): Either.Either<Prism
+     )
+   }
+ 
++  // Check external enums configuration
++  if (config.enums?.external && !experimental.externalTables) {
++    return Either.left(
++      new Error('The `enums.external` configuration requires `experimental.externalTables` to be set to `true`.'),
++    )
++  }
++
+   // Check migrations setupExternalTables configuration
+   if (config.migrations?.setupExternalTables && !experimental.externalTables) {
+     return Either.left(
+diff --git a/packages/config/src/defineConfig.ts b/packages/config/src/defineConfig.ts
+index 5bbd4c096..1e4eae850 100644
+--- a/packages/config/src/defineConfig.ts
++++ b/packages/config/src/defineConfig.ts
+@@ -66,6 +66,7 @@ export function defineConfig(configInput: PrismaConfig): PrismaConfigInternal {
+   defineStudioConfig(config, configInput)
+   defineMigrationsConfig(config, configInput)
+   defineTablesConfig(config, configInput)
++  defineEnumsConfig(config, configInput)
+   defineTypedSqlConfig(config, configInput)
+   defineViewsConfig(config, configInput)
+ 
+@@ -137,7 +138,7 @@ function defineViewsConfig(config: DeepMutable<PrismaConfigInternal>, configInpu
+ }
+ 
+ /**
+- * `configInput.tables` is forwarded to `config.views` as is.
++ * `configInput.tables` is forwarded to `config.tables` as is.
+  */
+ function defineTablesConfig(config: DeepMutable<PrismaConfigInternal>, configInput: PrismaConfig) {
+   if (!configInput.tables) {
+@@ -148,6 +149,18 @@ function defineTablesConfig(config: DeepMutable<PrismaConfigInternal>, configInp
+   debug('[config.tables]: %o', config.tables)
+ }
+ 
++/**
++ * `configInput.enums` is forwarded to `config.enums` as is.
++ */
++function defineEnumsConfig(config: DeepMutable<PrismaConfigInternal>, configInput: PrismaConfig) {
++  if (!configInput.enums) {
++    return
++  }
++
++  config.enums = configInput.enums
++  debug('[config.enums]: %o', config.enums)
++}
++
+ /**
+  * `configInput.studio` is forwarded to `config.studio` as is.
+  */
+diff --git a/packages/internals/src/migrateTypes.ts b/packages/internals/src/migrateTypes.ts
+index c14c08dd4..8bc131855 100644
+--- a/packages/internals/src/migrateTypes.ts
++++ b/packages/internals/src/migrateTypes.ts
+@@ -87,6 +87,7 @@ export namespace MigrateTypes {
+ 
+   export type SchemaFilter = {
+     externalTables: string[]
++    externalEnums: string[]
+   }
+ 
+   export type UrlContainer = {
+diff --git a/packages/migrate/src/Migrate.ts b/packages/migrate/src/Migrate.ts
+index f31f0b2ec..236263f66 100644
+--- a/packages/migrate/src/Migrate.ts
++++ b/packages/migrate/src/Migrate.ts
+@@ -52,7 +52,7 @@ export class Migrate {
+     // like migrate diff and db execute
+     this.schemaContext = schemaContext
+     this.migrationsDirectoryPath = migrationsDirPath
+-    this.schemaFilter = schemaFilter ?? { externalTables: [] }
++    this.schemaFilter = schemaFilter ?? { externalTables: [], externalEnums: [] }
+     this.shadowDbInitScript = shadowDbInitScript ?? ''
+   }
+ 
+diff --git a/packages/migrate/src/commands/DbPush.ts b/packages/migrate/src/commands/DbPush.ts
+index 06c5fcdfd..3eb414464 100644
+--- a/packages/migrate/src/commands/DbPush.ts
++++ b/packages/migrate/src/commands/DbPush.ts
+@@ -96,6 +96,7 @@ ${bold('Examples')}
+     printDatasource({ datasourceInfo, adapter })
+     const schemaFilter: MigrateTypes.SchemaFilter = {
+       externalTables: config.tables?.external ?? [],
++      externalEnums: config.enums?.external ?? [],
+     }
+ 
+     const migrate = await Migrate.setup({ adapter, migrationsDirPath, schemaContext, schemaFilter })
+diff --git a/packages/migrate/src/commands/MigrateDeploy.ts b/packages/migrate/src/commands/MigrateDeploy.ts
+index 2300303f5..0439b5560 100644
+--- a/packages/migrate/src/commands/MigrateDeploy.ts
++++ b/packages/migrate/src/commands/MigrateDeploy.ts
+@@ -85,6 +85,7 @@ ${bold('Examples')}
+ 
+     const schemaFilter: MigrateTypes.SchemaFilter = {
+       externalTables: config.tables?.external ?? [],
++      externalEnums: config.enums?.external ?? [],
+     }
+ 
+     const migrate = await Migrate.setup({ adapter, migrationsDirPath, schemaContext, schemaFilter })
+diff --git a/packages/migrate/src/commands/MigrateDev.ts b/packages/migrate/src/commands/MigrateDev.ts
+index eafdb1e42..b92e39e5f 100644
+--- a/packages/migrate/src/commands/MigrateDev.ts
++++ b/packages/migrate/src/commands/MigrateDev.ts
+@@ -128,6 +128,7 @@ ${bold('Examples')}
+ 
+     const schemaFilter: MigrateTypes.SchemaFilter = {
+       externalTables: config.tables?.external ?? [],
++      externalEnums: config.enums?.external ?? [],
+     }
+ 
+     const migrate = await Migrate.setup({
+diff --git a/packages/migrate/src/commands/MigrateDiff.ts b/packages/migrate/src/commands/MigrateDiff.ts
+index 8be68c02e..79d1745d3 100644
+--- a/packages/migrate/src/commands/MigrateDiff.ts
++++ b/packages/migrate/src/commands/MigrateDiff.ts
+@@ -336,6 +336,7 @@ ${bold('Examples')}
+     const adapter = await config.adapter?.()
+     const schemaFilter: MigrateTypes.SchemaFilter = {
+       externalTables: config.tables?.external ?? [],
++      externalEnums: config.enums?.external ?? [],
+     }
+     const migrate = await Migrate.setup({ adapter, schemaFilter })
+ 
+@@ -357,6 +358,7 @@ ${bold('Examples')}
+         exitCode: args['--exit-code'] ?? null,
+         filters: {
+           externalTables: config.tables?.external ?? [],
++          externalEnums: config.enums?.external ?? [],
+         },
+       })
+     } finally {
+diff --git a/packages/migrate/src/commands/MigrateReset.ts b/packages/migrate/src/commands/MigrateReset.ts
+index 89a355014..ea5b01703 100644
+--- a/packages/migrate/src/commands/MigrateReset.ts
++++ b/packages/migrate/src/commands/MigrateReset.ts
+@@ -123,6 +123,7 @@ ${bold('Examples')}
+ 
+     const schemaFilter: MigrateTypes.SchemaFilter = {
+       externalTables: config.tables?.external ?? [],
++      externalEnums: config.enums?.external ?? [],
+     }
+ 
+     const migrate = await Migrate.setup({ adapter, migrationsDirPath, schemaContext, schemaFilter })
+diff --git a/packages/migrate/src/commands/MigrateStatus.ts b/packages/migrate/src/commands/MigrateStatus.ts
+index bb04af8b2..48c87c0e7 100644
+--- a/packages/migrate/src/commands/MigrateStatus.ts
++++ b/packages/migrate/src/commands/MigrateStatus.ts
+@@ -86,6 +86,7 @@ Check the status of your database migrations
+ 
+     const schemaFilter: MigrateTypes.SchemaFilter = {
+       externalTables: config.tables?.external ?? [],
++      externalEnums: config.enums?.external ?? [],
+     }
+ 
+     const migrate = await Migrate.setup({ adapter, migrationsDirPath, schemaContext, schemaFilter })

@@ -1,0 +1,358 @@
+diff --git a/core/node/libp2p/routing.go b/core/node/libp2p/routing.go
+index b3a4610ed..305ca9033 100644
+--- a/core/node/libp2p/routing.go
++++ b/core/node/libp2p/routing.go
+@@ -122,7 +122,8 @@ func BaseRouting(cfg *config.Config) any {
+ 
+ 			// we want to also use the default HTTP routers, so wrap the FullRT client
+ 			// in a parallel router that calls them in parallel
+-			httpRouters, err := constructDefaultHTTPRouters(cfg)
++			addrFunc := httpRouterAddrFunc(in.Host, cfg.Addresses)
++			httpRouters, err := constructDefaultHTTPRouters(cfg, addrFunc)
+ 			if err != nil {
+ 				return out, err
+ 			}
+diff --git a/core/node/libp2p/routingopt.go b/core/node/libp2p/routingopt.go
+index c8f22af2f..9c1f36ee3 100644
+--- a/core/node/libp2p/routingopt.go
++++ b/core/node/libp2p/routingopt.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"fmt"
+ 	"os"
++	"slices"
+ 	"strings"
+ 	"time"
+ 
+@@ -18,6 +19,8 @@ import (
+ 	host "github.com/libp2p/go-libp2p/core/host"
+ 	"github.com/libp2p/go-libp2p/core/peer"
+ 	routing "github.com/libp2p/go-libp2p/core/routing"
++	basichost "github.com/libp2p/go-libp2p/p2p/host/basic"
++	ma "github.com/multiformats/go-multiaddr"
+ )
+ 
+ type RoutingOptionArgs struct {
+@@ -105,7 +108,7 @@ func collectAllEndpoints(cfg *config.Config) []EndpointSource {
+ 	return endpoints
+ }
+ 
+-func constructDefaultHTTPRouters(cfg *config.Config) ([]*routinghelpers.ParallelRouter, error) {
++func constructDefaultHTTPRouters(cfg *config.Config, addrFunc func() []ma.Multiaddr) ([]*routinghelpers.ParallelRouter, error) {
+ 	var routers []*routinghelpers.ParallelRouter
+ 	httpRetrievalEnabled := cfg.HTTPRetrieval.Enabled.WithDefault(config.DefaultHTTPRetrievalEnabled)
+ 
+@@ -130,7 +133,7 @@ func constructDefaultHTTPRouters(cfg *config.Config) ([]*routinghelpers.Parallel
+ 	// Create single HTTP router and composer per origin
+ 	for baseURL, capabilities := range originCapabilities {
+ 		// Construct HTTP router using base URL (without path)
+-		httpRouter, err := irouting.ConstructHTTPRouter(baseURL, cfg.Identity.PeerID, httpAddrsFromConfig(cfg.Addresses), cfg.Identity.PrivKey, httpRetrievalEnabled)
++		httpRouter, err := irouting.ConstructHTTPRouter(baseURL, cfg.Identity.PeerID, addrFunc, cfg.Identity.PrivKey, httpRetrievalEnabled)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -191,7 +194,8 @@ func ConstructDelegatedOnlyRouting(cfg *config.Config) RoutingOption {
+ 		var routers []*routinghelpers.ParallelRouter
+ 
+ 		// Add HTTP delegated routers (includes both router and publisher capabilities)
+-		httpRouters, err := constructDefaultHTTPRouters(cfg)
++		addrFunc := httpRouterAddrFunc(args.Host, cfg.Addresses)
++		httpRouters, err := constructDefaultHTTPRouters(cfg, addrFunc)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -225,7 +229,8 @@ func ConstructDefaultRouting(cfg *config.Config, routingOpt RoutingOption) Routi
+ 			ExecuteAfter:            0,
+ 		})
+ 
+-		httpRouters, err := constructDefaultHTTPRouters(cfg)
++		addrFunc := httpRouterAddrFunc(args.Host, cfg.Addresses)
++		httpRouters, err := constructDefaultHTTPRouters(cfg, addrFunc)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -271,6 +276,7 @@ func constructDHTRouting(mode dht.ModeOpt) RoutingOption {
+ // ConstructDelegatedRouting is used when Routing.Type = "custom"
+ func ConstructDelegatedRouting(routers config.Routers, methods config.Methods, peerID string, addrs config.Addresses, privKey string, httpRetrieval bool) RoutingOption {
+ 	return func(args RoutingOptionArgs) (routing.Routing, error) {
++		addrFunc := httpRouterAddrFunc(args.Host, addrs)
+ 		return irouting.Parse(routers, methods,
+ 			&irouting.ExtraDHTParams{
+ 				BootstrapPeers: args.BootstrapPeers,
+@@ -281,7 +287,7 @@ func ConstructDelegatedRouting(routers config.Routers, methods config.Methods, p
+ 			},
+ 			&irouting.ExtraHTTPParams{
+ 				PeerID:        peerID,
+-				Addrs:         httpAddrsFromConfig(addrs),
++				AddrFunc:      addrFunc,
+ 				PrivKeyB64:    privKey,
+ 				HTTPRetrieval: httpRetrieval,
+ 			},
+@@ -300,30 +306,78 @@ var (
+ 	NilRouterOption               = constructNilRouting
+ )
+ 
+-// httpAddrsFromConfig creates a list of addresses from the provided configuration to be used by HTTP delegated routers.
+-func httpAddrsFromConfig(cfgAddrs config.Addresses) []string {
+-	// Swarm addrs are announced by default
+-	addrs := cfgAddrs.Swarm
+-	// if Announce addrs are specified - override Swarm
++// confirmedAddrsHost matches libp2p hosts that support AutoNAT V2 address confirmation.
++type confirmedAddrsHost interface {
++	ConfirmedAddrs() (reachable, unreachable, unknown []ma.Multiaddr)
++}
++
++// Compile-time check: BasicHost must satisfy confirmedAddrsHost.
++// ConfirmedAddrs is not part of the core host.Host interface and is marked
++// experimental in go-libp2p. If BasicHost ever drops or changes this method,
++// this assertion will fail at build time. In that case, update
++// httpRouterAddrFunc (this file) and the swarm autonat command
++// (core/commands/swarm_addrs_autonat.go) which both type-assert to this
++// interface.
++var _ confirmedAddrsHost = (*basichost.BasicHost)(nil)
++
++// httpRouterAddrFunc returns a function that resolves provider addresses for
++// HTTP routers at provide-time.
++//
++// Resolution logic:
++//   - If Announce is set, use it as a static override (no dynamic resolution).
++//   - Otherwise, prefer AutoNAT V2 confirmed reachable addresses when available,
++//     falling back to static Swarm addresses (filtered by NoAnnounce).
++//   - AppendAnnounce addresses are always appended.
++func httpRouterAddrFunc(h host.Host, cfgAddrs config.Addresses) func() []ma.Multiaddr {
++	appendAddrs := parseMultiaddrs(cfgAddrs.AppendAnnounce)
++
++	// If Announce is explicitly set, use it as a static override.
+ 	if len(cfgAddrs.Announce) > 0 {
+-		addrs = cfgAddrs.Announce
+-	} else if len(cfgAddrs.NoAnnounce) > 0 {
+-		// if Announce adds are not specified - filter Swarm addrs with NoAnnounce list
+-		maddrs := map[string]struct{}{}
+-		for _, addr := range addrs {
+-			maddrs[addr] = struct{}{}
++		staticAddrs := slices.Concat(parseMultiaddrs(cfgAddrs.Announce), appendAddrs)
++		return func() []ma.Multiaddr { return staticAddrs }
++	}
++
++	// Precompute fallback: Swarm minus NoAnnounce plus AppendAnnounce.
++	fallbackStrs := cfgAddrs.Swarm
++	if len(cfgAddrs.NoAnnounce) > 0 {
++		noAnnounce := map[string]struct{}{}
++		for _, a := range cfgAddrs.NoAnnounce {
++			noAnnounce[a] = struct{}{}
+ 		}
+-		for _, addr := range cfgAddrs.NoAnnounce {
+-			delete(maddrs, addr)
++		filtered := make([]string, 0, len(fallbackStrs))
++		for _, a := range fallbackStrs {
++			if _, skip := noAnnounce[a]; !skip {
++				filtered = append(filtered, a)
++			}
+ 		}
+-		addrs = make([]string, 0, len(maddrs))
+-		for k := range maddrs {
+-			addrs = append(addrs, k)
++		fallbackStrs = filtered
++	}
++	fallbackResult := slices.Concat(parseMultiaddrs(fallbackStrs), appendAddrs)
++
++	ch, hasConfirmed := h.(confirmedAddrsHost)
++	return func() []ma.Multiaddr {
++		if hasConfirmed {
++			reachable, _, _ := ch.ConfirmedAddrs()
++			if len(reachable) > 0 {
++				if len(appendAddrs) == 0 {
++					return reachable
++				}
++				return slices.Concat(reachable, appendAddrs)
++			}
+ 		}
++		return fallbackResult
+ 	}
+-	// append AppendAnnounce addrs to the result list
+-	if len(cfgAddrs.AppendAnnounce) > 0 {
+-		addrs = append(addrs, cfgAddrs.AppendAnnounce...)
++}
++
++func parseMultiaddrs(strs []string) []ma.Multiaddr {
++	addrs := make([]ma.Multiaddr, 0, len(strs))
++	for _, s := range strs {
++		a, err := ma.NewMultiaddr(s)
++		if err != nil {
++			log.Errorf("ignoring invalid multiaddr %q: %s", s, err)
++			continue
++		}
++		addrs = append(addrs, a)
+ 	}
+ 	return addrs
+ }
+diff --git a/docs/changelogs/v0.41.md b/docs/changelogs/v0.41.md
+index 342fbbe2f..0d4472df8 100644
+--- a/docs/changelogs/v0.41.md
++++ b/docs/changelogs/v0.41.md
+@@ -11,6 +11,7 @@ This release was brought to you by the [Shipyard](https://ipshipyard.com/) team.
+ - [Overview](#overview)
+ - [🔦 Highlights](#-highlights)
+   - [🖥️ WebUI Improvements](#-webui-improvements)
++  - [🔧 Correct provider addresses for custom HTTP routing](#-correct-provider-addresses-for-custom-http-routing)
+   - [📦️ Dependency updates](#-dependency-updates)
+ - [📝 Changelog](#-changelog)
+ - [👨‍👩‍👧‍👦 Contributors](#-contributors)
+@@ -29,6 +30,10 @@ The Peers screen now resolves IPv6 addresses to geographic locations, and the ge
+ 
+ Peer locations load faster thanks to UX optimizations in the underlying ipfs-geoip library.
+ 
++#### 🔧 Correct provider addresses for custom HTTP routing
++
++Nodes using custom routing (`Routing.Type=custom`) with [IPIP-526](https://github.com/ipfs/specs/pull/526) could end up publishing unresolved `0.0.0.0` addresses in provider records. Addresses are now resolved at provide-time, and when AutoNAT V2 has confirmed publicly reachable addresses, those are preferred automatically. See [#11213](https://github.com/ipfs/kubo/issues/11213).
++
+ #### 📦️ Dependency updates
+ 
+ - update `ipfs-webui` to [v4.12.0](https://github.com/ipfs/ipfs-webui/releases/tag/v4.12.0)
+diff --git a/docs/examples/kubo-as-a-library/go.mod b/docs/examples/kubo-as-a-library/go.mod
+index 4900ae8d1..cfad56b05 100644
+--- a/docs/examples/kubo-as-a-library/go.mod
++++ b/docs/examples/kubo-as-a-library/go.mod
+@@ -7,7 +7,7 @@ go 1.25.0
+ replace github.com/ipfs/kubo => ./../../..
+ 
+ require (
+-	github.com/ipfs/boxo v0.37.0
++	github.com/ipfs/boxo v0.37.1-0.20260317235537-851246983422
+ 	github.com/ipfs/kubo v0.0.0-00010101000000-000000000000
+ 	github.com/libp2p/go-libp2p v0.47.0
+ 	github.com/multiformats/go-multiaddr v0.16.1
+diff --git a/docs/examples/kubo-as-a-library/go.sum b/docs/examples/kubo-as-a-library/go.sum
+index 9ee1cf537..7d6a5e93e 100644
+--- a/docs/examples/kubo-as-a-library/go.sum
++++ b/docs/examples/kubo-as-a-library/go.sum
+@@ -346,8 +346,8 @@ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0 h1:OqNqsGZPX8zh3eFMO8Lf8EHRRnSGBMqcd
+ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0/go.mod h1:BxhUdtBgOXg1B+gAPEplkg/GpyTZY+kCMSfsJvvydqU=
+ github.com/ipfs/bbloom v0.0.4 h1:Gi+8EGJ2y5qiD5FbsbpX/TMNcJw8gSqr7eyjHa4Fhvs=
+ github.com/ipfs/bbloom v0.0.4/go.mod h1:cS9YprKXpoZ9lT0n/Mw/a6/aFV6DTjTLYHeA+gyqMG0=
+-github.com/ipfs/boxo v0.37.0 h1:2E3mZvydMI2t5IkAgtkmZ3sGsld0oS7o3I+xyzDk6uI=
+-github.com/ipfs/boxo v0.37.0/go.mod h1:8yyiRn54F2CsW13n0zwXEPrVsZix/gFj9SYIRYMZ6KE=
++github.com/ipfs/boxo v0.37.1-0.20260317235537-851246983422 h1:yY3ot/DU1bqTzHDBARACM76Tbx9s4xzcRbzifG1e/es=
++github.com/ipfs/boxo v0.37.1-0.20260317235537-851246983422/go.mod h1:8yyiRn54F2CsW13n0zwXEPrVsZix/gFj9SYIRYMZ6KE=
+ github.com/ipfs/go-bitfield v1.1.0 h1:fh7FIo8bSwaJEh6DdTWbCeZ1eqOaOkKFI74SCnsWbGA=
+ github.com/ipfs/go-bitfield v1.1.0/go.mod h1:paqf1wjq/D2BBmzfTVFlJQ9IlFOZpg422HL0HqsGWHU=
+ github.com/ipfs/go-block-format v0.0.3/go.mod h1:4LmD4ZUw0mhO+JSKdpWwrzATiEfM7WWgQ8H5l6P8MVk=
+diff --git a/go.mod b/go.mod
+index 8454c6541..3a66c8a29 100644
+--- a/go.mod
++++ b/go.mod
+@@ -21,7 +21,7 @@ require (
+ 	github.com/hashicorp/go-version v1.8.0
+ 	github.com/ipfs-shipyard/nopfs v0.0.14
+ 	github.com/ipfs-shipyard/nopfs/ipfs v0.25.0
+-	github.com/ipfs/boxo v0.37.0
++	github.com/ipfs/boxo v0.37.1-0.20260317235537-851246983422
+ 	github.com/ipfs/go-block-format v0.2.3
+ 	github.com/ipfs/go-cid v0.6.0
+ 	github.com/ipfs/go-cidutil v0.1.1
+diff --git a/go.sum b/go.sum
+index e7bc05adb..4c07c060b 100644
+--- a/go.sum
++++ b/go.sum
+@@ -386,8 +386,8 @@ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0 h1:OqNqsGZPX8zh3eFMO8Lf8EHRRnSGBMqcd
+ github.com/ipfs-shipyard/nopfs/ipfs v0.25.0/go.mod h1:BxhUdtBgOXg1B+gAPEplkg/GpyTZY+kCMSfsJvvydqU=
+ github.com/ipfs/bbloom v0.0.4 h1:Gi+8EGJ2y5qiD5FbsbpX/TMNcJw8gSqr7eyjHa4Fhvs=
+ github.com/ipfs/bbloom v0.0.4/go.mod h1:cS9YprKXpoZ9lT0n/Mw/a6/aFV6DTjTLYHeA+gyqMG0=
+-github.com/ipfs/boxo v0.37.0 h1:2E3mZvydMI2t5IkAgtkmZ3sGsld0oS7o3I+xyzDk6uI=
+-github.com/ipfs/boxo v0.37.0/go.mod h1:8yyiRn54F2CsW13n0zwXEPrVsZix/gFj9SYIRYMZ6KE=
++github.com/ipfs/boxo v0.37.1-0.20260317235537-851246983422 h1:yY3ot/DU1bqTzHDBARACM76Tbx9s4xzcRbzifG1e/es=
++github.com/ipfs/boxo v0.37.1-0.20260317235537-851246983422/go.mod h1:8yyiRn54F2CsW13n0zwXEPrVsZix/gFj9SYIRYMZ6KE=
+ github.com/ipfs/go-bitfield v1.1.0 h1:fh7FIo8bSwaJEh6DdTWbCeZ1eqOaOkKFI74SCnsWbGA=
+ github.com/ipfs/go-bitfield v1.1.0/go.mod h1:paqf1wjq/D2BBmzfTVFlJQ9IlFOZpg422HL0HqsGWHU=
+ github.com/ipfs/go-block-format v0.0.3/go.mod h1:4LmD4ZUw0mhO+JSKdpWwrzATiEfM7WWgQ8H5l6P8MVk=
+diff --git a/routing/delegated.go b/routing/delegated.go
+index 1c6d45ae1..e9266ba8f 100644
+--- a/routing/delegated.go
++++ b/routing/delegated.go
+@@ -160,12 +160,12 @@ func parse(visited map[string]bool,
+ 
+ type ExtraHTTPParams struct {
+ 	PeerID        string
+-	Addrs         []string
++	AddrFunc      func() []ma.Multiaddr // dynamic address resolver for provider records
+ 	PrivKeyB64    string
+ 	HTTPRetrieval bool
+ }
+ 
+-func ConstructHTTPRouter(endpoint string, peerID string, addrs []string, privKey string, httpRetrieval bool) (routing.Routing, error) {
++func ConstructHTTPRouter(endpoint string, peerID string, addrFunc func() []ma.Multiaddr, privKey string, httpRetrieval bool) (routing.Routing, error) {
+ 	return httpRoutingFromConfig(
+ 		config.Router{
+ 			Type: "http",
+@@ -175,7 +175,7 @@ func ConstructHTTPRouter(endpoint string, peerID string, addrs []string, privKey
+ 		},
+ 		&ExtraHTTPParams{
+ 			PeerID:        peerID,
+-			Addrs:         addrs,
++			AddrFunc:      addrFunc,
+ 			PrivKeyB64:    privKey,
+ 			HTTPRetrieval: httpRetrieval,
+ 		},
+@@ -226,21 +226,28 @@ func httpRoutingFromConfig(conf config.Router, extraHTTP *ExtraHTTPParams) (rout
+ 		return nil, err
+ 	}
+ 
+-	addrInfo, err := createAddrInfo(extraHTTP.PeerID, extraHTTP.Addrs)
++	protocols := config.DefaultHTTPRoutersFilterProtocols
++	if extraHTTP.HTTPRetrieval {
++		protocols = append(protocols, "transport-ipfs-gateway-http")
++	}
++
++	peerID, err := peer.Decode(extraHTTP.PeerID)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 
+-	protocols := config.DefaultHTTPRoutersFilterProtocols
+-	if extraHTTP.HTTPRetrieval {
+-		protocols = append(protocols, "transport-ipfs-gateway-http")
++	var providerInfoOpt drclient.Option
++	if extraHTTP.AddrFunc != nil {
++		providerInfoOpt = drclient.WithProviderInfoFunc(peerID, extraHTTP.AddrFunc)
++	} else {
++		providerInfoOpt = drclient.WithProviderInfo(peerID, nil)
+ 	}
+ 
+ 	cli, err := drclient.New(
+ 		params.Endpoint,
+ 		drclient.WithHTTPClient(delegateHTTPClient),
+ 		drclient.WithIdentity(key),
+-		drclient.WithProviderInfo(addrInfo.ID, addrInfo.Addrs),
++		providerInfoOpt,
+ 		drclient.WithUserAgent(version.GetUserAgentVersion()),
+ 		drclient.WithProtocolFilter(protocols),
+ 		drclient.WithStreamResultsRequired(),       // https://specs.ipfs.tech/routing/http-routing-v1/#streaming
+@@ -278,28 +285,6 @@ func decodePrivKey(keyB64 string) (ic.PrivKey, error) {
+ 	return ic.UnmarshalPrivateKey(pk)
+ }
+ 
+-func createAddrInfo(peerID string, addrs []string) (peer.AddrInfo, error) {
+-	pID, err := peer.Decode(peerID)
+-	if err != nil {
+-		return peer.AddrInfo{}, err
+-	}
+-
+-	var mas []ma.Multiaddr
+-	for _, a := range addrs {
+-		m, err := ma.NewMultiaddr(a)
+-		if err != nil {
+-			return peer.AddrInfo{}, err
+-		}
+-
+-		mas = append(mas, m)
+-	}
+-
+-	return peer.AddrInfo{
+-		ID:    pID,
+-		Addrs: mas,
+-	}, nil
+-}
+-
+ type ExtraDHTParams struct {
+ 	BootstrapPeers []peer.AddrInfo
+ 	Host           host.Host

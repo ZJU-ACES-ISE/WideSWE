@@ -1,0 +1,3135 @@
+diff --git a/.claude/settings.local.json b/.claude/settings.local.json
+new file mode 100644
+index 00000000..bcd49f4c
+--- /dev/null
++++ b/.claude/settings.local.json
+@@ -0,0 +1,35 @@
++{
++  "permissions": {
++    "allow": [
++      "Bash(find:*)",
++      "Bash(mkdir:*)",
++      "Bash(cp:*)",
++      "Bash(ls:*)",
++      "Bash(make:*)",
++      "Bash(go:*)",
++      "Bash(golangci-lint:*)",
++      "Bash(git merge:*)",
++      "Bash(git add:*)",
++      "Bash(git commit:*)",
++      "Bash(git push:*)",
++      "Bash(git pull:*)",
++      "Bash(git fetch:*)",
++      "Bash(git checkout:*)",
++      "WebFetch(*)",
++      "Write(*)",
++      "WebSearch(*)",
++      "MultiEdit(*)",
++      "Edit(*)",
++      "Bash(gh:*)",
++      "Bash(grep:*)",
++      "Bash(tree:*)",
++      "Bash(./nuclei:*)",
++      "WebFetch(domain:github.com)"
++    ],
++    "deny": [
++      "Bash(make run:*)",
++      "Bash(./bin/nuclei:*)"
++    ],
++    "defaultMode": "acceptEdits"
++  }
++}
+\ No newline at end of file
+diff --git a/.gitignore b/.gitignore
+index f5153fe0..8e4f9d93 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -28,6 +28,8 @@
+ /scrapefunc
+ /scrapefuncs
+ /tsgen
++/integration_tests/integration-test
++/integration_tests/nuclei
+ 
+ # Templates
+ /*.yaml
+diff --git a/CLAUDE.md b/CLAUDE.md
+new file mode 100644
+index 00000000..ba6e226f
+--- /dev/null
++++ b/CLAUDE.md
+@@ -0,0 +1,83 @@
++# CLAUDE.md
++
++This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
++
++## Project Overview
++
++Nuclei is a modern, high-performance vulnerability scanner built in Go that leverages YAML-based templates for customizable vulnerability detection. It supports multiple protocols (HTTP, DNS, TCP, SSL, WebSocket, WHOIS, JavaScript, Code) and is designed for zero false positives through real-world condition simulation.
++
++## Development Commands
++
++### Building and Testing
++- `make build` - Build the main nuclei binary to ./bin/nuclei
++- `make test` - Run unit tests with race detection
++- `make integration` - Run integration tests (builds and runs test suite)
++- `make functional` - Run functional tests
++- `make vet` - Run go vet for code analysis
++- `make tidy` - Clean up go modules
++
++### Validation and Linting
++- `make template-validate` - Validate nuclei templates using the built binary
++- `go fmt ./...` - Format Go code
++- `go vet ./...` - Static analysis
++
++### Development Tools
++- `make devtools-all` - Build all development tools (bindgen, tsgen, scrapefuncs)
++- `make jsupdate-all` - Update JavaScript bindings and TypeScript definitions
++- `make docs` - Generate documentation
++- `make memogen` - Generate memoization code for JavaScript libraries
++
++### Testing Specific Components
++- Run single test: `go test -v ./pkg/path/to/package -run TestName`
++- Integration tests are in `integration_tests/` and can be run via `make integration`
++
++## Architecture Overview
++
++### Core Components
++- **cmd/nuclei** - Main CLI entry point with flag parsing and configuration
++- **internal/runner** - Core runner that orchestrates the entire scanning process
++- **pkg/core** - Execution engine with work pools and template clustering
++- **pkg/templates** - Template parsing, compilation, and management
++- **pkg/protocols** - Protocol implementations (HTTP, DNS, Network, etc.)
++- **pkg/operators** - Matching and extraction logic (matchers/extractors)
++- **pkg/catalog** - Template discovery and loading from disk/remote sources
++
++### Protocol Architecture
++Each protocol (HTTP, DNS, Network, etc.) implements:
++- Request interface with Compile(), ExecuteWithResults(), Match(), Extract() methods
++- Operators embedding for matching/extraction functionality
++- Protocol-specific request building and execution logic
++
++### Template System
++- Templates are YAML files defining vulnerability detection logic
++- Compiled into executable requests with operators (matchers/extractors)
++- Support for workflows (multi-step template execution)
++- Template clustering optimizes identical requests across multiple templates
++
++### Key Execution Flow
++1. Template loading and compilation via pkg/catalog/loader
++2. Input provider setup for targets
++3. Engine creation with work pools for concurrency
++4. Template execution with result collection via operators
++5. Output writing and reporting integration
++
++### JavaScript Integration
++- Custom JavaScript runtime for code protocol templates
++- Auto-generated bindings in pkg/js/generated/
++- Library implementations in pkg/js/libs/
++- Development tools for binding generation in pkg/js/devtools/
++
++## Template Development
++- Templates located in separate nuclei-templates repository
++- YAML format with info, requests, and operators sections  
++- Support for multiple protocol types in single template
++- Built-in DSL functions for dynamic content generation
++- Template validation available via `make template-validate`
++
++## Key Directories
++- **lib/** - SDK for embedding nuclei as a library
++- **examples/** - Usage examples for different scenarios
++- **integration_tests/** - Integration test suite with protocol-specific tests
++- **pkg/fuzz/** - Fuzzing engine and DAST capabilities
++- **pkg/input/** - Input processing for various formats (Burp, OpenAPI, etc.)
++- **pkg/reporting/** - Result export and issue tracking integrations
+\ No newline at end of file
+diff --git a/cmd/integration-test/http.go b/cmd/integration-test/http.go
+index 69fb3518..8b587fff 100644
+--- a/cmd/integration-test/http.go
++++ b/cmd/integration-test/http.go
+@@ -196,7 +196,7 @@ func (d *httpDefaultMatcherCondition) Execute(filePath string) error {
+ 		return err
+ 	}
+ 	if routerErr != nil {
+-		return errkit.Append(errkit.New("failed to send http request to interactsh server"), routerErr)
++		return errkit.Wrap(routerErr, "failed to send http request to interactsh server")
+ 	}
+ 	if err := expectResultsCount(results, 1); err != nil {
+ 		return err
+@@ -628,10 +628,10 @@ func (h *httpRawWithParams) Execute(filePath string) error {
+ 		// we intentionally use params["test"] instead of params.Get("test") to test the case where
+ 		// there are multiple parameters with the same name
+ 		if !reflect.DeepEqual(params["key1"], []string{"value1"}) {
+-			errx = errkit.Append(errkit.New(fmt.Sprintf("expected %v, got %v", []string{"value1"}, params["key1"])), errx)
++			errx = errkit.Append(errx, errkit.New("key1 not found in params", "expected", []string{"value1"}, "got", params["key1"]))
+ 		}
+ 		if !reflect.DeepEqual(params["key2"], []string{"value2"}) {
+-			errx = errkit.Append(errkit.New(fmt.Sprintf("expected %v, got %v", []string{"value2"}, params["key2"])), errx)
++			errx = errkit.Append(errx, errkit.New("key2 not found in params", "expected", []string{"value2"}, "got", params["key2"]))
+ 		}
+ 		_, _ = fmt.Fprintf(w, "Test is test raw-params-matcher text")
+ 	})
+@@ -971,10 +971,10 @@ func (h *httpRequestSelfContainedWithParams) Execute(filePath string) error {
+ 		// we intentionally use params["test"] instead of params.Get("test") to test the case where
+ 		// there are multiple parameters with the same name
+ 		if !reflect.DeepEqual(params["something"], []string{"here"}) {
+-			errx = errkit.Append(errkit.New(fmt.Sprintf("expected %v, got %v", []string{"here"}, params["something"])), errx)
++			errx = errkit.Append(errx, errkit.New("something not found in params", "expected", []string{"here"}, "got", params["something"]))
+ 		}
+ 		if !reflect.DeepEqual(params["key"], []string{"value"}) {
+-			errx = errkit.Append(errkit.New(fmt.Sprintf("expected %v, got %v", []string{"value"}, params["key"])), errx)
++			errx = errkit.Append(errx, errkit.New("key not found in params", "expected", []string{"value"}, "got", params["key"]))
+ 		}
+ 		_, _ = w.Write([]byte("This is self-contained response"))
+ 	})
+@@ -1027,10 +1027,10 @@ func (h *httpRequestSelfContainedFileInput) Execute(filePath string) error {
+ 	// create temp file
+ 	FileLoc, err := os.CreateTemp("", "self-contained-payload-*.txt")
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to create temp file"), err)
++		return errkit.Wrap(err, "failed to create temp file")
+ 	}
+ 	if _, err := FileLoc.Write([]byte("one\ntwo\n")); err != nil {
+-		return errkit.Append(errkit.New("failed to write payload to temp file"), err)
++		return errkit.Wrap(err, "failed to write payload to temp file")
+ 	}
+ 	defer func() {
+ 		_ = FileLoc.Close()
+@@ -1046,7 +1046,7 @@ func (h *httpRequestSelfContainedFileInput) Execute(filePath string) error {
+ 	}
+ 
+ 	if !sliceutil.ElementsMatch(gotReqToEndpoints, []string{"/one", "/two", "/one", "/two"}) {
+-		return errkit.New(fmt.Sprintf("%s: expected requests to be sent to `/one` and `/two` endpoints but were sent to `%v`", filePath, gotReqToEndpoints)).Build()
++		return errkit.New("expected requests to be sent to `/one` and `/two` endpoints but were sent to `%v`", gotReqToEndpoints, "filePath", filePath)
+ 	}
+ 	return nil
+ }
+diff --git a/cmd/integration-test/loader.go b/cmd/integration-test/loader.go
+index 2967e9af..d6fc5464 100644
+--- a/cmd/integration-test/loader.go
++++ b/cmd/integration-test/loader.go
+@@ -223,7 +223,7 @@ type loadTemplateWithID struct{}
+ func (h *loadTemplateWithID) Execute(nooop string) error {
+ 	results, err := testutils.RunNucleiBareArgsAndGetResults(debug, nil, "-target", "scanme.sh", "-id", "self-signed-ssl")
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to load template with id"), err)
++		return errkit.Wrap(err, "failed to load template with id")
+ 	}
+ 	return expectResultsCount(results, 1)
+ }
+diff --git a/cmd/integration-test/profile-loader.go b/cmd/integration-test/profile-loader.go
+index 19e57ba4..3cef723a 100644
+--- a/cmd/integration-test/profile-loader.go
++++ b/cmd/integration-test/profile-loader.go
+@@ -18,7 +18,7 @@ type profileLoaderByRelFile struct{}
+ func (h *profileLoaderByRelFile) Execute(testName string) error {
+ 	results, err := testutils.RunNucleiWithArgsAndGetResults(debug, "-tl", "-tp", "cloud.yml")
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to load template with id"), err)
++		return errkit.Wrap(err, "failed to load template with id")
+ 	}
+ 	if len(results) <= 10 {
+ 		return fmt.Errorf("incorrect result: expected more results than %d, got %v", 10, len(results))
+@@ -31,7 +31,7 @@ type profileLoaderById struct{}
+ func (h *profileLoaderById) Execute(testName string) error {
+ 	results, err := testutils.RunNucleiWithArgsAndGetResults(debug, "-tl", "-tp", "cloud")
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to load template with id"), err)
++		return errkit.Wrap(err, "failed to load template with id")
+ 	}
+ 	if len(results) <= 10 {
+ 		return fmt.Errorf("incorrect result: expected more results than %d, got %v", 10, len(results))
+@@ -45,7 +45,7 @@ type customProfileLoader struct{}
+ func (h *customProfileLoader) Execute(filepath string) error {
+ 	results, err := testutils.RunNucleiWithArgsAndGetResults(debug, "-tl", "-tp", filepath)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to load template with id"), err)
++		return errkit.Wrap(err, "failed to load template with id")
+ 	}
+ 	if len(results) < 1 {
+ 		return fmt.Errorf("incorrect result: expected more results than %d, got %v", 1, len(results))
+diff --git a/cmd/integration-test/template-dir.go b/cmd/integration-test/template-dir.go
+index 96da8742..5f26a05a 100644
+--- a/cmd/integration-test/template-dir.go
++++ b/cmd/integration-test/template-dir.go
+@@ -17,7 +17,7 @@ type templateDirWithTargetTest struct{}
+ func (h *templateDirWithTargetTest) Execute(filePath string) error {
+ 	tempdir, err := os.MkdirTemp("", "nuclei-update-dir-*")
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to create temp dir"), err)
++		return errkit.Wrap(err, "failed to create temp dir")
+ 	}
+ 	defer func() {
+ 		_ = os.RemoveAll(tempdir)
+diff --git a/cmd/nuclei/main.go b/cmd/nuclei/main.go
+index ba71a1e0..0698fb96 100644
+--- a/cmd/nuclei/main.go
++++ b/cmd/nuclei/main.go
+@@ -187,7 +187,7 @@ func main() {
+ 			options.Logger.Info().Msgf("Creating resume file: %s\n", resumeFileName)
+ 			err := nucleiRunner.SaveResumeConfig(resumeFileName)
+ 			if err != nil {
+-				return errkit.Append(errkit.New("couldn't create crash resume file"), err)
++				return errkit.Wrap(err, "couldn't create crash resume file")
+ 			}
+ 			return nil
+ 		})
+diff --git a/cmd/tmc/main.go b/cmd/tmc/main.go
+index 69065436..fa9bc8ea 100644
+--- a/cmd/tmc/main.go
++++ b/cmd/tmc/main.go
+@@ -243,7 +243,7 @@ func enhanceTemplate(data string) (string, bool, error) {
+ 		return data, false, err
+ 	}
+ 	if resp.StatusCode != 200 {
+-		return data, false, errkit.New(fmt.Sprintf("unexpected status code: %v", resp.Status)).Build()
++		return data, false, errkit.New("unexpected status code: %v", resp.Status)
+ 	}
+ 	var templateResp TemplateResp
+ 	if err := json.NewDecoder(resp.Body).Decode(&templateResp); err != nil {
+@@ -254,20 +254,20 @@ func enhanceTemplate(data string) (string, bool, error) {
+ 	}
+ 	if templateResp.ValidateErrorCount > 0 {
+ 		if len(templateResp.ValidateError) > 0 {
+-			return data, false, errkit.New(fmt.Sprintf("validate: %s: at line %v", templateResp.ValidateError[0].Message, templateResp.ValidateError[0].Mark.Line)).Build()
++			return data, false, errkit.New(templateResp.ValidateError[0].Message+": at line %v", templateResp.ValidateError[0].Mark.Line, "tag", "validate")
+ 		}
+-		return data, false, errkit.New("validate: validation failed").Build()
++		return data, false, errkit.New("validation failed", "tag", "validate")
+ 	}
+ 	if templateResp.Error.Name != "" {
+-		return data, false, errkit.New(templateResp.Error.Name).Build()
++		return data, false, errkit.New("%s", templateResp.Error.Name)
+ 	}
+ 	if strings.TrimSpace(templateResp.Enhanced) == "" && !templateResp.Lint {
+ 		if templateResp.LintError.Reason != "" {
+-			return data, false, errkit.New(fmt.Sprintf("lint: %s : at line %v", templateResp.LintError.Reason, templateResp.LintError.Mark.Line)).Build()
++			return data, false, errkit.New(templateResp.LintError.Reason+" : at line %v", templateResp.LintError.Mark.Line, "tag", "lint")
+ 		}
+-		return data, false, errkit.New(fmt.Sprintf("lint: at line: %v", templateResp.LintError.Mark.Line)).Build()
++		return data, false, errkit.New("at line: %v", templateResp.LintError.Mark.Line, "tag", "lint")
+ 	}
+-	return data, false, errkit.New("template enhance failed").Build()
++	return data, false, errkit.New("template enhance failed")
+ }
+ 
+ // formatTemplate formats template data using templateman format api
+@@ -277,7 +277,7 @@ func formatTemplate(data string) (string, bool, error) {
+ 		return data, false, err
+ 	}
+ 	if resp.StatusCode != 200 {
+-		return data, false, errkit.New(fmt.Sprintf("unexpected status code: %v", resp.Status)).Build()
++		return data, false, errkit.New("unexpected status code: %v", resp.Status)
+ 	}
+ 	var templateResp TemplateResp
+ 	if err := json.NewDecoder(resp.Body).Decode(&templateResp); err != nil {
+@@ -288,20 +288,20 @@ func formatTemplate(data string) (string, bool, error) {
+ 	}
+ 	if templateResp.ValidateErrorCount > 0 {
+ 		if len(templateResp.ValidateError) > 0 {
+-			return data, false, errkit.New(fmt.Sprintf("validate: %s: at line %v", templateResp.ValidateError[0].Message, templateResp.ValidateError[0].Mark.Line)).Build()
++			return data, false, errkit.New(templateResp.ValidateError[0].Message+": at line %v", templateResp.ValidateError[0].Mark.Line, "tag", "validate")
+ 		}
+-		return data, false, errkit.New("validate: validation failed").Build()
++		return data, false, errkit.New("validation failed", "tag", "validate")
+ 	}
+ 	if templateResp.Error.Name != "" {
+-		return data, false, errkit.New(templateResp.Error.Name).Build()
++		return data, false, errkit.New("%s", templateResp.Error.Name)
+ 	}
+ 	if strings.TrimSpace(templateResp.Updated) == "" && !templateResp.Lint {
+ 		if templateResp.LintError.Reason != "" {
+-			return data, false, errkit.New(fmt.Sprintf("lint: %s : at line %v", templateResp.LintError.Reason, templateResp.LintError.Mark.Line)).Build()
++			return data, false, errkit.New(templateResp.LintError.Reason+" : at line %v", templateResp.LintError.Mark.Line, "tag", "lint")
+ 		}
+-		return data, false, errkit.New(fmt.Sprintf("lint: at line: %v", templateResp.LintError.Mark.Line)).Build()
++		return data, false, errkit.New("at line: %v", templateResp.LintError.Mark.Line, "tag", "lint")
+ 	}
+-	return data, false, errkit.New("template format failed").Build()
++	return data, false, errkit.New("template format failed")
+ }
+ 
+ // lintTemplate lints template data using templateman lint api
+@@ -311,7 +311,7 @@ func lintTemplate(data string) (bool, error) {
+ 		return false, err
+ 	}
+ 	if resp.StatusCode != 200 {
+-		return false, errkit.New(fmt.Sprintf("unexpected status code: %v", resp.Status)).Build()
++		return false, errkit.New("unexpected status code: %v", resp.Status)
+ 	}
+ 	var lintResp TemplateLintResp
+ 	if err := json.NewDecoder(resp.Body).Decode(&lintResp); err != nil {
+@@ -321,9 +321,9 @@ func lintTemplate(data string) (bool, error) {
+ 		return true, nil
+ 	}
+ 	if lintResp.LintError.Reason != "" {
+-		return false, errkit.New(fmt.Sprintf("lint: %s : at line %v", lintResp.LintError.Reason, lintResp.LintError.Mark.Line)).Build()
++		return false, errkit.New(lintResp.LintError.Reason+" : at line %v", lintResp.LintError.Mark.Line, "tag", "lint")
+ 	}
+-	return false, errkit.New(fmt.Sprintf("lint: at line: %v", lintResp.LintError.Mark.Line)).Build()
++	return false, errkit.New("at line: %v", lintResp.LintError.Mark.Line, "tag", "lint")
+ }
+ 
+ // validateTemplate validates template data using templateman validate api
+@@ -333,7 +333,7 @@ func validateTemplate(data string) (bool, error) {
+ 		return false, err
+ 	}
+ 	if resp.StatusCode != 200 {
+-		return false, errkit.New(fmt.Sprintf("unexpected status code: %v", resp.Status)).Build()
++		return false, errkit.New("unexpected status code: %v", resp.Status)
+ 	}
+ 	var validateResp TemplateResp
+ 	if err := json.NewDecoder(resp.Body).Decode(&validateResp); err != nil {
+@@ -344,14 +344,14 @@ func validateTemplate(data string) (bool, error) {
+ 	}
+ 	if validateResp.ValidateErrorCount > 0 {
+ 		if len(validateResp.ValidateError) > 0 {
+-			return false, errkit.New(fmt.Sprintf("validate: %s: at line %v", validateResp.ValidateError[0].Message, validateResp.ValidateError[0].Mark.Line)).Build()
++			return false, errkit.New(validateResp.ValidateError[0].Message+": at line %v", validateResp.ValidateError[0].Mark.Line, "tag", "validate")
+ 		}
+-		return false, errkit.New("validate: validation failed").Build()
++		return false, errkit.New("validation failed", "tag", "validate")
+ 	}
+ 	if validateResp.Error.Name != "" {
+-		return false, errkit.New(validateResp.Error.Name).Build()
++		return false, errkit.New("%s", validateResp.Error.Name)
+ 	}
+-	return false, errkit.New("template validation failed").Build()
++	return false, errkit.New("template validation failed")
+ }
+ 
+ // parseAndAddMaxRequests parses and adds max requests to templates
+diff --git a/go.mod b/go.mod
+index 2fd4ee3b..191fd9b4 100644
+--- a/go.mod
++++ b/go.mod
+@@ -20,12 +20,12 @@ require (
+ 	github.com/olekukonko/tablewriter v1.0.8
+ 	github.com/pkg/errors v0.9.1
+ 	github.com/projectdiscovery/clistats v0.1.1
+-	github.com/projectdiscovery/fastdialer v0.4.4
++	github.com/projectdiscovery/fastdialer v0.4.6
+ 	github.com/projectdiscovery/hmap v0.0.92
+ 	github.com/projectdiscovery/interactsh v1.2.4
+ 	github.com/projectdiscovery/rawhttp v0.1.90
+ 	github.com/projectdiscovery/retryabledns v1.0.105
+-	github.com/projectdiscovery/retryablehttp-go v1.0.119
++	github.com/projectdiscovery/retryablehttp-go v1.0.120
+ 	github.com/projectdiscovery/yamldoc-go v1.0.6
+ 	github.com/remeh/sizedwaitgroup v1.0.0
+ 	github.com/rs/xid v1.6.0
+@@ -98,14 +98,14 @@ require (
+ 	github.com/projectdiscovery/httpx v1.7.0
+ 	github.com/projectdiscovery/mapcidr v1.1.34
+ 	github.com/projectdiscovery/n3iwf v0.0.0-20230523120440-b8cd232ff1f5
+-	github.com/projectdiscovery/networkpolicy v0.1.18
++	github.com/projectdiscovery/networkpolicy v0.1.20
+ 	github.com/projectdiscovery/ratelimit v0.0.81
+ 	github.com/projectdiscovery/rdap v0.9.0
+ 	github.com/projectdiscovery/sarif v0.0.1
+ 	github.com/projectdiscovery/tlsx v1.1.9
+ 	github.com/projectdiscovery/uncover v1.1.0
+ 	github.com/projectdiscovery/useragent v0.0.101
+-	github.com/projectdiscovery/utils v0.4.23
++	github.com/projectdiscovery/utils v0.4.24-0.20250823123502-bd7f2849ddb4
+ 	github.com/projectdiscovery/wappalyzergo v0.2.36
+ 	github.com/redis/go-redis/v9 v9.11.0
+ 	github.com/seh-msft/burpxml v1.0.1
+@@ -199,7 +199,7 @@ require (
+ 	github.com/felixge/fgprof v0.9.5 // indirect
+ 	github.com/free5gc/util v1.0.5-0.20230511064842-2e120956883b // indirect
+ 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
+-	github.com/gaissmai/bart v0.20.5 // indirect
++	github.com/gaissmai/bart v0.23.1 // indirect
+ 	github.com/geoffgarside/ber v1.1.0 // indirect
+ 	github.com/gin-contrib/sse v0.1.0 // indirect
+ 	github.com/gin-gonic/gin v1.9.1 // indirect
+diff --git a/go.sum b/go.sum
+index 5fa540e3..3551fb73 100644
+--- a/go.sum
++++ b/go.sum
+@@ -332,8 +332,8 @@ github.com/fsnotify/fsnotify v1.6.0 h1:n+5WquG0fcWoWp6xPWfHdbskMCQaFnG6PfBrh1Ky4
+ github.com/fsnotify/fsnotify v1.6.0/go.mod h1:sl3t1tCWJFWoRz9R8WJCbQihKKwmorjAbSClcnxKAGw=
+ github.com/gabriel-vasile/mimetype v1.4.8 h1:FfZ3gj38NjllZIeJAmMhr+qKL8Wu+nOoI3GqacKw1NM=
+ github.com/gabriel-vasile/mimetype v1.4.8/go.mod h1:ByKUIKGjh1ODkGM1asKUbQZOLGrPjydw3hYPU2YU9t8=
+-github.com/gaissmai/bart v0.20.5 h1:ehoWZWQ7j//qt0K0Zs4i9hpoPpbgqsMQiR8W2QPJh+c=
+-github.com/gaissmai/bart v0.20.5/go.mod h1:cEed+ge8dalcbpi8wtS9x9m2hn/fNJH5suhdGQOHnYk=
++github.com/gaissmai/bart v0.23.1 h1:8+EYZZcm9xObBgCIBb8f5sg65qVtphg7VcbMOjuvNrE=
++github.com/gaissmai/bart v0.23.1/go.mod h1:RpLtt3lWq1BoRz3AAyDAJ7jhLWBkYhVCfi+ximB2t68=
+ github.com/geoffgarside/ber v1.1.0 h1:qTmFG4jJbwiSzSXoNJeHcOprVzZ8Ulde2Rrrifu5U9w=
+ github.com/geoffgarside/ber v1.1.0/go.mod h1:jVPKeCbj6MvQZhwLYsGwaGI52oUorHoHKNecGT85ZCc=
+ github.com/getkin/kin-openapi v0.132.0 h1:3ISeLMsQzcb5v26yeJrBcdTCEQTag36ZjaGk7MIRUwk=
+@@ -769,8 +769,8 @@ github.com/projectdiscovery/clistats v0.1.1 h1:8mwbdbwTU4aT88TJvwIzTpiNeow3XnAB7
+ github.com/projectdiscovery/clistats v0.1.1/go.mod h1:4LtTC9Oy//RiuT1+76MfTg8Hqs7FQp1JIGBM3nHK6a0=
+ github.com/projectdiscovery/dsl v0.5.0 h1:3HHY14FNmdwWXq3pi9dd8JjUHQzskZjLD/pZKVx5Vi4=
+ github.com/projectdiscovery/dsl v0.5.0/go.mod h1:Fr+zIQJfMNy+RTj5KFgozfvDaiQQEKMyrKXl75aGgxY=
+-github.com/projectdiscovery/fastdialer v0.4.4 h1:QeVbOnTMPhc/IOkkj2AP2q9hu5E1oCBPiLwEvPSR6A8=
+-github.com/projectdiscovery/fastdialer v0.4.4/go.mod h1:a0FNUOcmW6g6JhjaJ2+YkCpFFkQeCbetq/d9Zo4G3rQ=
++github.com/projectdiscovery/fastdialer v0.4.6 h1:7cw47IyrkVHCEM80dBDhjT4YNsPY2IAZD2Sg11QM0Wk=
++github.com/projectdiscovery/fastdialer v0.4.6/go.mod h1:IRbTB9d2GNT1EyxA16b/HJpqYbnNXk6hsH8CRZkdukc=
+ github.com/projectdiscovery/fasttemplate v0.0.2 h1:h2cISk5xDhlJEinlBQS6RRx0vOlOirB2y3Yu4PJzpiA=
+ github.com/projectdiscovery/fasttemplate v0.0.2/go.mod h1:XYWWVMxnItd+r0GbjA1GCsUopMw1/XusuQxdyAIHMCw=
+ github.com/projectdiscovery/freeport v0.0.7 h1:Q6uXo/j8SaV/GlAHkEYQi8WQoPXyJWxyspx+aFmz9Qk=
+@@ -801,8 +801,8 @@ github.com/projectdiscovery/mapcidr v1.1.34 h1:udr83vQ7oz3kEOwlsU6NC6o08leJzSDQt
+ github.com/projectdiscovery/mapcidr v1.1.34/go.mod h1:1+1R6OkKSAKtWDXE9RvxXtXPoajXTYX0eiEdkqlhQqQ=
+ github.com/projectdiscovery/n3iwf v0.0.0-20230523120440-b8cd232ff1f5 h1:L/e8z8yw1pfT6bg35NiN7yd1XKtJap5Nk6lMwQ0RNi8=
+ github.com/projectdiscovery/n3iwf v0.0.0-20230523120440-b8cd232ff1f5/go.mod h1:pGW2ncnTxTxHtP9wzcIJAB+3/NMp6IiuQWd2NK7K+oc=
+-github.com/projectdiscovery/networkpolicy v0.1.18 h1:DAeP73SvcuT4evaohNS7BPELw+VtvcVt4PaTK3fC1qA=
+-github.com/projectdiscovery/networkpolicy v0.1.18/go.mod h1:2yWanKsU2oBZ75ch94IsEQy6hByFp+3oTiSyC6ew3TE=
++github.com/projectdiscovery/networkpolicy v0.1.20 h1:dPUk3FKoAehMnFvphAZLq6khDCbPYPJnD6PPTcjp5nU=
++github.com/projectdiscovery/networkpolicy v0.1.20/go.mod h1:laPi8mLbgCbYZ0kYQU4fkWCFQdFbx24ci7yBQA8Hcww=
+ github.com/projectdiscovery/ratelimit v0.0.81 h1:u6lW+rAhS/UO0amHTYmYLipPK8NEotA9521hdojBtgI=
+ github.com/projectdiscovery/ratelimit v0.0.81/go.mod h1:tK04WXHuC4i6AsFkByInODSNf45gd9sfaMHzmy2bAsA=
+ github.com/projectdiscovery/rawhttp v0.1.90 h1:LOSZ6PUH08tnKmWsIwvwv1Z/4zkiYKYOSZ6n+8RFKtw=
+@@ -811,8 +811,8 @@ github.com/projectdiscovery/rdap v0.9.0 h1:wPhHx5pQ2QI+WGhyNb2PjhTl0NtB39Nk7YFZ9
+ github.com/projectdiscovery/rdap v0.9.0/go.mod h1:zk4yrJFQ2Hy36Aqk+DvotYQxYAeALaCJ5ORySkff36Q=
+ github.com/projectdiscovery/retryabledns v1.0.105 h1:G8ln01igkNTQ5xvMY5K4cx5XIfKGTwGH6aZxWxBKMqc=
+ github.com/projectdiscovery/retryabledns v1.0.105/go.mod h1:3EZKhRL1rokqYR4q5qKK1eLBEe8mSzgtzkMOJilO1Ok=
+-github.com/projectdiscovery/retryablehttp-go v1.0.119 h1:Lpjb6gCWpIvCCX8GultM8zlaQEmFOci1dS33k9Ll4gw=
+-github.com/projectdiscovery/retryablehttp-go v1.0.119/go.mod h1:x29gqkLERRzw0znJDu5ORhphBaVin8FtK0+jCvCx4os=
++github.com/projectdiscovery/retryablehttp-go v1.0.120 h1:kH4D0MwKV6a0U6YbBQ8cBD+tT0U3zrwudTPCFVSaZg8=
++github.com/projectdiscovery/retryablehttp-go v1.0.120/go.mod h1:jR3eJLdCEvW3Xz0LOQldxNc+MHHY61qZh9k3Sz7U40U=
+ github.com/projectdiscovery/sarif v0.0.1 h1:C2Tyj0SGOKbCLgHrx83vaE6YkzXEVrMXYRGLkKCr/us=
+ github.com/projectdiscovery/sarif v0.0.1/go.mod h1:cEYlDu8amcPf6b9dSakcz2nNnJsoz4aR6peERwV+wuQ=
+ github.com/projectdiscovery/stringsutil v0.0.2 h1:uzmw3IVLJSMW1kEg8eCStG/cGbYYZAja8BH3LqqJXMA=
+@@ -823,8 +823,8 @@ github.com/projectdiscovery/uncover v1.1.0 h1:UDp/qLZn78YZb6VPoOrfyP1vz+ojEx8VrT
+ github.com/projectdiscovery/uncover v1.1.0/go.mod h1:2rXINmMe/lmVAt2jn9CpAOs9An57/JEeLZobY3Z9kUs=
+ github.com/projectdiscovery/useragent v0.0.101 h1:8A+XOJ/nIH+WqW8ogLxJ/psemGp8ATQ2/GuKroJ/81E=
+ github.com/projectdiscovery/useragent v0.0.101/go.mod h1:RGoRw1BQ/lJnhYMbMpEKjyAAgCaDCr/+GsULo5yEJ2I=
+-github.com/projectdiscovery/utils v0.4.23 h1:fi6AVPIh2laomWO+Yy6G8YhvM4c2fDmQ/Viio6VZgyw=
+-github.com/projectdiscovery/utils v0.4.23/go.mod h1:2K2ymMPnp4/Zao5QulCDJzKjxdyZPsucQm6Fyo09JlA=
++github.com/projectdiscovery/utils v0.4.24-0.20250823123502-bd7f2849ddb4 h1:qQMEhfxDsiZ+Ay3dj93FuMAa7yt1XE2bxDpPSTEz/P0=
++github.com/projectdiscovery/utils v0.4.24-0.20250823123502-bd7f2849ddb4/go.mod h1:ipzU2PHYP71MaMn4jllPOpdYpdMkFD0jE3Tjak4b4eM=
+ github.com/projectdiscovery/wappalyzergo v0.2.36 h1:g/E2gatdYcmLKk9R81vrkq4RdpACpYgN1fuyY3041eE=
+ github.com/projectdiscovery/wappalyzergo v0.2.36/go.mod h1:L4P6SZuaEgEE2eXbpf4OnSGxjWj9vn6xM15SD78niLA=
+ github.com/projectdiscovery/yamldoc-go v1.0.6 h1:GCEdIRlQjDux28xTXKszM7n3jlMf152d5nqVpVoetas=
+diff --git a/internal/pdcp/writer.go b/internal/pdcp/writer.go
+index ed98d556..778d2ccc 100644
+--- a/internal/pdcp/writer.go
++++ b/internal/pdcp/writer.go
+@@ -77,11 +77,11 @@ func NewUploadWriter(ctx context.Context, logger *gologger.Logger, creds *pdcpau
+ 		output.WithJson(true, true),
+ 	)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("could not create output writer"), err)
++		return nil, errkit.Wrap(err, "could not create output writer")
+ 	}
+ 	tmp, err := urlutil.Parse(creds.Server)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("could not parse server url"), err)
++		return nil, errkit.Wrap(err, "could not parse server url")
+ 	}
+ 	tmp.Path = uploadEndpoint
+ 	tmp.Update()
+@@ -199,7 +199,7 @@ func (u *UploadWriter) autoCommit(ctx context.Context, r *io.PipeReader) {
+ // uploadChunk uploads a chunk of data to the server
+ func (u *UploadWriter) uploadChunk(buff *bytes.Buffer) error {
+ 	if err := u.upload(buff.Bytes()); err != nil {
+-		return errkit.Append(errkit.New("could not upload chunk"), err)
++		return errkit.Wrap(err, "could not upload chunk")
+ 	}
+ 	// if successful, reset the buffer
+ 	buff.Reset()
+@@ -211,25 +211,25 @@ func (u *UploadWriter) uploadChunk(buff *bytes.Buffer) error {
+ func (u *UploadWriter) upload(data []byte) error {
+ 	req, err := u.getRequest(data)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("could not create upload request"), err)
++		return errkit.Wrap(err, "could not create upload request")
+ 	}
+ 	resp, err := u.client.Do(req)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("could not upload results"), err)
++		return errkit.Wrap(err, "could not upload results")
+ 	}
+ 	defer func() {
+ 		_ = resp.Body.Close()
+ 	}()
+ 	bin, err := io.ReadAll(resp.Body)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("could not get id from response"), err)
++		return errkit.Wrap(err, "could not get id from response")
+ 	}
+ 	if resp.StatusCode != http.StatusOK {
+ 		return fmt.Errorf("could not upload results got status code %v on %v", resp.StatusCode, resp.Request.URL.String())
+ 	}
+ 	var uploadResp uploadResponse
+ 	if err := json.Unmarshal(bin, &uploadResp); err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("could not unmarshal response got %v", string(bin))), err)
++		return errkit.Wrap(err, fmt.Sprintf("could not unmarshal response got %v", string(bin)))
+ 	}
+ 	if uploadResp.ID != "" && u.scanID == "" {
+ 		u.scanID = uploadResp.ID
+@@ -254,7 +254,7 @@ func (u *UploadWriter) getRequest(bin []byte) (*retryablehttp.Request, error) {
+ 	}
+ 	req, err := retryablehttp.NewRequest(method, url, bytes.NewReader(bin))
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("could not create cloud upload request"), err)
++		return nil, errkit.Wrap(err, "could not create cloud upload request")
+ 	}
+ 	// add pdtm meta params
+ 	req.Params.Merge(updateutils.GetpdtmParams(config.Version))
+diff --git a/internal/runner/lazy.go b/internal/runner/lazy.go
+index 27f223e6..1202620f 100644
+--- a/internal/runner/lazy.go
++++ b/internal/runner/lazy.go
+@@ -32,7 +32,7 @@ func GetAuthTmplStore(opts *types.Options, catalog catalog.Catalog, execOpts *pr
+ 	for _, file := range opts.SecretsFile {
+ 		data, err := authx.GetTemplatePathsFromSecretFile(file)
+ 		if err != nil {
+-			return nil, errkit.Append(errkit.New("failed to get template paths from secrets file"), err)
++			return nil, errkit.Wrap(err, "failed to get template paths from secrets file")
+ 		}
+ 		tmpls = append(tmpls, data...)
+ 	}
+@@ -58,7 +58,7 @@ func GetAuthTmplStore(opts *types.Options, catalog catalog.Catalog, execOpts *pr
+ 	cfg.StoreId = loader.AuthStoreId
+ 	store, err := loader.New(cfg)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("failed to initialize dynamic auth templates store"), err)
++		return nil, errkit.Wrap(err, "failed to initialize dynamic auth templates store")
+ 	}
+ 	return store, nil
+ }
+diff --git a/internal/runner/proxy.go b/internal/runner/proxy.go
+index 4584eedc..6ff3c43f 100644
+--- a/internal/runner/proxy.go
++++ b/internal/runner/proxy.go
+@@ -50,7 +50,7 @@ func loadProxyServers(options *types.Options) error {
+ 	}
+ 	proxyURL, err := url.Parse(aliveProxy)
+ 	if err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("failed to parse proxy got %v", err)), err)
++		return errkit.Wrapf(err, "failed to parse proxy got %v", err)
+ 	}
+ 	if options.ProxyInternal {
+ 		_ = os.Setenv(HTTP_PROXY_ENV, proxyURL.String())
+diff --git a/lib/config.go b/lib/config.go
+index 24af8fdb..2c2a585d 100644
+--- a/lib/config.go
++++ b/lib/config.go
+@@ -8,6 +8,7 @@ import (
+ 	"github.com/projectdiscovery/goflags"
+ 	"github.com/projectdiscovery/gologger"
+ 	"github.com/projectdiscovery/ratelimit"
++	"github.com/projectdiscovery/utils/errkit"
+ 
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/authprovider"
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/catalog"
+@@ -102,7 +103,7 @@ type InteractshOpts interactsh.Options
+ func WithInteractshOptions(opts InteractshOpts) NucleiSDKOptions {
+ 	return func(e *NucleiEngine) error {
+ 		if e.mode == threadSafe {
+-			return ErrOptionsNotSupported("WithInteractshOptions")
++			return errkit.Wrap(ErrOptionsNotSupported, "WithInteractshOptions")
+ 		}
+ 		optsPtr := &opts
+ 		e.interactshOpts = (*interactsh.Options)(optsPtr)
+@@ -229,7 +230,7 @@ type StatsOptions struct {
+ func EnableStatsWithOpts(opts StatsOptions) NucleiSDKOptions {
+ 	return func(e *NucleiEngine) error {
+ 		if e.mode == threadSafe {
+-			return ErrOptionsNotSupported("EnableStatsWithOpts")
++			return errkit.Wrap(ErrOptionsNotSupported, "EnableStatsWithOpts")
+ 		}
+ 		if opts.Interval == 0 {
+ 			opts.Interval = 5 //sec
+@@ -257,7 +258,7 @@ type VerbosityOptions struct {
+ func WithVerbosity(opts VerbosityOptions) NucleiSDKOptions {
+ 	return func(e *NucleiEngine) error {
+ 		if e.mode == threadSafe {
+-			return ErrOptionsNotSupported("WithVerbosity")
++			return errkit.Wrap(ErrOptionsNotSupported, "WithVerbosity")
+ 		}
+ 		e.opts.Verbose = opts.Verbose
+ 		e.opts.Silent = opts.Silent
+@@ -290,7 +291,7 @@ type NetworkConfig struct {
+ func WithNetworkConfig(opts NetworkConfig) NucleiSDKOptions {
+ 	return func(e *NucleiEngine) error {
+ 		if e.mode == threadSafe {
+-			return ErrOptionsNotSupported("WithNetworkConfig")
++			return errkit.Wrap(ErrOptionsNotSupported, "WithNetworkConfig")
+ 		}
+ 		e.opts.NoHostErrors = opts.DisableMaxHostErr
+ 		e.opts.MaxHostError = opts.MaxHostError
+@@ -321,7 +322,7 @@ func WithNetworkConfig(opts NetworkConfig) NucleiSDKOptions {
+ func WithProxy(proxy []string, proxyInternalRequests bool) NucleiSDKOptions {
+ 	return func(e *NucleiEngine) error {
+ 		if e.mode == threadSafe {
+-			return ErrOptionsNotSupported("WithProxy")
++			return errkit.Wrap(ErrOptionsNotSupported, "WithProxy")
+ 		}
+ 		e.opts.Proxy = proxy
+ 		e.opts.ProxyInternal = proxyInternalRequests
+@@ -346,7 +347,7 @@ type OutputWriter output.Writer
+ func UseOutputWriter(writer OutputWriter) NucleiSDKOptions {
+ 	return func(e *NucleiEngine) error {
+ 		if e.mode == threadSafe {
+-			return ErrOptionsNotSupported("UseOutputWriter")
++			return errkit.Wrap(ErrOptionsNotSupported, "UseOutputWriter")
+ 		}
+ 		e.customWriter = writer
+ 		return nil
+@@ -361,7 +362,7 @@ type StatsWriter progress.Progress
+ func UseStatsWriter(writer StatsWriter) NucleiSDKOptions {
+ 	return func(e *NucleiEngine) error {
+ 		if e.mode == threadSafe {
+-			return ErrOptionsNotSupported("UseStatsWriter")
++			return errkit.Wrap(ErrOptionsNotSupported, "UseStatsWriter")
+ 		}
+ 		e.customProgress = writer
+ 		return nil
+@@ -375,7 +376,7 @@ func UseStatsWriter(writer StatsWriter) NucleiSDKOptions {
+ func WithTemplateUpdateCallback(disableTemplatesAutoUpgrade bool, callback func(newVersion string)) NucleiSDKOptions {
+ 	return func(e *NucleiEngine) error {
+ 		if e.mode == threadSafe {
+-			return ErrOptionsNotSupported("WithTemplateUpdateCallback")
++			return errkit.Wrap(ErrOptionsNotSupported, "WithTemplateUpdateCallback")
+ 		}
+ 		e.disableTemplatesAutoUpgrade = disableTemplatesAutoUpgrade
+ 		e.onUpdateAvailableCallback = callback
+@@ -387,7 +388,7 @@ func WithTemplateUpdateCallback(disableTemplatesAutoUpgrade bool, callback func(
+ func WithSandboxOptions(allowLocalFileAccess bool, restrictLocalNetworkAccess bool) NucleiSDKOptions {
+ 	return func(e *NucleiEngine) error {
+ 		if e.mode == threadSafe {
+-			return ErrOptionsNotSupported("WithSandboxOptions")
++			return errkit.Wrap(ErrOptionsNotSupported, "WithSandboxOptions")
+ 		}
+ 		e.opts.AllowLocalFileAccess = allowLocalFileAccess
+ 		e.opts.RestrictLocalNetworkAccess = restrictLocalNetworkAccess
+diff --git a/lib/multi.go b/lib/multi.go
+index d224d09f..5c542513 100644
+--- a/lib/multi.go
++++ b/lib/multi.go
+@@ -147,13 +147,13 @@ func (e *ThreadSafeNucleiEngine) ExecuteNucleiWithOptsCtx(ctx context.Context, t
+ 	// load templates
+ 	workflowLoader, err := workflow.NewLoader(unsafeOpts.executerOpts)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("Could not create workflow loader"), err)
++		return errkit.Wrapf(err, "Could not create workflow loader: %s", err)
+ 	}
+ 	unsafeOpts.executerOpts.WorkflowLoader = workflowLoader
+ 
+ 	store, err := loader.New(loader.NewConfig(tmpEngine.opts, e.eng.catalog, unsafeOpts.executerOpts))
+ 	if err != nil {
+-		return errkit.Append(errkit.New("Could not create loader client"), err)
++		return errkit.Wrapf(err, "Could not create loader client: %s", err)
+ 	}
+ 	store.Load()
+ 
+diff --git a/lib/sdk.go b/lib/sdk.go
+index 76fc8870..3ed25217 100644
+--- a/lib/sdk.go
++++ b/lib/sdk.go
+@@ -4,7 +4,6 @@ import (
+ 	"bufio"
+ 	"bytes"
+ 	"context"
+-	"fmt"
+ 	"io"
+ 	"sync"
+ 
+@@ -38,18 +37,15 @@ type NucleiSDKOptions func(e *NucleiEngine) error
+ 
+ var (
+ 	// ErrNotImplemented is returned when a feature is not implemented
+-	ErrNotImplemented = errkit.New("Not implemented").Build()
++	ErrNotImplemented = errkit.New("Not implemented")
+ 	// ErrNoTemplatesAvailable is returned when no templates are available to execute
+-	ErrNoTemplatesAvailable = errkit.New("No templates available").Build()
++	ErrNoTemplatesAvailable = errkit.New("No templates available")
+ 	// ErrNoTargetsAvailable is returned when no targets are available to scan
+-	ErrNoTargetsAvailable = errkit.New("No targets available").Build()
++	ErrNoTargetsAvailable = errkit.New("No targets available")
++	// ErrOptionsNotSupported is returned when an option is not supported in thread safe mode
++	ErrOptionsNotSupported = errkit.New("Option not supported in thread safe mode")
+ )
+ 
+-// ErrOptionsNotSupported returns an error when an option is not supported in thread safe mode
+-func ErrOptionsNotSupported(option string) error {
+-	return errkit.New(fmt.Sprintf("Option %v not supported in thread safe mode", option)).Build()
+-}
+-
+ type engineMode uint
+ 
+ const (
+@@ -102,13 +98,13 @@ type NucleiEngine struct {
+ func (e *NucleiEngine) LoadAllTemplates() error {
+ 	workflowLoader, err := workflow.NewLoader(e.executerOpts)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("Could not create workflow loader"), err)
++		return errkit.Wrapf(err, "Could not create workflow loader: %s", err)
+ 	}
+ 	e.executerOpts.WorkflowLoader = workflowLoader
+ 
+ 	e.store, err = loader.New(loader.NewConfig(e.opts, e.catalog, e.executerOpts))
+ 	if err != nil {
+-		return errkit.Append(errkit.New("Could not create loader client"), err)
++		return errkit.Wrapf(err, "Could not create loader client: %s", err)
+ 	}
+ 	e.store.Load()
+ 	e.templatesLoaded = true
+diff --git a/pkg/authprovider/authx/dynamic.go b/pkg/authprovider/authx/dynamic.go
+index 9a242755..cff03147 100644
+--- a/pkg/authprovider/authx/dynamic.go
++++ b/pkg/authprovider/authx/dynamic.go
+@@ -53,7 +53,7 @@ func (d *Dynamic) GetDomainAndDomainRegex() ([]string, []string) {
+ 
+ func (d *Dynamic) UnmarshalJSON(data []byte) error {
+ 	if d == nil {
+-		return errkit.New("cannot unmarshal into nil Dynamic struct").Build()
++		return errkit.New("cannot unmarshal into nil Dynamic struct")
+ 	}
+ 
+ 	// Use an alias type (auxiliary) to avoid a recursive call in this method.
+@@ -72,10 +72,10 @@ func (d *Dynamic) UnmarshalJSON(data []byte) error {
+ func (d *Dynamic) Validate() error {
+ 	d.m = &sync.Mutex{}
+ 	if d.TemplatePath == "" {
+-		return errkit.New(" template-path is required for dynamic secret").Build()
++		return errkit.New(" template-path is required for dynamic secret")
+ 	}
+ 	if len(d.Variables) == 0 {
+-		return errkit.New("variables are required for dynamic secret").Build()
++		return errkit.New("variables are required for dynamic secret")
+ 	}
+ 
+ 	if d.Secret != nil {
+diff --git a/pkg/authprovider/authx/file.go b/pkg/authprovider/authx/file.go
+index fc749fda..804b6c34 100644
+--- a/pkg/authprovider/authx/file.go
++++ b/pkg/authprovider/authx/file.go
+@@ -237,7 +237,9 @@ func GetAuthDataFromYAML(data []byte) (*Authx, error) {
+ 	var auth Authx
+ 	err := yaml.Unmarshal(data, &auth)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("could not unmarshal yaml"), err)
++		errorErr := errkit.FromError(err)
++		errorErr.Msgf("could not unmarshal yaml")
++		return nil, errorErr
+ 	}
+ 	return &auth, nil
+ }
+@@ -247,7 +249,9 @@ func GetAuthDataFromJSON(data []byte) (*Authx, error) {
+ 	var auth Authx
+ 	err := json.Unmarshal(data, &auth)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("could not unmarshal json"), err)
++		errorErr := errkit.FromError(err)
++		errorErr.Msgf("could not unmarshal json")
++		return nil, errorErr
+ 	}
+ 	return &auth, nil
+ }
+diff --git a/pkg/authprovider/file.go b/pkg/authprovider/file.go
+index 02df46b6..40f40190 100644
+--- a/pkg/authprovider/file.go
++++ b/pkg/authprovider/file.go
+@@ -1,7 +1,6 @@
+ package authprovider
+ 
+ import (
+-	"fmt"
+ 	"net"
+ 	"net/url"
+ 	"regexp"
+@@ -31,16 +30,20 @@ func NewFileAuthProvider(path string, callback authx.LazyFetchSecret) (AuthProvi
+ 		return nil, ErrNoSecrets
+ 	}
+ 	if len(store.Dynamic) > 0 && callback == nil {
+-		return nil, errkit.New("lazy fetch callback is required for dynamic secrets").Build()
++		return nil, errkit.New("lazy fetch callback is required for dynamic secrets")
+ 	}
+ 	for _, secret := range store.Secrets {
+ 		if err := secret.Validate(); err != nil {
+-			return nil, errkit.Append(errkit.New(fmt.Sprintf("invalid secret in file: %s", path)), err)
++			errorErr := errkit.FromError(err)
++			errorErr.Msgf("invalid secret in file: %s", path)
++			return nil, errorErr
+ 		}
+ 	}
+ 	for i, dynamic := range store.Dynamic {
+ 		if err := dynamic.Validate(); err != nil {
+-			return nil, errkit.Append(errkit.New(fmt.Sprintf("invalid dynamic in file: %s", path)), err)
++			errorErr := errkit.FromError(err)
++			errorErr.Msgf("invalid dynamic in file: %s", path)
++			return nil, errorErr
+ 		}
+ 		dynamic.SetLazyFetchCallback(callback)
+ 		store.Dynamic[i] = dynamic
+diff --git a/pkg/catalog/config/nucleiconfig.go b/pkg/catalog/config/nucleiconfig.go
+index 8496b69b..e62dd37f 100644
+--- a/pkg/catalog/config/nucleiconfig.go
++++ b/pkg/catalog/config/nucleiconfig.go
+@@ -140,13 +140,13 @@ func (c *Config) UpdateNucleiIgnoreHash() error {
+ 	if fileutil.FileExists(ignoreFilePath) {
+ 		bin, err := os.ReadFile(ignoreFilePath)
+ 		if err != nil {
+-			return errkit.Append(errkit.New("could not read nuclei ignore file"), err)
++			return errkit.Newf("could not read nuclei ignore file: %v", err)
+ 		}
+ 		c.NucleiIgnoreHash = fmt.Sprintf("%x", md5.Sum(bin))
+ 		// write config to disk
+ 		return c.WriteTemplatesConfig()
+ 	}
+-	return errkit.New("config: ignore file not found: could not update nuclei ignore hash").Build()
++	return errkit.New("ignore file not found: could not update nuclei ignore hash")
+ }
+ 
+ // GetConfigDir returns the nuclei configuration directory
+@@ -257,7 +257,7 @@ func (c *Config) SetTemplatesVersion(version string) error {
+ 	c.TemplateVersion = version
+ 	// write config to disk
+ 	if err := c.WriteTemplatesConfig(); err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("could not write nuclei config file at %s", c.getTemplatesConfigFilePath())), err)
++		return errkit.Newf("could not write nuclei config file at %s: %v", c.getTemplatesConfigFilePath(), err)
+ 	}
+ 	return nil
+ }
+@@ -265,15 +265,15 @@ func (c *Config) SetTemplatesVersion(version string) error {
+ // ReadTemplatesConfig reads the nuclei templates config file
+ func (c *Config) ReadTemplatesConfig() error {
+ 	if !fileutil.FileExists(c.getTemplatesConfigFilePath()) {
+-		return errkit.New(fmt.Sprintf("config: nuclei config file at %s does not exist", c.getTemplatesConfigFilePath())).Build()
++		return errkit.Newf("nuclei config file at %s does not exist", c.getTemplatesConfigFilePath())
+ 	}
+ 	var cfg *Config
+ 	bin, err := os.ReadFile(c.getTemplatesConfigFilePath())
+ 	if err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("could not read nuclei config file at %s", c.getTemplatesConfigFilePath())), err)
++		return errkit.Newf("could not read nuclei config file at %s: %v", c.getTemplatesConfigFilePath(), err)
+ 	}
+ 	if err := json.Unmarshal(bin, &cfg); err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("could not unmarshal nuclei config file at %s", c.getTemplatesConfigFilePath())), err)
++		return errkit.Newf("could not unmarshal nuclei config file at %s: %v", c.getTemplatesConfigFilePath(), err)
+ 	}
+ 	// apply config
+ 	c.TemplatesDirectory = cfg.TemplatesDirectory
+@@ -292,10 +292,10 @@ func (c *Config) WriteTemplatesConfig() error {
+ 	}
+ 	bin, err := json.Marshal(c)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to marshal nuclei config"), err)
++		return errkit.Newf("failed to marshal nuclei config: %v", err)
+ 	}
+ 	if err = os.WriteFile(c.getTemplatesConfigFilePath(), bin, 0600); err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("failed to write nuclei config file at %s", c.getTemplatesConfigFilePath())), err)
++		return errkit.Newf("failed to write nuclei config file at %s: %v", c.getTemplatesConfigFilePath(), err)
+ 	}
+ 	return nil
+ }
+@@ -319,7 +319,7 @@ func (c *Config) getTemplatesConfigFilePath() string {
+ func (c *Config) createConfigDirIfNotExists() error {
+ 	if !fileutil.FolderExists(c.configDir) {
+ 		if err := fileutil.CreateFolder(c.configDir); err != nil {
+-			return errkit.Append(errkit.New(fmt.Sprintf("could not create nuclei config directory at %s", c.configDir)), err)
++			return errkit.Newf("could not create nuclei config directory at %s: %v", c.configDir, err)
+ 		}
+ 	}
+ 	return nil
+diff --git a/pkg/catalog/loader/ai_loader.go b/pkg/catalog/loader/ai_loader.go
+index 5b30c497..89e859ce 100644
+--- a/pkg/catalog/loader/ai_loader.go
++++ b/pkg/catalog/loader/ai_loader.go
+@@ -3,7 +3,6 @@ package loader
+ import (
+ 	"bytes"
+ 	"encoding/json"
+-	"fmt"
+ 	"io"
+ 	"net/http"
+ 	"os"
+@@ -34,27 +33,27 @@ type AITemplateResponse struct {
+ func getAIGeneratedTemplates(prompt string, options *types.Options) ([]string, error) {
+ 	prompt = strings.TrimSpace(prompt)
+ 	if len(prompt) < 5 {
+-		return nil, errkit.New("Prompt is too short. Please provide a more descriptive prompt").Build()
++		return nil, errkit.Newf("Prompt is too short. Please provide a more descriptive prompt")
+ 	}
+ 
+ 	if len(prompt) > 3000 {
+-		return nil, errkit.New("Prompt is too long. Please limit to 3000 characters").Build()
++		return nil, errkit.Newf("Prompt is too long. Please limit to 3000 characters")
+ 	}
+ 
+ 	template, templateID, err := generateAITemplate(prompt)
+ 	if err != nil {
+-		return nil, errkit.New(fmt.Sprintf("Failed to generate template: %v", err)).Build()
++		return nil, errkit.Newf("Failed to generate template: %v", err)
+ 	}
+ 
+ 	pdcpTemplateDir := filepath.Join(config.DefaultConfig.GetTemplateDir(), "pdcp")
+ 	if err := os.MkdirAll(pdcpTemplateDir, 0755); err != nil {
+-		return nil, errkit.New(fmt.Sprintf("Failed to create pdcp template directory: %v", err)).Build()
++		return nil, errkit.Newf("Failed to create pdcp template directory: %v", err)
+ 	}
+ 
+ 	templateFile := filepath.Join(pdcpTemplateDir, templateID+".yaml")
+ 	err = os.WriteFile(templateFile, []byte(template), 0644)
+ 	if err != nil {
+-		return nil, errkit.New(fmt.Sprintf("Failed to generate template: %v", err)).Build()
++		return nil, errkit.Newf("Failed to generate template: %v", err)
+ 	}
+ 
+ 	options.Logger.Info().Msgf("Generated template available at: https://cloud.projectdiscovery.io/templates/%s", templateID)
+@@ -92,22 +91,22 @@ func generateAITemplate(prompt string) (string, string, error) {
+ 	}
+ 	jsonBody, err := json.Marshal(reqBody)
+ 	if err != nil {
+-		return "", "", errkit.New(fmt.Sprintf("Failed to marshal request body: %v", err)).Build()
++		return "", "", errkit.Newf("Failed to marshal request body: %v", err)
+ 	}
+ 
+ 	req, err := http.NewRequest(http.MethodPost, aiTemplateGeneratorAPIEndpoint, bytes.NewBuffer(jsonBody))
+ 	if err != nil {
+-		return "", "", errkit.New(fmt.Sprintf("Failed to create HTTP request: %v", err)).Build()
++		return "", "", errkit.Newf("Failed to create HTTP request: %v", err)
+ 	}
+ 
+ 	ph := pdcpauth.PDCPCredHandler{}
+ 	creds, err := ph.GetCreds()
+ 	if err != nil {
+-		return "", "", errkit.New(fmt.Sprintf("Failed to get PDCP credentials: %v", err)).Build()
++		return "", "", errkit.Newf("Failed to get PDCP credentials: %v", err)
+ 	}
+ 
+ 	if creds == nil {
+-		return "", "", errkit.New("PDCP API Key not configured, Create one for free at https://cloud.projectdiscovery.io/").Build()
++		return "", "", errkit.Newf("PDCP API Key not configured, Create one for free at https://cloud.projectdiscovery.io/")
+ 	}
+ 
+ 	req.Header.Set("Content-Type", "application/json")
+@@ -115,28 +114,28 @@ func generateAITemplate(prompt string) (string, string, error) {
+ 
+ 	resp, err := retryablehttp.DefaultClient().Do(req)
+ 	if err != nil {
+-		return "", "", errkit.New(fmt.Sprintf("Failed to send HTTP request: %v", err)).Build()
++		return "", "", errkit.Newf("Failed to send HTTP request: %v", err)
+ 	}
+ 	defer func() {
+ 		_ = resp.Body.Close()
+ 	}()
+ 
+ 	if resp.StatusCode == http.StatusUnauthorized {
+-		return "", "", errkit.New("Invalid API Key or API Key not configured, Create one for free at https://cloud.projectdiscovery.io/").Build()
++		return "", "", errkit.Newf("Invalid API Key or API Key not configured, Create one for free at https://cloud.projectdiscovery.io/")
+ 	}
+ 
+ 	if resp.StatusCode != http.StatusOK {
+ 		body, _ := io.ReadAll(resp.Body)
+-		return "", "", errkit.New(fmt.Sprintf("API returned status code %d: %s", resp.StatusCode, string(body))).Build()
++		return "", "", errkit.Newf("API returned status code %d: %s", resp.StatusCode, string(body))
+ 	}
+ 
+ 	var result AITemplateResponse
+ 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+-		return "", "", errkit.New(fmt.Sprintf("Failed to decode API response: %v", err)).Build()
++		return "", "", errkit.Newf("Failed to decode API response: %v", err)
+ 	}
+ 
+ 	if result.TemplateID == "" || result.Completion == "" {
+-		return "", "", errkit.New("Failed to generate template").Build()
++		return "", "", errkit.Newf("Failed to generate template")
+ 	}
+ 
+ 	return result.Completion, result.TemplateID, nil
+diff --git a/pkg/catalog/loader/loader.go b/pkg/catalog/loader/loader.go
+index 069e99b5..cfaf4e83 100644
+--- a/pkg/catalog/loader/loader.go
++++ b/pkg/catalog/loader/loader.go
+@@ -238,7 +238,7 @@ func (store *Store) ReadTemplateFromURI(uri string, remote bool) ([]byte, error)
+ 		uri = handleTemplatesEditorURLs(uri)
+ 		remoteTemplates, _, err := getRemoteTemplatesAndWorkflows([]string{uri}, nil, store.config.RemoteTemplateDomainList)
+ 		if err != nil || len(remoteTemplates) == 0 {
+-			return nil, errkit.Append(errkit.New(fmt.Sprintf("Could not load template %s: got %v", uri, remoteTemplates)), err)
++			return nil, errkit.Wrapf(err, "Could not load template %s: got %v", uri, remoteTemplates)
+ 		}
+ 		resp, err := retryablehttp.Get(remoteTemplates[0])
+ 		if err != nil {
+diff --git a/pkg/external/customtemplates/azure_blob.go b/pkg/external/customtemplates/azure_blob.go
+index 180c45d8..4dc935a9 100644
+--- a/pkg/external/customtemplates/azure_blob.go
++++ b/pkg/external/customtemplates/azure_blob.go
+@@ -3,7 +3,6 @@ package customtemplates
+ import (
+ 	"bytes"
+ 	"context"
+-	"fmt"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+@@ -30,7 +29,9 @@ func NewAzureProviders(options *types.Options) ([]*customTemplateAzureBlob, erro
+ 		// Establish a connection to Azure and build a client object with which to download templates from Azure Blob Storage
+ 		azClient, err := getAzureBlobClient(options.AzureTenantID, options.AzureClientID, options.AzureClientSecret, options.AzureServiceURL)
+ 		if err != nil {
+-			return nil, errkit.Append(errkit.New(fmt.Sprintf("Error establishing Azure Blob client for %s", options.AzureContainerName)), err)
++			errx := errkit.FromError(err)
++			errx.Msgf("Error establishing Azure Blob client for %s", options.AzureContainerName)
++			return nil, errx
+ 		}
+ 
+ 		// Create a new Azure Blob Storage container object
+diff --git a/pkg/external/customtemplates/gitlab.go b/pkg/external/customtemplates/gitlab.go
+index fce4caa2..9a0836e1 100644
+--- a/pkg/external/customtemplates/gitlab.go
++++ b/pkg/external/customtemplates/gitlab.go
+@@ -3,7 +3,6 @@ package customtemplates
+ import (
+ 	"context"
+ 	"encoding/base64"
+-	"fmt"
+ 	"os"
+ 	"path/filepath"
+ 
+@@ -29,7 +28,9 @@ func NewGitLabProviders(options *types.Options) ([]*customTemplateGitLabRepo, er
+ 		// Establish a connection to GitLab and build a client object with which to download templates from GitLab
+ 		gitLabClient, err := getGitLabClient(options.GitLabServerURL, options.GitLabToken)
+ 		if err != nil {
+-			return nil, errkit.Append(errkit.New(fmt.Sprintf("Error establishing GitLab client for %s %s", options.GitLabServerURL, err)), err)
++			errx := errkit.FromError(err)
++			errx.Msgf("Error establishing GitLab client for %s %s", options.GitLabServerURL, err)
++			return nil, errx
+ 		}
+ 
+ 		// Create a new GitLab service client
+diff --git a/pkg/external/customtemplates/s3.go b/pkg/external/customtemplates/s3.go
+index 8b4eabff..8eb73c09 100644
+--- a/pkg/external/customtemplates/s3.go
++++ b/pkg/external/customtemplates/s3.go
+@@ -2,7 +2,6 @@ package customtemplates
+ 
+ import (
+ 	"context"
+-	"fmt"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+@@ -65,7 +64,9 @@ func NewS3Providers(options *types.Options) ([]*customTemplateS3Bucket, error) {
+ 	if options.AwsBucketName != "" && !options.AwsTemplateDisableDownload {
+ 		s3c, err := getS3Client(context.TODO(), options.AwsAccessKey, options.AwsSecretKey, options.AwsRegion, options.AwsProfile)
+ 		if err != nil {
+-			return nil, errkit.Append(errkit.New(fmt.Sprintf("error downloading s3 bucket %s", options.AwsBucketName)), err)
++			errx := errkit.FromError(err)
++			errx.Msgf("error downloading s3 bucket %s", options.AwsBucketName)
++			return nil, errx
+ 		}
+ 		ctBucket := &customTemplateS3Bucket{
+ 			bucketName: options.AwsBucketName,
+diff --git a/pkg/external/customtemplates/templates_provider.go b/pkg/external/customtemplates/templates_provider.go
+index a4691d5b..b40a7d93 100644
+--- a/pkg/external/customtemplates/templates_provider.go
++++ b/pkg/external/customtemplates/templates_provider.go
+@@ -38,7 +38,9 @@ func NewCustomTemplatesManager(options *types.Options) (*CustomTemplatesManager,
+ 	// Add GitHub providers
+ 	githubProviders, err := NewGitHubProviders(options)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("could not create github providers for custom templates"), err)
++		errx := errkit.FromError(err)
++		errx.Msgf("could not create github providers for custom templates")
++		return nil, errx
+ 	}
+ 	for _, v := range githubProviders {
+ 		ctm.providers = append(ctm.providers, v)
+@@ -47,7 +49,9 @@ func NewCustomTemplatesManager(options *types.Options) (*CustomTemplatesManager,
+ 	// Add AWS S3 providers
+ 	s3Providers, err := NewS3Providers(options)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("could not create s3 providers for custom templates"), err)
++		errx := errkit.FromError(err)
++		errx.Msgf("could not create s3 providers for custom templates")
++		return nil, errx
+ 	}
+ 	for _, v := range s3Providers {
+ 		ctm.providers = append(ctm.providers, v)
+@@ -56,7 +60,9 @@ func NewCustomTemplatesManager(options *types.Options) (*CustomTemplatesManager,
+ 	// Add Azure providers
+ 	azureProviders, err := NewAzureProviders(options)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("could not create azure providers for custom templates"), err)
++		errx := errkit.FromError(err)
++		errx.Msgf("could not create azure providers for custom templates")
++		return nil, errx
+ 	}
+ 	for _, v := range azureProviders {
+ 		ctm.providers = append(ctm.providers, v)
+@@ -65,7 +71,9 @@ func NewCustomTemplatesManager(options *types.Options) (*CustomTemplatesManager,
+ 	// Add GitLab providers
+ 	gitlabProviders, err := NewGitLabProviders(options)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("could not create gitlab providers for custom templates"), err)
++		errx := errkit.FromError(err)
++		errx.Msgf("could not create gitlab providers for custom templates")
++		return nil, errx
+ 	}
+ 	for _, v := range gitlabProviders {
+ 		ctm.providers = append(ctm.providers, v)
+diff --git a/pkg/fuzz/component/path.go b/pkg/fuzz/component/path.go
+index e77429c1..c3f450a7 100644
+--- a/pkg/fuzz/component/path.go
++++ b/pkg/fuzz/component/path.go
+@@ -7,7 +7,6 @@ import (
+ 
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/fuzz/dataformat"
+ 	"github.com/projectdiscovery/retryablehttp-go"
+-	mapsutil "github.com/projectdiscovery/utils/maps"
+ 	urlutil "github.com/projectdiscovery/utils/url"
+ )
+ 
+@@ -38,12 +37,18 @@ func (q *Path) Parse(req *retryablehttp.Request) (bool, error) {
+ 
+ 	splitted := strings.Split(req.Path, "/")
+ 	values := make(map[string]interface{})
+-	for i := range splitted {
+-		pathTillNow := strings.Join(splitted[:i+1], "/")
+-		if pathTillNow == "" {
++	for i, segment := range splitted {
++		if segment == "" && i == 0 {
++			// Skip the first empty segment from leading "/"
+ 			continue
+ 		}
+-		values[strconv.Itoa(i)] = pathTillNow
++		if segment == "" {
++			// Skip any other empty segments
++			continue
++		}
++		// Use 1-based indexing and store individual segments
++		key := strconv.Itoa(len(values) + 1)
++		values[key] = segment
+ 	}
+ 	q.value.SetParsed(dataformat.KVMap(values), "")
+ 	return true, nil
+@@ -64,7 +69,7 @@ func (q *Path) Iterate(callback func(key string, value interface{}) error) (err
+ // SetValue sets a value in the component
+ // for a key
+ func (q *Path) SetValue(key string, value string) error {
+-	escaped := urlutil.ParamEncode(value)
++	escaped := urlutil.PathEncode(value)
+ 	if !q.value.SetParsedValue(key, escaped) {
+ 		return ErrSetValue
+ 	}
+@@ -82,40 +87,48 @@ func (q *Path) Delete(key string) error {
+ // Rebuild returns a new request with the
+ // component rebuilt
+ func (q *Path) Rebuild() (*retryablehttp.Request, error) {
+-	originalValues := mapsutil.Map[string, any]{}
+-	splitted := strings.Split(q.req.Path, "/")
+-	for i := range splitted {
+-		pathTillNow := strings.Join(splitted[:i+1], "/")
+-		if pathTillNow == "" {
+-			continue
+-		}
+-		originalValues[strconv.Itoa(i)] = pathTillNow
++	// Get the original path segments
++	originalSplitted := strings.Split(q.req.Path, "/")
++	
++	// Create a new slice to hold the rebuilt segments
++	rebuiltSegments := make([]string, 0, len(originalSplitted))
++	
++	// Add the first empty segment (from leading "/")
++	if len(originalSplitted) > 0 && originalSplitted[0] == "" {
++		rebuiltSegments = append(rebuiltSegments, "")
+ 	}
+-
+-	originalPath := q.req.Path
+-	lengthSplitted := len(q.value.parsed.Map)
+-	for i := lengthSplitted; i > 0; i-- {
+-		key := strconv.Itoa(i)
+-
+-		original, ok := originalValues.GetOrDefault(key, "").(string)
+-		if !ok {
+-			continue
+-		}
+-
+-		new, ok := q.value.parsed.Map.GetOrDefault(key, "").(string)
+-		if !ok {
++	
++	// Process each segment
++	segmentIndex := 1 // 1-based indexing for our stored values
++	for i := 1; i < len(originalSplitted); i++ {
++		originalSegment := originalSplitted[i]
++		if originalSegment == "" {
++			// Skip empty segments
+ 			continue
+ 		}
+-
+-		if new == original {
+-			// no need to replace
+-			continue
++		
++		// Check if we have a replacement for this segment
++		key := strconv.Itoa(segmentIndex)
++		if newValue, exists := q.value.parsed.Map.GetOrDefault(key, "").(string); exists && newValue != "" {
++			rebuiltSegments = append(rebuiltSegments, newValue)
++		} else {
++			rebuiltSegments = append(rebuiltSegments, originalSegment)
+ 		}
+-
+-		originalPath = strings.Replace(originalPath, original, new, 1)
++		segmentIndex++
++	}
++	
++	// Join the segments back into a path
++	rebuiltPath := strings.Join(rebuiltSegments, "/")
++	
++	if unescaped, err := urlutil.PathDecode(rebuiltPath); err == nil {
++		// this is handle the case where anyportion of path has url encoded data
++		// by default the http/request official library will escape/encode special characters in path
++		// to avoid double encoding we unescape/decode already encoded value
++		//
++		// if there is a invalid url encoded value like %99 then it will still be encoded as %2599 and not %99
++		// the only way to make sure it stays as %99 is to implement raw request and unsafe for fuzzing as well
++		rebuiltPath = unescaped
+ 	}
+-
+-	rebuiltPath := originalPath
+ 
+ 	// Clone the request and update the path
+ 	cloned := q.req.Clone(context.Background())
+diff --git a/pkg/fuzz/execute.go b/pkg/fuzz/execute.go
+index ddec7650..3cd2e364 100644
+--- a/pkg/fuzz/execute.go
++++ b/pkg/fuzz/execute.go
+@@ -23,10 +23,9 @@ import (
+ 	urlutil "github.com/projectdiscovery/utils/url"
+ )
+ 
+-// ErrRuleNotApplicable returns a rule not applicable error
+-func ErrRuleNotApplicable(reason interface{}) error {
+-	return errkit.New(fmt.Sprintf("rule not applicable: %v", reason)).Build()
+-}
++var (
++	ErrRuleNotApplicable = errkit.New("rule not applicable")
++)
+ 
+ // IsErrRuleNotApplicable checks if an error is due to rule not applicable
+ func IsErrRuleNotApplicable(err error) bool {
+@@ -90,10 +89,10 @@ type GeneratedRequest struct {
+ // goroutines.
+ func (rule *Rule) Execute(input *ExecuteRuleInput) (err error) {
+ 	if !rule.isInputURLValid(input.Input) {
+-		return ErrRuleNotApplicable(fmt.Sprintf("invalid input url: %v", input.Input.MetaInput.Input))
++		return errkit.Newf("rule not applicable: invalid input url: %v", input.Input.MetaInput.Input)
+ 	}
+ 	if input.BaseRequest == nil && input.Input.MetaInput.ReqResp == nil {
+-		return ErrRuleNotApplicable(fmt.Sprintf("both base request and reqresp are nil for %v", input.Input.MetaInput.Input))
++		return errkit.Newf("rule not applicable: both base request and reqresp are nil for %v", input.Input.MetaInput.Input)
+ 	}
+ 
+ 	var finalComponentList []component.Component
+@@ -145,7 +144,7 @@ func (rule *Rule) Execute(input *ExecuteRuleInput) (err error) {
+ 	}
+ 
+ 	if len(finalComponentList) == 0 {
+-		return ErrRuleNotApplicable("no component matched on this rule")
++		return errkit.Newf("rule not applicable: no component matched on this rule")
+ 	}
+ 
+ 	baseValues := input.Values
+diff --git a/pkg/input/formats/openapi/generator.go b/pkg/input/formats/openapi/generator.go
+index 3d758cbc..43628625 100644
+--- a/pkg/input/formats/openapi/generator.go
++++ b/pkg/input/formats/openapi/generator.go
+@@ -395,7 +395,7 @@ func generateRequestsFromOp(opts *generateReqOptions) error {
+ func GetGlobalParamsForSecurityRequirement(schema *openapi3.T, requirement *openapi3.SecurityRequirements) ([]*openapi3.ParameterRef, error) {
+ 	globalParams := openapi3.NewParameters()
+ 	if len(schema.Components.SecuritySchemes) == 0 {
+-		return nil, errkit.New(fmt.Sprintf("openapi: security requirements (%+v) without any security schemes found in openapi file", schema.Security)).Build()
++		return nil, errkit.Newf("security requirements (%+v) without any security schemes found in openapi file", schema.Security)
+ 	}
+ 	found := false
+ 	// this api is protected for each security scheme pull its corresponding scheme
+@@ -415,11 +415,11 @@ schemaLabel:
+ 		}
+ 		if !found && len(security) > 1 {
+ 			// if this is case then both security schemes are required
+-			return nil, errkit.New(fmt.Sprintf("openapi: security requirement (%+v) not found in openapi file", security)).Build()
++			return nil, errkit.Newf("security requirement (%+v) not found in openapi file", security)
+ 		}
+ 	}
+ 	if !found {
+-		return nil, errkit.New(fmt.Sprintf("openapi: security requirement (%+v) not found in openapi file", requirement)).Build()
++		return nil, errkit.Newf("security requirement (%+v) not found in openapi file", requirement)
+ 	}
+ 
+ 	return globalParams, nil
+@@ -428,12 +428,12 @@ schemaLabel:
+ // GenerateParameterFromSecurityScheme generates an example from a schema object
+ func GenerateParameterFromSecurityScheme(scheme *openapi3.SecuritySchemeRef) (*openapi3.Parameter, error) {
+ 	if !generic.EqualsAny(scheme.Value.Type, "http", "apiKey") {
+-		return nil, errkit.New(fmt.Sprintf("openapi: unsupported security scheme type (%s) found in openapi file", scheme.Value.Type)).Build()
++		return nil, errkit.Newf("unsupported security scheme type (%s) found in openapi file", scheme.Value.Type)
+ 	}
+ 	if scheme.Value.Type == "http" {
+ 		// check scheme
+ 		if !generic.EqualsAny(scheme.Value.Scheme, "basic", "bearer") {
+-			return nil, errkit.New(fmt.Sprintf("openapi: unsupported security scheme (%s) found in openapi file", scheme.Value.Scheme)).Build()
++			return nil, errkit.Newf("unsupported security scheme (%s) found in openapi file", scheme.Value.Scheme)
+ 		}
+ 		// HTTP authentication schemes basic or bearer use the Authorization header
+ 		headerName := scheme.Value.Name
+@@ -458,10 +458,10 @@ func GenerateParameterFromSecurityScheme(scheme *openapi3.SecuritySchemeRef) (*o
+ 	if scheme.Value.Type == "apiKey" {
+ 		// validate name and in
+ 		if scheme.Value.Name == "" {
+-			return nil, errkit.New(fmt.Sprintf("openapi: security scheme (%s) name is empty", scheme.Value.Type)).Build()
++			return nil, errkit.Newf("security scheme (%s) name is empty", scheme.Value.Type)
+ 		}
+ 		if !generic.EqualsAny(scheme.Value.In, "query", "header", "cookie") {
+-			return nil, errkit.New(fmt.Sprintf("openapi: unsupported security scheme (%s) in (%s) found in openapi file", scheme.Value.Type, scheme.Value.In)).Build()
++			return nil, errkit.Newf("unsupported security scheme (%s) in (%s) found in openapi file", scheme.Value.Type, scheme.Value.In)
+ 		}
+ 		// create parameters using the scheme
+ 		switch scheme.Value.In {
+@@ -482,5 +482,5 @@ func GenerateParameterFromSecurityScheme(scheme *openapi3.SecuritySchemeRef) (*o
+ 			return c, nil
+ 		}
+ 	}
+-	return nil, errkit.New(fmt.Sprintf("openapi: unsupported security scheme type (%s) found in openapi file", scheme.Value.Type)).Build()
++	return nil, errkit.Newf("unsupported security scheme type (%s) found in openapi file", scheme.Value.Type)
+ }
+diff --git a/pkg/input/provider/interface.go b/pkg/input/provider/interface.go
+index c93a329d..32b923dd 100644
+--- a/pkg/input/provider/interface.go
++++ b/pkg/input/provider/interface.go
+@@ -18,14 +18,10 @@ import (
+ )
+ 
+ var (
+-	ErrInactiveInput = fmt.Errorf("input is inactive")
++	ErrNotImplemented = errkit.New("provider does not implement method")
++	ErrInactiveInput  = fmt.Errorf("input is inactive")
+ )
+ 
+-// ErrNotImplemented returns an error when a provider does not implement a method
+-func ErrNotImplemented(provider, method string) error {
+-	return errkit.New(fmt.Sprintf("provider %s does not implement %s", provider, method)).Build()
+-}
+-
+ const (
+ 	MultiFormatInputProvider = "MultiFormatInputProvider"
+ 	ListInputProvider        = "ListInputProvider"
+diff --git a/pkg/installer/template.go b/pkg/installer/template.go
+index 62fefb0a..577f8c25 100644
+--- a/pkg/installer/template.go
++++ b/pkg/installer/template.go
+@@ -80,7 +80,7 @@ func (t *TemplateManager) FreshInstallIfNotExists() error {
+ 	}
+ 	gologger.Info().Msgf("nuclei-templates are not installed, installing...")
+ 	if err := t.installTemplatesAt(config.DefaultConfig.TemplatesDirectory); err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("failed to install templates at %s", config.DefaultConfig.TemplatesDirectory)), err)
++		return errkit.Wrapf(err, "failed to install templates at %s", config.DefaultConfig.TemplatesDirectory)
+ 	}
+ 	if t.CustomTemplates != nil {
+ 		t.CustomTemplates.Download(context.TODO())
+@@ -121,7 +121,7 @@ func (t *TemplateManager) UpdateIfOutdated() error {
+ func (t *TemplateManager) installTemplatesAt(dir string) error {
+ 	if !fileutil.FolderExists(dir) {
+ 		if err := fileutil.CreateFolder(dir); err != nil {
+-			return errkit.Append(errkit.New(fmt.Sprintf("failed to create directory at %s", dir)), err)
++			return errkit.Wrapf(err, "failed to create directory at %s", dir)
+ 		}
+ 	}
+ 	if t.DisablePublicTemplates {
+@@ -130,12 +130,12 @@ func (t *TemplateManager) installTemplatesAt(dir string) error {
+ 	}
+ 	ghrd, err := updateutils.NewghReleaseDownloader(config.OfficialNucleiTemplatesRepoName)
+ 	if err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("failed to install templates at %s", dir)), err)
++		return errkit.Wrapf(err, "failed to install templates at %s", dir)
+ 	}
+ 
+ 	// write templates to disk
+ 	if err := t.writeTemplatesToDisk(ghrd, dir); err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("failed to write templates to disk at %s", dir)), err)
++		return errkit.Wrapf(err, "failed to write templates to disk at %s", dir)
+ 	}
+ 	gologger.Info().Msgf("Successfully installed nuclei-templates at %s", dir)
+ 	return nil
+@@ -156,7 +156,7 @@ func (t *TemplateManager) updateTemplatesAt(dir string) error {
+ 
+ 	ghrd, err := updateutils.NewghReleaseDownloader(config.OfficialNucleiTemplatesRepoName)
+ 	if err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("failed to install templates at %s", dir)), err)
++		return errkit.Wrapf(err, "failed to install templates at %s", dir)
+ 	}
+ 
+ 	latestVersion := ghrd.Latest.GetTagName()
+@@ -177,7 +177,7 @@ func (t *TemplateManager) updateTemplatesAt(dir string) error {
+ 	newchecksums, err := t.getChecksumFromDir(dir)
+ 	if err != nil {
+ 		// unlikely this case will happen
+-		return errkit.Append(errkit.New(fmt.Sprintf("failed to get checksums from %s after update", dir)), err)
++		return errkit.Wrapf(err, "failed to get checksums from %s after update", dir)
+ 	}
+ 
+ 	// summarize all changes
+@@ -299,7 +299,7 @@ func (t *TemplateManager) writeTemplatesToDisk(ghrd *updateutils.GHReleaseDownlo
+ 		bin, err := io.ReadAll(r)
+ 		if err != nil {
+ 			// if error occurs, iteration also stops
+-			return errkit.Append(errkit.New(fmt.Sprintf("failed to read file %s", uri)), err)
++			return errkit.Wrapf(err, "failed to read file %s", uri)
+ 		}
+ 		// TODO: It might be better to just download index file from nuclei templates repo
+ 		// instead of creating it from scratch
+@@ -310,7 +310,7 @@ func (t *TemplateManager) writeTemplatesToDisk(ghrd *updateutils.GHReleaseDownlo
+ 				if oldPath != writePath {
+ 					// write new template at a new path and delete old template
+ 					if err := os.WriteFile(writePath, bin, f.Mode()); err != nil {
+-						return errkit.Append(errkit.New(fmt.Sprintf("failed to write file %s", uri)), err)
++						return errkit.Wrapf(err, "failed to write file %s", uri)
+ 					}
+ 					// after successful write, remove old template
+ 					if err := os.Remove(oldPath); err != nil {
+@@ -325,20 +325,20 @@ func (t *TemplateManager) writeTemplatesToDisk(ghrd *updateutils.GHReleaseDownlo
+ 	}
+ 	err = ghrd.DownloadSourceWithCallback(!HideProgressBar, callbackFunc)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to download templates"), err)
++		return errkit.Wrap(err, "failed to download templates")
+ 	}
+ 
+ 	if err := config.DefaultConfig.WriteTemplatesConfig(); err != nil {
+-		return errkit.Append(errkit.New("failed to write templates config"), err)
++		return errkit.Wrap(err, "failed to write templates config")
+ 	}
+ 	// update ignore hash after writing new templates
+ 	if err := config.DefaultConfig.UpdateNucleiIgnoreHash(); err != nil {
+-		return errkit.Append(errkit.New("failed to update nuclei ignore hash"), err)
++		return errkit.Wrap(err, "failed to update nuclei ignore hash")
+ 	}
+ 
+ 	// update templates version in config file
+ 	if err := config.DefaultConfig.SetTemplatesVersion(ghrd.Latest.GetTagName()); err != nil {
+-		return errkit.Append(errkit.New("failed to update templates version"), err)
++		return errkit.Wrap(err, "failed to update templates version")
+ 	}
+ 
+ 	PurgeEmptyDirectories(dir)
+@@ -348,11 +348,11 @@ func (t *TemplateManager) writeTemplatesToDisk(ghrd *updateutils.GHReleaseDownlo
+ 
+ 	index, err := config.GetNucleiTemplatesIndex()
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to get nuclei templates index"), err)
++		return errkit.Wrap(err, "failed to get nuclei templates index")
+ 	}
+ 
+ 	if err = config.DefaultConfig.WriteTemplatesIndex(index); err != nil {
+-		return errkit.Append(errkit.New("failed to write nuclei templates index"), err)
++		return errkit.Wrap(err, "failed to write nuclei templates index")
+ 	}
+ 
+ 	if !HideReleaseNotes {
+@@ -448,8 +448,5 @@ func (t *TemplateManager) calculateChecksumMap(dir string) (map[string]string, e
+ 		}
+ 		return nil
+ 	})
+-	if err != nil {
+-		return nil, errkit.Append(errkit.New("failed to calculate checksums of templates"), err)
+-	}
+-	return checksumMap, nil
++	return checksumMap, errkit.Wrap(err, "failed to calculate checksums of templates")
+ }
+diff --git a/pkg/installer/util.go b/pkg/installer/util.go
+index a0bc9975..c0ba27f9 100644
+--- a/pkg/installer/util.go
++++ b/pkg/installer/util.go
+@@ -52,7 +52,7 @@ func getNewAdditionsFileFromGitHub(version string) ([]string, error) {
+ 		return nil, err
+ 	}
+ 	if resp.StatusCode != http.StatusOK {
+-		return nil, errkit.New("version not found").Build()
++		return nil, errkit.New("version not found")
+ 	}
+ 	data, err := io.ReadAll(resp.Body)
+ 	if err != nil {
+diff --git a/pkg/js/devtools/tsgen/scrape.go b/pkg/js/devtools/tsgen/scrape.go
+index 3c846ad7..aac352df 100644
+--- a/pkg/js/devtools/tsgen/scrape.go
++++ b/pkg/js/devtools/tsgen/scrape.go
+@@ -21,17 +21,17 @@ func (p *EntityParser) scrapeAndCreate(typeName string) error {
+ 	// get package
+ 	pkg, ok := p.imports[pkgName]
+ 	if !ok {
+-		return errkit.New(fmt.Sprintf("package %v for type %v not found", pkgName, typeName)).Build()
++		return errkit.Newf("package %v for type %v not found", pkgName, typeName)
+ 	}
+ 	// get type
+ 	obj := pkg.Types.Scope().Lookup(baseTypeName)
+ 	if obj == nil {
+-		return errkit.New(fmt.Sprintf("type %v not found in package %+v", typeName, pkg)).Build()
++		return errkit.Newf("type %v not found in package %+v", typeName, pkg)
+ 	}
+ 	// Ensure the object is a type name
+ 	typeNameObj, ok := obj.(*types.TypeName)
+ 	if !ok {
+-		return errkit.New(fmt.Sprintf("%v is not a type name", typeName)).Build()
++		return errkit.Newf("%v is not a type name", typeName)
+ 	}
+ 	// Ensure the type is a named struct type
+ 	namedStruct, ok := typeNameObj.Type().Underlying().(*types.Struct)
+diff --git a/pkg/js/global/scripts.go b/pkg/js/global/scripts.go
+index 5bd625cb..4336edf6 100644
+--- a/pkg/js/global/scripts.go
++++ b/pkg/js/global/scripts.go
+@@ -4,7 +4,6 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"embed"
+-	"fmt"
+ 	"math/rand"
+ 	"net"
+ 	"reflect"
+@@ -257,7 +256,7 @@ func RegisterNativeScripts(runtime *goja.Runtime) error {
+ 	// import default modules
+ 	_, err = runtime.RunString(defaultImports)
+ 	if err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("could not import default modules %v", defaultImports)), err)
++		return errkit.Wrapf(err, "could not import default modules %v", defaultImports)
+ 	}
+ 
+ 	return nil
+diff --git a/pkg/js/gojs/set.go b/pkg/js/gojs/set.go
+index 72aece40..4d4407de 100644
+--- a/pkg/js/gojs/set.go
++++ b/pkg/js/gojs/set.go
+@@ -2,7 +2,6 @@ package gojs
+ 
+ import (
+ 	"context"
+-	"fmt"
+ 	"reflect"
+ 
+ 	"github.com/Mzack9999/goja"
+@@ -10,8 +9,8 @@ import (
+ )
+ 
+ var (
+-	ErrInvalidFuncOpts = errkit.New("invalid function options: %v").Build()
+-	ErrNilRuntime      = errkit.New("runtime is nil").Build()
++	ErrInvalidFuncOpts = errkit.New("invalid function options")
++	ErrNilRuntime      = errkit.New("runtime is nil")
+ )
+ 
+ type FuncOpts struct {
+@@ -84,7 +83,7 @@ func RegisterFuncWithSignature(runtime *goja.Runtime, opts FuncOpts) error {
+ 		return ErrNilRuntime
+ 	}
+ 	if !opts.valid() {
+-		return errkit.New(fmt.Sprintf("invalid function options: name: %s, signatures: %v, description: %s", opts.Name, opts.Signatures, opts.Description)).Build()
++		return errkit.Newf("invalid function options: name: %s, signatures: %v, description: %s", opts.Name, opts.Signatures, opts.Description)
+ 	}
+ 
+ 	// Wrap the function with context injection
+diff --git a/pkg/js/libs/mssql/mssql.go b/pkg/js/libs/mssql/mssql.go
+index f1a538db..4f9caf27 100644
+--- a/pkg/js/libs/mssql/mssql.go
++++ b/pkg/js/libs/mssql/mssql.go
+@@ -63,7 +63,7 @@ func connect(executionId string, host string, port int, username string, passwor
+ 	}
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return false, protocolstate.ErrHostDenied(host)
++		return false, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 
+ 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+@@ -118,7 +118,7 @@ func (c *MSSQLClient) IsMssql(ctx context.Context, host string, port int) (bool,
+ func isMssql(executionId string, host string, port int) (bool, error) {
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return false, protocolstate.ErrHostDenied(host)
++		return false, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 
+ 	dialer := protocolstate.GetDialersWithId(executionId)
+@@ -162,7 +162,7 @@ func (c *MSSQLClient) ExecuteQuery(ctx context.Context, host string, port int, u
+ 	}
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return nil, protocolstate.ErrHostDenied(host)
++		return nil, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 
+ 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+diff --git a/pkg/js/libs/mysql/mysql.go b/pkg/js/libs/mysql/mysql.go
+index a059766d..c48c73a8 100644
+--- a/pkg/js/libs/mysql/mysql.go
++++ b/pkg/js/libs/mysql/mysql.go
+@@ -45,7 +45,7 @@ func (c *MySQLClient) IsMySQL(ctx context.Context, host string, port int) (bool,
+ func isMySQL(executionId string, host string, port int) (bool, error) {
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return false, protocolstate.ErrHostDenied(host)
++		return false, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	dialer := protocolstate.GetDialersWithId(executionId)
+ 	if dialer == nil {
+@@ -85,7 +85,7 @@ func (c *MySQLClient) Connect(ctx context.Context, host string, port int, userna
+ 	executionId := ctx.Value("executionId").(string)
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return false, protocolstate.ErrHostDenied(host)
++		return false, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 
+ 	// executing queries implies the remote mysql service
+@@ -144,7 +144,7 @@ func fingerprintMySQL(executionId string, host string, port int) (MySQLInfo, err
+ 	info := MySQLInfo{}
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return info, protocolstate.ErrHostDenied(host)
++		return info, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	dialer := protocolstate.GetDialersWithId(executionId)
+ 	if dialer == nil {
+@@ -209,7 +209,7 @@ func (c *MySQLClient) ExecuteQueryWithOpts(ctx context.Context, opts MySQLOption
+ 	executionId := ctx.Value("executionId").(string)
+ 	if !protocolstate.IsHostAllowed(executionId, opts.Host) {
+ 		// host is not valid according to network policy
+-		return nil, protocolstate.ErrHostDenied(opts.Host)
++		return nil, protocolstate.ErrHostDenied.Msgf(opts.Host)
+ 	}
+ 
+ 	// executing queries implies the remote mysql service
+diff --git a/pkg/js/libs/net/net.go b/pkg/js/libs/net/net.go
+index 2f486bfa..ad1eaadd 100644
+--- a/pkg/js/libs/net/net.go
++++ b/pkg/js/libs/net/net.go
+@@ -201,7 +201,7 @@ func (c *NetConn) RecvFull(N int) ([]byte, error) {
+ 	}
+ 	bin, err := reader.ConnReadNWithTimeout(c.conn, int64(N), c.timeout)
+ 	if err != nil {
+-		return []byte{}, errkit.Append(errkit.New(fmt.Sprintf("failed to read %d bytes", N)), err)
++		return []byte{}, errkit.Wrapf(err, "failed to read %d bytes", N)
+ 	}
+ 	return bin, nil
+ }
+@@ -226,7 +226,7 @@ func (c *NetConn) Recv(N int) ([]byte, error) {
+ 	b := make([]byte, N)
+ 	n, err := c.conn.Read(b)
+ 	if err != nil {
+-		return []byte{}, errkit.Append(errkit.New(fmt.Sprintf("failed to read %d bytes", N)), err)
++		return []byte{}, errkit.Wrapf(err, "failed to read %d bytes", N)
+ 	}
+ 	return b[:n], nil
+ }
+diff --git a/pkg/js/libs/postgres/postgres.go b/pkg/js/libs/postgres/postgres.go
+index 4dd1cd54..322048a8 100644
+--- a/pkg/js/libs/postgres/postgres.go
++++ b/pkg/js/libs/postgres/postgres.go
+@@ -122,7 +122,7 @@ func (c *PGClient) ExecuteQuery(ctx context.Context, host string, port int, user
+ func executeQuery(executionId string, host string, port int, username string, password string, dbName string, query string) (*utils.SQLResult, error) {
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return nil, protocolstate.ErrHostDenied(host)
++		return nil, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 
+ 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+@@ -179,7 +179,7 @@ func connect(executionId string, host string, port int, username string, passwor
+ 
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return false, protocolstate.ErrHostDenied(host)
++		return false, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 
+ 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+diff --git a/pkg/js/libs/redis/redis.go b/pkg/js/libs/redis/redis.go
+index 50178824..84b96d86 100644
+--- a/pkg/js/libs/redis/redis.go
++++ b/pkg/js/libs/redis/redis.go
+@@ -27,7 +27,7 @@ func GetServerInfo(ctx context.Context, host string, port int) (string, error) {
+ func getServerInfo(executionId string, host string, port int) (string, error) {
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return "", protocolstate.ErrHostDenied(host)
++		return "", protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	// create a new client
+ 	client := redis.NewClient(&redis.Options{
+@@ -69,7 +69,7 @@ func Connect(ctx context.Context, host string, port int, password string) (bool,
+ func connect(executionId string, host string, port int, password string) (bool, error) {
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return false, protocolstate.ErrHostDenied(host)
++		return false, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	// create a new client
+ 	client := redis.NewClient(&redis.Options{
+@@ -109,7 +109,7 @@ func GetServerInfoAuth(ctx context.Context, host string, port int, password stri
+ func getServerInfoAuth(executionId string, host string, port int, password string) (string, error) {
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return "", protocolstate.ErrHostDenied(host)
++		return "", protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	// create a new client
+ 	client := redis.NewClient(&redis.Options{
+@@ -181,7 +181,7 @@ func RunLuaScript(ctx context.Context, host string, port int, password string, s
+ 	executionId := ctx.Value("executionId").(string)
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return false, protocolstate.ErrHostDenied(host)
++		return false, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	// create a new client
+ 	client := redis.NewClient(&redis.Options{
+diff --git a/pkg/js/libs/smb/smb.go b/pkg/js/libs/smb/smb.go
+index 62a80460..7dc2dc83 100644
+--- a/pkg/js/libs/smb/smb.go
++++ b/pkg/js/libs/smb/smb.go
+@@ -43,7 +43,7 @@ func (c *SMBClient) ConnectSMBInfoMode(ctx context.Context, host string, port in
+ func connectSMBInfoMode(executionId string, host string, port int) (*smb.SMBLog, error) {
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return nil, protocolstate.ErrHostDenied(host)
++		return nil, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	dialer := protocolstate.GetDialersWithId(executionId)
+ 	if dialer == nil {
+@@ -90,7 +90,7 @@ func (c *SMBClient) ListSMBv2Metadata(ctx context.Context, host string, port int
+ 	executionId := ctx.Value("executionId").(string)
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return nil, protocolstate.ErrHostDenied(host)
++		return nil, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	return memoizedcollectSMBv2Metadata(executionId, host, port, 5*time.Second)
+ }
+@@ -119,7 +119,7 @@ func (c *SMBClient) ListShares(ctx context.Context, host string, port int, user,
+ func listShares(executionId string, host string, port int, user string, password string) ([]string, error) {
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return nil, protocolstate.ErrHostDenied(host)
++		return nil, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	dialer := protocolstate.GetDialersWithId(executionId)
+ 	if dialer == nil {
+diff --git a/pkg/js/libs/smb/smbghost.go b/pkg/js/libs/smb/smbghost.go
+index bf498f3b..69ddcca1 100644
+--- a/pkg/js/libs/smb/smbghost.go
++++ b/pkg/js/libs/smb/smbghost.go
+@@ -35,7 +35,7 @@ func (c *SMBClient) DetectSMBGhost(ctx context.Context, host string, port int) (
+ func detectSMBGhost(executionId string, host string, port int) (bool, error) {
+ 	if !protocolstate.IsHostAllowed(executionId, host) {
+ 		// host is not valid according to network policy
+-		return false, protocolstate.ErrHostDenied(host)
++		return false, protocolstate.ErrHostDenied.Msgf(host)
+ 	}
+ 	addr := net.JoinHostPort(host, strconv.Itoa(port))
+ 	dialer := protocolstate.GetDialersWithId(executionId)
+diff --git a/pkg/js/libs/smtp/smtp.go b/pkg/js/libs/smtp/smtp.go
+index f0f4b90b..d4a7e022 100644
+--- a/pkg/js/libs/smtp/smtp.go
++++ b/pkg/js/libs/smtp/smtp.go
+@@ -68,7 +68,7 @@ func NewSMTPClient(call goja.ConstructorCall, runtime *goja.Runtime) *goja.Objec
+ 	executionId := c.nj.ExecutionId()
+ 
+ 	// check if this is allowed address
+-	c.nj.Require(protocolstate.IsHostAllowed(executionId, host+":"+port), protocolstate.ErrHostDenied(host+":"+port).Error())
++	c.nj.Require(protocolstate.IsHostAllowed(executionId, host+":"+port), protocolstate.ErrHostDenied.Msgf(host+":"+port).Error())
+ 
+ 	// Link Constructor to Client and return
+ 	return utils.LinkConstructor(call, runtime, c)
+diff --git a/pkg/js/libs/ssh/ssh.go b/pkg/js/libs/ssh/ssh.go
+index ebb041e2..028bd788 100644
+--- a/pkg/js/libs/ssh/ssh.go
++++ b/pkg/js/libs/ssh/ssh.go
+@@ -129,7 +129,7 @@ func (c *SSHClient) ConnectSSHInfoMode(ctx context.Context, host string, port in
+ // ```
+ func (c *SSHClient) Run(cmd string) (string, error) {
+ 	if c.connection == nil {
+-		return "", errkit.New("no connection").Build()
++		return "", errkit.New("no connection")
+ 	}
+ 	session, err := c.connection.NewSession()
+ 	if err != nil {
+@@ -177,14 +177,14 @@ type connectOptions struct {
+ 
+ func (c *connectOptions) validate() error {
+ 	if c.Host == "" {
+-		return errkit.New("host is required").Build()
++		return errkit.New("host is required")
+ 	}
+ 	if c.Port <= 0 {
+-		return errkit.New("port is required").Build()
++		return errkit.New("port is required")
+ 	}
+ 	if !protocolstate.IsHostAllowed(c.ExecutionId, c.Host) {
+ 		// host is not valid according to network policy
+-		return protocolstate.ErrHostDenied(c.Host)
++		return protocolstate.ErrHostDenied.Msgf(c.Host)
+ 	}
+ 	if c.Timeout == 0 {
+ 		c.Timeout = 10 * time.Second
+diff --git a/pkg/protocols/code/code.go b/pkg/protocols/code/code.go
+index 0a17c9f3..92d951ba 100644
+--- a/pkg/protocols/code/code.go
++++ b/pkg/protocols/code/code.go
+@@ -11,7 +11,6 @@ import (
+ 	"github.com/Mzack9999/goja"
+ 	"github.com/alecthomas/chroma/quick"
+ 	"github.com/ditashi/jsbeautifier-go/jsbeautifier"
+-	"github.com/pkg/errors"
+ 
+ 	"github.com/projectdiscovery/gologger"
+ 	"github.com/projectdiscovery/gozero"
+@@ -113,7 +112,7 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 		if options.Options.Validate {
+ 			options.Logger.Error().Msgf("%s <- %s", errMsg, err)
+ 		} else {
+-			return errkit.Append(errkit.New(errMsg), err)
++			return errkit.Wrap(err, errMsg)
+ 		}
+ 	} else {
+ 		request.gozero = engine
+@@ -132,7 +131,7 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 		compiled.ExcludeMatchers = options.ExcludeMatchers
+ 		compiled.TemplateID = options.TemplateID
+ 		if err := compiled.Compile(); err != nil {
+-			return errors.Wrap(err, "could not compile operators")
++			return errkit.Wrap(err, "could not compile operators")
+ 		}
+ 		for _, matcher := range compiled.Matchers {
+ 			// default matcher part for code protocol is response
+@@ -153,7 +152,7 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 	if request.PreCondition != "" {
+ 		preConditionCompiled, err := compiler.SourceAutoMode(request.PreCondition, false)
+ 		if err != nil {
+-			return errkit.New(fmt.Sprintf("%s: could not compile pre-condition: %s", request.TemplateID, err)).Build()
++			return errkit.Newf("could not compile pre-condition: %s", err)
+ 		}
+ 		request.preConditionCompiled = preConditionCompiled
+ 	}
+@@ -230,7 +229,7 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
+ 				Context:         input.Context(),
+ 			})
+ 		if err != nil {
+-			return errkit.New(fmt.Sprintf("%s: could not execute pre-condition: %s", request.TemplateID, err)).Build()
++			return errkit.Newf("could not execute pre-condition: %s", err)
+ 		}
+ 		if !result.GetSuccess() || types.ToString(result["error"]) != "" {
+ 			gologger.Warning().Msgf("[%s] Precondition for request %s was not satisfied\n", request.TemplateID, request.PreCondition)
+diff --git a/pkg/protocols/common/interactsh/const.go b/pkg/protocols/common/interactsh/const.go
+index aad130d4..46e5c268 100644
+--- a/pkg/protocols/common/interactsh/const.go
++++ b/pkg/protocols/common/interactsh/const.go
+@@ -8,7 +8,7 @@ import (
+ 
+ var (
+ 	defaultInteractionDuration = 60 * time.Second
+-	interactshURLMarkerRegex = regexp.MustCompile(`(%7[B|b]|\{){2}(interactsh-url(?:_[0-9]+){0,3})(%7[D|d]|\}){2}`)
++	interactshURLMarkerRegex   = regexp.MustCompile(`(%7[B|b]|\{){2}(interactsh-url(?:_[0-9]+){0,3})(%7[D|d]|\}){2}`)
+ 
+ 	ErrInteractshClientNotInitialized = errors.New("interactsh client not initialized")
+ )
+diff --git a/pkg/protocols/common/interactsh/interactsh.go b/pkg/protocols/common/interactsh/interactsh.go
+index 6cf7b122..7cdf7c77 100644
+--- a/pkg/protocols/common/interactsh/interactsh.go
++++ b/pkg/protocols/common/interactsh/interactsh.go
+@@ -88,7 +88,7 @@ func (c *Client) poll() error {
+ 		KeepAliveInterval:   time.Minute,
+ 	})
+ 	if err != nil {
+-		return errkit.Append(errkit.New("could not create client"), err)
++		return errkit.Wrap(err, "could not create client")
+ 	}
+ 
+ 	c.interactsh = interactsh
+@@ -109,7 +109,7 @@ func (c *Client) poll() error {
+ 			// If we don't have any request for this ID, add it to temporary
+ 			// lru cache, so we can correlate when we get an add request.
+ 			items, err := c.interactions.Get(interaction.UniqueID)
+-			if errors.Is(err, gcache.KeyNotFoundError) || items == nil {
++			if errkit.Is(err, gcache.KeyNotFoundError) || items == nil {
+ 				_ = c.interactions.SetWithExpire(interaction.UniqueID, []*server.Interaction{interaction}, defaultInteractionDuration)
+ 			} else {
+ 				items = append(items, interaction)
+@@ -128,7 +128,7 @@ func (c *Client) poll() error {
+ 	})
+ 
+ 	if err != nil {
+-		return errkit.Append(errkit.New("could not perform interactsh polling"), err)
++		return errkit.Wrap(err, "could not perform interactsh polling")
+ 	}
+ 	return nil
+ }
+@@ -239,7 +239,7 @@ func (c *Client) URL() (string, error) {
+ 		err = c.poll()
+ 	})
+ 	if err != nil {
+-		return "", errkit.Append(ErrInteractshClientNotInitialized, err)
++		return "", errkit.Wrap(ErrInteractshClientNotInitialized, err.Error())
+ 	}
+ 
+ 	if c.interactsh == nil {
+diff --git a/pkg/protocols/common/protocolstate/file.go b/pkg/protocols/common/protocolstate/file.go
+index 0ca4dd3b..4957fa68 100644
+--- a/pkg/protocols/common/protocolstate/file.go
++++ b/pkg/protocols/common/protocolstate/file.go
+@@ -1,7 +1,6 @@
+ package protocolstate
+ 
+ import (
+-	"fmt"
+ 	"strings"
+ 
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/catalog/config"
+@@ -68,12 +67,12 @@ func NormalizePath(options *types.Options, filePath string) (string, error) {
+ 	}
+ 	cleaned, err := fileutil.ResolveNClean(filePath, config.DefaultConfig.GetTemplateDir())
+ 	if err != nil {
+-		return "", errkit.Append(errkit.New(fmt.Sprintf("could not resolve and clean path %v", filePath)), err)
++		return "", errkit.Wrapf(err, "could not resolve and clean path %v", filePath)
+ 	}
+ 	// only allow files inside nuclei-templates directory
+ 	// even current working directory is not allowed
+ 	if strings.HasPrefix(cleaned, config.DefaultConfig.GetTemplateDir()) {
+ 		return cleaned, nil
+ 	}
+-	return "", errkit.New(fmt.Sprintf("path %v is outside nuclei-template directory and -lfa is not enabled", filePath)).Build()
++	return "", errkit.Newf("path %v is outside nuclei-template directory and -lfa is not enabled", filePath)
+ }
+diff --git a/pkg/protocols/common/protocolstate/headless.go b/pkg/protocols/common/protocolstate/headless.go
+index ee75c3b3..8b593a96 100644
+--- a/pkg/protocols/common/protocolstate/headless.go
++++ b/pkg/protocols/common/protocolstate/headless.go
+@@ -2,7 +2,6 @@ package protocolstate
+ 
+ import (
+ 	"context"
+-	"fmt"
+ 	"net"
+ 	"strings"
+ 
+@@ -18,14 +17,18 @@ import (
+ 
+ // initialize state of headless protocol
+ 
+-// ErrURLDenied returns an error when a URL is denied by network policy
+-func ErrURLDenied(url, rule string) error {
+-	return errkit.New(fmt.Sprintf("headless: url %v dropped by rule: %v", url, rule)).Build()
++var (
++	ErrURLDenied  = errkit.New("headless: url dropped by rule")
++	ErrHostDenied = errorTemplate{format: "host %v dropped by network policy"}
++)
++
++// errorTemplate provides a way to create formatted errors like the old errorutil.NewWithFmt
++type errorTemplate struct {
++	format string
+ }
+ 
+-// ErrHostDenied returns an error when a host is denied by network policy
+-func ErrHostDenied(host string) error {
+-	return errkit.New(fmt.Sprintf("host %v dropped by network policy", host)).Build()
++func (e errorTemplate) Msgf(args ...interface{}) error {
++	return errkit.Newf(e.format, args...)
+ }
+ 
+ func GetNetworkPolicy(ctx context.Context) *networkpolicy.NetworkPolicy {
+@@ -47,15 +50,15 @@ func ValidateNFailRequest(options *types.Options, page *rod.Page, e *proto.Fetch
+ 	normalized := strings.ToLower(reqURL)      // normalize url to lowercase
+ 	normalized = strings.TrimSpace(normalized) // trim leading & trailing whitespaces
+ 	if !IsLfaAllowed(options) && stringsutil.HasPrefixI(normalized, "file:") {
+-		return multierr.Combine(FailWithReason(page, e), ErrURLDenied(reqURL, "use of file:// protocol disabled use '-lfa' to enable"))
++		return multierr.Combine(FailWithReason(page, e), errkit.Newf("headless: url %v dropped by rule: %v", reqURL, "use of file:// protocol disabled use '-lfa' to enable"))
+ 	}
+ 	// validate potential invalid schemes
+ 	// javascript protocol is allowed for xss fuzzing
+ 	if stringsutil.HasPrefixAnyI(normalized, "ftp:", "externalfile:", "chrome:", "chrome-extension:") {
+-		return multierr.Combine(FailWithReason(page, e), ErrURLDenied(reqURL, "protocol blocked by network policy"))
++		return multierr.Combine(FailWithReason(page, e), errkit.Newf("headless: url %v dropped by rule: %v", reqURL, "protocol blocked by network policy"))
+ 	}
+ 	if !isValidHost(options, reqURL) {
+-		return multierr.Combine(FailWithReason(page, e), ErrURLDenied(reqURL, "address blocked by network policy"))
++		return multierr.Combine(FailWithReason(page, e), errkit.Newf("headless: url %v dropped by rule: %v", reqURL, "address blocked by network policy"))
+ 	}
+ 	return nil
+ }
+diff --git a/pkg/protocols/headless/engine/page.go b/pkg/protocols/headless/engine/page.go
+index 86f95a0e..6b518dd3 100644
+--- a/pkg/protocols/headless/engine/page.go
++++ b/pkg/protocols/headless/engine/page.go
+@@ -78,7 +78,7 @@ func (i *Instance) Run(ctx *contextargs.Context, actions []*Action, payloads map
+ 	target := ctx.MetaInput.Input
+ 	input, err := urlutil.Parse(target)
+ 	if err != nil {
+-		return nil, nil, errkit.Append(errkit.New(fmt.Sprintf("could not parse URL %s", target)), err)
++		return nil, nil, errkit.Wrapf(err, "could not parse URL %s", target)
+ 	}
+ 
+ 	hasTrailingSlash := httputil.HasTrailingSlash(target)
+diff --git a/pkg/protocols/headless/engine/page_actions.go b/pkg/protocols/headless/engine/page_actions.go
+index 1a11bdc7..47548046 100644
+--- a/pkg/protocols/headless/engine/page_actions.go
++++ b/pkg/protocols/headless/engine/page_actions.go
+@@ -31,8 +31,8 @@ import (
+ )
+ 
+ var (
+-	errinvalidArguments = errkit.New("invalid arguments provided").Build()
+-	ErrLFAccessDenied   = errkit.New("Use -allow-local-file-access flag to enable local file access").Build()
++	errinvalidArguments = errkit.New("invalid arguments provided")
++	ErrLFAccessDenied   = errkit.New("Use -allow-local-file-access flag to enable local file access")
+ 	// ErrActionExecDealine is the error returned when alloted time for action execution exceeds
+ 	ErrActionExecDealine = errkit.New("headless action execution deadline exceeded").SetKind(errkit.ErrKindDeadline).Build()
+ )
+@@ -59,7 +59,7 @@ func (p *Page) ExecuteActions(input *contextargs.Context, actions []*Action) (ou
+ 		}
+ 
+ 		if r := recover(); r != nil {
+-			err = errkit.New(fmt.Sprintf("panic on headless action: %v", r)).Build()
++			err = errkit.Newf("panic on headless action: %v", r)
+ 		}
+ 	}()
+ 
+@@ -72,7 +72,7 @@ func (p *Page) ExecuteActions(input *contextargs.Context, actions []*Action) (ou
+ 				for _, waitFunc := range waitFuncs {
+ 					if waitFunc != nil {
+ 						if err := waitFunc(); err != nil {
+-							return nil, errkit.Append(errkit.New("error occurred while executing waitFunc"), err)
++							return nil, errkit.Wrap(err, "error occurred while executing waitFunc")
+ 						}
+ 					}
+ 				}
+@@ -400,7 +400,7 @@ func (p *Page) NavigateURL(action *Action, out ActionData) error {
+ 
+ 	parsedURL, err := urlutil.ParseURL(url, true)
+ 	if err != nil {
+-		return errkit.New(fmt.Sprintf("headless: failed to parse url %v while creating http request", url)).Build()
++		return errkit.Newf("failed to parse url %v while creating http request", url)
+ 	}
+ 
+ 	// ===== parameter automerge =====
+@@ -410,7 +410,7 @@ func (p *Page) NavigateURL(action *Action, out ActionData) error {
+ 	parsedURL.Params = finalparams
+ 
+ 	if err := p.page.Navigate(parsedURL.String()); err != nil {
+-		return errkit.Append(errkit.New(fmt.Sprintf("could not navigate to url %s", parsedURL.String())), err)
++		return errkit.Wrapf(err, "could not navigate to url %s", parsedURL.String())
+ 	}
+ 
+ 	p.updateLastNavigatedURL()
+@@ -524,14 +524,14 @@ func (p *Page) Screenshot(act *Action, out ActionData) error {
+ 
+ 	to, err = fileutil.CleanPath(to)
+ 	if err != nil {
+-		return errkit.New(fmt.Sprintf("could not clean output screenshot path %s", to)).Build()
++		return errkit.Newf("could not clean output screenshot path %s", to)
+ 	}
+ 
+ 	// allow if targetPath is child of current working directory
+ 	if !protocolstate.IsLfaAllowed(p.options.Options) {
+ 		cwd, err := os.Getwd()
+ 		if err != nil {
+-			return errkit.Append(errkit.New("could not get current working directory"), err)
++			return errkit.Wrap(err, "could not get current working directory")
+ 		}
+ 
+ 		if !strings.HasPrefix(to, cwd) {
+@@ -550,7 +550,7 @@ func (p *Page) Screenshot(act *Action, out ActionData) error {
+ 		// creates new directory if needed based on path `to`
+ 		// TODO: replace all permission bits with fileutil constants (https://github.com/projectdiscovery/utils/issues/113)
+ 		if err := os.MkdirAll(filepath.Dir(to), 0700); err != nil {
+-			return errkit.Append(errkit.New("failed to create directory while writing screenshot"), err)
++			return errkit.Wrap(err, "failed to create directory while writing screenshot")
+ 		}
+ 	}
+ 
+@@ -562,7 +562,7 @@ func (p *Page) Screenshot(act *Action, out ActionData) error {
+ 
+ 	if fileutil.FileExists(filePath) {
+ 		// return custom error as overwriting files is not supported
+-		return errkit.New(fmt.Sprintf("screenshot: failed to write screenshot, file %v already exists", filePath)).Build()
++		return errkit.Newf("failed to write screenshot, file %v already exists", filePath)
+ 	}
+ 	err = os.WriteFile(filePath, data, 0540)
+ 	if err != nil {
+@@ -805,12 +805,12 @@ func (p *Page) WaitEvent(act *Action, out ActionData) (func() error, error) {
+ 
+ 	gotType := proto.GetType(event)
+ 	if gotType == nil {
+-		return nil, errkit.New(fmt.Sprintf("event %q does not exist", event)).Build()
++		return nil, errkit.Newf("event %q does not exist", event)
+ 	}
+ 
+ 	tmp, ok := reflect.New(gotType).Interface().(proto.Event)
+ 	if !ok {
+-		return nil, errkit.New(fmt.Sprintf("event %q is not a page event", event)).Build()
++		return nil, errkit.Newf("event %q is not a page event", event)
+ 	}
+ 
+ 	waitEvent = tmp
+@@ -947,7 +947,7 @@ func (p *Page) getActionArg(action *Action, arg string) (string, error) {
+ 
+ 	err = expressions.ContainsUnresolvedVariables(exprs...)
+ 	if err != nil {
+-		return "", errkit.Append(errkit.New(fmt.Sprintf("argument %q, value: %q", arg, argValue)), err)
++		return "", errkit.Wrapf(err, "argument %q, value: %q", arg, argValue)
+ 	}
+ 
+ 	argValue, err = expressions.Evaluate(argValue, p.variables)
+diff --git a/pkg/protocols/http/build_request.go b/pkg/protocols/http/build_request.go
+index 7dac4156..0fa8d150 100644
+--- a/pkg/protocols/http/build_request.go
++++ b/pkg/protocols/http/build_request.go
+@@ -37,18 +37,42 @@ const (
+ 	ReqURLPatternKey = "req_url_pattern"
+ )
+ 
+-// ErrEvalExpression returns an error when helper expressions cannot be evaluated
+-func ErrEvalExpression(tag string) func(error) error {
+-	return func(err error) error {
+-		return errkit.Append(errkit.New(fmt.Sprintf("%s: could not evaluate helper expressions", tag)), err)
+-	}
++// ErrEvalExpression
++type errorTemplate struct {
++	format string
++}
++
++func (e errorTemplate) Wrap(err error) wrapperError {
++	return wrapperError{template: e, err: err}
++}
++
++func (e errorTemplate) Msgf(args ...interface{}) error {
++	return errkit.Newf(e.format, args...)
++}
++
++type wrapperError struct {
++	template errorTemplate
++	err      error
+ }
+ 
+-// ErrUnresolvedVars returns an error when unresolved variables are found in request
+-func ErrUnresolvedVars(vars string) error {
+-	return errkit.New(fmt.Sprintf("unresolved variables `%v` found in request", vars)).Build()
++func (w wrapperError) WithTag(tag string) error {
++	return errkit.Wrap(w.err, w.template.format)
+ }
+ 
++func (w wrapperError) Msgf(format string, args ...interface{}) error {
++	return errkit.Wrapf(w.err, format, args...)
++}
++
++func (w wrapperError) Error() string {
++	return errkit.Wrap(w.err, w.template.format).Error()
++}
++
++// ErrEvalExpression
++var (
++	ErrEvalExpression = errorTemplate{"could not evaluate helper expressions"}
++	ErrUnresolvedVars = errorTemplate{"unresolved variables `%v` found in request"}
++)
++
+ // generatedRequest is a single generated request wrapped for a template request
+ type generatedRequest struct {
+ 	original             *Request
+@@ -199,7 +223,7 @@ func (r *requestGenerator) Make(ctx context.Context, input *contextargs.Context,
+ 	for payloadName, payloadValue := range payloads {
+ 		payloads[payloadName], err = expressions.Evaluate(types.ToString(payloadValue), allVars)
+ 		if err != nil {
+-			return nil, ErrEvalExpression("http")(err)
++			return nil, errkit.Wrap(err, "could not evaluate helper expressions")
+ 		}
+ 	}
+ 	// finalVars contains allVars and any generator/fuzzing specific payloads
+@@ -216,7 +240,7 @@ func (r *requestGenerator) Make(ctx context.Context, input *contextargs.Context,
+ 	// Evaluate (replace) variable with final values
+ 	reqData, err = expressions.Evaluate(reqData, finalVars)
+ 	if err != nil {
+-		return nil, ErrEvalExpression("http")(err)
++		return nil, errkit.Wrap(err, "could not evaluate helper expressions")
+ 	}
+ 
+ 	if isRawRequest {
+@@ -225,7 +249,7 @@ func (r *requestGenerator) Make(ctx context.Context, input *contextargs.Context,
+ 
+ 	reqURL, err := urlutil.ParseAbsoluteURL(reqData, true)
+ 	if err != nil {
+-		return nil, errkit.New(fmt.Sprintf("http: failed to parse url %v while creating http request", reqData)).Build()
++		return nil, errkit.Newf("failed to parse url %v while creating http request", reqData)
+ 	}
+ 	// while merging parameters first preference is given to target params
+ 	finalparams := parsed.Params
+@@ -258,7 +282,7 @@ func (r *requestGenerator) makeSelfContainedRequest(ctx context.Context, data st
+ 	// evaluate request
+ 	data, err := expressions.Evaluate(data, values)
+ 	if err != nil {
+-		return nil, ErrEvalExpression("self-contained")(err)
++		return nil, errkit.Wrap(err, "could not evaluate helper expressions")
+ 	}
+ 	// If the request is a raw request, get the URL from the request
+ 	// header and use it to make the request.
+@@ -281,7 +305,7 @@ func (r *requestGenerator) makeSelfContainedRequest(ctx context.Context, data st
+ 		}
+ 
+ 		if err := expressions.ContainsUnresolvedVariables(parts[1]); err != nil && !r.request.SkipVariablesCheck {
+-			return nil, ErrUnresolvedVars(parts[1])
++			return nil, errkit.Newf("unresolved variables `%v` found in request", parts[1])
+ 		}
+ 
+ 		parsed, err := urlutil.ParseURL(parts[1], true)
+@@ -295,19 +319,19 @@ func (r *requestGenerator) makeSelfContainedRequest(ctx context.Context, data st
+ 		// Evaluate (replace) variable with final values
+ 		data, err = expressions.Evaluate(data, values)
+ 		if err != nil {
+-			return nil, ErrEvalExpression("self-contained")(err)
++			return nil, errkit.Wrap(err, "could not evaluate helper expressions")
+ 		}
+ 		return r.generateRawRequest(ctx, data, parsed, values, payloads)
+ 	}
+ 	if err := expressions.ContainsUnresolvedVariables(data); err != nil && !r.request.SkipVariablesCheck {
+ 		// early exit: if there are any unresolved variables in `path` after evaluation
+ 		// then return early since this will definitely fail
+-		return nil, ErrUnresolvedVars(data)
++		return nil, errkit.Newf("unresolved variables `%v` found in request", data)
+ 	}
+ 
+ 	urlx, err := urlutil.ParseURL(data, true)
+ 	if err != nil {
+-		return nil, errkit.New(fmt.Sprintf("self-contained: failed to parse %v in self contained request: %s", data, err)).Build()
++		return nil, errkit.Wrapf(err, "failed to parse %v in self contained request", data)
+ 	}
+ 	return r.generateHttpRequest(ctx, urlx, values, payloads)
+ }
+@@ -318,7 +342,7 @@ func (r *requestGenerator) makeSelfContainedRequest(ctx context.Context, data st
+ func (r *requestGenerator) generateHttpRequest(ctx context.Context, urlx *urlutil.URL, finalVars, generatorValues map[string]interface{}) (*generatedRequest, error) {
+ 	method, err := expressions.Evaluate(r.request.Method.String(), finalVars)
+ 	if err != nil {
+-		return nil, ErrEvalExpression("http")(err)
++		return nil, errkit.Wrap(err, "failed to evaluate while generating http request")
+ 	}
+ 	// Build a request on the specified URL
+ 	req, err := retryablehttp.NewRequestFromURLWithContext(ctx, method, urlx, nil)
+@@ -347,7 +371,7 @@ func (r *requestGenerator) generateRawRequest(ctx context.Context, rawRequest st
+ 		rawRequestData, err = raw.Parse(rawRequest, baseURL, r.request.Unsafe, r.request.DisablePathAutomerge)
+ 	}
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New("failed to parse raw request"), err)
++		return nil, errkit.Wrap(err, "failed to parse raw request")
+ 	}
+ 
+ 	// Unsafe option uses rawhttp library
+@@ -363,7 +387,7 @@ func (r *requestGenerator) generateRawRequest(ctx context.Context, rawRequest st
+ 	}
+ 	urlx, err := urlutil.ParseAbsoluteURL(rawRequestData.FullURL, true)
+ 	if err != nil {
+-		return nil, errkit.New(fmt.Sprintf("raw: failed to create request with url %v got %v", rawRequestData.FullURL, err)).Build()
++		return nil, errkit.Wrapf(err, "failed to create request with url %v got %v", rawRequestData.FullURL, err)
+ 	}
+ 	req, err := retryablehttp.NewRequestFromURLWithContext(ctx, rawRequestData.Method, urlx, rawRequestData.Data)
+ 	if err != nil {
+@@ -420,7 +444,7 @@ func (r *requestGenerator) fillRequest(req *retryablehttp.Request, values map[st
+ 		}
+ 		value, err := expressions.Evaluate(value, values)
+ 		if err != nil {
+-			return nil, ErrEvalExpression("http")(err)
++			return nil, errkit.Wrap(err, "failed to evaluate while adding headers to request")
+ 		}
+ 		req.Header[header] = []string{value}
+ 		if header == "Host" {
+@@ -441,7 +465,7 @@ func (r *requestGenerator) fillRequest(req *retryablehttp.Request, values map[st
+ 		}
+ 		body, err := expressions.Evaluate(body, values)
+ 		if err != nil {
+-			return nil, ErrEvalExpression("http")(err)
++			return nil, errkit.Wrap(err, "could not evaluate helper expressions")
+ 		}
+ 		bodyReader, err := readerutil.NewReusableReadCloser([]byte(body))
+ 		if err != nil {
+diff --git a/pkg/protocols/http/raw/raw.go b/pkg/protocols/http/raw/raw.go
+index 11454bb7..c2a2121b 100644
+--- a/pkg/protocols/http/raw/raw.go
++++ b/pkg/protocols/http/raw/raw.go
+@@ -48,7 +48,7 @@ func Parse(request string, inputURL *urlutil.URL, unsafe, disablePathAutomerge b
+ 	case strings.HasPrefix(rawrequest.Path, "http") && !unsafe:
+ 		urlx, err := urlutil.ParseURL(rawrequest.Path, true)
+ 		if err != nil {
+-			return nil, errkit.New(fmt.Sprintf("raw: failed to parse url %v from template: %s", rawrequest.Path, err)).Build()
++			return nil, errkit.Wrapf(err, "failed to parse url %v from template", rawrequest.Path)
+ 		}
+ 		cloned := inputURL.Clone()
+ 		cloned.Params.IncludeEquals = true
+@@ -57,7 +57,7 @@ func Parse(request string, inputURL *urlutil.URL, unsafe, disablePathAutomerge b
+ 		}
+ 		parseErr := cloned.MergePath(urlx.GetRelativePath(), true)
+ 		if parseErr != nil {
+-			return nil, errkit.Append(errkit.New(fmt.Sprintf("raw: could not automergepath for template path %v", urlx.GetRelativePath())), parseErr)
++			return nil, errkit.Wrapf(parseErr, "could not automergepath for template path %v", urlx.GetRelativePath())
+ 		}
+ 		rawrequest.Path = cloned.GetRelativePath()
+ 	// If unsafe changes must be made in raw request string itself
+@@ -94,7 +94,7 @@ func Parse(request string, inputURL *urlutil.URL, unsafe, disablePathAutomerge b
+ 			}
+ 			err = cloned.MergePath(rawrequest.Path, true)
+ 			if err != nil {
+-				return nil, errkit.New(fmt.Sprintf("raw: failed to automerge %v from unsafe template: %s", rawrequest.Path, err)).Build()
++				return nil, errkit.Wrapf(err, "failed to automerge %v from unsafe template", rawrequest.Path)
+ 			}
+ 			unsafeRelativePath = cloned.GetRelativePath()
+ 		}
+@@ -116,7 +116,7 @@ func Parse(request string, inputURL *urlutil.URL, unsafe, disablePathAutomerge b
+ 		}
+ 		parseErr := cloned.MergePath(rawrequest.Path, true)
+ 		if parseErr != nil {
+-			return nil, errkit.Append(errkit.New(fmt.Sprintf("raw: could not automergepath for template path %v", rawrequest.Path)), parseErr)
++			return nil, errkit.Wrapf(parseErr, "could not automergepath for template path %v", rawrequest.Path)
+ 		}
+ 		rawrequest.Path = cloned.GetRelativePath()
+ 	}
+@@ -145,18 +145,18 @@ func ParseRawRequest(request string, unsafe bool) (*Request, error) {
+ 	if strings.HasPrefix(req.Path, "http") {
+ 		urlx, err := urlutil.Parse(req.Path)
+ 		if err != nil {
+-			return nil, errkit.Append(errkit.New(fmt.Sprintf("failed to parse url %v", req.Path)), err)
++			return nil, errkit.Wrapf(err, "failed to parse url %v", req.Path)
+ 		}
+ 		req.Path = urlx.GetRelativePath()
+ 		req.FullURL = urlx.String()
+ 	} else {
+ 
+ 		if req.Path == "" {
+-			return nil, errkit.New("self-contained-raw: path cannot be empty in self contained request").Build()
++			return nil, errkit.New("path cannot be empty in self contained request")
+ 		}
+ 		// given url is relative construct one using Host Header
+ 		if _, ok := req.Headers["Host"]; !ok {
+-			return nil, errkit.New("self-contained-raw: host header is required for relative path").Build()
++			return nil, errkit.New("host header is required for relative path")
+ 		}
+ 		// Review: Current default scheme in self contained templates if relative path is provided is http
+ 		req.FullURL = fmt.Sprintf("%s://%s%s", urlutil.HTTP, strings.TrimSpace(req.Headers["Host"]), req.Path)
+diff --git a/pkg/protocols/http/signer/aws-sign.go b/pkg/protocols/http/signer/aws-sign.go
+index bf6e15d3..413f4688 100644
+--- a/pkg/protocols/http/signer/aws-sign.go
++++ b/pkg/protocols/http/signer/aws-sign.go
+@@ -60,7 +60,7 @@ func (a *AWSSigner) SignHTTP(ctx context.Context, request *http.Request) error {
+ 	// contentHash is sha256 hash of response body
+ 	contentHash := a.getPayloadHash(request)
+ 	if err := a.signer.SignHTTP(ctx, *a.creds, request, contentHash, a.options.Service, a.options.Region, time.Now()); err != nil {
+-		return errkit.Append(errkit.New("failed to sign http request using aws v4 signer"), err)
++		return errkit.Wrap(err, "failed to sign http request using aws v4 signer")
+ 	}
+ 	// add x-amz-content-sha256 header to request
+ 	request.Header.Set("x-amz-content-sha256", contentHash)
+diff --git a/pkg/protocols/http/utils.go b/pkg/protocols/http/utils.go
+index 547b32da..781dc61a 100644
+--- a/pkg/protocols/http/utils.go
++++ b/pkg/protocols/http/utils.go
+@@ -1,7 +1,6 @@
+ package http
+ 
+ import (
+-	"fmt"
+ 	"io"
+ 	"strings"
+ 
+@@ -16,14 +15,14 @@ func dump(req *generatedRequest, reqURL string) ([]byte, error) {
+ 		// Use a clone to avoid a race condition with the http transport
+ 		bin, err := req.request.Clone(req.request.Context()).Dump()
+ 		if err != nil {
+-			return nil, errkit.New(fmt.Sprintf("http: could not dump request: %v: %s", req.request.String(), err)).Build()
++			return nil, errkit.Wrapf(err, "could not dump request: %v", req.request.String())
+ 		}
+ 		return bin, nil
+ 	}
+ 	rawHttpOptions := &rawhttp.Options{CustomHeaders: req.rawRequest.UnsafeHeaders, CustomRawBytes: req.rawRequest.UnsafeRawBytes}
+ 	bin, err := rawhttp.DumpRequestRaw(req.rawRequest.Method, reqURL, req.rawRequest.Path, generators.ExpandMapValues(req.rawRequest.Headers), io.NopCloser(strings.NewReader(req.rawRequest.Data)), rawHttpOptions)
+ 	if err != nil {
+-		return nil, errkit.New(fmt.Sprintf("http: could not dump request: %v: %s", reqURL, err)).Build()
++		return nil, errkit.Wrapf(err, "could not dump request: %v", reqURL)
+ 	}
+ 	return bin, nil
+ }
+diff --git a/pkg/protocols/javascript/js.go b/pkg/protocols/javascript/js.go
+index 573855ab..9925c310 100644
+--- a/pkg/protocols/javascript/js.go
++++ b/pkg/protocols/javascript/js.go
+@@ -127,14 +127,14 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 			}
+ 		}
+ 		if err := compiled.Compile(); err != nil {
+-			return errkit.New(fmt.Sprintf("%s: could not compile operators got %v", request.TemplateID, err)).Build()
++			return errkit.Newf("could not compile operators got %v", err)
+ 		}
+ 		request.CompiledOperators = compiled
+ 	}
+ 
+ 	// "Port" is a special variable and it should not contains any dsl expressions
+ 	if strings.Contains(request.getPort(), "{{") {
+-		return errkit.New(fmt.Sprintf("%s: 'Port' variable cannot contain any dsl expressions", request.TemplateID)).Build()
++		return errkit.New("'Port' variable cannot contain any dsl expressions")
+ 	}
+ 
+ 	if request.Init != "" {
+@@ -218,11 +218,11 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 
+ 		initCompiled, err := compiler.SourceAutoMode(request.Init, false)
+ 		if err != nil {
+-			return errkit.New(fmt.Sprintf("%s: could not compile init code: %s", request.TemplateID, err)).Build()
++			return errkit.Newf("could not compile init code: %s", err)
+ 		}
+ 		result, err := request.options.JsCompiler.ExecuteWithOptions(initCompiled, args, opts)
+ 		if err != nil {
+-			return errkit.New(fmt.Sprintf("%s: could not execute pre-condition: %s", request.TemplateID, err)).Build()
++			return errkit.Newf("could not execute pre-condition: %s", err)
+ 		}
+ 		if types.ToString(result["error"]) != "" {
+ 			gologger.Warning().Msgf("[%s] Init failed with error %v\n", request.TemplateID, result["error"])
+@@ -239,7 +239,7 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 	if request.PreCondition != "" {
+ 		preConditionCompiled, err := compiler.SourceAutoMode(request.PreCondition, false)
+ 		if err != nil {
+-			return errkit.New(fmt.Sprintf("%s: could not compile pre-condition: %s", request.TemplateID, err)).Build()
++			return errkit.Newf("could not compile pre-condition: %s", err)
+ 		}
+ 		request.preConditionCompiled = preConditionCompiled
+ 	}
+@@ -248,7 +248,7 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 	if request.Code != "" {
+ 		scriptCompiled, err := compiler.SourceAutoMode(request.Code, false)
+ 		if err != nil {
+-			return errkit.New(fmt.Sprintf("%s: could not compile javascript code: %s", request.TemplateID, err)).Build()
++			return errkit.Newf("could not compile javascript code: %s", err)
+ 		}
+ 		request.scriptCompiled = scriptCompiled
+ 	}
+diff --git a/pkg/protocols/network/network.go b/pkg/protocols/network/network.go
+index f1adc90c..4a5088f6 100644
+--- a/pkg/protocols/network/network.go
++++ b/pkg/protocols/network/network.go
+@@ -1,7 +1,6 @@
+ package network
+ 
+ import (
+-	"fmt"
+ 	"strconv"
+ 	"strings"
+ 
+@@ -197,10 +196,10 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 			}
+ 			portInt, err := strconv.Atoi(port)
+ 			if err != nil {
+-				return errkit.Append(errkit.New(fmt.Sprintf("could not parse port %v from '%s'", port, request.Port)), err)
++				return errkit.Wrapf(err, "could not parse port %v from '%s'", port, request.Port)
+ 			}
+ 			if portInt < 1 || portInt > 65535 {
+-				return errkit.New(fmt.Sprintf("%s: port %v is not in valid range", request.TemplateID, portInt)).Build()
++				return errkit.Newf("port %v is not in valid range", portInt)
+ 			}
+ 			request.ports = append(request.ports, port)
+ 		}
+diff --git a/pkg/protocols/network/request.go b/pkg/protocols/network/request.go
+index 63e1bfb5..c8a3dd9b 100644
+--- a/pkg/protocols/network/request.go
++++ b/pkg/protocols/network/request.go
+@@ -362,7 +362,7 @@ func (request *Request) executeRequestWithPayloads(variables map[string]interfac
+ 		if input.Read > 0 {
+ 			buffer, err := ConnReadNWithTimeout(conn, int64(input.Read), request.options.Options.GetTimeouts().TcpReadTimeout)
+ 			if err != nil {
+-				return errkit.Append(errkit.New("could not read response from connection"), err)
++				return errkit.Wrap(err, "could not read response from connection")
+ 			}
+ 
+ 			responseBuilder.Write(buffer)
+diff --git a/pkg/protocols/ssl/ssl.go b/pkg/protocols/ssl/ssl.go
+index aa4a0261..c18eebc6 100644
+--- a/pkg/protocols/ssl/ssl.go
++++ b/pkg/protocols/ssl/ssl.go
+@@ -121,7 +121,7 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 		CustomDialer: options.CustomFastdialer,
+ 	})
+ 	if err != nil {
+-		return errkit.Append(errkit.New("ssl: could not get network client"), err)
++		return errkit.Wrap(err, "could not get network client")
+ 	}
+ 	request.dialer = client
+ 	switch {
+@@ -130,7 +130,7 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 		request.ScanMode = "auto"
+ 
+ 	case !stringsutil.EqualFoldAny(request.ScanMode, "auto", "openssl", "ztls", "ctls"):
+-		return errkit.New(fmt.Sprintf("%s: template %v does not contain valid scan-mode", request.TemplateID, request.TemplateID)).Build()
++		return errkit.Newf("template %v does not contain valid scan-mode", request.TemplateID)
+ 
+ 	case request.ScanMode == "openssl" && !openssl.IsAvailable():
+ 		// if openssl is not installed instead of failing "auto" scanmode is used
+@@ -169,7 +169,7 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 
+ 	tlsxService, err := tlsx.New(tlsxOptions)
+ 	if err != nil {
+-		return errkit.New(fmt.Sprintf("%s: could not create tlsx service", request.TemplateID)).Build()
++		return errkit.New("could not create tlsx service")
+ 	}
+ 	request.tlsx = tlsxService
+ 
+@@ -178,7 +178,7 @@ func (request *Request) Compile(options *protocols.ExecutorOptions) error {
+ 		compiled.ExcludeMatchers = options.ExcludeMatchers
+ 		compiled.TemplateID = options.TemplateID
+ 		if err := compiled.Compile(); err != nil {
+-			return errkit.New(fmt.Sprintf("%s: could not compile operators got %v", request.TemplateID, err)).Build()
++			return errkit.Newf("could not compile operators got %v", err)
+ 		}
+ 		request.CompiledOperators = compiled
+ 	}
+@@ -236,7 +236,7 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
+ 	addressToDial := string(finalAddress)
+ 	host, port, err := net.SplitHostPort(addressToDial)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("could not split input host port"), err)
++		return errkit.Wrap(err, "could not split input host port")
+ 	}
+ 
+ 	var hostIp string
+@@ -250,7 +250,7 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
+ 	if err != nil {
+ 		requestOptions.Output.Request(requestOptions.TemplateID, input.MetaInput.Input, request.Type().String(), err)
+ 		requestOptions.Progress.IncrementFailedRequestsBy(1)
+-		return errkit.Append(errkit.New(fmt.Sprintf("%s: could not connect to server", request.TemplateID)), err)
++		return errkit.Wrap(err, "could not connect to server")
+ 	}
+ 
+ 	requestOptions.Output.Request(requestOptions.TemplateID, hostPort, request.Type().String(), err)
+@@ -287,7 +287,7 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
+ 
+ 	// if response is not struct compatible, error out
+ 	if !structs.IsStruct(response) {
+-		return errkit.New(fmt.Sprintf("ssl: response cannot be parsed into a struct: %v", response)).Build()
++		return errkit.Newf("response cannot be parsed into a struct: %v", response)
+ 	}
+ 
+ 	// Convert response to key value pairs and first cert chain item as well
+@@ -307,7 +307,7 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
+ 
+ 	// if certificate response is not struct compatible, error out
+ 	if !structs.IsStruct(response.CertificateResponse) {
+-		return errkit.New(fmt.Sprintf("ssl: certificate response cannot be parsed into a struct: %v", response.CertificateResponse)).Build()
++		return errkit.Newf("certificate response cannot be parsed into a struct: %v", response.CertificateResponse)
+ 	}
+ 
+ 	responseParsed = structs.New(response.CertificateResponse)
+diff --git a/pkg/reporting/exporters/markdown/util/markdown_utils.go b/pkg/reporting/exporters/markdown/util/markdown_utils.go
+index 2ec5d8f9..bbe1b82c 100644
+--- a/pkg/reporting/exporters/markdown/util/markdown_utils.go
++++ b/pkg/reporting/exporters/markdown/util/markdown_utils.go
+@@ -20,7 +20,7 @@ func CreateTable(headers []string, rows [][]string) (string, error) {
+ 	builder := &bytes.Buffer{}
+ 	headerSize := len(headers)
+ 	if headers == nil || headerSize == 0 {
+-		return "", errkit.New("No headers provided").Build()
++		return "", errkit.New("No headers provided")
+ 	}
+ 
+ 	builder.WriteString(CreateTableHeader(headers...))
+@@ -34,7 +34,7 @@ func CreateTable(headers []string, rows [][]string) (string, error) {
+ 			copy(extendedRows, row)
+ 			builder.WriteString(CreateTableRow(extendedRows...))
+ 		} else {
+-			return "", errkit.New("Too many columns for the given headers").Build()
++			return "", errkit.New("Too many columns for the given headers")
+ 		}
+ 	}
+ 
+diff --git a/pkg/reporting/reporting.go b/pkg/reporting/reporting.go
+index 30de6ad8..a048e947 100644
+--- a/pkg/reporting/reporting.go
++++ b/pkg/reporting/reporting.go
+@@ -84,7 +84,7 @@ func New(options *Options, db string, doNotDedupe bool) (Client, error) {
+ 		options.GitHub.OmitRaw = options.OmitRaw
+ 		tracker, err := github.New(options.GitHub)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrReportingClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create reporting client: %v", ErrReportingClientCreation)
+ 		}
+ 		client.trackers = append(client.trackers, tracker)
+ 	}
+@@ -93,7 +93,7 @@ func New(options *Options, db string, doNotDedupe bool) (Client, error) {
+ 		options.GitLab.OmitRaw = options.OmitRaw
+ 		tracker, err := gitlab.New(options.GitLab)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrReportingClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create reporting client: %v", ErrReportingClientCreation)
+ 		}
+ 		client.trackers = append(client.trackers, tracker)
+ 	}
+@@ -102,7 +102,7 @@ func New(options *Options, db string, doNotDedupe bool) (Client, error) {
+ 		options.Gitea.OmitRaw = options.OmitRaw
+ 		tracker, err := gitea.New(options.Gitea)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrReportingClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create reporting client: %v", ErrReportingClientCreation)
+ 		}
+ 		client.trackers = append(client.trackers, tracker)
+ 	}
+@@ -111,7 +111,7 @@ func New(options *Options, db string, doNotDedupe bool) (Client, error) {
+ 		options.Jira.OmitRaw = options.OmitRaw
+ 		tracker, err := jira.New(options.Jira)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrReportingClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create reporting client: %v", ErrReportingClientCreation)
+ 		}
+ 		client.trackers = append(client.trackers, tracker)
+ 	}
+@@ -120,35 +120,35 @@ func New(options *Options, db string, doNotDedupe bool) (Client, error) {
+ 		options.Linear.OmitRaw = options.OmitRaw
+ 		tracker, err := linear.New(options.Linear)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrReportingClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create reporting client: %v", ErrReportingClientCreation)
+ 		}
+ 		client.trackers = append(client.trackers, tracker)
+ 	}
+ 	if options.MarkdownExporter != nil {
+ 		exporter, err := markdown.New(options.MarkdownExporter)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrExportClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create export client: %v", ErrExportClientCreation)
+ 		}
+ 		client.exporters = append(client.exporters, exporter)
+ 	}
+ 	if options.SarifExporter != nil {
+ 		exporter, err := sarif.New(options.SarifExporter)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrExportClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create export client: %v", ErrExportClientCreation)
+ 		}
+ 		client.exporters = append(client.exporters, exporter)
+ 	}
+ 	if options.JSONExporter != nil {
+ 		exporter, err := json_exporter.New(options.JSONExporter)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrExportClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create export client: %v", ErrExportClientCreation)
+ 		}
+ 		client.exporters = append(client.exporters, exporter)
+ 	}
+ 	if options.JSONLExporter != nil {
+ 		exporter, err := jsonl.New(options.JSONLExporter)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrExportClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create export client: %v", ErrExportClientCreation)
+ 		}
+ 		client.exporters = append(client.exporters, exporter)
+ 	}
+@@ -157,7 +157,7 @@ func New(options *Options, db string, doNotDedupe bool) (Client, error) {
+ 		options.ElasticsearchExporter.ExecutionId = options.ExecutionId
+ 		exporter, err := es.New(options.ElasticsearchExporter)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrExportClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create export client: %v", ErrExportClientCreation)
+ 		}
+ 		client.exporters = append(client.exporters, exporter)
+ 	}
+@@ -166,14 +166,14 @@ func New(options *Options, db string, doNotDedupe bool) (Client, error) {
+ 		options.SplunkExporter.ExecutionId = options.ExecutionId
+ 		exporter, err := splunk.New(options.SplunkExporter)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrExportClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create export client: %v", ErrExportClientCreation)
+ 		}
+ 		client.exporters = append(client.exporters, exporter)
+ 	}
+ 	if options.MongoDBExporter != nil {
+ 		exporter, err := mongo.New(options.MongoDBExporter)
+ 		if err != nil {
+-			return nil, errkit.Append(ErrExportClientCreation, err)
++			return nil, errkit.Wrapf(err, "could not create export client: %v", ErrExportClientCreation)
+ 		}
+ 		client.exporters = append(client.exporters, exporter)
+ 	}
+@@ -227,7 +227,7 @@ func CreateConfigIfNotExists() error {
+ 	}
+ 	reportingFile, err := os.Create(reportingConfig)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("could not create config file"), err)
++		return errkit.Wrap(err, "could not create config file")
+ 	}
+ 	defer func() {
+ 		_ = reportingFile.Close()
+diff --git a/pkg/templates/compile.go b/pkg/templates/compile.go
+index 6554e8cd..7093fcbb 100644
+--- a/pkg/templates/compile.go
++++ b/pkg/templates/compile.go
+@@ -480,7 +480,7 @@ func parseTemplate(data []byte, srcOptions *protocols.ExecutorOptions) (*Templat
+ 		}
+ 	}
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New(fmt.Sprintf("failed to parse %s", template.Path)), err)
++		return nil, errkit.Wrapf(err, "failed to parse %s", template.Path)
+ 	}
+ 
+ 	if utils.IsBlank(template.Info.Name) {
+@@ -540,7 +540,7 @@ func parseTemplate(data []byte, srcOptions *protocols.ExecutorOptions) (*Templat
+ 	// load `flow` and `source` in code protocol from file
+ 	// if file is referenced instead of actual source code
+ 	if err := template.ImportFileRefs(template.Options); err != nil {
+-		return nil, errkit.Append(errkit.New(fmt.Sprintf("failed to load file refs for %s", template.ID)), err)
++		return nil, errkit.Wrapf(err, "failed to load file refs for %s", template.ID)
+ 	}
+ 
+ 	if err := template.compileProtocolRequests(template.Options); err != nil {
+diff --git a/pkg/templates/parser.go b/pkg/templates/parser.go
+index bf24308e..02d40cc5 100644
+--- a/pkg/templates/parser.go
++++ b/pkg/templates/parser.go
+@@ -12,6 +12,7 @@ import (
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/utils/json"
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/utils/stats"
+ 	yamlutil "github.com/projectdiscovery/nuclei/v3/pkg/utils/yaml"
++	"github.com/projectdiscovery/utils/errkit"
+ 	fileutil "github.com/projectdiscovery/utils/file"
+ 
+ 	"gopkg.in/yaml.v2"
+@@ -82,7 +83,7 @@ func (p *Parser) LoadTemplate(templatePath string, t any, extraTags []string, ca
+ 	t, templateParseError := p.ParseTemplate(templatePath, catalog)
+ 	if templateParseError != nil {
+ 		checkOpenFileError(templateParseError)
+-		return false, ErrCouldNotLoadTemplate(templatePath, templateParseError.Error())
++		return false, errkit.Newf("Could not load template %s: %s", templatePath, templateParseError)
+ 	}
+ 	template, ok := t.(*Template)
+ 	if !ok {
+@@ -96,13 +97,13 @@ func (p *Parser) LoadTemplate(templatePath string, t any, extraTags []string, ca
+ 	validationError := validateTemplateMandatoryFields(template)
+ 	if validationError != nil {
+ 		stats.Increment(SyntaxErrorStats)
+-		return false, ErrCouldNotLoadTemplate(templatePath, validationError.Error())
++		return false, errkit.Newf("Could not load template %s: %s", templatePath, validationError)
+ 	}
+ 
+ 	ret, err := isTemplateInfoMetadataMatch(tagFilter, template, extraTags)
+ 	if err != nil {
+ 		checkOpenFileError(err)
+-		return ret, ErrCouldNotLoadTemplate(templatePath, err.Error())
++		return ret, errkit.Newf("Could not load template %s: %s", templatePath, err)
+ 	}
+ 	// if template loaded then check the template for optional fields to add warnings
+ 	if ret {
+@@ -110,7 +111,7 @@ func (p *Parser) LoadTemplate(templatePath string, t any, extraTags []string, ca
+ 		if validationWarning != nil {
+ 			stats.Increment(SyntaxWarningStats)
+ 			checkOpenFileError(validationWarning)
+-			return ret, ErrCouldNotLoadTemplate(templatePath, validationWarning.Error())
++			return ret, errkit.Newf("Could not load template %s: %s", templatePath, validationWarning)
+ 		}
+ 	}
+ 	return ret, nil
+diff --git a/pkg/templates/parser_error.go b/pkg/templates/parser_error.go
+index eaf174cb..2a986941 100644
+--- a/pkg/templates/parser_error.go
++++ b/pkg/templates/parser_error.go
+@@ -1,28 +1,13 @@
+ package templates
+ 
+ import (
+-	"fmt"
+-
+ 	"github.com/projectdiscovery/utils/errkit"
+ )
+ 
+-// Helper functions for template errors with formatting
+-func ErrMandatoryFieldMissingFmt(field string) error {
+-	return errkit.New(fmt.Sprintf("mandatory '%s' field is missing", field)).Build()
+-}
+-
+-func ErrInvalidField(field, format string) error {
+-	return errkit.New(fmt.Sprintf("invalid field format for '%s' (allowed format is %s)", field, format)).Build()
+-}
+-
+-func ErrWarningFieldMissing(field string) error {
+-	return errkit.New(fmt.Sprintf("field '%s' is missing", field)).Build()
+-}
+-
+-func ErrCouldNotLoadTemplate(path, reason string) error {
+-	return errkit.New(fmt.Sprintf("Could not load template %s: %s", path, reason)).Build()
+-}
+-
+-func ErrLoadedWithWarnings(path, warning string) error {
+-	return errkit.New(fmt.Sprintf("Loaded template %s: with syntax warning : %s", path, warning)).Build()
+-}
++var (
++	ErrMandatoryFieldMissingFmt = errkit.New("mandatory field is missing")
++	ErrInvalidField             = errkit.New("invalid field format")
++	ErrWarningFieldMissing      = errkit.New("field is missing")
++	ErrCouldNotLoadTemplate     = errkit.New("could not load template")
++	ErrLoadedWithWarnings       = errkit.New("loaded template with syntax warning")
++)
+diff --git a/pkg/templates/parser_validate.go b/pkg/templates/parser_validate.go
+index 3911bbb2..1a6609da 100644
+--- a/pkg/templates/parser_validate.go
++++ b/pkg/templates/parser_validate.go
+@@ -5,6 +5,7 @@ import (
+ 
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/templates/types"
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/utils"
++	"github.com/projectdiscovery/utils/errkit"
+ )
+ 
+ // validateTemplateMandatoryFields validates the mandatory fields of a template
+@@ -15,17 +16,17 @@ func validateTemplateMandatoryFields(template *Template) error {
+ 	var validateErrors []error
+ 
+ 	if utils.IsBlank(info.Name) {
+-		validateErrors = append(validateErrors, ErrMandatoryFieldMissingFmt("name"))
++		validateErrors = append(validateErrors, errkit.Newf("mandatory '%s' field is missing", "name"))
+ 	}
+ 
+ 	if info.Authors.IsEmpty() {
+-		validateErrors = append(validateErrors, ErrMandatoryFieldMissingFmt("author"))
++		validateErrors = append(validateErrors, errkit.Newf("mandatory '%s' field is missing", "author"))
+ 	}
+ 
+ 	if template.ID == "" {
+-		validateErrors = append(validateErrors, ErrMandatoryFieldMissingFmt("id"))
++		validateErrors = append(validateErrors, errkit.Newf("mandatory '%s' field is missing", "id"))
+ 	} else if !ReTemplateID.MatchString(template.ID) {
+-		validateErrors = append(validateErrors, ErrInvalidField("id", ReTemplateID.String()))
++		validateErrors = append(validateErrors, errkit.Newf("invalid field format for '%s' (allowed format is %s)", "id", ReTemplateID.String()))
+ 	}
+ 
+ 	if len(validateErrors) > 0 {
+@@ -53,7 +54,7 @@ func validateTemplateOptionalFields(template *Template) error {
+ 	var warnings []error
+ 
+ 	if template.Type() != types.WorkflowProtocol && utils.IsBlank(info.SeverityHolder.Severity.String()) {
+-		warnings = append(warnings, ErrWarningFieldMissing("severity"))
++		warnings = append(warnings, errkit.Newf("field '%s' is missing", "severity"))
+ 	}
+ 
+ 	if len(warnings) > 0 {
+diff --git a/pkg/templates/signer/default.go b/pkg/templates/signer/default.go
+index 174bda18..a56facba 100644
+--- a/pkg/templates/signer/default.go
++++ b/pkg/templates/signer/default.go
+@@ -34,7 +34,7 @@ func init() {
+ // AddSignerToDefault adds a signer to the default list of signers
+ func AddSignerToDefault(s *TemplateSigner) error {
+ 	if s == nil {
+-		return errkit.New("signer is nil").Build()
++		return errkit.New("signer is nil")
+ 	}
+ 	DefaultTemplateVerifiers = append(DefaultTemplateVerifiers, s)
+ 	return nil
+diff --git a/pkg/templates/signer/tmpl_signer.go b/pkg/templates/signer/tmpl_signer.go
+index bb3d26c4..590cf94b 100644
+--- a/pkg/templates/signer/tmpl_signer.go
++++ b/pkg/templates/signer/tmpl_signer.go
+@@ -82,13 +82,13 @@ func (t *TemplateSigner) Sign(data []byte, tmpl SignableTemplate) (string, error
+ 			arr := strings.SplitN(string(existingSignature), ":", 3)
+ 			if len(arr) == 2 {
+ 				// signature has no fragment
+-				return "", errkit.New("signer: re-signing code templates are not allowed for security reasons.").Build()
++				return "", errkit.New("re-signing code templates are not allowed for security reasons.")
+ 			}
+ 			if len(arr) == 3 {
+ 				// signature has fragment verify if it is equal to current fragment
+ 				fragment := t.GetUserFragment()
+ 				if fragment != arr[2] {
+-					return "", errkit.New("signer: re-signing code templates are not allowed for security reasons.").Build()
++					return "", errkit.New("re-signing code templates are not allowed for security reasons.")
+ 				}
+ 			}
+ 		}
+diff --git a/pkg/templates/template_sign.go b/pkg/templates/template_sign.go
+index e6647a33..9e46769f 100644
+--- a/pkg/templates/template_sign.go
++++ b/pkg/templates/template_sign.go
+@@ -28,7 +28,7 @@ var (
+ 		_ = protocolstate.Init(defaultOpts)
+ 		_ = protocolinit.Init(defaultOpts)
+ 	})
+-	ErrNotATemplate = errkit.New("signer: given filePath is not a template").Build()
++	ErrNotATemplate = errkit.New("given filePath is not a template", "tag", "signer")
+ )
+ 
+ // UseOptionsForSigner sets the options to use for signing templates
+@@ -68,7 +68,7 @@ func SignTemplate(templateSigner *signer.TemplateSigner, templatePath string) er
+ 
+ 	template, bin, err := getTemplate(templatePath)
+ 	if err != nil {
+-		return errkit.Append(errkit.New("failed to get template from disk"), err)
++		return errkit.Wrap(err, "failed to get template from disk")
+ 	}
+ 	if len(template.Workflows) > 0 {
+ 		// signing workflows is not supported at least yet
+@@ -100,7 +100,7 @@ func getTemplate(templatePath string) (*Template, []byte, error) {
+ 	}
+ 	template, err := ParseTemplateFromReader(bytes.NewReader(bin), nil, executerOpts)
+ 	if err != nil {
+-		return nil, bin, errkit.Append(errkit.New("failed to parse template"), err)
++		return nil, bin, errkit.Wrap(err, "failed to parse template")
+ 	}
+ 	return template, bin, nil
+ }
+diff --git a/pkg/templates/templates.go b/pkg/templates/templates.go
+index 41823475..74818557 100644
+--- a/pkg/templates/templates.go
++++ b/pkg/templates/templates.go
+@@ -2,7 +2,6 @@
+ package templates
+ 
+ import (
+-	"fmt"
+ 	"io"
+ 	"path/filepath"
+ 	"strconv"
+@@ -326,14 +325,14 @@ func (template *Template) UnmarshalYAML(unmarshal func(interface{}) error) error
+ 	*template = Template(*alias)
+ 
+ 	if !ReTemplateID.MatchString(template.ID) {
+-		return errkit.New(fmt.Sprintf("invalid template: template id must match expression %v", ReTemplateID)).Build()
++		return errkit.New("template id must match expression %v", ReTemplateID, "tag", "invalid_template")
+ 	}
+ 	info := template.Info
+ 	if utils.IsBlank(info.Name) {
+-		return errkit.New("invalid template: no template name field provided").Build()
++		return errkit.New("no template name field provided", "tag", "invalid_template")
+ 	}
+ 	if info.Authors.IsEmpty() {
+-		return errkit.New("invalid template: no template author field provided").Build()
++		return errkit.New("no template author field provided", "tag", "invalid_template")
+ 	}
+ 
+ 	if len(template.RequestsHTTP) > 0 || len(template.RequestsNetwork) > 0 {
+@@ -341,10 +340,10 @@ func (template *Template) UnmarshalYAML(unmarshal func(interface{}) error) error
+ 	}
+ 
+ 	if len(alias.RequestsHTTP) > 0 && len(alias.RequestsWithHTTP) > 0 {
+-		return errkit.New("invalid template: use http or requests, both are not supported").Build()
++		return errkit.New("use http or requests, both are not supported", "tag", "invalid_template")
+ 	}
+ 	if len(alias.RequestsNetwork) > 0 && len(alias.RequestsWithTCP) > 0 {
+-		return errkit.New("invalid template: use tcp or network, both are not supported").Build()
++		return errkit.New("use tcp or network, both are not supported", "tag", "invalid_template")
+ 	}
+ 	if len(alias.RequestsWithHTTP) > 0 {
+ 		template.RequestsHTTP = alias.RequestsWithHTTP
+@@ -362,7 +361,7 @@ func (template *Template) UnmarshalYAML(unmarshal func(interface{}) error) error
+ 		var tempmap yaml.MapSlice
+ 		err = unmarshal(&tempmap)
+ 		if err != nil {
+-			return errkit.Append(errkit.New(fmt.Sprintf("failed to unmarshal multi protocol template %s", template.ID)), err)
++			return errkit.Wrapf(err, "failed to unmarshal multi protocol template %s", template.ID)
+ 		}
+ 		arr := []string{}
+ 		for _, v := range tempmap {
+@@ -546,7 +545,7 @@ func (template *Template) UnmarshalJSON(data []byte) error {
+ 		var tempMap map[string]interface{}
+ 		err = json.Unmarshal(data, &tempMap)
+ 		if err != nil {
+-			return errkit.Append(errkit.New(fmt.Sprintf("failed to unmarshal multi protocol template %s", template.ID)), err)
++			return errkit.Wrapf(err, "failed to unmarshal multi protocol template %s", template.ID)
+ 		}
+ 		arr := []string{}
+ 		for k := range tempMap {
+diff --git a/pkg/tmplexec/flow/flow_executor.go b/pkg/tmplexec/flow/flow_executor.go
+index 860e9629..cb9c70b5 100644
+--- a/pkg/tmplexec/flow/flow_executor.go
++++ b/pkg/tmplexec/flow/flow_executor.go
+@@ -22,10 +22,10 @@ import (
+ 	"go.uber.org/multierr"
+ )
+ 
+-// ErrInvalidRequestID returns an error for invalid request IDs
+-func ErrInvalidRequestID(templateID, requestID string) error {
+-	return errkit.New(fmt.Sprintf("[%s] invalid request id '%s' provided", templateID, requestID)).Build()
+-}
++var (
++	// ErrInvalidRequestID is a request id error
++	ErrInvalidRequestID = errkit.New("invalid request id provided")
++)
+ 
+ // ProtoOptions are options that can be passed to flow protocol callback
+ // ex: dns(protoOptions) <- protoOptions are optional and can be anything
+@@ -256,12 +256,12 @@ func (f *FlowExecutor) ExecuteWithResults(ctx *scan.ScanContext) error {
+ 	f.reconcileProgress()
+ 	if err != nil {
+ 		ctx.LogError(err)
+-		return errkit.Append(errkit.New(fmt.Sprintf("failed to execute flow\n%v\n", f.options.Flow)), err)
++		return errkit.Wrapf(err, "failed to execute flow\n%v\n", f.options.Flow)
+ 	}
+ 	runtimeErr := f.GetRuntimeErrors()
+ 	if runtimeErr != nil {
+ 		ctx.LogError(runtimeErr)
+-		return errkit.Append(errkit.New("got following errors while executing flow"), runtimeErr)
++		return errkit.Wrap(runtimeErr, "got following errors while executing flow")
+ 	}
+ 
+ 	return nil
+@@ -283,7 +283,7 @@ func (f *FlowExecutor) reconcileProgress() {
+ func (f *FlowExecutor) GetRuntimeErrors() error {
+ 	errs := []error{}
+ 	for proto, err := range f.allErrs.GetAll() {
+-		errs = append(errs, errkit.Append(errkit.New(fmt.Sprintf("failed to execute %v protocol", proto)), err))
++		errs = append(errs, errkit.Wrapf(err, "failed to execute %v protocol", proto))
+ 	}
+ 	return multierr.Combine(errs...)
+ }
+diff --git a/pkg/tmplexec/flow/flow_internal.go b/pkg/tmplexec/flow/flow_internal.go
+index 249f324c..c4666251 100644
+--- a/pkg/tmplexec/flow/flow_internal.go
++++ b/pkg/tmplexec/flow/flow_internal.go
+@@ -7,6 +7,7 @@ import (
+ 	"github.com/Mzack9999/goja"
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/output"
+ 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols"
++	"github.com/projectdiscovery/utils/errkit"
+ 	mapsutil "github.com/projectdiscovery/utils/maps"
+ )
+ 
+@@ -61,7 +62,7 @@ func (f *FlowExecutor) requestExecutor(runtime *goja.Runtime, reqMap mapsutil.Ma
+ 		if !ok {
+ 			f.ctx.LogError(fmt.Errorf("[%v] invalid request id '%s' provided", f.options.TemplateID, id))
+ 			// compile error
+-			if err := f.allErrs.Set(opts.protoName+":"+id, ErrInvalidRequestID(f.options.TemplateID, id)); err != nil {
++			if err := f.allErrs.Set(opts.protoName+":"+id, errkit.Newf("[%s] invalid request id '%s' provided", f.options.TemplateID, id)); err != nil {
+ 				f.ctx.LogError(fmt.Errorf("failed to store flow runtime errors got %v", err))
+ 			}
+ 			return matcherStatus.Load()
+diff --git a/pkg/types/types.go b/pkg/types/types.go
+index 4d009db5..48c186c8 100644
+--- a/pkg/types/types.go
++++ b/pkg/types/types.go
+@@ -1,7 +1,6 @@
+ package types
+ 
+ import (
+-	"fmt"
+ 	"io"
+ 	"os"
+ 	"path/filepath"
+@@ -831,7 +830,7 @@ func (options *Options) defaultLoadHelperFile(helperFile, templatePath string, c
+ 	}
+ 	f, err := os.Open(helperFile)
+ 	if err != nil {
+-		return nil, errkit.Append(errkit.New(fmt.Sprintf("could not open file %v", helperFile)), err)
++		return nil, errkit.Wrapf(err, "could not open file %v", helperFile)
+ 	}
+ 	return f, nil
+ }
+@@ -856,12 +855,12 @@ func (o *Options) GetValidAbsPath(helperFilePath, templatePath string) (string,
+ 	// CleanPath resolves using CWD and cleans the path
+ 	helperFilePath, err = fileutil.CleanPath(helperFilePath)
+ 	if err != nil {
+-		return "", errkit.Append(errkit.New(fmt.Sprintf("could not clean helper file path %v", helperFilePath)), err)
++		return "", errkit.Wrapf(err, "could not clean helper file path %v", helperFilePath)
+ 	}
+ 
+ 	templatePath, err = fileutil.CleanPath(templatePath)
+ 	if err != nil {
+-		return "", errkit.Append(errkit.New(fmt.Sprintf("could not clean template path %v", templatePath)), err)
++		return "", errkit.Wrapf(err, "could not clean template path %v", templatePath)
+ 	}
+ 
+ 	// As per rule 2, if template and helper file exist in same directory or helper file existed in any child dir of template dir
+@@ -872,7 +871,7 @@ func (o *Options) GetValidAbsPath(helperFilePath, templatePath string) (string,
+ 	}
+ 
+ 	// all other cases are denied
+-	return "", errkit.New(fmt.Sprintf("access to helper file %v denied", helperFilePath)).Build()
++	return "", errkit.Newf("access to helper file %v denied", helperFilePath)
+ }
+ 
+ // SetExecutionID sets the execution ID for the options

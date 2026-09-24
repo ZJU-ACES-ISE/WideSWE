@@ -1,0 +1,168 @@
+diff --git a/test/integration/README.md b/test/integration/README.md
+index c6c28b6..3bfeb42 100644
+--- a/test/integration/README.md
++++ b/test/integration/README.md
+@@ -25,6 +25,15 @@ $ go run ../../cmd/openapi-gen/openapi-gen.go \
+   --go-header-file ../../boilerplate/boilerplate.go.txt \
+   --report-filename ./testdata/golden.v2.report \
+   ./testdata/custom ./testdata/enumtype ./testdata/listtype ./testdata/maptype ./testdata/structtype ./testdata/dummytype ./testdata/uniontype ./testdata/defaults ./testdata/valuevalidation
++
++$ go run ../../cmd/openapi-gen/openapi-gen.go \
++  --output-dir pkg/generated/namedmodels \
++  --output-pkg generated \
++  --output-file openapi_generated.go \
++  --output-model-name-file zz_generated_model_name.go \
++  --go-header-file ../../boilerplate/boilerplate.go.txt \
++  --report-filename ./testdata/namedmodels/golden.v3.report \
++  ./testdata/namedmodels
+ ```
+ The generated file `pkg/generated/openapi_generated.go` should have been created.
+ 
+diff --git a/test/integration/integration_suite_test.go b/test/integration/integration_suite_test.go
+index 50e195d..beb3e20 100644
+--- a/test/integration/integration_suite_test.go
++++ b/test/integration/integration_suite_test.go
+@@ -29,18 +29,19 @@ import (
+ )
+ 
+ const (
+-	headerFilePath             = "../../boilerplate/boilerplate.go.txt"
+-	testdataDir                = "./testdata"
+-	testPkgRoot                = "k8s.io/kube-openapi/test/integration/testdata"
+-	outputPkg                  = testPkgRoot + "/pkg/generated"
+-	generatedCodeFileName      = "openapi_generated.go"
+-	goldenCodeFilePath         = "pkg/generated/" + generatedCodeFileName
+-	generatedSwaggerFileName   = "generated.v2.json"
+-	goldenSwaggerFileName      = "golden.v2.json"
+-	generatedReportFileName    = "generated.v2.report"
+-	goldenReportFileName       = "golden.v2.report"
+-	generatedOpenAPIv3FileName = "generated.v3.json"
+-	goldenOpenAPIv3Filename    = "golden.v3.json"
++	headerFilePath                  = "../../boilerplate/boilerplate.go.txt"
++	testdataDir                     = "./testdata"
++	testPkgRoot                     = "k8s.io/kube-openapi/test/integration/testdata"
++	outputPkg                       = testPkgRoot + "/pkg/generated"
++	generatedCodeFileName           = "openapi_generated.go"
++	generatedSchemaNameCodeFileName = "zz_generated_model_name.go"
++	goldenCodeFilePath              = "pkg/generated/" + generatedCodeFileName
++	generatedSwaggerFileName        = "generated.v2.json"
++	goldenSwaggerFileName           = "golden.v2.json"
++	generatedReportFileName         = "generated.v2.report"
++	goldenReportFileName            = "golden.v2.report"
++	generatedOpenAPIv3FileName      = "generated.v3.json"
++	goldenOpenAPIv3Filename         = "golden.v3.json"
+ 
+ 	timeoutSeconds = 60.0
+ )
+@@ -104,7 +105,7 @@ var _ = BeforeSuite(func() {
+ 	Expect(err).ShouldNot(HaveOccurred())
+ 	Eventually(session, timeoutSeconds).Should(gexec.Exit(0))
+ 
+-	// Run the OpenAPI code generator with --use-openapi-model-names
++	// Run the OpenAPI code generator with --output-model-name-file
+ 	Expect(terr).ShouldNot(HaveOccurred())
+ 
+ 	By("'namedmodels' running openapi-gen")
+@@ -112,7 +113,7 @@ var _ = BeforeSuite(func() {
+ 		"--output-dir", tempDir + "/namedmodels",
+ 		"--output-pkg", outputPkg + "/namedmodels",
+ 		"--output-file", generatedCodeFileName,
+-		"--use-openapi-model-names",
++		"--output-model-name-file", generatedSchemaNameCodeFileName,
+ 		"--go-header-file", headerFilePath,
+ 	}, path.Join(testPkgRoot, "namedmodels"))
+ 	command = exec.Command(openAPIGenPath, args...)
+diff --git a/test/integration/testdata/namedmodels/doc.go b/test/integration/testdata/namedmodels/doc.go
+new file mode 100644
+index 0000000..afc56e5
+--- /dev/null
++++ b/test/integration/testdata/namedmodels/doc.go
+@@ -0,0 +1,3 @@
++// +k8s:openapi-gen=true
++// +k8s:openapi-model-package=io.k8s.kube-openapi.test.integration.testdata.namedmodels
++package namedmodels
+diff --git a/test/integration/testdata/namedmodels/golden.v3.report b/test/integration/testdata/namedmodels/golden.v3.report
+new file mode 100644
+index 0000000..84e5b7a
+--- /dev/null
++++ b/test/integration/testdata/namedmodels/golden.v3.report
+@@ -0,0 +1,3 @@
++API rule violation: names_match,k8s.io/kube-openapi/test/integration/testdata/namedmodels,AtomicStruct,Field
++API rule violation: names_match,k8s.io/kube-openapi/test/integration/testdata/namedmodels,Struct,Field
++API rule violation: names_match,k8s.io/kube-openapi/test/integration/testdata/namedmodels,Struct,OtherField
+diff --git a/test/integration/testdata/namedmodels/struct.go b/test/integration/testdata/namedmodels/struct.go
+index 58313a4..7a136a1 100644
+--- a/test/integration/testdata/namedmodels/struct.go
++++ b/test/integration/testdata/namedmodels/struct.go
+@@ -1,27 +1,12 @@
+-package structtype
++package namedmodels
+ 
+-// +k8s:openapi-gen=true
+ type Struct struct {
+ 	Field      ContainedStruct
+ 	OtherField int
+ }
+ 
+-func (Struct) OpenAPIModelName() string {
+-	return "com.example.Struct"
+-}
+-
+-// +k8s:openapi-gen=true
+ type ContainedStruct struct{}
+ 
+-func (ContainedStruct) OpenAPIModelName() string {
+-	return "com.example.ContainedStruct"
+-}
+-
+-// +k8s:openapi-gen=true
+ type AtomicStruct struct {
+ 	Field int
+ }
+-
+-func (AtomicStruct) OpenAPIModelName() string {
+-	return "com.example.AtomicStruct"
+-}
+diff --git a/test/integration/testdata/namedmodels/zz_generated_model_name.go b/test/integration/testdata/namedmodels/zz_generated_model_name.go
+new file mode 100644
+index 0000000..0c2dcbd
+--- /dev/null
++++ b/test/integration/testdata/namedmodels/zz_generated_model_name.go
+@@ -0,0 +1,37 @@
++//go:build !ignore_autogenerated
++// +build !ignore_autogenerated
++
++/*
++Copyright The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++// Code generated by openapi-gen. DO NOT EDIT.
++
++package namedmodels
++
++// OpenAPIModelName returns the OpenAPI model name for this type.
++func (in AtomicStruct) OpenAPIModelName() string {
++	return "io.k8s.kube-openapi.test.integration.testdata.namedmodels.AtomicStruct"
++}
++
++// OpenAPIModelName returns the OpenAPI model name for this type.
++func (in ContainedStruct) OpenAPIModelName() string {
++	return "io.k8s.kube-openapi.test.integration.testdata.namedmodels.ContainedStruct"
++}
++
++// OpenAPIModelName returns the OpenAPI model name for this type.
++func (in Struct) OpenAPIModelName() string {
++	return "io.k8s.kube-openapi.test.integration.testdata.namedmodels.Struct"
++}

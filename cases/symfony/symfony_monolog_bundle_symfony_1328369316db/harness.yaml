@@ -1,0 +1,31 @@
+task_id: symfony_monolog_bundle_symfony_1328369316db
+hidden_test_patches:
+- repo: monolog-bundle
+  patch: hidden/patches/monolog-bundle-hidden-tests.patch
+  test_profile: monolog_bundle-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/DependencyInjection/Compiler/AddProcessorsPassTest.php
+  hidden_file: *id001
+  semantic_changes: omits the non-scoping method-only case because the prompt only changes explicit channel or handler scope
+  source: upstream test changes from symfony/monolog-bundle PR(s) 513
+- repo: symfony
+  patch: hidden/patches/symfony-hidden-tests.patch
+  test_profile: symfony-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - src/Symfony/Component/Serializer/Tests/DependencyInjection/SerializerPassTest.php
+  hidden_file: *id002
+  semantic_changes: omits the non-scoping priority-only case because the prompt only changes explicit named serializer scope
+  source: upstream test changes from symfony/symfony PR(s) 61526
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - monolog_bundle-hidden
+    - symfony-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

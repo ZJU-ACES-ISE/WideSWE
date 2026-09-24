@@ -1,0 +1,218 @@
+diff --git a/core/node/provider.go b/core/node/provider.go
+index a419ed637..36179b425 100644
+--- a/core/node/provider.go
++++ b/core/node/provider.go
+@@ -851,10 +851,14 @@ func SweepingProviderOpt(cfg *config.Config) fx.Option {
+ 					strategy := cfg.Provide.Strategy.WithDefault(config.DefaultProvideStrategy)
+ 					providerLog.Infow("provider keystore sync started", "strategy", strategy)
+ 					if err := syncKeystore(ctx); err != nil {
+-						if ctx.Err() == nil {
+-							providerLog.Errorw("provider keystore sync failed", "err", err, "strategy", strategy)
+-						} else {
++						// ErrClosed means the keystore was closed by the shutdown
++						// hook while this goroutine was still in flight: the
++						// OnStart ctx is not cancelled yet, so we classify the
++						// failure as shutdown explicitly.
++						if ctx.Err() != nil || errors.Is(err, keystore.ErrClosed) {
+ 							providerLog.Debugw("provider keystore sync interrupted by shutdown", "err", err, "strategy", strategy)
++						} else {
++							providerLog.Errorw("provider keystore sync failed", "err", err, "strategy", strategy)
+ 						}
+ 						return
+ 					}
+@@ -875,7 +879,11 @@ func SweepingProviderOpt(cfg *config.Config) fx.Option {
+ 							return
+ 						case <-ticker.C:
+ 							if err := syncKeystore(gcCtx); err != nil {
+-								providerLog.Errorw("provider keystore sync", "err", err)
++								if gcCtx.Err() != nil || errors.Is(err, keystore.ErrClosed) {
++									providerLog.Debugw("provider keystore sync interrupted by shutdown", "err", err)
++								} else {
++									providerLog.Errorw("provider keystore sync failed", "err", err)
++								}
+ 							}
+ 						}
+ 					}
+diff --git a/docs/changelogs/v0.42.md b/docs/changelogs/v0.42.md
+index 17167733c..2c05134f1 100644
+--- a/docs/changelogs/v0.42.md
++++ b/docs/changelogs/v0.42.md
+@@ -10,6 +10,7 @@ This release was brought to you by the [Shipyard](https://ipshipyard.com/) team.
+ 
+ - [Overview](#overview)
+ - [🔦 Highlights](#-highlights)
++  - [🐛 Fixed pin operations hanging under pinned reprovide strategies](#-fixed-pin-operations-hanging-under-pinned-reprovide-strategies)
+ - [📝 Changelog](#-changelog)
+ - [👨‍👩‍👧‍👦 Contributors](#-contributors)
+ 
+@@ -17,6 +18,12 @@ This release was brought to you by the [Shipyard](https://ipshipyard.com/) team.
+ 
+ ### 🔦 Highlights
+ 
++#### 🐛 Fixed pin operations hanging under pinned reprovide strategies
++
++`ipfs pin ls`, `ipfs add`, and other pin-touching operations could block for hours on nodes running with [`Provide.Strategy`](https://github.com/ipfs/kubo/blob/master/docs/config.md#providestrategy) set to `pinned`, `roots`, or `pinned+mfs` (including `+unique` / `+entities` variants). The pin index held a read lock for the entire reprovide cycle, which on large pinsets takes many hours. Any pin operation issued during that window blocked, and further `pin ls` / `ipfs add` calls piled up behind it until the cycle finished.
++
++The pinner now snapshots the index under the read lock and releases it before the reprovider starts, so pin operations are no longer blocked by the reprovide cycle. The default `Provide.Strategy=all` was not affected.
++
+ ### 📝 Changelog
+ 
+ ### 👨‍👩‍👧‍👦 Contributors
+diff --git a/docs/config.md b/docs/config.md
+index f05bf9bfc..ff5edcc9c 100644
+--- a/docs/config.md
++++ b/docs/config.md
+@@ -2157,7 +2157,7 @@ The `+unique` and `+entities` modifiers can be appended to `pinned`, `mfs`, or `
+ 
+ #### Memory during reprovide
+ 
+-Reproviding larger pinsets using the `mfs`, `pinned`, `pinned+mfs` or `roots` strategies requires additional memory, with an estimated ~1 GiB of RAM per 20 million CIDs. This is due to the use of a buffered provider, which loads all CIDs into memory to avoid holding a lock on the entire pinset during the reprovide cycle.
++Reproviding larger pinsets using the `mfs`, `pinned`, `pinned+mfs` or `roots` strategies requires additional memory, with an estimated ~1 GiB of RAM per 20 million CIDs. This is because the pinner snapshots the pin index into memory at the start of each reprovide cycle so that pin/unpin are not blocked while the DHT reprovider works over the snapshot.
+ 
+ With `+unique` or `+entities`, a bloom filter replaces the in-memory CID set, significantly reducing memory usage:
+ 
+diff --git a/test/cli/provider_test.go b/test/cli/provider_test.go
+index 4dc2f38ef..d174447c9 100644
+--- a/test/cli/provider_test.go
++++ b/test/cli/provider_test.go
+@@ -1585,3 +1585,140 @@ func dirExists(path string) bool {
+ 	info, err := os.Stat(path)
+ 	return err == nil && info.IsDir()
+ }
++
++// TestProviderKeystoreSyncShutdownQuiet verifies two shutdown UX
++// guarantees for a daemon running the sweeping provider with a
++// pin-walking strategy (see ipfs/kubo#11292):
++//
++//  1. Shutdown-caused keystore-sync errors never appear at Error
++//     level. The fix classifies keystore.ErrClosed and context
++//     cancellation as shutdown-caused and logs at Debug as
++//     "interrupted by shutdown" instead.
++//  2. `ipfs pin ls --stream` running against the daemon returns a
++//     meaningful error (no panic, no hang) when the daemon is
++//     shutting down mid-stream.
++//
++// Determinism: with Provide.DHT.Interval=10ms the periodic
++// reprovide goroutine runs syncKeystore back-to-back (ticks coalesce
++// under the select), so it is always mid-sync when StopDaemon
++// closes the keystore. The line-scan below fails on the exact
++// Error+err=keystore-closed/context-canceled combination the old
++// code emitted. Empirically this catches the regression on most
++// runs (~3 of 5 on a fast workstation); the first few bug-free
++// runs were verified by temporarily reverting core/node/provider.go.
++func TestProviderKeystoreSyncShutdownQuiet(t *testing.T) {
++	t.Parallel()
++
++	h := harness.NewT(t)
++	node := h.NewNode().Init()
++	node.SetIPFSConfig("Provide.DHT.SweepEnabled", true)
++	node.SetIPFSConfig("Provide.Enabled", true)
++	node.SetIPFSConfig("Provide.Strategy", "pinned+mfs+entities")
++	// Tight Interval: once the startup sync completes, the periodic
++	// goroutine runs syncKeystore back-to-back (ticks coalesce under
++	// the select), so it is always mid-sync when StopDaemon fires.
++	// This makes the shutdown interrupt deterministic. Briefly
++	// during startup the first periodic tick may overlap the startup
++	// sync and emit "reset already in progress" at Error; the log
++	// scan below explicitly ignores that unrelated class of error.
++	node.SetIPFSConfig("Provide.DHT.Interval", "10ms")
++	node.SetIPFSConfig("Bootstrap", []string{})
++
++	// Seed recursive pins so the keystore sync has meaningful work.
++	// Offline bulk add + bulk pin is much faster than per-file
++	// IPFSAddStr calls for this count.
++	const nPins = 500
++	dir := t.TempDir()
++	for i := range nPins {
++		require.NoError(t, os.WriteFile(
++			filepath.Join(dir, fmt.Sprintf("f%04d", i)),
++			fmt.Appendf(nil, "keystore-shutdown-content-%d", i),
++			0o600,
++		))
++	}
++	// --pin=false so the wrapping dir is not auto-pinned; each file
++	// is then pinned individually below to get nPins separate pin
++	// index entries (one big recursive pin would not exercise the
++	// pin-index streamIndex walk the same way).
++	addRes := node.IPFS("add", "-r", "-q", "--pin=false", dir)
++	addedCIDs := strings.Split(strings.TrimSpace(addRes.Stdout.String()), "\n")
++	require.GreaterOrEqual(t, len(addedCIDs), nPins, "expected at least %d CIDs from bulk add", nPins)
++	pinArgs := append([]string{"pin", "add"}, addedCIDs[:nPins]...)
++	node.IPFS(pinArgs...)
++
++	node.StartDaemonWithReq(harness.RunRequest{
++		CmdOpts: []harness.CmdOpt{
++			harness.RunWithEnv(map[string]string{
++				// Debug for the provider subsystem so the shutdown
++				// Debug line is visible for post-hoc inspection.
++				"GOLOG_LOG_LEVEL": "error,provider=debug",
++			}),
++		},
++	}, "")
++
++	// Wait for the startup sync to complete so periodic has sole
++	// access to the keystore when we shut down.
++	require.Eventually(t, func() bool {
++		return strings.Contains(node.Daemon.Stderr.String(), "provider keystore sync completed")
++	}, 30*time.Second, 50*time.Millisecond, "startup keystore sync should complete")
++
++	// Let periodic reprovide fire several times.
++	time.Sleep(1 * time.Second)
++
++	// Kick off `ipfs pin ls --stream` against the live RPC. The
++	// server-side channel is held by the pinner's streamIndex
++	// goroutine; when StopDaemon below tears down the keystore and
++	// datastore, the HTTP stream closes under the CLI, which must
++	// exit cleanly with a meaningful error (no panic, no hang).
++	pinLsDone := make(chan *harness.RunResult, 1)
++	go func() {
++		pinLsDone <- node.RunIPFS("pin", "ls", "--stream")
++	}()
++	// Brief delay so the pin ls RPC has started streaming.
++	time.Sleep(100 * time.Millisecond)
++
++	node.StopDaemon()
++
++	// --- Daemon-side assertions ---
++
++	daemonLog := node.Daemon.Stderr.String()
++
++	// Scan for the specific bug pattern: an Error-level line from
++	// the provider subsystem about "keystore sync" whose err field
++	// is the shutdown-caused "keystore is closed" or "context
++	// canceled". The fix routes those to Debug; only unrelated
++	// errors (e.g. "reset already in progress" from test-induced
++	// overlap) remain at Error and are ignored by this check.
++	for line := range strings.SplitSeq(daemonLog, "\n") {
++		if !strings.Contains(line, "\tERROR\t") {
++			continue
++		}
++		if !strings.Contains(line, "provider keystore sync") {
++			continue
++		}
++		if strings.Contains(line, `"err": "keystore is closed"`) ||
++			strings.Contains(line, `"err": "context canceled"`) {
++			t.Errorf("shutdown-caused keystore sync error should be logged at Debug, got Error:\n%s", line)
++		}
++	}
++
++	// --- Client-side assertions (ipfs pin ls --stream) ---
++
++	var pinLs *harness.RunResult
++	select {
++	case pinLs = <-pinLsDone:
++	case <-time.After(15 * time.Second):
++		t.Fatal("ipfs pin ls --stream did not return within 15s of daemon shutdown")
++	}
++
++	pinLsOut := pinLs.Stdout.String() + pinLs.Stderr.String()
++	require.NotContains(t, pinLsOut, "panic:",
++		"ipfs pin ls must not observe a daemon panic")
++	// Either the stream drained before shutdown (exit 0) or the
++	// server dropped it mid-stream (non-zero exit with a meaningful
++	// error message). Silent non-zero exits are confusing and fail.
++	if pinLs.ExitCode() != 0 {
++		require.NotEmpty(t, strings.TrimSpace(pinLs.Stderr.String()),
++			"pin ls exited non-zero but produced no error message")
++	}
++}

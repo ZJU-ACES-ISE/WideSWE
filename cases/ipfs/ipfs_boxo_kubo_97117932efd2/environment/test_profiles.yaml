@@ -1,0 +1,26 @@
+profiles:
+  boxo-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: boxo
+    workdir: repos/ipfs/boxo
+    command: go test -count=1 -json ./provider/internal/queue
+    dependency_image: ecosyncbench/base/go:1.25-bookworm
+    status: candidate_profile_unverified
+    test_files:
+    - provider/internal/queue/queue_test.go
+  kubo-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: kubo
+    workdir: repos/ipfs/kubo
+    command: go test -count=1 -json ./core/commands -run "^TestCommands$" && go test -count=1 -json ./test/cli -run "^TestProvider$"
+    dependency_image: ecosyncbench/base/go:1.25-bookworm
+    status: candidate_profile_unverified
+    test_files:
+    - core/commands/commands_test.go
+    - test/cli/provider_test.go
+    - test/dependencies/go.mod
+    - test/dependencies/go.sum

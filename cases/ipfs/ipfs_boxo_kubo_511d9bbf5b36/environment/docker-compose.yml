@@ -1,0 +1,38 @@
+services:
+  boxo-hidden:
+    image: ecosyncbench/deps/ipfs-boxo-go:511d9bbf5b36
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/go-mod-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/go:1.26-bookworm
+        ECOSYNC_TASK_ID: ipfs_boxo_kubo_511d9bbf5b36
+        ECOSYNC_REPO: ipfs/boxo
+        ECOSYNC_REPO_PATH: repos/ipfs/boxo
+        ECOSYNC_BASE_COMMIT: 971bdfe2928782f10dfee12d0aa15d7fdcdc73ac
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 511d9bbf5b36-boxo
+    working_dir: /workspace/repos/ipfs/boxo
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: >-
+      bash -lc 'bash /opt/ecosync/run-go-test.sh boxo-hidden-p2p ./bitswap/server/internal/decision &&
+      bash /opt/ecosync/run-go-test.sh boxo-hidden-contract
+      -run "^(TestIdentityHashSizeLimit|TestGatewayIdentityCIDSizeLimit|TestIdentityCIDHandling|TestRawNodeGrowthConversion|TestDefaultAllowList|TestValidateCid)$"
+      ./blockservice ./gateway ./ipld/unixfs/mod ./verifcid'
+
+  kubo-hidden:
+    image: ecosyncbench/deps/ipfs-kubo-go:511d9bbf5b36
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/go-mod-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/go:1.26-bookworm
+        ECOSYNC_TASK_ID: ipfs_boxo_kubo_511d9bbf5b36
+        ECOSYNC_REPO: ipfs/kubo
+        ECOSYNC_REPO_PATH: repos/ipfs/kubo
+        ECOSYNC_BASE_COMMIT: 5866db6d8c7f24812dc268e12fecd84d54dfc0b5
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 511d9bbf5b36-kubo
+    working_dir: /workspace/repos/ipfs/kubo
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-kubo-hidden.sh'

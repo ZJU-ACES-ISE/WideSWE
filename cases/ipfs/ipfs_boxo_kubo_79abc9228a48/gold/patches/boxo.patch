@@ -1,0 +1,1332 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9cebf920..78ff2d4f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -18,6 +18,14 @@ The following emojis are used to highlight certain changes:
+ 
+ ### Changed
+ 
++- `bitswap/network`: The connection event manager now has a `SetListeners` method. Both `bsnet` and `httpnet` now have options to provide the `ConnectionEventManager` during `New(...)`. This allows sharing the connection event manager when using both. The connection manager SHOULD be shared when using both networks with the `network.Router` utility.
++- `provider`: Distribute the responsability of providing new blocks to the places that play a role in the different providing strategies [#976](https://github.com/ipfs/boxo/pull/976). Refactor the logic to perform Provides, when the component has been given a provider:
++  - Remove `providing.Exchange`
++  - Provide directly from Blockstore when `provider` is set (via Option).
++  - Provide directly from pinner/merkledag on dag traversal when `provider` is set (via Option).
++  - Provide from MFS whenever there is a call to `DAGService.Add` and `provider` is set (via constructor param).
++- upgrade to `go-libp2p` [v0.42.1](https://github.com/libp2p/go-libp2p/releases/tag/v0.42.1)
++
+ ### Removed
+ 
+ ### Fixed
+diff --git a/blockservice/blockservice.go b/blockservice/blockservice.go
+index 421831b6..3565008e 100644
+--- a/blockservice/blockservice.go
++++ b/blockservice/blockservice.go
+@@ -172,7 +172,6 @@ func (s *blockService) AddBlock(ctx context.Context, o blocks.Block) error {
+ 	}
+ 
+ 	logger.Debugf("BlockService.BlockAdded %s", c)
+-
+ 	if s.exchange != nil {
+ 		if err := s.exchange.NotifyNewBlocks(ctx, o); err != nil {
+ 			logger.Errorf("NotifyNewBlocks: %s", err.Error())
+diff --git a/blockstore/blockstore.go b/blockstore/blockstore.go
+index 8f722af0..8230b05e 100644
+--- a/blockstore/blockstore.go
++++ b/blockstore/blockstore.go
+@@ -16,6 +16,9 @@ import (
+ 	dsq "github.com/ipfs/go-datastore/query"
+ 	ipld "github.com/ipfs/go-ipld-format"
+ 	logging "github.com/ipfs/go-log/v2"
++	routinghelpers "github.com/libp2p/go-libp2p-routing-helpers"
++	"github.com/libp2p/go-libp2p/core/routing"
++	"github.com/multiformats/go-multihash"
+ )
+ 
+ var logger = logging.Logger("blockstore")
+@@ -141,6 +144,16 @@ func NoPrefix() Option {
+ 	}
+ }
+ 
++// Provider allows performing a Provide operation for every block written.
++func Provider(provider routing.ContentProviding) Option {
++	return Option{
++		func(bs *blockstore) {
++			logger.Debug("providing-blockstore configured")
++			bs.provider = provider
++		},
++	}
++}
++
+ // NewBlockstore returns a default Blockstore implementation
+ // using the provided datastore.Batching backend.
+ func NewBlockstore(d ds.Batching, opts ...Option) Blockstore {
+@@ -173,6 +186,7 @@ type blockstore struct {
+ 	rehash       atomic.Bool
+ 	writeThrough bool
+ 	noPrefix     bool
++	provider     routing.ContentProviding
+ }
+ 
+ func (bs *blockstore) HashOnRead(enabled bool) {
+@@ -216,7 +230,17 @@ func (bs *blockstore) Put(ctx context.Context, block blocks.Block) error {
+ 			return nil // already stored.
+ 		}
+ 	}
+-	return bs.datastore.Put(ctx, k, block.RawData())
++	if err := bs.datastore.Put(ctx, k, block.RawData()); err != nil {
++		return err
++	}
++
++	if bs.provider != nil {
++		logger.Debugf("blockstore: provide %s", block.Cid())
++		if err := bs.provider.Provide(ctx, block.Cid(), true); err != nil {
++			logger.Debugf("error providing %s: %s", block.Cid(), err)
++		}
++	}
++	return nil
+ }
+ 
+ func (bs *blockstore) PutMany(ctx context.Context, blocks []blocks.Block) error {
+@@ -244,7 +268,16 @@ func (bs *blockstore) PutMany(ctx context.Context, blocks []blocks.Block) error
+ 			return err
+ 		}
+ 	}
+-	return t.Commit(ctx)
++	if err := t.Commit(ctx); err != nil {
++		return err
++	}
++
++	var hashes []multihash.Multihash
++	for _, block := range blocks {
++		hashes = append(hashes, block.Cid().Hash())
++	}
++	doProvideManyHashes(ctx, bs.provider, hashes)
++	return nil
+ }
+ 
+ func (bs *blockstore) Has(ctx context.Context, k cid.Cid) (bool, error) {
+@@ -351,3 +384,23 @@ func (bs *gclocker) PinLock(_ context.Context) Unlocker {
+ func (bs *gclocker) GCRequested(_ context.Context) bool {
+ 	return atomic.LoadInt32(&bs.gcreq) > 0
+ }
++
++func doProvideManyHashes(ctx context.Context, r routing.ContentProviding, keys []multihash.Multihash) {
++	if r == nil {
++		return
++	}
++	if many, ok := r.(routinghelpers.ProvideManyRouter); ok {
++		logger.Debugf("reprovider: provideMany (%d keys)", len(keys))
++		if err := many.ProvideMany(ctx, keys); err != nil {
++			logger.Debugf("error providing keys: %s", err)
++		}
++	}
++
++	for _, k := range keys {
++		logger.Debugf("reprovider: providing %s", k)
++		if err := r.Provide(ctx, cid.NewCidV1(cid.Raw, k), true); err != nil {
++			logger.Debugf("error providing %s: %s", k, err)
++			break
++		}
++	}
++}
+diff --git a/exchange/providing/providing.go b/exchange/providing/providing.go
+deleted file mode 100644
+index 6b288785..00000000
+--- a/exchange/providing/providing.go
++++ /dev/null
+@@ -1,46 +0,0 @@
+-// Package providing implements an exchange wrapper which
+-// does content providing for new blocks.
+-package providing
+-
+-import (
+-	"context"
+-
+-	"github.com/ipfs/boxo/exchange"
+-	"github.com/ipfs/boxo/provider"
+-	blocks "github.com/ipfs/go-block-format"
+-)
+-
+-// Exchange is an exchange wrapper that calls Provide for blocks received
+-// over NotifyNewBlocks.
+-type Exchange struct {
+-	exchange.Interface
+-	provider provider.Provider
+-}
+-
+-// New creates a new providing Exchange with the given exchange and provider.
+-// This is a light wrapper. We recommend that the provider supports the
+-// handling of many concurrent provides etc. as it is called directly for
+-// every new block.
+-func New(base exchange.Interface, provider provider.Provider) *Exchange {
+-	return &Exchange{
+-		Interface: base,
+-		provider:  provider,
+-	}
+-}
+-
+-// NotifyNewBlocks calls NotifyNewBlocks on the underlying provider and
+-// provider.Provide for every block after that.
+-func (ex *Exchange) NotifyNewBlocks(ctx context.Context, blocks ...blocks.Block) error {
+-	// Notify blocks on the underlying exchange.
+-	err := ex.Interface.NotifyNewBlocks(ctx, blocks...)
+-	if err != nil {
+-		return err
+-	}
+-
+-	for _, b := range blocks {
+-		if err := ex.provider.Provide(ctx, b.Cid(), true); err != nil {
+-			return err
+-		}
+-	}
+-	return nil
+-}
+diff --git a/ipld/merkledag/coding.go b/ipld/merkledag/coding.go
+index 4195a8e0..51e58fb4 100644
+--- a/ipld/merkledag/coding.go
++++ b/ipld/merkledag/coding.go
+@@ -38,17 +38,17 @@ func unmarshal(encodedBytes []byte) (*ProtoNode, error) {
+ func fromImmutableNode(encoded *immutableProtoNode) *ProtoNode {
+ 	n := new(ProtoNode)
+ 	n.encoded = encoded
+-	if n.encoded.PBNode.Data.Exists() {
+-		n.data = n.encoded.PBNode.Data.Must().Bytes()
++	if n.encoded.Data.Exists() {
++		n.data = n.encoded.Data.Must().Bytes()
+ 	}
+-	numLinks := n.encoded.PBNode.Links.Length()
++	numLinks := n.encoded.Links.Length()
+ 	// links may not be sorted after deserialization, but we don't change
+ 	// them until we mutate this node since we're representing the current,
+ 	// as-serialized state
+ 	n.links = make([]*format.Link, numLinks)
+ 	linkAllocs := make([]format.Link, numLinks)
+ 	for i := int64(0); i < numLinks; i++ {
+-		next := n.encoded.PBNode.Links.Lookup(i)
++		next := n.encoded.Links.Lookup(i)
+ 		name := ""
+ 		if next.FieldName().Exists() {
+ 			name = next.FieldName().Must().String()
+diff --git a/ipld/merkledag/merkledag.go b/ipld/merkledag/merkledag.go
+index d500dc7c..8ed50c53 100644
+--- a/ipld/merkledag/merkledag.go
++++ b/ipld/merkledag/merkledag.go
+@@ -13,9 +13,9 @@ import (
+ 	format "github.com/ipfs/go-ipld-format"
+ 	legacy "github.com/ipfs/go-ipld-legacy"
+ 	dagpb "github.com/ipld/go-codec-dagpb"
+-	// blank import is used to register the IPLD raw codec
+-	_ "github.com/ipld/go-ipld-prime/codec/raw"
++	_ "github.com/ipld/go-ipld-prime/codec/raw" // register the IPLD raw codec
+ 	basicnode "github.com/ipld/go-ipld-prime/node/basic"
++	"github.com/libp2p/go-libp2p/core/routing"
+ )
+ 
+ var ipldLegacyDecoder *legacy.Decoder
+@@ -45,9 +45,9 @@ func NewDAGService(bs bserv.BlockService) *dagService {
+ // dagService is an IPFS Merkle DAG service.
+ // - the root is virtual (like a forest)
+ // - stores nodes' data in a BlockService
+-// TODO: should cache Nodes that are in memory, and be
+ //
+-//	able to free some of them when vm pressure is high
++// TODO: should cache Nodes that are in memory, and be able to free some of
++// them when vm pressure is high
+ type dagService struct {
+ 	Blocks  bserv.BlockService
+ 	decoder *legacy.Decoder
+@@ -104,8 +104,8 @@ func (n *dagService) Remove(ctx context.Context, c cid.Cid) error {
+ 	return n.Blocks.DeleteBlock(ctx, c)
+ }
+ 
+-// RemoveMany removes multiple nodes from the DAG. It will likely be faster than
+-// removing them individually.
++// RemoveMany removes multiple nodes from the DAG. It will likely be faster
++// than removing them individually.
+ //
+ // This operation is not atomic. If it returns an error, some nodes may or may
+ // not have been removed.
+@@ -119,9 +119,9 @@ func (n *dagService) RemoveMany(ctx context.Context, cids []cid.Cid) error {
+ 	return nil
+ }
+ 
+-// GetLinksDirect creates a function to get the links for a node, from
+-// the node, bypassing the LinkService.  If the node does not exist
+-// locally (and can not be retrieved) an error will be returned.
++// GetLinksDirect creates a function to get the links for a node, from the
++// node, bypassing the LinkService. If the node does not exist locally (and can
++// not be retrieved) an error will be returned.
+ func GetLinksDirect(serv format.NodeGetter) GetLinks {
+ 	return func(ctx context.Context, c cid.Cid) ([]*format.Link, error) {
+ 		nd, err := serv.Get(ctx, c)
+@@ -152,7 +152,8 @@ func (sg *sesGetter) GetMany(ctx context.Context, keys []cid.Cid) <-chan *format
+ 	return getNodesFromBG(ctx, sg.bs, keys, sg.decoder)
+ }
+ 
+-// WrapSession wraps a blockservice session to satisfy the format.NodeGetter interface
++// WrapSession wraps a blockservice session to satisfy the format.NodeGetter
++// interface.
+ func WrapSession(s *bserv.Session) format.NodeGetter {
+ 	return &sesGetter{
+ 		bs:      s,
+@@ -169,17 +170,17 @@ func (n *dagService) Session(ctx context.Context) format.NodeGetter {
+ 	}
+ }
+ 
+-// FetchGraph fetches all nodes that are children of the given node
+-func FetchGraph(ctx context.Context, root cid.Cid, serv format.DAGService) error {
+-	return FetchGraphWithDepthLimit(ctx, root, -1, serv)
++// FetchGraph fetches all nodes that are children of the given node.
++func FetchGraph(ctx context.Context, root cid.Cid, serv format.DAGService, opts ...WalkOption) error {
++	return FetchGraphWithDepthLimit(ctx, root, -1, serv, opts...)
+ }
+ 
+ // FetchGraphWithDepthLimit fetches all nodes that are children to the given
+-// node down to the given depth. maxDepth=0 means "only fetch root",
+-// maxDepth=1 means "fetch root and its direct children" and so on...
+-// maxDepth=-1 means unlimited.
+-func FetchGraphWithDepthLimit(ctx context.Context, root cid.Cid, depthLim int, serv format.DAGService) error {
+-	var ng format.NodeGetter = NewSession(ctx, serv)
++// node down to the given depth. maxDepth=0 means "only fetch root", maxDepth=1
++// means "fetch root and its direct children" and so on... maxDepth=-1 means
++// unlimited.
++func FetchGraphWithDepthLimit(ctx context.Context, root cid.Cid, depthLim int, serv format.DAGService, opts ...WalkOption) error {
++	ng := NewSession(ctx, serv)
+ 
+ 	set := make(map[cid.Cid]int)
+ 
+@@ -204,10 +205,13 @@ func FetchGraphWithDepthLimit(ctx context.Context, root cid.Cid, depthLim int, s
+ 		return false
+ 	}
+ 
+-	// If we have a ProgressTracker, we wrap the visit function to handle it
++	// We default to Concurrent() walk.
++	opts = append([]WalkOption{Concurrent()}, opts...)
++
++	// If we have a ProgressTracker, we wrap the visit function to handle it.
+ 	v, _ := ctx.Value(progressContextKey).(*ProgressTracker)
+ 	if v == nil {
+-		return WalkDepth(ctx, GetLinksDirect(ng), root, visit, Concurrent())
++		return WalkDepth(ctx, GetLinksDirect(ng), root, visit, opts...)
+ 	}
+ 
+ 	visitProgress := func(c cid.Cid, depth int) bool {
+@@ -217,7 +221,7 @@ func FetchGraphWithDepthLimit(ctx context.Context, root cid.Cid, depthLim int, s
+ 		}
+ 		return false
+ 	}
+-	return WalkDepth(ctx, GetLinksDirect(ng), root, visitProgress, Concurrent())
++	return WalkDepth(ctx, GetLinksDirect(ng), root, visitProgress, opts...)
+ }
+ 
+ // GetMany gets many nodes from the DAG at once.
+@@ -282,9 +286,9 @@ func getNodesFromBG(ctx context.Context, bs bserv.BlockGetter, keys []cid.Cid, d
+ type GetLinks func(context.Context, cid.Cid) ([]*format.Link, error)
+ 
+ // GetLinksWithDAG returns a GetLinks function that tries to use the given
+-// NodeGetter as a LinkGetter to get the children of a given IPLD node. This may
+-// allow us to traverse the DAG without actually loading and parsing the node in
+-// question (if we already have the links cached).
++// NodeGetter as a LinkGetter to get the children of a given IPLD node. This
++// may allow us to traverse the DAG without actually loading and parsing the
++// node in question (if we already have the links cached).
+ func GetLinksWithDAG(ng format.NodeGetter) GetLinks {
+ 	return func(ctx context.Context, c cid.Cid) ([]*format.Link, error) {
+ 		return format.GetLinks(ctx, ng, c)
+@@ -292,7 +296,7 @@ func GetLinksWithDAG(ng format.NodeGetter) GetLinks {
+ }
+ 
+ // defaultConcurrentFetch is the default maximum number of concurrent fetches
+-// that 'fetchNodes' will start at a time
++// that 'fetchNodes' will start at a time.
+ const defaultConcurrentFetch = 32
+ 
+ // walkOptions represent the parameters of a graph walking algorithm
+@@ -300,6 +304,7 @@ type walkOptions struct {
+ 	SkipRoot     bool
+ 	Concurrency  int
+ 	ErrorHandler func(c cid.Cid, err error) error
++	Provider     routing.ContentProviding
+ }
+ 
+ // WalkOption is a setter for walkOptions
+@@ -323,8 +328,9 @@ func SkipRoot() WalkOption {
+ }
+ 
+ // Concurrent is a WalkOption indicating that node fetching should be done in
+-// parallel, with the default concurrency factor.
+-// NOTE: When using that option, the walk order is *not* guarantee.
++// parallel, with the default concurrency factor. When using this option, the
++// walk order is not guaranteed.
++//
+ // NOTE: It *does not* make multiple concurrent calls to the passed `visit` function.
+ func Concurrent() WalkOption {
+ 	return func(walkOptions *walkOptions) {
+@@ -333,8 +339,9 @@ func Concurrent() WalkOption {
+ }
+ 
+ // Concurrency is a WalkOption indicating that node fetching should be done in
+-// parallel, with a specific concurrency factor.
+-// NOTE: When using that option, the walk order is *not* guarantee.
++// parallel, with a specific concurrency factor. When using that option, the
++// walk order is not guaranteed.
++//
+ // NOTE: It *does not* make multiple concurrent calls to the passed `visit` function.
+ func Concurrency(worker int) WalkOption {
+ 	return func(walkOptions *walkOptions) {
+@@ -365,8 +372,8 @@ func IgnoreMissing() WalkOption {
+ 	}
+ }
+ 
+-// OnMissing is a WalkOption adding a callback that will be triggered on a missing
+-// node.
++// OnMissing is a WalkOption adding a callback that will be triggered on a
++// missing node.
+ func OnMissing(callback func(c cid.Cid)) WalkOption {
+ 	return func(walkOptions *walkOptions) {
+ 		walkOptions.addHandler(func(c cid.Cid, err error) error {
+@@ -378,15 +385,23 @@ func OnMissing(callback func(c cid.Cid)) WalkOption {
+ 	}
+ }
+ 
+-// OnError is a WalkOption adding a custom error handler.
+-// If this handler return a nil error, the walk will continue.
++// OnError is a WalkOption that adds a custom error handler. The walk is
++// stopped if this handler returns a non-nil error.
+ func OnError(handler func(c cid.Cid, err error) error) WalkOption {
+ 	return func(walkOptions *walkOptions) {
+ 		walkOptions.addHandler(handler)
+ 	}
+ }
+ 
+-// WalkGraph will walk the dag in order (depth first) starting at the given root.
++// WithProvider calls Provide() on every fetched node while traversing a DAG.
++func WithProvider(p routing.ContentProviding) WalkOption {
++	log.Debug("merkledag provider configured")
++	return func(walkOptions *walkOptions) {
++		walkOptions.Provider = p
++	}
++}
++
++// WalkGraph walks the dag in depth-first order starting at the given root.
+ func Walk(ctx context.Context, getLinks GetLinks, c cid.Cid, visit func(cid.Cid) bool, options ...WalkOption) error {
+ 	visitDepth := func(c cid.Cid, depth int) bool {
+ 		return visit(c)
+@@ -412,7 +427,7 @@ func WalkDepth(ctx context.Context, getLinks GetLinks, c cid.Cid, visit func(cid
+ }
+ 
+ func sequentialWalkDepth(ctx context.Context, getLinks GetLinks, root cid.Cid, depth int, visit func(cid.Cid, int) bool, options *walkOptions) error {
+-	if !(options.SkipRoot && depth == 0) {
++	if !options.SkipRoot || depth != 0 {
+ 		if !visit(root, depth) {
+ 			return nil
+ 		}
+@@ -426,6 +441,14 @@ func sequentialWalkDepth(ctx context.Context, getLinks GetLinks, root cid.Cid, d
+ 		return err
+ 	}
+ 
++	// Successfully fetched "root". Provide it when needed.
++	if prov := options.Provider; prov != nil {
++		log.Debugf("merkledag: provide %s", root)
++		if err := prov.Provide(ctx, root, true); err != nil {
++			log.Debugf("error providing %s: %s", root, err)
++		}
++	}
++
+ 	for _, lnk := range links {
+ 		if err := sequentialWalkDepth(ctx, getLinks, lnk.Cid, depth+1, visit, options); err != nil {
+ 			return err
+@@ -440,8 +463,8 @@ type ProgressTracker struct {
+ 	lk    sync.Mutex
+ }
+ 
+-// DeriveContext returns a new context with value "progress" derived from
+-// the given one.
++// DeriveContext returns a new context with value "progress" derived from the
++// given one.
+ func (p *ProgressTracker) DeriveContext(ctx context.Context) context.Context {
+ 	return context.WithValue(ctx, progressContextKey, p)
+ }
+@@ -493,12 +516,12 @@ func parallelWalkDepth(ctx context.Context, getLinks GetLinks, root cid.Cid, vis
+ 				var shouldVisit bool
+ 
+ 				// bypass the root if needed
+-				if !(options.SkipRoot && depth == 0) {
++				if options.SkipRoot && depth == 0 {
++					shouldVisit = true
++				} else {
+ 					visitlk.Lock()
+ 					shouldVisit = visit(ci, depth)
+ 					visitlk.Unlock()
+-				} else {
+-					shouldVisit = true
+ 				}
+ 
+ 				if shouldVisit {
+@@ -514,6 +537,13 @@ func parallelWalkDepth(ctx context.Context, getLinks GetLinks, root cid.Cid, vis
+ 						return
+ 					}
+ 
++					// Successfully fetched "ci". Provide it when needed,
++					if prov := options.Provider; prov != nil {
++						log.Debugf("merkledag: provide %s", root)
++						if err := prov.Provide(ctx, root, true); err != nil {
++							log.Debugf("error providing %s: %s", root, err)
++						}
++					}
+ 					outLinks := linksDepth{
+ 						links: links,
+ 						depth: depth + 1,
+diff --git a/mfs/dir.go b/mfs/dir.go
+index 11f2c5f7..e2f320d9 100644
+--- a/mfs/dir.go
++++ b/mfs/dir.go
+@@ -14,6 +14,7 @@ import (
+ 	uio "github.com/ipfs/boxo/ipld/unixfs/io"
+ 	cid "github.com/ipfs/go-cid"
+ 	ipld "github.com/ipfs/go-ipld-format"
++	"github.com/libp2p/go-libp2p/core/routing"
+ )
+ 
+ var (
+@@ -40,18 +41,37 @@ type Directory struct {
+ 	// UnixFS directory implementation used for creating,
+ 	// reading and editing directories.
+ 	unixfsDir uio.Directory
++
++	prov routing.ContentProviding
+ }
+ 
+ // NewDirectory constructs a new MFS directory.
+ //
+ // You probably don't want to call this directly. Instead, construct a new root
+ // using NewRoot.
+-func NewDirectory(ctx context.Context, name string, node ipld.Node, parent parent, dserv ipld.DAGService) (*Directory, error) {
++func NewDirectory(ctx context.Context, name string, node ipld.Node, parent parent, dserv ipld.DAGService, prov routing.ContentProviding) (*Directory, error) {
+ 	db, err := uio.NewDirectoryFromNode(dserv, node)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 
++	nd, err := db.GetNode()
++	if err != nil {
++		return nil, err
++	}
++
++	err = dserv.Add(ctx, nd)
++	if err != nil {
++		return nil, err
++	}
++
++	if prov != nil {
++		log.Debugf("mfs: provide: %s", nd.Cid())
++		if err = prov.Provide(ctx, nd.Cid(), true); err != nil {
++			log.Errorf("error providing %s: %s", nd.Cid(), err)
++		}
++	}
++
+ 	return &Directory{
+ 		inode: inode{
+ 			name:       name,
+@@ -60,6 +80,7 @@ func NewDirectory(ctx context.Context, name string, node ipld.Node, parent paren
+ 		},
+ 		ctx:          ctx,
+ 		unixfsDir:    db,
++		prov:         prov,
+ 		entriesCache: make(map[string]FSNode),
+ 	}, nil
+ }
+@@ -67,7 +88,7 @@ func NewDirectory(ctx context.Context, name string, node ipld.Node, parent paren
+ // NewEmptyDirectory creates an empty MFS directory with the given options.
+ // The directory is added to the DAGService. To create a new MFS
+ // root use NewEmptyRootFolder instead.
+-func NewEmptyDirectory(ctx context.Context, name string, parent parent, dserv ipld.DAGService, opts MkdirOpts) (*Directory, error) {
++func NewEmptyDirectory(ctx context.Context, name string, parent parent, dserv ipld.DAGService, prov routing.ContentProviding, opts MkdirOpts) (*Directory, error) {
+ 	db, err := uio.NewDirectory(dserv,
+ 		uio.WithMaxLinks(opts.MaxLinks),
+ 		uio.WithMaxHAMTFanout(opts.MaxHAMTFanout),
+@@ -88,6 +109,8 @@ func NewEmptyDirectory(ctx context.Context, name string, parent parent, dserv ip
+ 		return nil, err
+ 	}
+ 
++	// note: we don't provide the empty unixfs dir as it is always local.
++
+ 	return &Directory{
+ 		inode: inode{
+ 			name:       name,
+@@ -96,6 +119,7 @@ func NewEmptyDirectory(ctx context.Context, name string, parent parent, dserv ip
+ 		},
+ 		ctx:          ctx,
+ 		unixfsDir:    db,
++		prov:         prov,
+ 		entriesCache: make(map[string]FSNode),
+ 	}, nil
+ }
+@@ -157,6 +181,13 @@ func (d *Directory) localUpdate(c child) (*dag.ProtoNode, error) {
+ 		return nil, err
+ 	}
+ 
++	if d.prov != nil {
++		log.Debugf("mfs: provide: %s", nd.Cid())
++		if err = d.prov.Provide(d.ctx, nd.Cid(), true); err != nil {
++			log.Errorf("error providing %s: %s", nd.Cid(), err)
++		}
++	}
++
+ 	return pbnd.Copy().(*dag.ProtoNode), nil
+ 	// TODO: Why do we need a copy?
+ }
+@@ -176,7 +207,7 @@ func (d *Directory) cacheNode(name string, nd ipld.Node) (FSNode, error) {
+ 
+ 		switch fsn.Type() {
+ 		case ft.TDirectory, ft.THAMTShard:
+-			ndir, err := NewDirectory(d.ctx, name, nd, d, d.dagService)
++			ndir, err := NewDirectory(d.ctx, name, nd, d, d.dagService, d.prov)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+@@ -189,7 +220,7 @@ func (d *Directory) cacheNode(name string, nd ipld.Node) (FSNode, error) {
+ 			d.entriesCache[name] = ndir
+ 			return ndir, nil
+ 		case ft.TFile, ft.TRaw, ft.TSymlink:
+-			nfi, err := NewFile(name, nd, d, d.dagService)
++			nfi, err := NewFile(name, nd, d, d.dagService, d.prov)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+@@ -201,7 +232,7 @@ func (d *Directory) cacheNode(name string, nd ipld.Node) (FSNode, error) {
+ 			return nil, ErrInvalidChild
+ 		}
+ 	case *dag.RawNode:
+-		nfi, err := NewFile(name, nd, d, d.dagService)
++		nfi, err := NewFile(name, nd, d, d.dagService, d.prov)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -338,7 +369,7 @@ func (d *Directory) MkdirWithOpts(name string, opts MkdirOpts) (*Directory, erro
+ 	// keep backwards compatibility. CidBuilder from the options is
+ 	// manually set in `Mkdir` (ops.go) though.
+ 	opts.CidBuilder = d.GetCidBuilder()
+-	dirobj, err := NewEmptyDirectory(d.ctx, name, d, d.dagService, opts)
++	dirobj, err := NewEmptyDirectory(d.ctx, name, d, d.dagService, d.prov, opts)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -390,6 +421,13 @@ func (d *Directory) AddChild(name string, nd ipld.Node) error {
+ 		return err
+ 	}
+ 
++	if d.prov != nil {
++		log.Debugf("mfs: provide: %s", nd.Cid())
++		if err = d.prov.Provide(d.ctx, nd.Cid(), true); err != nil {
++			log.Errorf("error providing %s: %s", nd.Cid(), err)
++		}
++	}
++
+ 	return d.unixfsDir.AddChild(d.ctx, name, nd)
+ }
+ 
+@@ -451,6 +489,13 @@ func (d *Directory) getNode(cacheClean bool) (ipld.Node, error) {
+ 		return nil, err
+ 	}
+ 
++	if d.prov != nil {
++		log.Debugf("mfs: provide: %s", nd.Cid())
++		if err = d.prov.Provide(d.ctx, nd.Cid(), true); err != nil {
++			log.Errorf("error providing %s: %s", nd.Cid(), err)
++		}
++	}
++
+ 	return nd.Copy(), err
+ }
+ 
+@@ -514,6 +559,13 @@ func (d *Directory) setNodeData(data []byte, links []*ipld.Link) error {
+ 		return err
+ 	}
+ 
++	if d.prov != nil {
++		log.Debugf("mfs: provide: %s", nd.Cid())
++		if err = d.prov.Provide(d.ctx, nd.Cid(), true); err != nil {
++			log.Errorf("error providing %s: %s", nd.Cid(), err)
++		}
++	}
++
+ 	err = d.parent.updateChildEntry(child{d.name, nd})
+ 	if err != nil {
+ 		return err
+diff --git a/mfs/file.go b/mfs/file.go
+index 648f7681..3789e0da 100644
+--- a/mfs/file.go
++++ b/mfs/file.go
+@@ -12,6 +12,7 @@ import (
+ 	ft "github.com/ipfs/boxo/ipld/unixfs"
+ 	mod "github.com/ipfs/boxo/ipld/unixfs/mod"
+ 	ipld "github.com/ipfs/go-ipld-format"
++	"github.com/libp2p/go-libp2p/core/routing"
+ )
+ 
+ // File represents a file in the MFS, its logic its mainly targeted
+@@ -23,10 +24,11 @@ type File struct {
+ 	// Lock to coordinate the `FileDescriptor`s associated to this file.
+ 	desclock sync.RWMutex
+ 
+-	// This isn't any node, it's the root node that represents the
+-	// entire DAG of nodes that comprise the file.
+-	// TODO: Rename, there should be an explicit term for these root nodes
+-	// of a particular sub-DAG that abstract an upper layer's entity.
++	// This isn't any node, it's the root node that represents the entire DAG
++	// of nodes that comprise the file.
++	//
++	// TODO: Rename, there should be an explicit term for these root nodes of a
++	// particular sub-DAG that abstract an upper layer's entity.
+ 	node ipld.Node
+ 
+ 	// Lock around the `node` that represents this file, necessary because
+@@ -36,14 +38,16 @@ type File struct {
+ 	RawLeaves bool
+ }
+ 
+-// NewFile returns a NewFile object with the given parameters.  If the
+-// Cid version is non-zero RawLeaves will be enabled.
+-func NewFile(name string, node ipld.Node, parent parent, dserv ipld.DAGService) (*File, error) {
++// NewFile returns a NewFile object with the given parameters. If the CID
++// version is non-zero RawLeaves will be enabled. A nil providing parameter
++// means that MFS will not provide content to the routing system.
++func NewFile(name string, node ipld.Node, parent parent, dserv ipld.DAGService, providing routing.ContentProviding) (*File, error) {
+ 	fi := &File{
+ 		inode: inode{
+ 			name:       name,
+ 			parent:     parent,
+ 			dagService: dserv,
++			prov:       providing,
+ 		},
+ 		node: node,
+ 	}
+@@ -76,10 +80,9 @@ func (fi *File) Open(flags Flags) (_ FileDescriptor, _retErr error) {
+ 	node := fi.node
+ 	fi.nodeLock.RUnlock()
+ 
+-	// TODO: Move this `switch` logic outside (maybe even
+-	// to another package, this seems like a job of UnixFS),
+-	// `NewDagModifier` uses the IPLD node, we're not
+-	// extracting anything just doing a safety check.
++	// TODO: Move this `switch` logic outside (maybe even to another package,
++	// this seems like a job of UnixFS), `NewDagModifier` uses the IPLD node,
++	// we're not extracting anything just doing a safety check.
+ 	switch node := node.(type) {
+ 	case *dag.ProtoNode:
+ 		fsn, err := ft.FSNodeFromBytes(node.Data())
+@@ -116,11 +119,13 @@ func (fi *File) Open(flags Flags) (_ FileDescriptor, _retErr error) {
+ }
+ 
+ // Size returns the size of this file
++//
+ // TODO: Should we be providing this API?
+-// TODO: There's already a `FileDescriptor.Size()` that
+-// through the `DagModifier`'s `fileSize` function is doing
+-// pretty much the same thing as here, we should at least call
+-// that function and wrap the `ErrNotUnixfs` with an MFS text.
++//
++// TODO: There's already a `FileDescriptor.Size()` that through the
++// `DagModifier`'s `fileSize` function is doing pretty much the same thing as
++// here, we should at least call that function and wrap the `ErrNotUnixfs` with
++// an MFS text.
+ func (fi *File) Size() (int64, error) {
+ 	fi.nodeLock.RLock()
+ 	defer fi.nodeLock.RUnlock()
+@@ -139,6 +144,7 @@ func (fi *File) Size() (int64, error) {
+ }
+ 
+ // GetNode returns the dag node associated with this file
++//
+ // TODO: Use this method and do not access the `nodeLock` directly anywhere else.
+ func (fi *File) GetNode() (ipld.Node, error) {
+ 	fi.nodeLock.RLock()
+@@ -146,14 +152,13 @@ func (fi *File) GetNode() (ipld.Node, error) {
+ 	return fi.node, nil
+ }
+ 
+-// TODO: Tight coupling with the `FileDescriptor`, at the
+-// very least this should be an independent function that
+-// takes a `File` argument and automates the open/flush/close
+-// operations.
+-// TODO: Why do we need to flush a file that isn't opened?
+-// (the `OpenWriteOnly` seems to implicitly be targeting a
+-// closed file, a file we forgot to flush? can we close
+-// a file without flushing?)
++// TODO: Tight coupling with the `FileDescriptor`, at the very least this
++// should be an independent function that takes a `File` argument and automates
++// the open/flush/close operations.
++//
++// TODO: Why do we need to flush a file that isn't opened? (the `OpenWriteOnly`
++// seems to implicitly be targeting a closed file, a file we forgot to flush?
++// can we close a file without flushing?)
+ func (fi *File) Flush() error {
+ 	// open the file in fullsync mode
+ 	fd, err := fi.Open(Flags{Write: true, Sync: true})
+@@ -174,7 +179,7 @@ func (fi *File) Sync() error {
+ 	return nil
+ }
+ 
+-// Type returns the type FSNode this is
++// Type returns the type FSNode this is.
+ func (fi *File) Type() NodeType {
+ 	return TFile
+ }
+@@ -219,7 +224,7 @@ func (fi *File) SetMode(mode os.FileMode) error {
+ 	return fi.setNodeData(data)
+ }
+ 
+-// ModTime returns the files' last modification time
++// ModTime returns the files' last modification time.
+ func (fi *File) ModTime() (time.Time, error) {
+ 	fi.nodeLock.RLock()
+ 	defer fi.nodeLock.RUnlock()
+@@ -235,7 +240,7 @@ func (fi *File) ModTime() (time.Time, error) {
+ 	return fsn.ModTime(), nil
+ }
+ 
+-// SetModTime sets the files' last modification time
++// SetModTime sets the files' last modification time.
+ func (fi *File) SetModTime(ts time.Time) error {
+ 	nd, err := fi.GetNode()
+ 	if err != nil {
+@@ -263,15 +268,22 @@ func (fi *File) SetModTime(ts time.Time) error {
+ 
+ func (fi *File) setNodeData(data []byte) error {
+ 	nd := dag.NodeWithData(data)
+-	err := fi.inode.dagService.Add(context.TODO(), nd)
++	err := fi.dagService.Add(context.TODO(), nd)
+ 	if err != nil {
+ 		return err
+ 	}
+ 
++	if fi.prov != nil {
++		log.Debugf("mfs: provide: %s", nd.Cid())
++		if err = fi.prov.Provide(context.TODO(), nd.Cid(), true); err != nil {
++			log.Errorf("error providing %s: %s", nd.Cid(), err)
++		}
++	}
++
+ 	fi.nodeLock.Lock()
+ 	fi.node = nd
+-	parent := fi.inode.parent
+-	name := fi.inode.name
++	parent := fi.parent
++	name := fi.name
+ 	fi.nodeLock.Unlock()
+ 	return parent.updateChildEntry(child{name, fi.node})
+ }
+diff --git a/mfs/inode.go b/mfs/inode.go
+index 50bed0b3..de34299f 100644
+--- a/mfs/inode.go
++++ b/mfs/inode.go
+@@ -2,6 +2,7 @@ package mfs
+ 
+ import (
+ 	ipld "github.com/ipfs/go-ipld-format"
++	"github.com/libp2p/go-libp2p/core/routing"
+ )
+ 
+ // inode abstracts the common characteristics of the MFS `File`
+@@ -18,4 +19,7 @@ type inode struct {
+ 	// dagService used to store modifications made to the contents
+ 	// of the file or directory the `inode` belongs to.
+ 	dagService ipld.DAGService
++
++	// provider used to announce CIDs
++	prov routing.ContentProviding
+ }
+diff --git a/mfs/root.go b/mfs/root.go
+index 7a41f55e..4f3b0d12 100644
+--- a/mfs/root.go
++++ b/mfs/root.go
+@@ -14,6 +14,7 @@ import (
+ 	ft "github.com/ipfs/boxo/ipld/unixfs"
+ 	ipld "github.com/ipfs/go-ipld-format"
+ 	logging "github.com/ipfs/go-log/v2"
++	"github.com/libp2p/go-libp2p/core/routing"
+ )
+ 
+ // TODO: Remove if not used.
+@@ -98,10 +99,11 @@ type Root struct {
+ 	dir *Directory
+ 
+ 	repub *Republisher
++	prov  routing.ContentProviding
+ }
+ 
+ // NewRoot creates a new Root and starts up a republisher routine for it.
+-func NewRoot(parent context.Context, ds ipld.DAGService, node *dag.ProtoNode, pf PubFunc) (*Root, error) {
++func NewRoot(ctx context.Context, ds ipld.DAGService, node *dag.ProtoNode, pf PubFunc, prov routing.ContentProviding) (*Root, error) {
+ 	var repub *Republisher
+ 	if pf != nil {
+ 		repub = NewRepublisher(pf, repubQuick, repubLong, node.Cid())
+@@ -120,7 +122,7 @@ func NewRoot(parent context.Context, ds ipld.DAGService, node *dag.ProtoNode, pf
+ 
+ 	switch fsn.Type() {
+ 	case ft.TDirectory, ft.THAMTShard:
+-		newDir, err := NewDirectory(parent, node.String(), node, root, ds)
++		newDir, err := NewDirectory(ctx, node.String(), node, root, ds, prov)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -138,10 +140,10 @@ func NewRoot(parent context.Context, ds ipld.DAGService, node *dag.ProtoNode, pf
+ 
+ // NewEmptyRoot creates an empty Root directory with the given directory
+ // options. A republisher is created if PubFunc is not nil.
+-func NewEmptyRoot(parent context.Context, ds ipld.DAGService, pf PubFunc, opts MkdirOpts) (*Root, error) {
++func NewEmptyRoot(ctx context.Context, ds ipld.DAGService, pf PubFunc, prov routing.ContentProviding, opts MkdirOpts) (*Root, error) {
+ 	root := new(Root)
+ 
+-	dir, err := NewEmptyDirectory(parent, "", root, ds, opts)
++	dir, err := NewEmptyDirectory(ctx, "", root, ds, prov, opts)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -211,9 +213,17 @@ func (kr *Root) updateChildEntry(c child) error {
+ 	if err != nil {
+ 		return err
+ 	}
++
+ 	// TODO: Why are we not using the inner directory lock nor
+ 	// applying the same procedure as `Directory.updateChildEntry`?
+ 
++	if kr.prov != nil {
++		log.Debugf("mfs: provide: %s", c.Node.Cid())
++		if err = kr.prov.Provide(context.TODO(), c.Node.Cid(), true); err != nil {
++			log.Errorf("error providing %s: %s", c.Node.Cid(), err)
++		}
++	}
++
+ 	if kr.repub != nil {
+ 		kr.repub.Update(c.Node.Cid())
+ 	}
+diff --git a/pinning/pinner/dspinner/pin.go b/pinning/pinner/dspinner/pin.go
+index 4cc5e38e..3ba10b29 100644
+--- a/pinning/pinner/dspinner/pin.go
++++ b/pinning/pinner/dspinner/pin.go
+@@ -19,6 +19,7 @@ import (
+ 	"github.com/ipfs/go-datastore/query"
+ 	ipld "github.com/ipfs/go-ipld-format"
+ 	logging "github.com/ipfs/go-log/v2"
++	"github.com/libp2p/go-libp2p/core/routing"
+ 	"github.com/polydawn/refmt/cbor"
+ 	"github.com/polydawn/refmt/obj/atlas"
+ )
+@@ -96,6 +97,9 @@ type pinner struct {
+ 
+ 	clean int64
+ 	dirty int64
++
++	rootsProvider  routing.ContentProviding
++	pinnedProvider routing.ContentProviding
+ }
+ 
+ var _ ipfspinner.Pinner = (*pinner)(nil)
+@@ -126,13 +130,35 @@ type syncDAGService interface {
+ 	Sync() error
+ }
+ 
++type Option struct {
++	f func(p *pinner)
++}
++
++// WithPinnedProvider sets a provider for all pinned CIDs to be provided
++// (directly or recursively).
++func WithPinnedProvider(prov routing.ContentProviding) Option {
++	return Option{func(p *pinner) {
++		log.Debug("pinned-providing configured")
++		p.pinnedProvider = prov
++	}}
++}
++
++// WithRootsProvider sets a provider for root CIDs and direct pins to be
++// provided.
++func WithRootsProvider(prov routing.ContentProviding) Option {
++	return Option{func(p *pinner) {
++		log.Debug("roots-providing configured")
++		p.rootsProvider = prov
++	}}
++}
++
+ // New creates a new pinner and loads its keysets from the given datastore. If
+ // there is no data present in the datastore, then an empty pinner is returned.
+ //
+ // By default, changes are automatically flushed to the datastore.  This can be
+ // disabled by calling SetAutosync(false), which will require that Flush be
+ // called explicitly.
+-func New(ctx context.Context, dstore ds.Datastore, dserv ipld.DAGService) (*pinner, error) {
++func New(ctx context.Context, dstore ds.Datastore, dserv ipld.DAGService, opts ...Option) (*pinner, error) {
+ 	p := &pinner{
+ 		autoSync:  true,
+ 		cidDIndex: dsindex.New(dstore, ds.NewKey(pinCidDIndexPath)),
+@@ -142,6 +168,10 @@ func New(ctx context.Context, dstore ds.Datastore, dserv ipld.DAGService) (*pinn
+ 		dstore:    dstore,
+ 	}
+ 
++	for _, o := range opts {
++		o.f(p)
++	}
++
+ 	data, err := dstore.Get(ctx, dirtyKey)
+ 	if err != nil {
+ 		if err == ds.ErrNotFound {
+@@ -213,7 +243,11 @@ func (p *pinner) doPinRecursive(ctx context.Context, c cid.Cid, fetch bool, name
+ 		// temporary unlock to fetch the entire graph
+ 		p.lock.Unlock()
+ 		// Fetch graph starting at node identified by cid
+-		err = merkledag.FetchGraph(ctx, c, p.dserv)
++		var opts []merkledag.WalkOption
++		if p.pinnedProvider != nil {
++			opts = append(opts, merkledag.WithProvider(p.pinnedProvider))
++		}
++		err = merkledag.FetchGraph(ctx, c, p.dserv, opts...)
+ 		p.lock.Lock()
+ 		if err != nil {
+ 			return err
+@@ -253,7 +287,20 @@ func (p *pinner) doPinRecursive(ctx context.Context, c cid.Cid, fetch bool, name
+ 	if err != nil {
+ 		return err
+ 	}
+-	return p.flushPins(ctx, false)
++	err = p.flushPins(ctx, false)
++	if err != nil {
++		return err
++	}
++
++	// Provide only if we have not set pinnedProvider, as otherwise
++	// we would provide the roots twice.
++	if p.rootsProvider != nil && p.pinnedProvider == nil {
++		log.Debugf("pinner: provide root %s", c)
++		if err := p.rootsProvider.Provide(ctx, c, true); err != nil {
++			log.Debugf("error providing %s: %s", c, err)
++		}
++	}
++	return nil
+ }
+ 
+ func (p *pinner) doPinDirect(ctx context.Context, c cid.Cid, name string) error {
+@@ -291,7 +338,19 @@ func (p *pinner) doPinDirect(ctx context.Context, c cid.Cid, name string) error
+ 		return err
+ 	}
+ 
+-	return p.flushPins(ctx, false)
++	err = p.flushPins(ctx, false)
++	if err != nil {
++		return err
++	}
++
++	if p.rootsProvider != nil {
++		log.Debugf("pinner: provide direct pin %s", c)
++		if err := p.rootsProvider.Provide(ctx, c, true); err != nil {
++			log.Debugf("error providing %s: %s", c, err)
++		}
++	}
++
++	return nil
+ }
+ 
+ func (p *pinner) addPin(ctx context.Context, c cid.Cid, mode ipfspinner.Mode, name string) (string, error) {
+diff --git a/pinning/pinner/dspinner/pinprovider.go b/pinning/pinner/dspinner/pinprovider.go
+new file mode 100644
+index 00000000..6536c0c5
+--- /dev/null
++++ b/pinning/pinner/dspinner/pinprovider.go
+@@ -0,0 +1,94 @@
++package dspinner
++
++import (
++	"context"
++
++	"github.com/ipfs/boxo/fetcher"
++	fetcherhelpers "github.com/ipfs/boxo/fetcher/helpers"
++	ipfspinner "github.com/ipfs/boxo/pinning/pinner"
++	"github.com/ipfs/boxo/provider"
++	"github.com/ipfs/go-cid"
++	"github.com/ipfs/go-cidutil"
++	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
++)
++
++// NewPinnedProvider returns a KeyChanFunc supplying pinned keys. The Provider
++// will block when writing to the channel and there are no readers.
++func NewPinnedProvider(onlyRoots bool, pinning ipfspinner.Pinner, fetchConfig fetcher.Factory) provider.KeyChanFunc {
++	return func(ctx context.Context) (<-chan cid.Cid, error) {
++		set, err := pinSet(ctx, pinning, fetchConfig, onlyRoots)
++		if err != nil {
++			return nil, err
++		}
++
++		outCh := make(chan cid.Cid)
++		go func() {
++			defer close(outCh)
++			for c := range set.New {
++				select {
++				case <-ctx.Done():
++					return
++				case outCh <- c:
++				}
++			}
++		}()
++
++		return outCh, nil
++	}
++}
++
++func pinSet(ctx context.Context, pinning ipfspinner.Pinner, fetchConfig fetcher.Factory, onlyRoots bool) (*cidutil.StreamingSet, error) {
++	set := cidutil.NewStreamingSet()
++	recursivePins := cidutil.NewSet()
++
++	go func() {
++		ctx, cancel := context.WithCancel(ctx)
++		defer cancel()
++		defer close(set.New)
++
++		// 1. Recursive keys
++		for sc := range pinning.RecursiveKeys(ctx, false) {
++			if sc.Err != nil {
++				log.Errorf("reprovide recursive pins: %s", sc.Err)
++				return
++			}
++			if !onlyRoots {
++				// Save some bytes.
++				_ = recursivePins.Visit(sc.Pin.Key)
++			}
++			_ = set.Visitor(ctx)(sc.Pin.Key)
++		}
++
++		// 2. Direct pins
++		for sc := range pinning.DirectKeys(ctx, false) {
++			if sc.Err != nil {
++				log.Errorf("reprovide direct pins: %s", sc.Err)
++				return
++			}
++			_ = set.Visitor(ctx)(sc.Pin.Key)
++		}
++
++		if onlyRoots {
++			return
++		}
++
++		// 3. Go through recursive pins to fetch remaining blocks if we want more
++		// than just roots.
++		session := fetchConfig.NewSession(ctx)
++		err := recursivePins.ForEach(func(c cid.Cid) error {
++			return fetcherhelpers.BlockAll(ctx, session, cidlink.Link{Cid: c}, func(res fetcher.FetchResult) error {
++				clink, ok := res.LastBlockLink.(cidlink.Link)
++				if ok {
++					_ = set.Visitor(ctx)(clink.Cid)
++				}
++				return nil
++			})
++		})
++		if err != nil {
++			log.Errorf("reprovide indirect pins: %s", err)
++			return
++		}
++	}()
++
++	return set, nil
++}
+diff --git a/provider/noop.go b/provider/noop.go
+index 4da18da3..0150967e 100644
+--- a/provider/noop.go
++++ b/provider/noop.go
+@@ -34,3 +34,6 @@ func (op *noopProvider) Reprovide(context.Context) error {
+ func (op *noopProvider) Stat() (ReproviderStats, error) {
+ 	return ReproviderStats{}, nil
+ }
++
++func (op *noopProvider) SetKeyProvider(KeyChanFunc) {
++}
+diff --git a/provider/provider.go b/provider/provider.go
+index c0573d5d..11e21e50 100644
+--- a/provider/provider.go
++++ b/provider/provider.go
+@@ -10,13 +10,8 @@ import (
+ 	"context"
+ 
+ 	"github.com/gammazero/chanqueue"
+-	blocks "github.com/ipfs/boxo/blockstore"
+-	"github.com/ipfs/boxo/fetcher"
+-	fetcherhelpers "github.com/ipfs/boxo/fetcher/helpers"
+-	pin "github.com/ipfs/boxo/pinning/pinner"
+ 	"github.com/ipfs/go-cid"
+ 	"github.com/ipfs/go-cidutil"
+-	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
+ )
+ 
+ // Provider announces blocks to the network
+@@ -39,6 +34,7 @@ type System interface {
+ 	Clear() int
+ 	Close() error
+ 	Stat() (ReproviderStats, error)
++	SetKeyProvider(kp KeyChanFunc)
+ 	Provider
+ 	Reprovider
+ }
+@@ -46,38 +42,6 @@ type System interface {
+ // KeyChanFunc is function streaming CIDs to pass to content routing
+ type KeyChanFunc func(context.Context) (<-chan cid.Cid, error)
+ 
+-// NewBlockstoreProvider returns key provider using bstore.AllKeysChan
+-func NewBlockstoreProvider(bstore blocks.Blockstore) KeyChanFunc {
+-	return func(ctx context.Context) (<-chan cid.Cid, error) {
+-		return bstore.AllKeysChan(ctx)
+-	}
+-}
+-
+-// NewPinnedProvider returns a KeyChanFunc supplying pinned keys. The Provider
+-// will block when writing to the channel and there are no readers.
+-func NewPinnedProvider(onlyRoots bool, pinning pin.Pinner, fetchConfig fetcher.Factory) KeyChanFunc {
+-	return func(ctx context.Context) (<-chan cid.Cid, error) {
+-		set, err := pinSet(ctx, pinning, fetchConfig, onlyRoots)
+-		if err != nil {
+-			return nil, err
+-		}
+-
+-		outCh := make(chan cid.Cid)
+-		go func() {
+-			defer close(outCh)
+-			for c := range set.New {
+-				select {
+-				case <-ctx.Done():
+-					return
+-				case outCh <- c:
+-				}
+-			}
+-		}()
+-
+-		return outCh, nil
+-	}
+-}
+-
+ // NewBufferedProvider returns a KeyChanFunc supplying keys from a given
+ // KeyChanFunction, but buffering keys in memory if we can read them faster
+ // they are consumed.  This allows the underlying KeyChanFunc to finish
+@@ -95,62 +59,6 @@ func NewBufferedProvider(pinsF KeyChanFunc) KeyChanFunc {
+ 	}
+ }
+ 
+-func pinSet(ctx context.Context, pinning pin.Pinner, fetchConfig fetcher.Factory, onlyRoots bool) (*cidutil.StreamingSet, error) {
+-	set := cidutil.NewStreamingSet()
+-	recursivePins := cidutil.NewSet()
+-
+-	go func() {
+-		ctx, cancel := context.WithCancel(ctx)
+-		defer cancel()
+-		defer close(set.New)
+-
+-		// 1. Recursive keys
+-		for sc := range pinning.RecursiveKeys(ctx, false) {
+-			if sc.Err != nil {
+-				log.Errorf("reprovide recursive pins: %s", sc.Err)
+-				return
+-			}
+-			if !onlyRoots {
+-				// Save some bytes.
+-				_ = recursivePins.Visit(sc.Pin.Key)
+-			}
+-			_ = set.Visitor(ctx)(sc.Pin.Key)
+-		}
+-
+-		// 2. Direct pins
+-		for sc := range pinning.DirectKeys(ctx, false) {
+-			if sc.Err != nil {
+-				log.Errorf("reprovide direct pins: %s", sc.Err)
+-				return
+-			}
+-			_ = set.Visitor(ctx)(sc.Pin.Key)
+-		}
+-
+-		if onlyRoots {
+-			return
+-		}
+-
+-		// 3. Go through recursive pins to fetch remaining blocks if we want more
+-		// than just roots.
+-		session := fetchConfig.NewSession(ctx)
+-		err := recursivePins.ForEach(func(c cid.Cid) error {
+-			return fetcherhelpers.BlockAll(ctx, session, cidlink.Link{Cid: c}, func(res fetcher.FetchResult) error {
+-				clink, ok := res.LastBlockLink.(cidlink.Link)
+-				if ok {
+-					_ = set.Visitor(ctx)(clink.Cid)
+-				}
+-				return nil
+-			})
+-		})
+-		if err != nil {
+-			log.Errorf("reprovide indirect pins: %s", err)
+-			return
+-		}
+-	}()
+-
+-	return set, nil
+-}
+-
+ func NewPrioritizedProvider(priorityCids KeyChanFunc, otherCids KeyChanFunc) KeyChanFunc {
+ 	return func(ctx context.Context) (<-chan cid.Cid, error) {
+ 		outCh := make(chan cid.Cid)
+diff --git a/provider/reprovider.go b/provider/reprovider.go
+index 2ab94550..da3643e4 100644
+--- a/provider/reprovider.go
++++ b/provider/reprovider.go
+@@ -52,9 +52,11 @@ type reprovider struct {
+ 	initialReprovideDelay    time.Duration
+ 	initialReprovideDelaySet bool
+ 
+-	allowlist   verifcid.Allowlist
+-	rsys        Provide
+-	keyProvider KeyChanFunc
++	allowlist verifcid.Allowlist
++	rsys      Provide
++
++	keyProviderLock sync.RWMutex
++	keyProvider     KeyChanFunc
+ 
+ 	q  *queue.Queue
+ 	ds datastore.Batching
+@@ -253,6 +255,16 @@ func Online(rsys Provide) Option {
+ 	}
+ }
+ 
++// SetKeyProvider replaces the current key provider.
++func (s *reprovider) SetKeyProvider(kp KeyChanFunc) {
++	if kp == nil {
++		return
++	}
++	s.keyProviderLock.Lock()
++	s.keyProvider = kp
++	s.keyProviderLock.Unlock()
++}
++
+ func (s *reprovider) run() {
+ 	s.closewg.Add(1)
+ 	go s.provideWorker()
+@@ -423,7 +435,11 @@ func (s *reprovider) Reprovide(ctx context.Context) error {
+ 	}
+ 	defer s.mu.Unlock()
+ 
+-	kch, err := s.keyProvider(ctx)
++	s.keyProviderLock.RLock()
++	kp := s.keyProvider
++	s.keyProviderLock.RUnlock()
++
++	kch, err := kp(ctx)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -552,11 +568,12 @@ func (s *reprovider) Stat() (ReproviderStats, error) {
+ 
+ func doProvideMany(ctx context.Context, r Provide, keys []multihash.Multihash) error {
+ 	if many, ok := r.(ProvideMany); ok {
++		log.Debugf("reprovider: provideMany (%d keys)", len(keys))
+ 		return many.ProvideMany(ctx, keys)
+ 	}
+ 
+ 	for _, k := range keys {
+-		log.Debugf("providing %s", k)
++		log.Debugf("reprovider: providing %s", k)
+ 		if err := r.Provide(ctx, cid.NewCidV1(cid.Raw, k), true); err != nil {
+ 			return err
+ 		}

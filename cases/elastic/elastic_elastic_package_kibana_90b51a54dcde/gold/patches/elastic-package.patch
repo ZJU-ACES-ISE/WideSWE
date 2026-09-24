@@ -1,0 +1,762 @@
+diff --git a/internal/builder/packages.go b/internal/builder/packages.go
+index 35d0649f68391c1161fa6d6d76ca53920aa6e315..9916c51d8e067400b5f43b3c9b3378f3e9c8f794 100644
+--- a/internal/builder/packages.go
++++ b/internal/builder/packages.go
+@@ -110,6 +110,20 @@ func BuildPackagesDirectory(packageRoot string, buildDir string) (string, error)
+ 	return filepath.Join(buildDir, m.Name, m.Version), nil
+ }
+ 
++// ReadBuiltPackageManifest locates the built package directory for packageRoot
++// and reads its manifest. Returns the built root path and parsed manifest.
++func ReadBuiltPackageManifest(packageRoot string) (string, *packages.PackageManifest, error) {
++	builtRoot, err := BuildPackagesDirectory(packageRoot, "")
++	if err != nil {
++		return "", nil, err
++	}
++	builtPkg, err := packages.ReadPackageManifestFromPackageRoot(builtRoot)
++	if err != nil {
++		return "", nil, err
++	}
++	return builtRoot, builtPkg, nil
++}
++
+ // buildPackagesZipPath function returns the path to zipped built package.
+ func buildPackagesZipPath(packageRoot string) (string, error) {
+ 	buildPackagesDir, err := buildPackagesRootDirectory()
+diff --git a/internal/kibana/packagepolicy.go b/internal/kibana/packagepolicy.go
+index ee8e6ad856cabe269d817ee52bf463feef13cdf4..2e0e75bc924b79ede09b452887c68e153068af6f 100644
+--- a/internal/kibana/packagepolicy.go
++++ b/internal/kibana/packagepolicy.go
+@@ -48,17 +48,20 @@ func BuildIntegrationPackagePolicy(
+ 	inputs := make(map[string]PackagePolicyInput)
+ 	for _, pt := range manifest.PolicyTemplates {
+ 		for _, input := range pt.Inputs {
+-			inputKey := fmt.Sprintf("%s-%s", pt.Name, input.Type)
+-			if input.Type == streamInput && pt.Name == policyTemplate.Name {
++			// effectiveName is the identifier used in data stream manifests: the Name qualifier
++			// when set (disambiguated same-type inputs), otherwise the Type.
++			effectiveName := effectiveInputName(input)
++			inputKey := fmt.Sprintf("%s-%s", pt.Name, effectiveName)
++			if effectiveName == streamInput && pt.Name == policyTemplate.Name {
+ 				// The target input: enabled with user-provided vars.
+ 				streams := buildStreamsForInput(streamInput, manifest, dsManifest, enabled, dsVars, datastreams)
+ 				inputEntry := PackagePolicyInput{
+ 					Enabled:        enabled,
+ 					Streams:        streams,
+-					inputType:      streamInput,
++					inputType:      input.Type, // Fleet agent input type (e.g. logfile, otelcol), not name qualifier or data_stream type (logs/metrics/traces).
+ 					policyTemplate: pt.Name,
+ 				}
+-				if foundInput := policyTemplate.FindInputByType(streamInput); foundInput != nil {
++				if foundInput := policyTemplate.FindInput(streamInput); foundInput != nil {
+ 					iv := SetKibanaVariables(foundInput.Vars, allInputVars)
+ 					inputEntry.Vars = iv.ToMapStr()
+ 					inputEntry.legacyVars = iv
+@@ -69,7 +72,7 @@ func BuildIntegrationPackagePolicy(
+ 				// so that sibling stream keys are correct even when multiple policy
+ 				// templates declare different data_streams lists.
+ 				ptDatastreams := packages.FilterDatastreamsForPolicyTemplate(allDatastreams, pt)
+-				streams := buildStreamsForInput(input.Type, manifest, packages.DataStreamManifest{}, false, common.MapStr{}, ptDatastreams)
++				streams := buildStreamsForInput(effectiveName, manifest, packages.DataStreamManifest{}, false, common.MapStr{}, ptDatastreams)
+ 				entry := PackagePolicyInput{
+ 					Enabled:        false,
+ 					inputType:      input.Type,
+@@ -310,3 +313,13 @@ func setVarFromUser(vars Vars, name, varType string, val packages.VarValue) {
+ 	}
+ 	vars[name] = Var{Type: varType, Value: val, fromUser: true}
+ }
++
++// effectiveInputName returns the identifier used to reference an input from data stream
++// manifests: the Name qualifier when set (for inputs disambiguated by name), or
++// the Type when no qualifier is present.
++func effectiveInputName(input packages.Input) string {
++	if input.Name != "" {
++		return input.Name
++	}
++	return input.Type
++}
+diff --git a/internal/kibana/policies.go b/internal/kibana/policies.go
+index 475d2efaf43fb45fce7f966b9c3796e1ea272d37..8f10e0e33d03bb0278e4e8229a1097b94b7a030e 100644
+--- a/internal/kibana/policies.go
++++ b/internal/kibana/policies.go
+@@ -307,6 +307,9 @@ type PackagePolicyInput struct {
+ 	Streams map[string]PackagePolicyStream `json:"streams,omitempty"`
+ 
+ 	// Unexported fields carry metadata used only for legacy API conversion.
++	// inputType is the Elastic Agent / Fleet input type from the package manifest
++	// (e.g. logfile, httpjson, otelcol), not the policy-template or data_stream type
++	// (e.g. logs, metrics, traces).
+ 	inputType      string
+ 	policyTemplate string
+ 	legacyVars     Vars
+diff --git a/internal/packages/packages.go b/internal/packages/packages.go
+index 6daf05ceba571579d1a225e8e78817368a42e826..32ad61665e974197c20235cef0bd7261fe8738b3 100644
+--- a/internal/packages/packages.go
++++ b/internal/packages/packages.go
+@@ -193,6 +193,7 @@ type Variable struct {
+ 
+ // Input is a single input configuration.
+ type Input struct {
++	Name          string     `config:"name,omitempty" json:"name,omitempty" yaml:"name,omitempty"`
+ 	Type          string     `config:"type" json:"type" yaml:"type"`
+ 	Package       string     `config:"package,omitempty" json:"package,omitempty" yaml:"package,omitempty"`
+ 	Vars          []Variable `config:"vars" json:"vars" yaml:"vars"`
+@@ -841,11 +842,15 @@ func (dsm *DataStreamManifest) indexTemplateNamePrefix() string {
+ 	return ""
+ }
+ 
+-// FindInputByType returns the input for the provided type.
+-func (pt *PolicyTemplate) FindInputByType(inputType string) *Input {
+-	for _, input := range pt.Inputs {
+-		if input.Type == inputType {
+-			return &input
++// FindInput returns the first input matching effectiveName, checked against the
++// input's Name qualifier first (when set) and then its Type. Use this when the
++// effectiveName may be a name qualifier (set on inputs that share a type) rather
++// than a bare type string.
++func (pt *PolicyTemplate) FindInput(effectiveName string) *Input {
++	for i := range pt.Inputs {
++		input := &pt.Inputs[i]
++		if (input.Name != "" && input.Name == effectiveName) || input.Type == effectiveName {
++			return input
+ 		}
+ 	}
+ 	return nil
+@@ -906,8 +911,8 @@ func findPolicyTemplateForDataStream(pkg PackageManifest, ds DataStreamManifest,
+ 
+ 	var matchedPolicyTemplates []string
+ 	for _, policyTemplate := range pkg.PolicyTemplates {
+-		// Does this policy_template include this input type?
+-		if policyTemplate.FindInputByType(inputName) == nil {
++		// Does this policy_template include an input for this identifier (name or type)?
++		if policyTemplate.FindInput(inputName) == nil {
+ 			continue
+ 		}
+ 
+diff --git a/internal/requiredinputs/streamdefs.go b/internal/requiredinputs/streamdefs.go
+index 5fd9c5d9defb25108d44bd776048e5ac1e1c5349..f14428df3e729e6ac256b97de99fab984c235d08 100644
+--- a/internal/requiredinputs/streamdefs.go
++++ b/internal/requiredinputs/streamdefs.go
+@@ -14,10 +14,10 @@ import (
+ 	"github.com/elastic/elastic-package/internal/packages"
+ )
+ 
+-// inputPkgInfo holds the resolved metadata from an input package needed to
+-// replace package: references in composable package manifests.
+-type inputPkgInfo struct {
+-	identifier     string // policy_templates[0].input; if several templates exist, only the first is used
++// inputPolicyTemplateInfo holds the resolved metadata from an input package needed to
++// replace package: references in composable (integrations) package manifests.
++type inputPolicyTemplateInfo struct {
++	input          string // policy_templates[0].input; if several templates exist, only the first is used
+ 	pkgTitle       string // manifest.title (fallback title)
+ 	pkgDescription string // manifest.description (fallback description)
+ }
+@@ -27,6 +27,12 @@ type inputPkgInfo struct {
+ // data_stream/*/manifest.yml (streams[]) with the actual input type identifier
+ // from the referenced input package, then removes the package: key.
+ //
++// When multiple inputs in the same policy template share the same type (e.g., two
++// otelcol inputs from different required packages), it also sets a unique name on
++// each such input (derived from the package name) so Fleet can distinguish them.
++// In that case, data stream manifests use the name as their input reference instead
++// of the type.
++//
+ // This step must run last, after mergeVariables, because that step uses
+ // stream.Package and input.Package to identify which entries to process.
+ // It resolves metadata per required input via buildInputPkgInfoByName, then
+@@ -41,32 +47,80 @@ func (r *RequiredInputsResolver) resolveStreamInputTypes(
+ 		return err
+ 	}
+ 
+-	if err := applyInputTypesToComposableManifest(manifest, buildRoot, infoByPkg); err != nil {
++	streamInputEffectveNames := buildStreamInputRefs(manifest, infoByPkg)
++
++	if err := applyInputTypesToComposableManifest(manifest, buildRoot, infoByPkg, streamInputEffectveNames); err != nil {
+ 		return err
+ 	}
+ 
+-	return applyInputTypesToDataStreamManifests(buildRoot, infoByPkg)
++	return applyInputTypesToDataStreamManifests(buildRoot, infoByPkg, streamInputEffectveNames)
+ }
+ 
+-// buildInputPkgInfoByName loads inputPkgInfo for each downloaded required input package path.
+-func buildInputPkgInfoByName(inputPkgPaths map[string]string) (map[string]inputPkgInfo, error) {
+-	infoByPkg := make(map[string]inputPkgInfo, len(inputPkgPaths))
++// buildStreamInputRefs computes the value to write to streams[].input for each
++// required input package referenced by the integration.
++//
++// By default the ref is the resolved input type (e.g. "logfile", "otelcol").
++// If a policy template contains multiple required input packages that resolve to
++// the same type, those packages use their package name as a stable qualifier;
++// streams[].input references that qualifier (and the corresponding input gets
++// name: <package>) so Fleet can distinguish same-type inputs.
++//
++// Duplicate detection is per policy template (not integration-wide) because only
++// inputs that coexist within a single policy template must be unique. When
++// building the Fleet package policy, inputs are keyed as
++// "{policyTemplate.Name}-{effectiveName}" where effectiveName is input Name when
++// set, otherwise Type.
++// Once a package is qualified, it keeps that ref across policy templates.
++func buildStreamInputRefs(manifest *packages.PackageManifest, infoByInputPkg map[string]inputPolicyTemplateInfo) map[string]string {
++	refs := make(map[string]string, len(infoByInputPkg))
++	// iterate over all policy templates from composable package manifest
++	for _, pt := range manifest.PolicyTemplates {
++		// first count the number of inputs of each type
++		typeCounts := make(map[string]int)
++		for _, input := range pt.Inputs {
++			if input.Package == "" {
++				continue
++			}
++			// integration input type is equivalent to the policy template input identifier in the required input package
++			typeCounts[infoByInputPkg[input.Package].input]++
++		}
++		for _, input := range pt.Inputs {
++			if input.Package == "" {
++				continue
++			}
++			importedInput := infoByInputPkg[input.Package]
++			if typeCounts[importedInput.input] > 1 {
++				refs[input.Package] = input.Package // package name as stable unique qualifier
++			} else if _, exists := refs[input.Package]; !exists {
++				refs[input.Package] = importedInput.input
++			}
++		}
++	}
++	return refs
++}
++
++// buildInputPkgInfoByName loads inputPolicyTemplateInfo for each downloaded required input package path.
++func buildInputPkgInfoByName(inputPkgPaths map[string]string) (map[string]inputPolicyTemplateInfo, error) {
++	infoByInputPkg := make(map[string]inputPolicyTemplateInfo, len(inputPkgPaths))
+ 	for pkgName, pkgPath := range inputPkgPaths {
+ 		info, err := loadInputPkgInfo(pkgPath)
+ 		if err != nil {
+ 			return nil, fmt.Errorf("loading input package info for %q: %w", pkgName, err)
+ 		}
+-		infoByPkg[pkgName] = info
++		infoByInputPkg[pkgName] = *info
+ 	}
+-	return infoByPkg, nil
++	return infoByInputPkg, nil
+ }
+ 
+-// applyInputTypesToComposableManifest sets type (and optional title/description) on
+-// package-backed policy template inputs in manifest.yml and drops package:.
++// applyInputTypesToComposableManifest sets type (and optional title/description/name) on
++// package-backed policy template inputs in manifest.yml and drops package field.
++// When streamInputRefs maps a package to its own name (indicating a type conflict), it also
++// sets name on that input so Fleet can distinguish multiple inputs of the same type.
+ func applyInputTypesToComposableManifest(
+ 	manifest *packages.PackageManifest,
+ 	buildRoot *os.Root,
+-	infoByPkg map[string]inputPkgInfo,
++	infoByInputPkg map[string]inputPolicyTemplateInfo,
++	streamInputRefs map[string]string,
+ ) error {
+ 	manifestBytes, err := buildRoot.ReadFile("manifest.yml")
+ 	if err != nil {
+@@ -82,7 +136,7 @@ func applyInputTypesToComposableManifest(
+ 			if input.Package == "" {
+ 				continue
+ 			}
+-			info, ok := infoByPkg[input.Package]
++			info, ok := infoByInputPkg[input.Package]
+ 			if !ok {
+ 				return fmt.Errorf("input package %q referenced in policy_templates[%d].inputs[%d] not found in required inputs", input.Package, ptIdx, inputIdx)
+ 			}
+@@ -92,7 +146,10 @@ func applyInputTypesToComposableManifest(
+ 				return fmt.Errorf("getting input node at pt[%d].inputs[%d]: %w", ptIdx, inputIdx, err)
+ 			}
+ 
+-			upsertKey(inputNode, "type", strVal(info.identifier))
++			upsertKey(inputNode, "type", strVal(info.input))
++			if streamInputRefs[input.Package] == input.Package {
++				upsertKey(inputNode, "name", strVal(input.Package))
++			}
+ 
+ 			if mappingValue(inputNode, "title") == nil && info.pkgTitle != "" {
+ 				upsertKey(inputNode, "title", strVal(info.pkgTitle))
+@@ -116,8 +173,11 @@ func applyInputTypesToComposableManifest(
+ }
+ 
+ // applyInputTypesToDataStreamManifests sets input on package-backed streams in each
+-// data_stream/*/manifest.yml and drops package:.
+-func applyInputTypesToDataStreamManifests(buildRoot *os.Root, infoByPkg map[string]inputPkgInfo) error {
++// data_stream/*/manifest.yml and drops package:. The value written to streams[].input
++// is taken from streamInputRefs: the package name when disambiguation is required
++// (i.e. the corresponding policy template input carries a name qualifier), otherwise
++// the type identifier.
++func applyInputTypesToDataStreamManifests(buildRoot *os.Root, infoByInputPkg map[string]inputPolicyTemplateInfo, streamInputRefs map[string]string) error {
+ 	dsManifestPaths, err := fs.Glob(buildRoot.FS(), "data_stream/*/manifest.yml")
+ 	if err != nil {
+ 		return fmt.Errorf("globbing data stream manifests: %w", err)
+@@ -143,7 +203,7 @@ func applyInputTypesToDataStreamManifests(buildRoot *os.Root, infoByPkg map[stri
+ 			if stream.Package == "" {
+ 				continue
+ 			}
+-			info, ok := infoByPkg[stream.Package]
++			info, ok := infoByInputPkg[stream.Package]
+ 			if !ok {
+ 				return fmt.Errorf("input package %q referenced in %q streams[%d] not found in required inputs", stream.Package, path.Dir(manifestPath), streamIdx)
+ 			}
+@@ -153,7 +213,11 @@ func applyInputTypesToDataStreamManifests(buildRoot *os.Root, infoByPkg map[stri
+ 				return fmt.Errorf("getting stream node at index %d in %q: %w", streamIdx, manifestPath, err)
+ 			}
+ 
+-			upsertKey(streamNode, "input", strVal(info.identifier))
++			streamInputRef, ok := streamInputRefs[stream.Package]
++			if !ok {
++				return fmt.Errorf("stream input ref for package %q not found in streamInputRefs", stream.Package)
++			}
++			upsertKey(streamNode, "input", strVal(streamInputRef))
+ 
+ 			if stream.Title == "" && info.pkgTitle != "" {
+ 				upsertKey(streamNode, "title", strVal(info.pkgTitle))
+@@ -181,25 +245,25 @@ func applyInputTypesToDataStreamManifests(buildRoot *os.Root, infoByPkg map[stri
+ // needed to replace package: references in composable packages. When the input
+ // package has several policy templates, only the first template's input id is
+ // used and a warning is logged.
+-func loadInputPkgInfo(pkgPath string) (inputPkgInfo, error) {
++func loadInputPkgInfo(pkgPath string) (*inputPolicyTemplateInfo, error) {
+ 	pkgFS, closeFn, err := openPackageFS(pkgPath)
+ 	if err != nil {
+-		return inputPkgInfo{}, fmt.Errorf("opening package: %w", err)
++		return nil, fmt.Errorf("opening package: %w", err)
+ 	}
+ 	defer func() { _ = closeFn() }()
+ 
+ 	manifestBytes, err := fs.ReadFile(pkgFS, packages.PackageManifestFile)
+ 	if err != nil {
+-		return inputPkgInfo{}, fmt.Errorf("reading manifest: %w", err)
++		return nil, fmt.Errorf("reading manifest: %w", err)
+ 	}
+ 
+ 	m, err := packages.ReadPackageManifestBytes(manifestBytes)
+ 	if err != nil {
+-		return inputPkgInfo{}, fmt.Errorf("parsing manifest: %w", err)
++		return nil, fmt.Errorf("parsing manifest: %w", err)
+ 	}
+ 
+ 	if len(m.PolicyTemplates) == 0 {
+-		return inputPkgInfo{}, fmt.Errorf("input package %q has no policy templates", m.Name)
++		return nil, fmt.Errorf("input package %q has no policy templates", m.Name)
+ 	}
+ 	if len(m.PolicyTemplates) > 1 {
+ 		logger.Warnf("Input package %q has multiple policy templates; using input identifier %q from first policy template only", m.Name, m.PolicyTemplates[0].Input)
+@@ -207,11 +271,11 @@ func loadInputPkgInfo(pkgPath string) (inputPkgInfo, error) {
+ 
+ 	pt := m.PolicyTemplates[0]
+ 	if pt.Input == "" {
+-		return inputPkgInfo{}, fmt.Errorf("input package %q policy template %q has no input identifier", m.Name, pt.Name)
++		return nil, fmt.Errorf("input package %q policy template %q has no input identifier", m.Name, pt.Name)
+ 	}
+ 
+-	return inputPkgInfo{
+-		identifier:     pt.Input,
++	return &inputPolicyTemplateInfo{
++		input:          pt.Input,
+ 		pkgTitle:       m.Title,
+ 		pkgDescription: m.Description,
+ 	}, nil
+diff --git a/internal/resources/fleetpolicy.go b/internal/resources/fleetpolicy.go
+index 2dfa395e71ebabe0b14f985c927b1a30f4171ac9..b1541c7a0cee36e91eed98e82d0fd0557948f6c8 100644
+--- a/internal/resources/fleetpolicy.go
++++ b/internal/resources/fleetpolicy.go
+@@ -159,15 +159,11 @@ func (f *FleetAgentPolicy) Create(ctx resource.Context) error {
+ }
+ 
+ func createPackagePolicy(policy FleetAgentPolicy, packagePolicy FleetPackagePolicy) (*kibana.PackagePolicy, error) {
+-	builtRoot, err := builder.BuildPackagesDirectory(packagePolicy.PackageRoot, "")
+-	if err != nil {
+-		return nil, fmt.Errorf("error locating built package directory: %w", err)
+-	}
+ 	// Composable integrations (requires.input) use the built tree so manifest input types
+ 	// match the package Fleet installed; source alone can omit types and break input keys.
+-	manifest, err := packages.ReadPackageManifestFromPackageRoot(builtRoot)
++	builtRoot, manifest, err := builder.ReadBuiltPackageManifest(packagePolicy.PackageRoot)
+ 	if err != nil {
+-		return nil, fmt.Errorf("could not read package manifest at %s: %w", builtRoot, err)
++		return nil, fmt.Errorf("reading built package manifest: %w", err)
+ 	}
+ 
+ 	switch manifest.Type {
+diff --git a/internal/testrunner/runners/static/tester.go b/internal/testrunner/runners/static/tester.go
+index 80a9c9118e5399a10ddce226d4fe4437e89559b2..d95b1b1fcd09495729e13626d9032c283ba80eb7 100644
+--- a/internal/testrunner/runners/static/tester.go
++++ b/internal/testrunner/runners/static/tester.go
+@@ -12,6 +12,7 @@ import (
+ 	"slices"
+ 
+ 	"github.com/elastic/elastic-package/internal/benchrunner/runners/stream"
++	"github.com/elastic/elastic-package/internal/builder"
+ 	"github.com/elastic/elastic-package/internal/fields"
+ 	"github.com/elastic/elastic-package/internal/files"
+ 	"github.com/elastic/elastic-package/internal/logger"
+@@ -194,7 +195,7 @@ func (r tester) verifySampleEvent(sampleEventPath string, pkgManifest *packages.
+ 		fields.WithDefaultNumericConversion(),
+ 		fields.WithExpectedDatasets(expectedDatasets),
+ 		fields.WithEnabledImportAllECSSChema(true),
+-		fields.WithOTelValidation(isTestUsingOTelCollectorInput(pkgManifest)),
++		fields.WithOTelValidation(r.isDataStreamUsingOTelCollectorInput(pkgManifest)),
+ 		fields.WithSchemaURLs(r.schemaURLs),
+ 	)
+ 	if err != nil {
+@@ -248,28 +249,51 @@ func (r tester) getExpectedDatasets(pkgManifest *packages.PackageManifest) ([]st
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to read data stream manifest: %w", err)
+ 	}
++	dataset := pkgManifest.Name + "." + dsName
+ 	if ds := dataStreamManifest.Dataset; ds != "" {
+-		return []string{ds}, nil
++		dataset = ds
+ 	}
+-	return []string{pkgManifest.Name + "." + dsName}, nil
++	if r.isDataStreamUsingOTelCollectorInput(pkgManifest) {
++		dataset = dataset + ".otel"
++	}
++	return []string{dataset}, nil
+ }
+ 
+ func (r tester) TearDown(ctx context.Context) error {
+ 	return nil // it's a static test runner, no state is stored
+ }
+ 
+-func isTestUsingOTelCollectorInput(manifest *packages.PackageManifest) bool {
+-	if manifest.Type != "input" {
+-		return false
+-	}
+-
+-	// We are not testing an specific policy template here, assume this is an OTel package
+-	// if at least one policy template has an "otelcol" input.
+-	if !slices.ContainsFunc(manifest.PolicyTemplates, func(t packages.PolicyTemplate) bool {
++// isDataStreamUsingOTelCollectorInput returns true if the data stream under test uses the
++// otelcol input type. For input packages the singular PolicyTemplate.Input field is checked
++// directly. For composable integration packages the built manifest is read to resolve the
++// input type materialised from the required input package.
++func (r tester) isDataStreamUsingOTelCollectorInput(manifest *packages.PackageManifest) bool {
++	// Input packages expose the input type directly in the singular Input field.
++	if slices.ContainsFunc(manifest.PolicyTemplates, func(t packages.PolicyTemplate) bool {
+ 		return t.Input == "otelcol"
+ 	}) {
+-		return false
++		return true
+ 	}
+ 
+-	return true
++	// For composable integration packages, check the built manifest where "package:" references
++	// are materialised into concrete input types.
++	if r.testFolder.DataStream == "" {
++		return false
++	}
++	builtRoot, builtPkg, err := builder.ReadBuiltPackageManifest(r.packageRoot)
++	if err != nil {
++		logger.Debugf("failed to read built manifest for OTel detection: %v", err)
++		return false
++	}
++	builtDS, err := packages.ReadDataStreamManifestFromPackageRoot(builtRoot, r.testFolder.DataStream)
++	if err != nil || len(builtDS.Streams) == 0 {
++		return false
++	}
++	inputName := builtDS.Streams[0].Input
++	for _, pt := range builtPkg.PolicyTemplates {
++		if input := pt.FindInput(inputName); input != nil {
++			return input.Type == "otelcol"
++		}
++	}
++	return false
+ }
+diff --git a/internal/testrunner/runners/system/tester.go b/internal/testrunner/runners/system/tester.go
+index e3d822e97d2bccedec1def9a3484d4ce348d152f..3d969d2137674e98325dfec814d3d9b1797f7ea4 100644
+--- a/internal/testrunner/runners/system/tester.go
++++ b/internal/testrunner/runners/system/tester.go
+@@ -1243,6 +1243,15 @@ func (r *tester) prepareScenario(ctx context.Context, config *testConfig, stackC
+ 		return nil, fmt.Errorf("failed to find the selected policy_template: %w", err)
+ 	}
+ 	scenario.policyTemplate = policyTemplate
++	// For integration packages with composable inputs the source manifest carries unresolved
++	// "package:" references, so policyTemplate.Input is empty even when the effective input
++	// type is "otelcol". Resolve it from the built tree so otelcol-specific behaviour
++	// (e.g. the .otel dataset suffix) works correctly for composable integrations.
++	if scenario.policyTemplate.Input == "" {
++		if resolved := r.resolveEffectiveInputType(policyTemplateName, config.Input); resolved != "" {
++			scenario.policyTemplate.Input = resolved
++		}
++	}
+ 
+ 	policyToEnrollOrCurrent, policyToTest, err := r.createOrGetKibanaPolicies(ctx, serviceStateData, stackConfig)
+ 	if err != nil {
+@@ -1289,7 +1298,11 @@ func (r *tester) prepareScenario(ctx context.Context, config *testConfig, stackC
+ 	scenario.startTestTime = time.Now()
+ 
+ 	logger.Debug("adding package data stream to test policy...")
+-	policy, dsType, dsDataset, err := CreatePackagePolicy(policyToTest, r.pkgManifest, policyTemplate, r.dataStreamManifest, config.Input, config.Vars, config.DataStream.Vars, policyToTest.Namespace, r.packageRoot)
++	dsName := ""
++	if r.dataStreamManifest != nil {
++		dsName = r.dataStreamManifest.Name
++	}
++	policy, dsType, dsDataset, err := CreatePackagePolicy(policyToTest, policyTemplate.Name, dsName, config.Input, config.Vars, config.DataStream.Vars, policyToTest.Namespace, r.packageRoot)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("could not create package data stream: %w", err)
+ 	}
+@@ -1533,7 +1546,7 @@ func (r *tester) buildDataStreamScenarios(ctx context.Context, dsType, dsDataset
+ 		return scenarios, nil
+ 	}
+ 	return []scenarioDataStream{{
+-		dataStream:        BuildDataStreamName(dsType, dsDataset, namespace, policyTemplate, r.pkgManifest.Type),
++		dataStream:        BuildDataStreamName(dsType, dsDataset, namespace, policyTemplate),
+ 		indexTemplateName: buildIndexTemplateName(dsType, dsDataset),
+ 	}}, nil
+ }
+@@ -1574,11 +1587,11 @@ func appendOtelcolAgentDatasetSuffix(baseDataset string) string {
+ }
+ 
+ // BuildDataStreamName builds the expected data stream name that is installed in Elasticsearch
+-// when the package data stream is added to the policy. For input packages with the otelcol
+-// input, the name includes the ".otel" suffix that Elastic Agent adds (see appendOtelcolAgentDatasetSuffix).
+-func BuildDataStreamName(dsType, dsDataset, namespace string, policyTemplate packages.PolicyTemplate, packageType string) string {
++// when the package data stream is added to the policy. For otelcol inputs (regardless of
++// package type), the name includes the ".otel" suffix that Elastic Agent adds (see appendOtelcolAgentDatasetSuffix).
++func BuildDataStreamName(dsType, dsDataset, namespace string, policyTemplate packages.PolicyTemplate) string {
+ 	dataset := dsDataset
+-	if packageType == "input" && policyTemplate.Input == otelCollectorInputName {
++	if policyTemplate.Input == otelCollectorInputName {
+ 		dataset = appendOtelcolAgentDatasetSuffix(dataset)
+ 	}
+ 	return fmt.Sprintf("%s-%s-%s", dsType, dataset, namespace)
+@@ -2072,8 +2085,7 @@ func (r *tester) expectedDatasets(scenario *scenarioTest) ([]string, error) {
+ 	if len(expectedDatasets) == 0 {
+ 		// get dataset directly from package policy added when preparing the scenario
+ 		expectedDataset := scenario.dataStreamDataset
+-		if scenario.policyTemplate.Input == otelCollectorInputName &&
+-			r.pkgManifest != nil && r.pkgManifest.Type == "input" {
++		if scenario.policyTemplate.Input == otelCollectorInputName {
+ 			expectedDataset = appendOtelcolAgentDatasetSuffix(expectedDataset)
+ 		}
+ 		expectedDatasets = []string{expectedDataset}
+@@ -2122,16 +2134,44 @@ func (r *tester) runTest(ctx context.Context, config *testConfig, stackConfig st
+ }
+ 
+ func (r *tester) isTestUsingOTelCollectorInput(policyTemplateInput string) bool {
+-	// Just supported for input packages currently
+-	if r.pkgManifest.Type != "input" {
+-		return false
+-	}
++	return policyTemplateInput == otelCollectorInputName
++}
+ 
+-	if policyTemplateInput != otelCollectorInputName {
+-		return false
++// resolveEffectiveInputType returns the resolved input type for the current data stream by
++// reading the built package tree, where composable "package:" references are materialised
++// into concrete input types. It is used to populate scenario.policyTemplate.Input for
++// integration packages whose source manifest carries unresolved references.
++func (r *tester) resolveEffectiveInputType(policyTemplateName, configInput string) string {
++	builtRoot, builtPkg, err := builder.ReadBuiltPackageManifest(r.packageRoot)
++	if err != nil {
++		logger.Debugf("failed to read built manifest for input type resolution: %v", err)
++		return ""
+ 	}
+-
+-	return true
++	builtPT, err := packages.SelectPolicyTemplateByName(builtPkg.PolicyTemplates, policyTemplateName)
++	if err != nil {
++		logger.Debugf("failed to find policy template %q in built manifest: %v", policyTemplateName, err)
++		return ""
++	}
++	// For non-composable integration packages the Input field is set directly.
++	if builtPT.Input != "" {
++		return builtPT.Input
++	}
++	// For composable integration packages, resolve which input the current data stream uses.
++	inputName := configInput
++	if inputName == "" && r.testFolder.DataStream != "" {
++		builtDS, err := packages.ReadDataStreamManifestFromPackageRoot(builtRoot, r.testFolder.DataStream)
++		if err == nil && len(builtDS.Streams) > 0 {
++			inputName = builtDS.Streams[0].Input
++		}
++	}
++	if inputName == "" {
++		return ""
++	}
++	input := builtPT.FindInput(inputName)
++	if input == nil {
++		return ""
++	}
++	return input.Type
+ }
+ 
+ func dumpScenarioDocs(dataStreams []scenarioDataStream) error {
+@@ -2210,57 +2250,87 @@ func (r *tester) checkEnrolledAgents(ctx context.Context, agentInfo agentdeploye
+ 
+ // CreatePackagePolicy builds a PackagePolicy for the given package configuration, returning
+ // the policy along with the data stream type and dataset for building index/data stream names.
++// It always reads manifests from the built package tree (via packageRoot) so that composable
++// integrations — where source streams carry unresolved package: references — produce the same
++// resolved input keys that Fleet sees. Both input-type and integration packages go through the
++// built bundle; pass dataStreamName as "" for input-type packages.
+ func CreatePackagePolicy(
+ 	kibanaPolicy *kibana.Policy,
+-	pkg *packages.PackageManifest,
+-	policyTemplate packages.PolicyTemplate,
+-	ds *packages.DataStreamManifest,
++	policyTemplateName string,
++	dataStreamName string,
+ 	cfgName string,
+ 	cfgVars, cfgDSVars common.MapStr,
+ 	suffix string,
+ 	packageRoot string,
+ ) (policy kibana.PackagePolicy, dsType string, dsDataset string, err error) {
+-	if pkg.Type == "input" {
++	if packageRoot == "" {
++		return kibana.PackagePolicy{}, "", "", fmt.Errorf("package root is required")
++	}
++
++	// Always resolve against the built tree so that RequiredInputsResolver has already
++	// materialized package: references into concrete input types.
++	builtRoot, builtPkg, err := builder.ReadBuiltPackageManifest(packageRoot)
++	if err != nil {
++		return kibana.PackagePolicy{}, "", "", fmt.Errorf("reading built package manifest: %w", err)
++	}
++
++	builtPolicyTemplate, err := packages.SelectPolicyTemplateByName(builtPkg.PolicyTemplates, policyTemplateName)
++	if err != nil {
++		return kibana.PackagePolicy{}, "", "", fmt.Errorf("finding policy template %q in built manifest: %w", policyTemplateName, err)
++	}
++
++	if builtPkg.Type == "input" {
+ 		p := kibana.BuildInputPackagePolicy(
+ 			kibanaPolicy.ID, kibanaPolicy.Namespace,
+-			fmt.Sprintf("%s-%s-%s", pkg.Name, policyTemplate.Name, suffix),
+-			*pkg, policyTemplate, cfgVars, true,
++			fmt.Sprintf("%s-%s-%s", builtPkg.Name, builtPolicyTemplate.Name, suffix),
++			*builtPkg, builtPolicyTemplate, cfgVars, true,
+ 		)
+-		fallbackDataset := fmt.Sprintf("%s.%s", pkg.Name, policyTemplate.Name)
+-		return p, dataStreamTypeFromPolicy(p, policyTemplate.Type), datasetFromPolicy(p, fallbackDataset), nil
+-	}
+-	if ds == nil {
+-		return kibana.PackagePolicy{}, "", "", fmt.Errorf("data stream manifest is required for integration packages")
++		fallbackDataset := fmt.Sprintf("%s.%s", builtPkg.Name, builtPolicyTemplate.Name)
++		return p, dataStreamTypeFromPolicy(p, builtPolicyTemplate.Type), datasetFromPolicy(p, fallbackDataset), nil
+ 	}
+-	if packageRoot == "" {
+-		return kibana.PackagePolicy{}, "", "", fmt.Errorf("package root is required for integration packages")
++
++	if dataStreamName == "" {
++		return kibana.PackagePolicy{}, "", "", fmt.Errorf("data stream name is required for integration packages")
+ 	}
+ 
+-	// Match Fleet's view of the package: composable integrations use the built tree (requires.input).
+-	root, err := builder.BuildPackagesDirectory(packageRoot, "")
++	builtDS, err := packages.ReadDataStreamManifestFromPackageRoot(builtRoot, dataStreamName)
+ 	if err != nil {
+-		return kibana.PackagePolicy{}, "", "", fmt.Errorf("error locating built package directory: %w", err)
++		return kibana.PackagePolicy{}, "", "", fmt.Errorf("reading built data stream %q manifest at %s: %w", dataStreamName, builtRoot, err)
+ 	}
+-
+-	allDatastreams, err := packages.ReadAllDataStreamManifests(root)
++	allDatastreams, err := packages.ReadAllDataStreamManifests(builtRoot)
+ 	if err != nil {
+ 		return kibana.PackagePolicy{}, "", "", err
+ 	}
++	return buildIntegrationPackagePolicyFromBuilt(kibanaPolicy, builtPkg, builtDS, builtPolicyTemplate, allDatastreams, cfgName, cfgVars, cfgDSVars, suffix)
++}
+ 
++// buildIntegrationPackagePolicyFromBuilt builds a Fleet package policy from manifests
++// under builtRoot (the materialized package tree Fleet installs). Caller must ensure
++// builtRoot matches the package the test installed.
++func buildIntegrationPackagePolicyFromBuilt(
++	kibanaPolicy *kibana.Policy,
++	builtPkg *packages.PackageManifest,
++	builtDS *packages.DataStreamManifest,
++	builtPolicyTemplate packages.PolicyTemplate,
++	allDatastreams []packages.DataStreamManifest,
++	cfgName string,
++	cfgVars, cfgDSVars common.MapStr,
++	suffix string,
++) (policy kibana.PackagePolicy, dsType string, dsDataset string, err error) {
+ 	p, err := kibana.BuildIntegrationPackagePolicy(
+ 		kibanaPolicy.ID, kibanaPolicy.Namespace,
+-		fmt.Sprintf("%s-%s-%s", pkg.Name, ds.Name, suffix),
+-		*pkg, policyTemplate, *ds, cfgName, cfgVars, cfgDSVars, true, allDatastreams,
++		fmt.Sprintf("%s-%s-%s", builtPkg.Name, builtDS.Name, suffix),
++		*builtPkg, builtPolicyTemplate, *builtDS, cfgName, cfgVars, cfgDSVars, true, allDatastreams,
+ 	)
+ 	if err != nil {
+ 		return kibana.PackagePolicy{}, "", "", err
+ 	}
+ 
+-	dataset := fmt.Sprintf("%s.%s", pkg.Name, ds.Name)
+-	if ds.Dataset != "" {
+-		dataset = ds.Dataset
++	dataset := fmt.Sprintf("%s.%s", builtPkg.Name, builtDS.Name)
++	if builtDS.Dataset != "" {
++		dataset = builtDS.Dataset
+ 	}
+-	return p, ds.Type, dataset, nil
++	return p, builtDS.Type, dataset, nil
+ }
+ 
+ func datasetFromPolicy(policy kibana.PackagePolicy, fallback string) string {
+diff --git a/internal/testrunner/script/data_stream.go b/internal/testrunner/script/data_stream.go
+index c46d02a755514993b8b6a7b0c071b2781d510c6b..7d6a802ddb924a86b06d2dd0430f08e5bbad1a89 100644
+--- a/internal/testrunner/script/data_stream.go
++++ b/internal/testrunner/script/data_stream.go
+@@ -18,6 +18,7 @@ import (
+ 	"github.com/elastic/go-ucfg"
+ 	"github.com/elastic/go-ucfg/yaml"
+ 
++	"github.com/elastic/elastic-package/internal/builder"
+ 	"github.com/elastic/elastic-package/internal/common"
+ 	"github.com/elastic/elastic-package/internal/kibana"
+ 	"github.com/elastic/elastic-package/internal/packages"
+@@ -121,7 +122,38 @@ func addPackagePolicy(ts *testscript.TestScript, neg bool, args []string) {
+ 	templ, err := packages.SelectPolicyTemplateByName(pkgMan.PolicyTemplates, *polName)
+ 	ts.Check(decoratedWith("finding policy template", err))
+ 
+-	policy, dsType, dsDataset, err := system.CreatePackagePolicy(installed.testingPolicy, pkgMan, templ, dsMan, config.Input, config.Vars, config.DataStream.Vars, installed.testingPolicy.Namespace, manifestRoot)
++	// For composable integration packages the source manifest has unresolved "package:" references,
++	// so templ.Input is empty. Resolve the effective input type from the built tree (same bundle
++	// CreatePackagePolicy uses) so BuildDataStreamName can apply the otelcol ".otel" suffix.
++	if templ.Input == "" {
++		builtRoot, builtPkg, err := builder.ReadBuiltPackageManifest(manifestRoot)
++		ts.Check(decoratedWith("reading built package manifest for policy template input", err))
++		builtPT, err := packages.SelectPolicyTemplateByName(builtPkg.PolicyTemplates, *polName)
++		ts.Check(decoratedWith("finding policy template in built manifest", err))
++		if builtPT.Input != "" {
++			templ.Input = builtPT.Input
++		} else {
++			inputName := config.Input
++			if inputName == "" {
++				builtDS, err := packages.ReadDataStreamManifestFromPackageRoot(builtRoot, dsMan.Name)
++				ts.Check(decoratedWith("reading data stream manifest from built package", err))
++				if len(builtDS.Streams) == 0 {
++					ts.Fatalf("data stream %q has no streams in built manifest", dsMan.Name)
++				}
++				inputName = builtDS.Streams[0].Input
++			}
++			if inputName == "" {
++				ts.Fatalf("could not determine input for policy template %q (config input empty and could not infer from built data stream)", *polName)
++			}
++			input := builtPT.FindInput(inputName)
++			if input == nil {
++				ts.Fatalf("no input %q in policy template %q (built manifest)", inputName, *polName)
++			}
++			templ.Input = input.Type
++		}
++	}
++
++	policy, dsType, dsDataset, err := system.CreatePackagePolicy(installed.testingPolicy, *polName, dsMan.Name, config.Input, config.Vars, config.DataStream.Vars, installed.testingPolicy.Namespace, manifestRoot)
+ 	ts.Check(decoratedWith("creating package policy", err))
+ 	_, err = stk.kibana.CreatePackagePolicy(ctx, policy, kibana.PolicyAPIFormatAuto)
+ 	ts.Check(decoratedWith("adding package policy", err))
+@@ -130,7 +162,7 @@ func addPackagePolicy(ts *testscript.TestScript, neg bool, args []string) {
+ 	ts.Check(decoratedWith("reading policy", err))
+ 	ts.Check(decoratedWith("assigning policy", stk.kibana.AssignPolicyToAgent(ctx, installed.enrolled, *pol)))
+ 
+-	dsName := system.BuildDataStreamName(dsType, dsDataset, installed.testingPolicy.Namespace, templ, pkgMan.Type)
++	dsName := system.BuildDataStreamName(dsType, dsDataset, installed.testingPolicy.Namespace, templ)
+ 	ts.Setenv(dsNameLabel, dsName)
+ 	dataStreams[dsName] = struct{}{}
+ 

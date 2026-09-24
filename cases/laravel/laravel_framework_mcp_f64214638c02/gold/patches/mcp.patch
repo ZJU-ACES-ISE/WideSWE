@@ -1,0 +1,334 @@
+diff --git a/composer.json b/composer.json
+index d3f150c..1cad16c 100644
+--- a/composer.json
++++ b/composer.json
+@@ -81,7 +81,7 @@
+             "rector --dry-run"
+         ],
+         "test:unit": "pest --ci --coverage --min=92.5",
+-        "test:types": "phpstan",
++        "test:types": "phpstan --no-progress",
+         "test": [
+             "@test:lint",
+             "@test:unit",
+diff --git a/src/Server.php b/src/Server.php
+index 1cc8b76..3133e2b 100644
+--- a/src/Server.php
++++ b/src/Server.php
+@@ -7,6 +7,10 @@
+ use Illuminate\Container\Container;
+ use Illuminate\Support\Str;
+ use Laravel\Mcp\Events\SessionInitialized;
++use Laravel\Mcp\Server\Attributes\Instructions;
++use Laravel\Mcp\Server\Attributes\Name;
++use Laravel\Mcp\Server\Attributes\Version;
++use Laravel\Mcp\Server\Concerns\ReadsAttributes;
+ use Laravel\Mcp\Server\Contracts\Method;
+ use Laravel\Mcp\Server\Contracts\Transport;
+ use Laravel\Mcp\Server\Exceptions\JsonRpcException;
+@@ -37,6 +41,8 @@
+  */
+ abstract class Server
+ {
++    use ReadsAttributes;
++
+     public const CAPABILITY_TOOLS = 'tools';
+ 
+     public const CAPABILITY_RESOURCES = 'resources';
+@@ -223,12 +229,16 @@ public function handle(string $rawMessage): void
+ 
+     public function createContext(): ServerContext
+     {
++        $name = $this->resolveAttribute(Name::class);
++        $version = $this->resolveAttribute(Version::class);
++        $instructions = $this->resolveAttribute(Instructions::class);
++
+         return new ServerContext(
+             supportedProtocolVersions: $this->supportedProtocolVersion,
+             serverCapabilities: $this->capabilities,
+-            serverName: $this->name,
+-            serverVersion: $this->version,
+-            instructions: $this->instructions,
++            serverName: $name !== null ? $name->value : $this->name,
++            serverVersion: $version !== null ? $version->value : $this->version,
++            instructions: $instructions !== null ? $instructions->value : $this->instructions,
+             maxPaginationLength: $this->maxPaginationLength,
+             defaultPaginationLength: $this->defaultPaginationLength,
+             tools: $this->tools,
+diff --git a/src/Server/Attributes/Description.php b/src/Server/Attributes/Description.php
+new file mode 100644
+index 0000000..05b3694
+--- /dev/null
++++ b/src/Server/Attributes/Description.php
+@@ -0,0 +1,10 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Mcp\Server\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Description extends ServerAttribute {}
+diff --git a/src/Server/Attributes/Instructions.php b/src/Server/Attributes/Instructions.php
+new file mode 100644
+index 0000000..b60c879
+--- /dev/null
++++ b/src/Server/Attributes/Instructions.php
+@@ -0,0 +1,10 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Mcp\Server\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Instructions extends ServerAttribute {}
+diff --git a/src/Server/Attributes/MimeType.php b/src/Server/Attributes/MimeType.php
+new file mode 100644
+index 0000000..6188be6
+--- /dev/null
++++ b/src/Server/Attributes/MimeType.php
+@@ -0,0 +1,10 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Mcp\Server\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class MimeType extends ServerAttribute {}
+diff --git a/src/Server/Attributes/Name.php b/src/Server/Attributes/Name.php
+new file mode 100644
+index 0000000..d45dd75
+--- /dev/null
++++ b/src/Server/Attributes/Name.php
+@@ -0,0 +1,10 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Mcp\Server\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Name extends ServerAttribute {}
+diff --git a/src/Server/Attributes/ServerAttribute.php b/src/Server/Attributes/ServerAttribute.php
+new file mode 100644
+index 0000000..db6e91f
+--- /dev/null
++++ b/src/Server/Attributes/ServerAttribute.php
+@@ -0,0 +1,10 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Mcp\Server\Attributes;
++
++abstract class ServerAttribute
++{
++    public function __construct(public string $value) {}
++}
+diff --git a/src/Server/Attributes/Title.php b/src/Server/Attributes/Title.php
+new file mode 100644
+index 0000000..cae2ebe
+--- /dev/null
++++ b/src/Server/Attributes/Title.php
+@@ -0,0 +1,10 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Mcp\Server\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Title extends ServerAttribute {}
+diff --git a/src/Server/Attributes/Uri.php b/src/Server/Attributes/Uri.php
+new file mode 100644
+index 0000000..2fcb049
+--- /dev/null
++++ b/src/Server/Attributes/Uri.php
+@@ -0,0 +1,10 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Mcp\Server\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Uri extends ServerAttribute {}
+diff --git a/src/Server/Attributes/Version.php b/src/Server/Attributes/Version.php
+new file mode 100644
+index 0000000..49a2dd6
+--- /dev/null
++++ b/src/Server/Attributes/Version.php
+@@ -0,0 +1,10 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Mcp\Server\Attributes;
++
++use Attribute;
++
++#[Attribute(Attribute::TARGET_CLASS)]
++class Version extends ServerAttribute {}
+diff --git a/src/Server/Concerns/ReadsAttributes.php b/src/Server/Concerns/ReadsAttributes.php
+new file mode 100644
+index 0000000..62c2fcc
+--- /dev/null
++++ b/src/Server/Concerns/ReadsAttributes.php
+@@ -0,0 +1,42 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Laravel\Mcp\Server\Concerns;
++
++use ReflectionClass;
++
++trait ReadsAttributes
++{
++    /**
++     * @var array<string, object|null>
++     */
++    protected static array $attributeCache = [];
++
++    /**
++     * @template T of object
++     *
++     * @param  class-string<T>  $attributeClass
++     * @return T|null
++     */
++    protected function resolveAttribute(string $attributeClass): mixed
++    {
++        $cacheKey = static::class.'@'.$attributeClass;
++
++        if (array_key_exists($cacheKey, static::$attributeCache)) {
++            return static::$attributeCache[$cacheKey]; // @phpstan-ignore return.type
++        }
++
++        $reflection = new ReflectionClass($this);
++
++        do {
++            $attributes = $reflection->getAttributes($attributeClass);
++
++            if ($attributes !== []) {
++                return static::$attributeCache[$cacheKey] = $attributes[0]->newInstance();
++            }
++        } while ($reflection = $reflection->getParentClass());
++
++        return static::$attributeCache[$cacheKey] = null;
++    }
++}
+diff --git a/src/Server/Primitive.php b/src/Server/Primitive.php
+index c2b517f..5ba0880 100644
+--- a/src/Server/Primitive.php
++++ b/src/Server/Primitive.php
+@@ -7,7 +7,11 @@
+ use Illuminate\Container\Container;
+ use Illuminate\Contracts\Support\Arrayable;
+ use Illuminate\Support\Str;
++use Laravel\Mcp\Server\Attributes\Description;
++use Laravel\Mcp\Server\Attributes\Name;
++use Laravel\Mcp\Server\Attributes\Title;
+ use Laravel\Mcp\Server\Concerns\HasMeta;
++use Laravel\Mcp\Server\Concerns\ReadsAttributes;
+ 
+ /**
+  * @implements Arrayable<string, mixed>
+@@ -15,6 +19,7 @@
+ abstract class Primitive implements Arrayable
+ {
+     use HasMeta;
++    use ReadsAttributes;
+ 
+     protected string $name = '';
+ 
+@@ -24,23 +29,29 @@ abstract class Primitive implements Arrayable
+ 
+     public function name(): string
+     {
+-        return $this->name === ''
+-            ? Str::kebab(class_basename($this))
+-            : $this->name;
++        $attribute = $this->resolveAttribute(Name::class);
++
++        return $attribute !== null
++            ? $attribute->value
++            : ($this->name !== '' ? $this->name : Str::kebab(class_basename($this)));
+     }
+ 
+     public function title(): string
+     {
+-        return $this->title === ''
+-            ? Str::headline(class_basename($this))
+-            : $this->title;
++        $attribute = $this->resolveAttribute(Title::class);
++
++        return $attribute !== null
++            ? $attribute->value
++            : ($this->title !== '' ? $this->title : Str::headline(class_basename($this)));
+     }
+ 
+     public function description(): string
+     {
+-        return $this->description === ''
+-            ? Str::headline(class_basename($this))
+-            : $this->description;
++        $attribute = $this->resolveAttribute(Description::class);
++
++        return $attribute !== null
++            ? $attribute->value
++            : ($this->description !== '' ? $this->description : Str::headline(class_basename($this)));
+     }
+ 
+     /**
+diff --git a/src/Server/Resource.php b/src/Server/Resource.php
+index 1bf2310..fc29d76 100644
+--- a/src/Server/Resource.php
++++ b/src/Server/Resource.php
+@@ -6,6 +6,8 @@
+ 
+ use Illuminate\Support\Str;
+ use Laravel\Mcp\Server\Annotations\Annotation;
++use Laravel\Mcp\Server\Attributes\MimeType;
++use Laravel\Mcp\Server\Attributes\Uri;
+ use Laravel\Mcp\Server\Concerns\HasAnnotations;
+ use Laravel\Mcp\Server\Contracts\HasUriTemplate;
+ 
+@@ -23,14 +25,20 @@ public function uri(): string
+             return (string) $this->uriTemplate();
+         }
+ 
+-        return $this->uri !== '' ? $this->uri : 'file://resources/'.Str::kebab(class_basename($this));
++        $attribute = $this->resolveAttribute(Uri::class);
++
++        return $attribute !== null
++            ? $attribute->value
++            : ($this->uri !== '' ? $this->uri : 'file://resources/'.Str::kebab(class_basename($this)));
+     }
+ 
+     public function mimeType(): string
+     {
+-        return $this->mimeType !== ''
+-            ? $this->mimeType
+-            : 'text/plain';
++        $attribute = $this->resolveAttribute(MimeType::class);
++
++        return $attribute !== null
++            ? $attribute->value
++            : ($this->mimeType !== '' ? $this->mimeType : 'text/plain');
+     }
+ 
+     /**

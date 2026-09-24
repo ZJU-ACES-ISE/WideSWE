@@ -1,0 +1,35 @@
+task_id: getsentry_sentry_javascript_bundler_plugins_sentry_react_native_701fa84fe330
+agent_dependency_source_masks:
+- repos/getsentry/sentry-react-native/node_modules/@sentry/babel-plugin-component-annotate
+- repos/getsentry/sentry-react-native/packages/core/node_modules/@sentry/babel-plugin-component-annotate
+hidden_test_patches:
+- repo: sentry-javascript-bundler-plugins
+  patch: hidden/patches/sentry-javascript-bundler-plugins-hidden-tests.patch
+  test_profile: sentry_javascript_bundler_plugins-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - packages/babel-plugin-component-annotate/test/sentry-label.test.ts
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-javascript-bundler-plugins PR
+    925
+- repo: sentry-react-native
+  patch: hidden/patches/sentry-react-native-hidden-tests.patch
+  test_profile: sentry_react_native-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - packages/core/test/tools/sentryBabelTransformer.test.ts
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-react-native PR 6141
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - sentry_javascript_bundler_plugins-hidden
+    - sentry_react_native-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

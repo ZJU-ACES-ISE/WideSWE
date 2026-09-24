@@ -1,0 +1,47 @@
+diff --git a/internal/transport/http2_server.go b/internal/transport/http2_server.go
+index 7e53eb17..75e5f72d 100644
+--- a/internal/transport/http2_server.go
++++ b/internal/transport/http2_server.go
+@@ -595,10 +595,24 @@ func (t *http2Server) operateHeaders(ctx context.Context, frame *http2.MetaHeade
+ 			return nil
+ 		}
+ 	}
++
++	if s.ctx.Err() != nil {
++		// Early abort in case the timeout was zero or so low it already fired.
++		t.controlBuf.put(&earlyAbortStream{
++			httpStatus:     http.StatusOK,
++			streamID:       s.id,
++			contentSubtype: s.contentSubtype,
++			status:         status.New(codes.DeadlineExceeded, context.DeadlineExceeded.Error()),
++			rst:            !frame.StreamEnded(),
++		})
++		return nil
++	}
++
+ 	t.activeStreams[streamID] = s
+ 	if len(t.activeStreams) == 1 {
+ 		t.idle = time.Time{}
+ 	}
++
+ 	// Start a timer to close the stream on reaching the deadline.
+ 	if timeoutSet {
+ 		// We need to wait for s.cancel to be updated before calling
+diff --git a/internal/transport/http_util.go b/internal/transport/http_util.go
+index 3613d7b6..0d3ddcf1 100644
+--- a/internal/transport/http_util.go
++++ b/internal/transport/http_util.go
+@@ -196,11 +196,11 @@ func decodeTimeout(s string) (time.Duration, error) {
+ 	if !ok {
+ 		return 0, fmt.Errorf("transport: timeout unit is not recognized: %q", s)
+ 	}
+-	t, err := strconv.ParseInt(s[:size-1], 10, 64)
++	t, err := strconv.ParseUint(s[:size-1], 10, 64)
+ 	if err != nil {
+ 		return 0, err
+ 	}
+-	const maxHours = math.MaxInt64 / int64(time.Hour)
++	const maxHours = math.MaxInt64 / uint64(time.Hour)
+ 	if d == time.Hour && t > maxHours {
+ 		// This timeout would overflow math.MaxInt64; clamp it.
+ 		return time.Duration(math.MaxInt64), nil

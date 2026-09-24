@@ -1,0 +1,194 @@
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-custom/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-node-20-18/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa-node-20-18/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework-spa/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/dev-packages/e2e-tests/test-applications/react-router-7-framework/tests/errors/errors.client.test.ts b/dev-packages/e2e-tests/test-applications/react-router-7-framework/tests/errors/errors.client.test.ts
+index d6c80924c1..c1a7de46f1 100644
+--- a/dev-packages/e2e-tests/test-applications/react-router-7-framework/tests/errors/errors.client.test.ts
++++ b/dev-packages/e2e-tests/test-applications/react-router-7-framework/tests/errors/errors.client.test.ts
+@@ -100,7 +100,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+@@ -127,7 +128,8 @@ test.describe('client-side errors', () => {
+             type: 'Error',
+             value: errorMessage,
+             mechanism: {
+-              handled: true,
++              handled: false,
++              type: 'auto.function.react_router.on_error',
+             },
+           },
+         ],
+diff --git a/packages/react-router/test/client/sentryOnError.test.ts b/packages/react-router/test/client/sentryOnError.test.ts
+new file mode 100644
+index 0000000000..33df018582
+--- /dev/null
++++ b/packages/react-router/test/client/sentryOnError.test.ts
+@@ -0,0 +1,68 @@
++import {
++  createTransport,
++  getCurrentScope,
++  getGlobalScope,
++  getIsolationScope,
++  resolvedSyncPromise,
++  type Event,
++} from '@sentry/core';
++import { afterEach, describe, expect, it, vi } from 'vitest';
++
++type SentryOnError = (error: unknown, context: { errorInfo?: { componentStack?: string | null } }) => void;
++
++async function captureWithHandler(context: Parameters<SentryOnError>[1]): Promise<Event> {
++  vi.stubGlobal('__DEBUG_BUILD__', true);
++  const clientModule = await import('../../src/client');
++  const sentryOnError = (clientModule as typeof clientModule & { sentryOnError?: SentryOnError }).sentryOnError;
++  expect(sentryOnError).toBeTypeOf('function');
++
++  const events: Event[] = [];
++  const client = clientModule.init({
++    dsn: 'https://public@example.com/1',
++    integrations: [],
++    transport: () =>
++      createTransport({ recordDroppedEvent: () => undefined }, () => resolvedSyncPromise({})),
++    beforeSend(event) {
++      events.push(event);
++      return event;
++    },
++  });
++
++  sentryOnError!(new Error('router error'), context);
++  await client.flush();
++
++  expect(events).toHaveLength(1);
++  return events[0]!;
++}
++
++function expectUnhandledReactRouterOnError(event: Event): void {
++  const mechanism = event.exception?.values?.[0]?.mechanism;
++  expect(mechanism?.handled).toBe(false);
++  expect(mechanism?.type.toLowerCase()).toMatch(/react.*router.*on.*error/);
++}
++
++describe('sentryOnError', () => {
++  afterEach(() => {
++    vi.clearAllMocks();
++    getGlobalScope().clear();
++    getIsolationScope().clear();
++    getCurrentScope().clear();
++    getCurrentScope().setClient(undefined);
++    vi.unstubAllGlobals();
++  });
++
++  it('preserves React error context when errorInfo is provided', async () => {
++    const event = await captureWithHandler({
++      errorInfo: { componentStack: '<TestComponent>\n<App>' },
++    });
++
++    expectUnhandledReactRouterOnError(event);
++    expect(event.contexts?.react?.componentStack).toBe('<TestComponent>\n<App>');
++  });
++
++  it('reports errors without React error context', async () => {
++    const event = await captureWithHandler({});
++
++    expectUnhandledReactRouterOnError(event);
++  });
++});

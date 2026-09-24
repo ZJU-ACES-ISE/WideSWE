@@ -1,0 +1,37 @@
+task_id: rails_jbuilder_rails_c55c6f409dc4
+hidden_test_patches:
+- repo: jbuilder
+  patch: hidden/patches/jbuilder-hidden-tests.patch
+  test_profile: jbuilder-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test/scaffold_api_controller_generator_test.rb
+  - test/scaffold_controller_generator_test.rb
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from rails/jbuilder PR 603
+- repo: rails
+  patch: hidden/patches/rails-hidden-tests.patch
+  test_profile: rails-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - actionmailbox/test/controllers/ingresses/postmark/inbound_emails_controller_test.rb
+  - actionmailbox/test/controllers/ingresses/relay/inbound_emails_controller_test.rb
+  - actionpack/test/controller/rescue_test.rb
+  - actionpack/test/dispatch/debug_exceptions_test.rb
+  - activestorage/test/controllers/disk_controller_test.rb
+  - railties/test/application/active_storage/uploads_integration_test.rb
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from rails/rails PR 53383
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - jbuilder-hidden
+    - rails-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

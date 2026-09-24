@@ -1,0 +1,202 @@
+diff --git a/crates/symbolicator-proguard/tests/integration/proguard.rs b/crates/symbolicator-proguard/tests/integration/proguard.rs
+index 266ab9f1..b57f137f 100644
+--- a/crates/symbolicator-proguard/tests/integration/proguard.rs
++++ b/crates/symbolicator-proguard/tests/integration/proguard.rs
+@@ -22,7 +22,10 @@ fn make_jvm_request(
+     let exceptions = vec![serde_json::from_str(exception).unwrap()];
+     let frames: Vec<JvmFrame> = serde_json::from_str(frames).unwrap();
+     let modules: Vec<JvmModule> = serde_json::from_str(modules).unwrap();
+-    let stacktraces = vec![JvmStacktrace { frames }];
++    let stacktraces = vec![JvmStacktrace {
++        frames,
++        exception: serde_json::from_str(exception).unwrap(),
++    }];
+ 
+     SymbolicateJvmStacktraces {
+         platform: None,
+@@ -478,3 +481,67 @@ async fn test_source_lookup_with_proguard() {
+ 
+     assert_snapshot!(response);
+ }
++
++#[tokio::test]
++async fn test_rewrite_frames() {
++    symbolicator_test::setup();
++    let (symbolication, _cache_dir) = setup_service(|_| ());
++    let (_srv, source) = proguard_server("rewrite_frames", |_url, _query| {
++        json!([{
++            "id":"proguard.txt",
++            "uuid":"550e8400-e29b-41d4-a716-446655440000",
++            "debugId":"550e8400-e29b-41d4-a716-446655440000",
++            "codeId":null,
++            "cpuName":"any",
++            "objectName":"proguard-mapping",
++            "symbolType":"proguard",
++            "headers": {
++                "Content-Type":"text/x-proguard+plain"
++            },
++            "size":1000,
++            "sha1":"0000000000000000000000000000000000000000",
++            "dateCreated":"2024-02-14T10:49:38.770116Z",
++            "data":{
++                "features":["mapping"]
++            }
++        }])
++    });
++
++    let source = SourceConfig::Sentry(Arc::new(source));
++
++    // Test with NullPointerException thrown at a.start
++    // In CallerFirst order: [outermost_caller, ..., exception_location]
++    // So we have: draw (outermost) -> dispatch -> start (where exception thrown)
++    //
++    // After rewrite:
++    //   - c.draw(20) -> UiBridge.render(200)
++    //   - b.dispatch(5) -> StreamRouter.dispatch(12) + StreamRouter$Inline.internalDispatch(30)
++    //   - a.start(10) -> Initializer.start(42) only (2 inlined frames removed by rewrite rule)
++    let frames_npe = r#"[{
++        "function": "draw",
++        "module": "c",
++        "lineno": 20,
++        "index": 0
++    }, {
++        "function": "dispatch",
++        "module": "b",
++        "lineno": 5,
++        "index": 1
++    }, {
++        "function": "start",
++        "module": "a",
++        "lineno": 10,
++        "index": 2
++    }]"#;
++
++    let request_npe = make_jvm_request(
++        source.clone(),
++        r#"{"type": "NullPointerException", "module": "java.lang"}"#,
++        frames_npe,
++        r#"[{"uuid": "550e8400-e29b-41d4-a716-446655440000", "type": "proguard"}]"#,
++        None,
++    );
++
++    let response_npe = symbolication.symbolicate_jvm(request_npe).await;
++    assert_snapshot!(response_npe);
++}
+diff --git a/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__basic_source_lookup.snap b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__basic_source_lookup.snap
+index 8cfd0b99..db152e89 100644
+--- a/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__basic_source_lookup.snap
++++ b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__basic_source_lookup.snap
+@@ -6,7 +6,10 @@ exceptions:
+   - type: RuntimeException
+     module: io.sentry.samples
+ stacktraces:
+-  - frames:
++  - exception:
++      type: RuntimeException
++      module: io.sentry.samples
++    frames:
+       - function: otherMethod
+         filename: OtherActivity.java
+         module: OtherActivity
+diff --git a/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__remap_exception.snap b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__remap_exception.snap
+index 111e153d..8d7de9b7 100644
+--- a/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__remap_exception.snap
++++ b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__remap_exception.snap
+@@ -6,6 +6,9 @@ exceptions:
+   - type: Util$ClassContextSecurityManager
+     module: org.slf4j.helpers
+ stacktraces:
+-  - frames: []
++  - exception:
++      type: Util$ClassContextSecurityManager
++      module: org.slf4j.helpers
++    frames: []
+ classes: {}
+ errors: []
+diff --git a/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__resolving_inline.snap b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__resolving_inline.snap
+index 6d76ef6a..ebd84f46 100644
+--- a/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__resolving_inline.snap
++++ b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__resolving_inline.snap
+@@ -6,7 +6,10 @@ exceptions:
+   - type: g$a
+     module: org.a.b
+ stacktraces:
+-  - frames:
++  - exception:
++      type: g$a
++      module: org.a.b
++    frames:
+       - function: onClick
+         module: io.sentry.sample.-$$Lambda$r3Avcbztes2hicEObh02jjhQqd4
+         lineno: 2
+diff --git a/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__rewrite_frames.snap b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__rewrite_frames.snap
+new file mode 100644
+index 00000000..e136676e
+--- /dev/null
++++ b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__rewrite_frames.snap
+@@ -0,0 +1,31 @@
++---
++source: crates/symbolicator-proguard/tests/integration/proguard.rs
++assertion_line: 546
++expression: response_npe
++---
++exceptions:
++  - type: NullPointerException
++    module: java.lang
++stacktraces:
++  - exception:
++      type: NullPointerException
++      module: java.lang
++    frames:
++      - function: render
++        module: com.example.flow.UiBridge
++        lineno: 200
++        index: 0
++      - function: dispatch
++        module: com.example.flow.StreamRouter
++        lineno: 12
++        index: 1
++      - function: internalDispatch
++        module: com.example.flow.StreamRouter$Inline
++        lineno: 30
++        index: 1
++      - function: start
++        module: com.example.flow.Initializer
++        lineno: 42
++        index: 2
++classes: {}
++errors: []
+diff --git a/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__source_lookup_with_proguard.snap b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__source_lookup_with_proguard.snap
+index b9a41e56..f1e90870 100644
+--- a/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__source_lookup_with_proguard.snap
++++ b/crates/symbolicator-proguard/tests/integration/snapshots/integration__proguard__source_lookup_with_proguard.snap
+@@ -6,7 +6,10 @@ exceptions:
+   - type: RuntimeException
+     module: java.lang
+ stacktraces:
+-  - frames:
++  - exception:
++      type: RuntimeException
++      module: java.lang
++    frames:
+       - function: main
+         filename: ZygoteInit.java
+         module: com.android.internal.os.ZygoteInit
+diff --git a/tests/fixtures/proguard/rewrite_frames/proguard.txt b/tests/fixtures/proguard/rewrite_frames/proguard.txt
+new file mode 100644
+index 00000000..43b45351
+--- /dev/null
++++ b/tests/fixtures/proguard/rewrite_frames/proguard.txt
+@@ -0,0 +1,12 @@
++com.example.flow.Initializer -> a:
++    10:10:void com.example.flow.Inliner.firstStep(com.example.flow.Step):60:60 -> start
++    10:10:void com.example.flow.Inliner.secondStep(com.example.flow.Step):61:61 -> start
++    10:10:void start(com.example.flow.Step):42 -> start
++    # {"id":"com.android.tools.r8.rewriteFrame","conditions":["throws(Ljava/lang/NullPointerException;)"],"actions":["removeInnerFrames(2)"]}
++    15:15:void resume():55 -> start
++com.example.flow.StreamRouter -> b:
++    5:5:void com.example.flow.StreamRouter$Inline.internalDispatch(java.lang.String):30:30 -> dispatch
++    5:5:void dispatch(java.lang.String):12 -> dispatch
++    # {"id":"com.android.tools.r8.rewriteFrame","conditions":["throws(Ljava/lang/IllegalStateException;)"],"actions":["removeInnerFrames(1)"]}
++com.example.flow.UiBridge -> c:
++    20:20:void render():200 -> draw

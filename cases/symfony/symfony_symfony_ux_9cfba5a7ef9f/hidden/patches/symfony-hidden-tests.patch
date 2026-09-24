@@ -1,0 +1,163 @@
+diff --git a/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/Compiler/SafeClassPassTest.php b/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/Compiler/SafeClassPassTest.php
+new file mode 100644
+index 0000000000..ebfd5fc83c
+--- /dev/null
++++ b/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/Compiler/SafeClassPassTest.php
+@@ -0,0 +1,104 @@
++<?php
++
++/*
++ * This file is part of the Symfony package.
++ *
++ * (c) Fabien Potencier <fabien@symfony.com>
++ *
++ * For the full copyright and license information, please view the LICENSE
++ * file that was distributed with this source code.
++ */
++
++namespace Symfony\Bundle\TwigBundle\Tests\DependencyInjection\Compiler;
++
++use PHPUnit\Framework\TestCase;
++use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\SafeClassPass;
++use Symfony\Component\DependencyInjection\ContainerBuilder;
++use Symfony\Component\DependencyInjection\Exception\InvalidArgumentException;
++use Twig\Runtime\EscaperRuntime;
++
++class SafeClassPassTest extends TestCase
++{
++    private ContainerBuilder $container;
++    private SafeClassPass $pass;
++
++    protected function setUp(): void
++    {
++        $this->container = new ContainerBuilder();
++        $this->container->register('twig.runtime.escaper', EscaperRuntime::class);
++        $this->pass = new SafeClassPass();
++    }
++
++    public function testSafeClassWithStringStrategy()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => 'html']);
++
++        $this->pass->process($this->container);
++
++        $this->assertSame(
++            [['addSafeClass', [\stdClass::class, ['html']]]],
++            $this->container->getDefinition('twig.runtime.escaper')->getMethodCalls()
++        );
++    }
++
++    public function testSafeClassWithArrayStrategy()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => ['html', 'js']]);
++
++        $this->pass->process($this->container);
++
++        $this->assertSame(
++            [['addSafeClass', [\stdClass::class, ['html', 'js']]]],
++            $this->container->getDefinition('twig.runtime.escaper')->getMethodCalls()
++        );
++    }
++
++    public function testSafeClassWithMultipleTags()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => 'html'])
++            ->addResourceTag('twig.safe_class', ['strategy' => 'js']);
++
++        $this->pass->process($this->container);
++
++        $strategies = [];
++        foreach ($this->container->getDefinition('twig.runtime.escaper')->getMethodCalls() as [$method, [$class, $callStrategies]]) {
++            if ('addSafeClass' === $method && \stdClass::class === $class) {
++                $strategies = [...$strategies, ...$callStrategies];
++            }
++        }
++        sort($strategies);
++        $this->assertSame(['html', 'js'], $strategies);
++    }
++
++    public function testThrowsOnMissingStrategy()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', []);
++
++        $this->expectException(InvalidArgumentException::class);
++        $this->pass->process($this->container);
++    }
++
++    public function testThrowsOnInvalidStrategy()
++    {
++        $this->container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => 123]);
++
++        $this->expectException(InvalidArgumentException::class);
++        $this->pass->process($this->container);
++    }
++
++    public function testDoesNothingWhenNoEscaperService()
++    {
++        $container = new ContainerBuilder();
++        $container->register('my_class')->setClass(\stdClass::class)
++            ->addResourceTag('twig.safe_class', ['strategy' => 'html']);
++
++        (new SafeClassPass())->process($container);
++
++        $this->assertFalse($container->hasDefinition('twig.runtime.escaper'));
++    }
++}
+diff --git a/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php b/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php
+index 848deed998..8d23a847b8 100644
+--- a/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php
++++ b/src/Symfony/Bundle/TwigBundle/Tests/DependencyInjection/TwigExtensionTest.php
+@@ -13,6 +13,7 @@ namespace Symfony\Bundle\TwigBundle\Tests\DependencyInjection;
+ 
+ use PHPUnit\Framework\Attributes\DataProvider;
+ use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\RuntimeLoaderPass;
++use Symfony\Bundle\TwigBundle\DependencyInjection\Compiler\SafeClassPass;
+ use Symfony\Bundle\TwigBundle\DependencyInjection\TwigExtension;
+ use Symfony\Bundle\TwigBundle\Tests\DependencyInjection\AcmeBundle\AcmeBundle;
+ use Symfony\Bundle\TwigBundle\Tests\TestCase;
+@@ -29,6 +30,7 @@ use Symfony\Component\Mailer\Mailer;
+ use Symfony\Component\Stopwatch\Stopwatch;
+ use Symfony\Component\Validator\Validator\ValidatorInterface;
+ use Twig\Environment;
++use Twig\Runtime\EscaperRuntime;
+ 
+ class TwigExtensionTest extends TestCase
+ {
+@@ -303,15 +305,32 @@ class TwigExtensionTest extends TestCase
+         $container->register('http_kernel', 'FooClass');
+         $container->register('foo', '%foo%')->addTag('twig.runtime');
+         $container->register('error_renderer.html', HtmlErrorRenderer::class);
++        $container->register('foo_safe')->setClass(\stdClass::class)->addResourceTag('twig.safe_class', ['strategy' => 'html']);
++        $container->register('bar_safe')->setClass(\stdClass::class)->addResourceTag('twig.safe_class', ['strategy' => ['html', 'js']]);
++        $container->addCompilerPass(new SafeClassPass(), PassConfig::TYPE_BEFORE_REMOVING);
+         $container->addCompilerPass(new RuntimeLoaderPass(), PassConfig::TYPE_BEFORE_REMOVING);
+         $container->getCompilerPassConfig()->setRemovingPasses([]);
+         $container->getCompilerPassConfig()->setAfterRemovingPasses([]);
+         $container->compile();
+ 
++        $this->assertTrue($container->hasDefinition('twig.runtime.escaper'));
++        $this->assertSame('UTF-8', $container->getDefinition('twig.runtime.escaper')->getArgument(0));
++
++        $strategies = [];
++        foreach ($container->getDefinition('twig.runtime.escaper')->getMethodCalls() as [$method, [$class, $callStrategies]]) {
++            if ('addSafeClass' === $method && \stdClass::class === $class) {
++                $strategies = [...$strategies, ...$callStrategies];
++            }
++        }
++        sort($strategies);
++        $this->assertSame(['html', 'html', 'js'], $strategies);
++
+         $loader = $container->getDefinition('twig.runtime_loader');
+         $args = $container->getDefinition((string) $loader->getArgument(0))->getArgument(0);
++        $this->assertArrayHasKey(EscaperRuntime::class, $args);
+         $this->assertArrayHasKey(FormRenderer::class, $args);
+         $this->assertArrayHasKey('FooClass', $args);
++        $this->assertEquals('twig.runtime.escaper', $args[EscaperRuntime::class]->getValues()[0]);
+         $this->assertEquals('twig.form.renderer', $args[FormRenderer::class]->getValues()[0]);
+         $this->assertEquals('foo', $args['FooClass']->getValues()[0]);
+     }

@@ -1,0 +1,47 @@
+task_id: getsentry_sentry_go_sentry_python_sentry_ruby_4085507dc55a
+hidden_test_patches:
+- repo: sentry-go
+  patch: hidden/patches/sentry-go-hidden-tests.patch
+  test_profile: sentry_go-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - client_test.go
+  - tracing_test.go
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-go PR(s) 1210
+- repo: sentry-python
+  patch: hidden/patches/sentry-python-hidden-tests.patch
+  test_profile: sentry_python-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - tests/conftest.py
+  - tests/test_dsc.py
+  - tests/test_tracing_utils.py
+  - tests/tracing/test_integration_tests.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-python PR(s) 5178
+- repo: sentry-ruby
+  patch: hidden/patches/sentry-ruby-hidden-tests.patch
+  test_profile: sentry_ruby-hidden
+  origin: upstream_test_diff
+  source_file: &id003
+  - sentry-ruby/spec/sentry/dsn_spec.rb
+  - sentry-ruby/spec/sentry/net/http_spec.rb
+  - sentry-ruby/spec/sentry/propagation_context_spec.rb
+  hidden_file: *id003
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-ruby PR(s) 2872
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - sentry_go-hidden
+    - sentry_python-hidden
+    - sentry_ruby-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

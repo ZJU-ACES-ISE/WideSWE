@@ -1,0 +1,1254 @@
+diff --git a/.changeset/little-humans-occur.md b/.changeset/little-humans-occur.md
+new file mode 100644
+index 000000000..78b94ee26
+--- /dev/null
++++ b/.changeset/little-humans-occur.md
+@@ -0,0 +1,5 @@
++---
++'svelte': minor
++---
++
++feat: add `print(...)` function
+diff --git a/packages/svelte/package.json b/packages/svelte/package.json
+index 416493faf..a2ed4bdf7 100644
+--- a/packages/svelte/package.json
++++ b/packages/svelte/package.json
+@@ -176,7 +176,7 @@
+     "clsx": "^2.1.1",
+     "devalue": "^5.5.0",
+     "esm-env": "^1.2.1",
+-    "esrap": "^2.1.0",
++    "esrap": "^2.2.0",
+     "is-reference": "^3.0.3",
+     "locate-character": "^3.0.0",
+     "magic-string": "^0.30.11",
+diff --git a/packages/svelte/src/compiler/index.js b/packages/svelte/src/compiler/index.js
+index a378af34e..9095a2a2f 100644
+--- a/packages/svelte/src/compiler/index.js
++++ b/packages/svelte/src/compiler/index.js
+@@ -10,6 +10,7 @@ import { transform_component, transform_module } from './phases/3-transform/inde
+ import { validate_component_options, validate_module_options } from './validate-options.js';
+ import * as state from './state.js';
+ export { default as preprocess } from './preprocess/index.js';
++export { print } from './print/index.js';
+ 
+ /**
+  * `compile` converts your `.svelte` source code into a JavaScript module that exports a component
+diff --git a/packages/svelte/src/compiler/phases/1-parse/remove_typescript_nodes.js b/packages/svelte/src/compiler/phases/1-parse/remove_typescript_nodes.js
+index cb498c3c1..0835c5fc7 100644
+--- a/packages/svelte/src/compiler/phases/1-parse/remove_typescript_nodes.js
++++ b/packages/svelte/src/compiler/phases/1-parse/remove_typescript_nodes.js
+@@ -27,6 +27,9 @@ const visitors = {
+ 		delete n.typeArguments;
+ 		delete n.returnType;
+ 		delete n.accessibility;
++		delete n.readonly;
++		delete n.definite;
++		delete n.override;
+ 	},
+ 	Decorator(node) {
+ 		e.typescript_invalid_feature(node, 'decorators (related TSC proposal is not stage 4 yet)');
+@@ -132,7 +135,14 @@ const visitors = {
+ 		if (node.declare) {
+ 			return b.empty;
+ 		}
++		delete node.abstract;
+ 		delete node.implements;
++		delete node.superTypeArguments;
++		return context.next();
++	},
++	ClassExpression(node, context) {
++		delete node.implements;
++		delete node.superTypeArguments;
+ 		return context.next();
+ 	},
+ 	MethodDefinition(node, context) {
+diff --git a/packages/svelte/src/compiler/print/index.js b/packages/svelte/src/compiler/print/index.js
+new file mode 100644
+index 000000000..abd8b5629
+--- /dev/null
++++ b/packages/svelte/src/compiler/print/index.js
+@@ -0,0 +1,865 @@
++/** @import { AST } from '#compiler'; */
++/** @import { Context, Visitors } from 'esrap' */
++import * as esrap from 'esrap';
++import ts from 'esrap/languages/ts';
++import { is_void } from '../../utils.js';
++
++/** Threshold for when content should be formatted on separate lines */
++const LINE_BREAK_THRESHOLD = 50;
++
++/**
++ * `print` converts a Svelte AST node back into Svelte source code.
++ * It is primarily intended for tools that parse and transform components using the compiler’s modern AST representation.
++ *
++ * `print(ast)` requires an AST node produced by parse with modern: true, or any sub-node within that modern AST.
++ * The result contains the generated source and a corresponding source map.
++ * The output is valid Svelte, but formatting details such as whitespace or quoting may differ from the original.
++ * @param {AST.SvelteNode} ast
++ * @param {import('./types.js').Options | undefined} options
++ */
++export function print(ast, options = undefined) {
++	return esrap.print(
++		ast,
++		/** @type {Visitors<AST.SvelteNode>} */ ({
++			...ts({
++				comments: ast.type === 'Root' ? ast.comments : [],
++				getLeadingComments: options?.getLeadingComments,
++				getTrailingComments: options?.getTrailingComments
++			}),
++			...svelte_visitors,
++			...css_visitors
++		})
++	);
++}
++
++/**
++ * @param {Context} context
++ * @param {AST.SvelteNode} node
++ * @param {boolean} allow_inline
++ */
++function block(context, node, allow_inline = false) {
++	const child_context = context.new();
++	child_context.visit(node);
++
++	if (child_context.empty()) {
++		return;
++	}
++
++	if (allow_inline && !child_context.multiline) {
++		context.append(child_context);
++	} else {
++		context.indent();
++		context.newline();
++		context.append(child_context);
++		context.dedent();
++		context.newline();
++	}
++}
++
++/**
++ * @param {AST.BaseElement['attributes']} attributes
++ * @param {Context} context
++ * @returns {boolean} true if attributes were formatted on multiple lines
++ */
++function attributes(attributes, context) {
++	if (attributes.length === 0) {
++		return false;
++	}
++
++	// Measure total width of all attributes when rendered inline
++	const child_context = context.new();
++
++	for (const attribute of attributes) {
++		child_context.write(' ');
++		child_context.visit(attribute);
++	}
++
++	const multiline = child_context.measure() > LINE_BREAK_THRESHOLD;
++
++	if (multiline) {
++		context.indent();
++		for (const attribute of attributes) {
++			context.newline();
++			context.visit(attribute);
++		}
++		context.dedent();
++		context.newline();
++	} else {
++		context.append(child_context);
++	}
++
++	return multiline;
++}
++
++/**
++ * @param {AST.BaseElement} node
++ * @param {Context} context
++ */
++function base_element(node, context) {
++	const child_context = context.new();
++
++	child_context.write('<' + node.name);
++
++	// Handle special Svelte components/elements that need 'this' attribute
++	if (node.type === 'SvelteComponent') {
++		child_context.write(' this={');
++		child_context.visit(/** @type {AST.SvelteComponent} */ (node).expression);
++		child_context.write('}');
++	} else if (node.type === 'SvelteElement') {
++		child_context.write(' this={');
++		child_context.visit(/** @type {AST.SvelteElement} */ (node).tag);
++		child_context.write('}');
++	}
++
++	const multiline_attributes = attributes(node.attributes, child_context);
++
++	const is_self_closing =
++		is_void(node.name) || (node.type === 'Component' && node.fragment.nodes.length === 0);
++	let multiline_content = false;
++
++	if (is_self_closing) {
++		child_context.write(`${multiline_attributes ? '' : ' '}/>`);
++	} else {
++		child_context.write('>');
++
++		// Process the element's content in a separate context for measurement
++		const content_context = child_context.new();
++		const allow_inline_content = child_context.measure() < LINE_BREAK_THRESHOLD;
++		block(content_context, node.fragment, allow_inline_content);
++
++		// Determine if content should be formatted on multiple lines
++		multiline_content = content_context.measure() > LINE_BREAK_THRESHOLD;
++
++		if (multiline_content) {
++			child_context.newline();
++
++			// Only indent if attributes are inline and content itself isn't already multiline
++			const should_indent = !multiline_attributes && !content_context.multiline;
++			if (should_indent) {
++				child_context.indent();
++			}
++
++			child_context.append(content_context);
++
++			if (should_indent) {
++				child_context.dedent();
++			}
++
++			child_context.newline();
++		} else {
++			child_context.append(content_context);
++		}
++
++		child_context.write(`</${node.name}>`);
++	}
++
++	const break_line_after = child_context.measure() > LINE_BREAK_THRESHOLD;
++
++	if ((multiline_content || multiline_attributes) && !context.empty()) {
++		context.newline();
++	}
++
++	context.append(child_context);
++
++	if (is_self_closing) return;
++	if (multiline_content || multiline_attributes || break_line_after) {
++		context.newline();
++	}
++}
++
++/** @type {Visitors<AST.SvelteNode>} */
++const css_visitors = {
++	Atrule(node, context) {
++		context.write(`@${node.name}`);
++		if (node.prelude) context.write(` ${node.prelude}`);
++
++		if (node.block) {
++			context.write(' ');
++			context.visit(node.block);
++		} else {
++			context.write(';');
++		}
++	},
++
++	Block(node, context) {
++		context.write('{');
++
++		if (node.children.length > 0) {
++			context.indent();
++			context.newline();
++
++			let started = false;
++
++			for (const child of node.children) {
++				if (started) {
++					context.newline();
++				}
++
++				context.visit(child);
++
++				started = true;
++			}
++
++			context.dedent();
++			context.newline();
++		}
++
++		context.write('}');
++	},
++
++	ClassSelector(node, context) {
++		context.write(`.${node.name}`);
++	},
++
++	ComplexSelector(node, context) {
++		for (const selector of node.children) {
++			context.visit(selector);
++		}
++	},
++
++	Declaration(node, context) {
++		context.write(`${node.property}: ${node.value};`);
++	},
++
++	Nth(node, context) {
++		context.write(node.value);
++	},
++
++	PseudoClassSelector(node, context) {
++		context.write(`:${node.name}`);
++
++		if (node.args) {
++			context.write('(');
++
++			let started = false;
++
++			for (const arg of node.args.children) {
++				if (started) {
++					context.write(', ');
++				}
++
++				context.visit(arg);
++
++				started = true;
++			}
++
++			context.write(')');
++		}
++	},
++
++	PseudoElementSelector(node, context) {
++		context.write(`::${node.name}`);
++	},
++
++	RelativeSelector(node, context) {
++		if (node.combinator) {
++			if (node.combinator.name === ' ') {
++				context.write(' ');
++			} else {
++				context.write(` ${node.combinator.name} `);
++			}
++		}
++
++		for (const selector of node.selectors) {
++			context.visit(selector);
++		}
++	},
++
++	Rule(node, context) {
++		let started = false;
++
++		for (const selector of node.prelude.children) {
++			if (started) {
++				context.write(',');
++				context.newline();
++			}
++
++			context.visit(selector);
++			started = true;
++		}
++
++		context.write(' ');
++		context.visit(node.block);
++	},
++
++	SelectorList(node, context) {
++		let started = false;
++		for (const selector of node.children) {
++			if (started) {
++				context.write(', ');
++			}
++
++			context.visit(selector);
++			started = true;
++		}
++	},
++
++	TypeSelector(node, context) {
++		context.write(node.name);
++	}
++};
++
++/** @type {Visitors<AST.SvelteNode>} */
++const svelte_visitors = {
++	Root(node, context) {
++		if (node.options) {
++			context.write('<svelte:options');
++
++			for (const attribute of node.options.attributes) {
++				context.write(' ');
++				context.visit(attribute);
++			}
++
++			context.write(' />');
++		}
++
++		let started = false;
++
++		for (const item of [node.module, node.instance, node.fragment, node.css]) {
++			if (!item) continue;
++
++			if (started) {
++				context.margin();
++				context.newline();
++			}
++
++			context.visit(item);
++			started = true;
++		}
++	},
++
++	Script(node, context) {
++		context.write('<script');
++		attributes(node.attributes, context);
++		context.write('>');
++		block(context, node.content);
++		context.write('</script>');
++	},
++
++	Fragment(node, context) {
++		/** @type {AST.SvelteNode[][]} */
++		const items = [];
++
++		/** @type {AST.SvelteNode[]} */
++		let sequence = [];
++
++		const flush = () => {
++			items.push(sequence);
++			sequence = [];
++		};
++
++		for (let i = 0; i < node.nodes.length; i += 1) {
++			let child_node = node.nodes[i];
++
++			const prev = node.nodes[i - 1];
++			const next = node.nodes[i + 1];
++
++			if (child_node.type === 'Text') {
++				child_node = { ...child_node }; // always clone, so we can safely mutate
++
++				child_node.data = child_node.data.replace(/[^\S]+/g, ' ');
++
++				// trim fragment
++				if (i === 0) {
++					child_node.data = child_node.data.trimStart();
++				}
++
++				if (i === node.nodes.length - 1) {
++					child_node.data = child_node.data.trimEnd();
++				}
++
++				if (child_node.data === '') {
++					continue;
++				}
++
++				if (child_node.data.startsWith(' ') && prev && prev.type !== 'ExpressionTag') {
++					flush();
++					child_node.data = child_node.data.trimStart();
++				}
++
++				if (child_node.data !== '') {
++					sequence.push({ ...child_node, data: child_node.data });
++
++					if (child_node.data.endsWith(' ') && next && next.type !== 'ExpressionTag') {
++						flush();
++						child_node.data = child_node.data.trimStart();
++					}
++				}
++			} else {
++				sequence.push(child_node);
++			}
++		}
++
++		flush();
++
++		let multiline = false;
++		let width = 0;
++
++		const child_contexts = items.map((sequence) => {
++			const child_context = context.new();
++
++			for (const node of sequence) {
++				child_context.visit(node);
++				multiline ||= child_context.multiline;
++			}
++
++			width += child_context.measure();
++
++			return child_context;
++		});
++
++		multiline ||= width > LINE_BREAK_THRESHOLD;
++
++		for (let i = 0; i < child_contexts.length; i += 1) {
++			const prev = child_contexts[i];
++			const next = child_contexts[i + 1];
++
++			context.append(prev);
++
++			if (next) {
++				if (prev.multiline || next.multiline) {
++					context.margin();
++					context.newline();
++				} else if (multiline) {
++					context.newline();
++				}
++			}
++		}
++	},
++
++	AnimateDirective(node, context) {
++		context.write(`animate:${node.name}`);
++		if (
++			node.expression !== null &&
++			!(node.expression.type === 'Identifier' && node.expression.name === node.name)
++		) {
++			context.write('={');
++			context.visit(node.expression);
++			context.write('}');
++		}
++	},
++
++	AttachTag(node, context) {
++		context.write('{@attach ');
++		context.visit(node.expression);
++		context.write('}');
++	},
++
++	Attribute(node, context) {
++		context.write(node.name);
++
++		if (node.value === true) return;
++
++		context.write('=');
++
++		if (Array.isArray(node.value)) {
++			if (node.value.length > 1 || node.value[0].type === 'Text') {
++				context.write('"');
++			}
++
++			for (const chunk of node.value) {
++				context.visit(chunk);
++			}
++
++			if (node.value.length > 1 || node.value[0].type === 'Text') {
++				context.write('"');
++			}
++		} else {
++			context.visit(node.value);
++		}
++	},
++
++	AwaitBlock(node, context) {
++		context.write(`{#await `);
++		context.visit(node.expression);
++
++		if (node.pending) {
++			context.write('}');
++			block(context, node.pending);
++			context.write('{:');
++		} else {
++			context.write(' ');
++		}
++
++		if (node.then) {
++			context.write(node.value ? 'then ' : 'then');
++			if (node.value) context.visit(node.value);
++			context.write('}');
++
++			block(context, node.then);
++
++			if (node.catch) {
++				context.write('{:');
++			}
++		}
++
++		if (node.catch) {
++			context.write(node.value ? 'catch ' : 'catch');
++			if (node.error) context.visit(node.error);
++			context.write('}');
++
++			block(context, node.catch);
++		}
++
++		context.write('{/await}');
++	},
++
++	BindDirective(node, context) {
++		context.write(`bind:${node.name}`);
++
++		if (node.expression.type === 'Identifier' && node.expression.name === node.name) {
++			// shorthand
++			return;
++		}
++
++		context.write('={');
++
++		if (node.expression.type === 'SequenceExpression') {
++			context.visit(node.expression.expressions[0]);
++			context.write(', ');
++			context.visit(node.expression.expressions[1]);
++		} else {
++			context.visit(node.expression);
++		}
++
++		context.write('}');
++	},
++
++	ClassDirective(node, context) {
++		context.write(`class:${node.name}`);
++		if (
++			node.expression !== null &&
++			!(node.expression.type === 'Identifier' && node.expression.name === node.name)
++		) {
++			context.write('={');
++			context.visit(node.expression);
++			context.write('}');
++		}
++	},
++
++	Comment(node, context) {
++		context.write('<!--' + node.data + '-->');
++	},
++
++	Component(node, context) {
++		base_element(node, context);
++	},
++
++	ConstTag(node, context) {
++		context.write('{@');
++		context.visit(node.declaration);
++		context.write('}');
++	},
++
++	DebugTag(node, context) {
++		context.write('{@debug ');
++		let started = false;
++		for (const identifier of node.identifiers) {
++			if (started) {
++				context.write(', ');
++			}
++			context.visit(identifier);
++			started = true;
++		}
++		context.write('}');
++	},
++
++	EachBlock(node, context) {
++		context.write('{#each ');
++		context.visit(node.expression);
++
++		if (node.context) {
++			context.write(' as ');
++			context.visit(node.context);
++		}
++
++		if (node.index) {
++			context.write(`, ${node.index}`);
++		}
++
++		if (node.key) {
++			context.write(' (');
++			context.visit(node.key);
++			context.write(')');
++		}
++
++		context.write('}');
++
++		block(context, node.body);
++
++		if (node.fallback) {
++			context.write('{:else}');
++			block(context, node.fallback);
++		}
++
++		context.write('{/each}');
++	},
++
++	ExpressionTag(node, context) {
++		context.write('{');
++		context.visit(node.expression);
++		context.write('}');
++	},
++
++	HtmlTag(node, context) {
++		context.write('{@html ');
++		context.visit(node.expression);
++		context.write('}');
++	},
++
++	IfBlock(node, context) {
++		if (node.elseif) {
++			context.write('{:else if ');
++			context.visit(node.test);
++			context.write('}');
++
++			block(context, node.consequent);
++		} else {
++			context.write('{#if ');
++			context.visit(node.test);
++			context.write('}');
++
++			block(context, node.consequent);
++		}
++
++		if (node.alternate !== null) {
++			if (
++				!(
++					node.alternate.nodes.length === 1 &&
++					node.alternate.nodes[0].type === 'IfBlock' &&
++					node.alternate.nodes[0].elseif
++				)
++			) {
++				context.write('{:else}');
++				block(context, node.alternate);
++			} else {
++				context.visit(node.alternate);
++			}
++		}
++
++		if (!node.elseif) {
++			context.write('{/if}');
++		}
++	},
++
++	KeyBlock(node, context) {
++		context.write('{#key ');
++		context.visit(node.expression);
++		context.write('}');
++		block(context, node.fragment);
++		context.write('{/key}');
++	},
++
++	LetDirective(node, context) {
++		context.write(`let:${node.name}`);
++		if (
++			node.expression !== null &&
++			!(node.expression.type === 'Identifier' && node.expression.name === node.name)
++		) {
++			context.write('={');
++			context.visit(node.expression);
++			context.write('}');
++		}
++	},
++
++	OnDirective(node, context) {
++		context.write(`on:${node.name}`);
++		for (const modifier of node.modifiers) {
++			context.write(`|${modifier}`);
++		}
++		if (
++			node.expression !== null &&
++			!(node.expression.type === 'Identifier' && node.expression.name === node.name)
++		) {
++			context.write('={');
++			context.visit(node.expression);
++			context.write('}');
++		}
++	},
++
++	RegularElement(node, context) {
++		base_element(node, context);
++	},
++
++	RenderTag(node, context) {
++		context.write('{@render ');
++		context.visit(node.expression);
++		context.write('}');
++	},
++
++	SlotElement(node, context) {
++		base_element(node, context);
++	},
++
++	SnippetBlock(node, context) {
++		context.write('{#snippet ');
++		context.visit(node.expression);
++
++		if (node.typeParams) {
++			context.write(`<${node.typeParams}>`);
++		}
++
++		context.write('(');
++
++		for (let i = 0; i < node.parameters.length; i += 1) {
++			if (i > 0) context.write(', ');
++			context.visit(node.parameters[i]);
++		}
++
++		context.write(')}');
++		block(context, node.body);
++		context.write('{/snippet}');
++	},
++
++	SpreadAttribute(node, context) {
++		context.write('{...');
++		context.visit(node.expression);
++		context.write('}');
++	},
++
++	StyleDirective(node, context) {
++		context.write(`style:${node.name}`);
++		for (const modifier of node.modifiers) {
++			context.write(`|${modifier}`);
++		}
++
++		if (node.value === true) {
++			return;
++		}
++
++		context.write('=');
++
++		if (Array.isArray(node.value)) {
++			context.write('"');
++
++			for (const tag of node.value) {
++				context.visit(tag);
++			}
++
++			context.write('"');
++		} else {
++			context.visit(node.value);
++		}
++	},
++
++	StyleSheet(node, context) {
++		context.write('<style');
++		attributes(node.attributes, context);
++		context.write('>');
++
++		if (node.children.length > 0) {
++			context.indent();
++			context.newline();
++
++			let started = false;
++
++			for (const child of node.children) {
++				if (started) {
++					context.margin();
++					context.newline();
++				}
++
++				context.visit(child);
++				started = true;
++			}
++
++			context.dedent();
++			context.newline();
++		}
++
++		context.write('</style>');
++	},
++
++	SvelteBoundary(node, context) {
++		base_element(node, context);
++	},
++
++	SvelteComponent(node, context) {
++		context.write('<svelte:component');
++
++		context.write(' this={');
++		context.visit(node.expression);
++		context.write('}');
++		attributes(node.attributes, context);
++		if (node.fragment && node.fragment.nodes.length > 0) {
++			context.write('>');
++			block(context, node.fragment, true);
++			context.write(`</svelte:component>`);
++		} else {
++			context.write(' />');
++		}
++	},
++
++	SvelteDocument(node, context) {
++		base_element(node, context);
++	},
++
++	SvelteElement(node, context) {
++		context.write('<svelte:element ');
++
++		context.write('this={');
++		context.visit(node.tag);
++		context.write('}');
++		attributes(node.attributes, context);
++
++		if (node.fragment && node.fragment.nodes.length > 0) {
++			context.write('>');
++			block(context, node.fragment);
++			context.write(`</svelte:element>`);
++		} else {
++			context.write(' />');
++		}
++	},
++
++	SvelteFragment(node, context) {
++		base_element(node, context);
++	},
++
++	SvelteHead(node, context) {
++		base_element(node, context);
++	},
++
++	SvelteSelf(node, context) {
++		base_element(node, context);
++	},
++
++	SvelteWindow(node, context) {
++		base_element(node, context);
++	},
++
++	Text(node, context) {
++		context.write(node.data);
++	},
++
++	TitleElement(node, context) {
++		base_element(node, context);
++	},
++
++	TransitionDirective(node, context) {
++		const directive = node.intro && node.outro ? 'transition' : node.intro ? 'in' : 'out';
++		context.write(`${directive}:${node.name}`);
++		for (const modifier of node.modifiers) {
++			context.write(`|${modifier}`);
++		}
++		if (
++			node.expression !== null &&
++			!(node.expression.type === 'Identifier' && node.expression.name === node.name)
++		) {
++			context.write('={');
++			context.visit(node.expression);
++			context.write('}');
++		}
++	},
++
++	UseDirective(node, context) {
++		context.write(`use:${node.name}`);
++		if (
++			node.expression !== null &&
++			!(node.expression.type === 'Identifier' && node.expression.name === node.name)
++		) {
++			context.write('={');
++			context.visit(node.expression);
++			context.write('}');
++		}
++	}
++};
+diff --git a/packages/svelte/src/compiler/print/types.d.ts b/packages/svelte/src/compiler/print/types.d.ts
+new file mode 100644
+index 000000000..cf9b749e0
+--- /dev/null
++++ b/packages/svelte/src/compiler/print/types.d.ts
+@@ -0,0 +1,6 @@
++import ts from 'esrap/languages/ts';
++
++export type Options = {
++	getLeadingComments?: NonNullable<Parameters<typeof ts>[0]>['getLeadingComments'] | undefined;
++	getTrailingComments?: NonNullable<Parameters<typeof ts>[0]>['getTrailingComments'] | undefined;
++};
+diff --git a/packages/svelte/src/compiler/types/template.d.ts b/packages/svelte/src/compiler/types/template.d.ts
+index 1f6299480..c06b77c53 100644
+--- a/packages/svelte/src/compiler/types/template.d.ts
++++ b/packages/svelte/src/compiler/types/template.d.ts
+@@ -308,7 +308,7 @@ export namespace AST {
+ 		};
+ 	}
+ 
+-	interface BaseElement extends BaseNode {
++	export interface BaseElement extends BaseNode {
+ 		name: string;
+ 		attributes: Array<Attribute | SpreadAttribute | Directive | AttachTag>;
+ 		fragment: Fragment;
+diff --git a/packages/svelte/types/index.d.ts b/packages/svelte/types/index.d.ts
+index f0200d09f..856126868 100644
+--- a/packages/svelte/types/index.d.ts
++++ b/packages/svelte/types/index.d.ts
+@@ -844,6 +844,7 @@ declare module 'svelte/compiler' {
+ 	import type { SourceMap } from 'magic-string';
+ 	import type { ArrayExpression, ArrowFunctionExpression, VariableDeclaration, VariableDeclarator, Expression, Identifier, MemberExpression, Node, ObjectExpression, Pattern, Program, ChainExpression, SimpleCallExpression, SequenceExpression } from 'estree';
+ 	import type { Location } from 'locate-character';
++	import type { default as ts } from 'esrap/languages/ts';
+ 	/**
+ 	 * `compile` converts your `.svelte` source code into a JavaScript module that exports a component
+ 	 *
+@@ -1390,7 +1391,7 @@ declare module 'svelte/compiler' {
+ 			expression: null | Expression;
+ 		}
+ 
+-		interface BaseElement extends BaseNode {
++		export interface BaseElement extends BaseNode {
+ 			name: string;
+ 			attributes: Array<Attribute | SpreadAttribute | Directive | AttachTag>;
+ 			fragment: Fragment;
+@@ -1616,6 +1617,18 @@ declare module 'svelte/compiler' {
+ 	export function preprocess(source: string, preprocessor: PreprocessorGroup | PreprocessorGroup[], options?: {
+ 		filename?: string;
+ 	} | undefined): Promise<Processed>;
++	/**
++	 * `print` converts a Svelte AST node back into Svelte source code.
++	 * It is primarily intended for tools that parse and transform components using the compiler’s modern AST representation.
++	 *
++	 * `print(ast)` requires an AST node produced by parse with modern: true, or any sub-node within that modern AST.
++	 * The result contains the generated source and a corresponding source map.
++	 * The output is valid Svelte, but formatting details such as whitespace or quoting may differ from the original.
++	 * */
++	export function print(ast: AST.SvelteNode, options?: Options | undefined): {
++		code: string;
++		map: any;
++	};
+ 	/**
+ 	 * The current version, as set in package.json.
+ 	 * */
+@@ -1799,6 +1812,10 @@ declare module 'svelte/compiler' {
+ 			| SimpleSelector
+ 			| Declaration;
+ 	}
++	type Options = {
++		getLeadingComments?: NonNullable<Parameters<typeof ts>[0]>['getLeadingComments'] | undefined;
++		getTrailingComments?: NonNullable<Parameters<typeof ts>[0]>['getTrailingComments'] | undefined;
++	};
+ 
+ 	export {};
+ }
+diff --git a/playgrounds/sandbox/run.js b/playgrounds/sandbox/run.js
+index 7ff9f7c4c..35bffb67a 100644
+--- a/playgrounds/sandbox/run.js
++++ b/playgrounds/sandbox/run.js
+@@ -3,7 +3,7 @@ import * as path from 'node:path';
+ import { fileURLToPath } from 'node:url';
+ import { parseArgs } from 'node:util';
+ import { globSync } from 'tinyglobby';
+-import { compile, compileModule, parse, migrate } from 'svelte/compiler';
++import { compile, compileModule, parse, print, migrate } from 'svelte/compiler';
+ 
+ // toggle these to change what gets written to sandbox/output
+ const AST = false;
+@@ -11,6 +11,7 @@ const MIGRATE = false;
+ const FROM_HTML = true;
+ const FROM_TREE = false;
+ const DEV = false;
++const PRINT = false;
+ 
+ const argv = parseArgs({ options: { runes: { type: 'boolean' } }, args: process.argv.slice(2) });
+ 
+@@ -71,6 +72,11 @@ for (const generate of /** @type {const} */ (['client', 'server'])) {
+ 						'\t'
+ 					)
+ 				);
++
++				if (PRINT) {
++					const printed = print(ast);
++					write(`${cwd}/output/printed/${file}`, printed.code);
++				}
+ 			}
+ 
+ 			if (MIGRATE) {
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 0b1f57213..bdb120600 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -96,8 +96,8 @@ importers:
+         specifier: ^1.2.1
+         version: 1.2.1
+       esrap:
+-        specifier: ^2.1.0
+-        version: 2.1.0
++        specifier: ^2.2.0
++        version: 2.2.0
+       is-reference:
+         specifier: ^3.0.3
+         version: 3.0.3
+@@ -1178,8 +1178,8 @@ packages:
+       eslint: ^8.57.0 || ^9.0.0
+       typescript: '>=4.8.4 <5.9.0'
+ 
+-  '@typescript-eslint/project-service@8.46.2':
+-    resolution: {integrity: sha512-PULOLZ9iqwI7hXcmL4fVfIsBi6AN9YxRc0frbvmg8f+4hQAjQ5GYNKK0DIArNo+rOKmR/iBYwkpBmnIwin4wBg==}
++  '@typescript-eslint/project-service@8.48.0':
++    resolution: {integrity: sha512-Ne4CTZyRh1BecBf84siv42wv5vQvVmgtk8AuiEffKTUo3DrBaGYZueJSxxBZ8fjk/N3DrgChH4TOdIOwOwiqqw==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+     peerDependencies:
+       typescript: '>=4.8.4 <6.0.0'
+@@ -1188,12 +1188,12 @@ packages:
+     resolution: {integrity: sha512-E0ntLvsfPqnPwng8b8y4OGuzh/iIOm2z8U3S9zic2TeMLW61u5IH2Q1wu0oSTkfrSzwbDJIB/Lm8O3//8BWMPA==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+ 
+-  '@typescript-eslint/scope-manager@8.46.2':
+-    resolution: {integrity: sha512-LF4b/NmGvdWEHD2H4MsHD8ny6JpiVNDzrSZr3CsckEgCbAGZbYM4Cqxvi9L+WqDMT+51Ozy7lt2M+d0JLEuBqA==}
++  '@typescript-eslint/scope-manager@8.48.0':
++    resolution: {integrity: sha512-uGSSsbrtJrLduti0Q1Q9+BF1/iFKaxGoQwjWOIVNJv0o6omrdyR8ct37m4xIl5Zzpkp69Kkmvom7QFTtue89YQ==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+ 
+-  '@typescript-eslint/tsconfig-utils@8.46.2':
+-    resolution: {integrity: sha512-a7QH6fw4S57+F5y2FIxxSDyi5M4UfGF+Jl1bCGd7+L4KsaUY80GsiF/t0UoRFDHAguKlBaACWJRmdrc6Xfkkag==}
++  '@typescript-eslint/tsconfig-utils@8.48.0':
++    resolution: {integrity: sha512-WNebjBdFdyu10sR1M4OXTt2OkMd5KWIL+LLfeH9KhgP+jzfDV/LI3eXzwJ1s9+Yc0Kzo2fQCdY/OpdusCMmh6w==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+     peerDependencies:
+       typescript: '>=4.8.4 <6.0.0'
+@@ -1209,8 +1209,8 @@ packages:
+     resolution: {integrity: sha512-89B1eP3tnpr9A8L6PZlSjBvnJhWXtYfZhECqlBl1D9Lme9mHO6iWlsprBtVenQvY1HMhax1mWOjhtL3fh/u+pA==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+ 
+-  '@typescript-eslint/types@8.46.2':
+-    resolution: {integrity: sha512-lNCWCbq7rpg7qDsQrd3D6NyWYu+gkTENkG5IKYhUIcxSb59SQC/hEQ+MrG4sTgBVghTonNWq42bA/d4yYumldQ==}
++  '@typescript-eslint/types@8.48.0':
++    resolution: {integrity: sha512-cQMcGQQH7kwKoVswD1xdOytxQR60MWKM1di26xSUtxehaDs/32Zpqsu5WJlXTtTTqyAVK8R7hvsUnIXRS+bjvA==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+ 
+   '@typescript-eslint/typescript-estree@8.26.0':
+@@ -1219,8 +1219,8 @@ packages:
+     peerDependencies:
+       typescript: '>=4.8.4 <5.9.0'
+ 
+-  '@typescript-eslint/typescript-estree@8.46.2':
+-    resolution: {integrity: sha512-f7rW7LJ2b7Uh2EiQ+7sza6RDZnajbNbemn54Ob6fRwQbgcIn+GWfyuHDHRYgRoZu1P4AayVScrRW+YfbTvPQoQ==}
++  '@typescript-eslint/typescript-estree@8.48.0':
++    resolution: {integrity: sha512-ljHab1CSO4rGrQIAyizUS6UGHHCiAYhbfcIZ1zVJr5nMryxlXMVWS3duFPSKvSUbFPwkXMFk1k0EMIjub4sRRQ==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+     peerDependencies:
+       typescript: '>=4.8.4 <6.0.0'
+@@ -1232,8 +1232,8 @@ packages:
+       eslint: ^8.57.0 || ^9.0.0
+       typescript: '>=4.8.4 <5.9.0'
+ 
+-  '@typescript-eslint/utils@8.46.2':
+-    resolution: {integrity: sha512-sExxzucx0Tud5tE0XqR0lT0psBQvEpnpiul9XbGUB1QwpWJJAps1O/Z7hJxLGiZLBKMCutjTzDgmd1muEhBnVg==}
++  '@typescript-eslint/utils@8.48.0':
++    resolution: {integrity: sha512-yTJO1XuGxCsSfIVt1+1UrLHtue8xz16V8apzPYI06W0HbEbEWHxHXgZaAgavIkoh+GeV6hKKd5jm0sS6OYxWXQ==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+     peerDependencies:
+       eslint: ^8.57.0 || ^9.0.0
+@@ -1243,8 +1243,8 @@ packages:
+     resolution: {integrity: sha512-2z8JQJWAzPdDd51dRQ/oqIJxe99/hoLIqmf8RMCAJQtYDc535W/Jt2+RTP4bP0aKeBG1F65yjIZuczOXCmbWwg==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+ 
+-  '@typescript-eslint/visitor-keys@8.46.2':
+-    resolution: {integrity: sha512-tUFMXI4gxzzMXt4xpGJEsBsTox0XbNQ1y94EwlD/CuZwFcQP79xfQqMhau9HsRc/J0cAPA/HZt1dZPtGn9V/7w==}
++  '@typescript-eslint/visitor-keys@8.48.0':
++    resolution: {integrity: sha512-T0XJMaRPOH3+LBbAfzR2jalckP1MSG/L9eUtY0DEzUyVaXJ/t6zN0nR7co5kz0Jko/nkSYCBRkz1djvjajVTTg==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+ 
+   '@vitest/coverage-v8@2.1.9':
+@@ -1660,8 +1660,8 @@ packages:
+     resolution: {integrity: sha512-YQLXUplAwJgCydQ78IMJywZCceoqk1oH01OERdSAJc/7U2AylwjhSCLDEtqwg811idIS/9fIU5GjG73IgjKMVg==}
+     engines: {node: '>=0.10'}
+ 
+-  esrap@2.1.0:
+-    resolution: {integrity: sha512-yzmPNpl7TBbMRC5Lj2JlJZNPml0tzqoqP5B1JXycNUwtqma9AKCO0M2wHrdgsHcy1WRW7S9rJknAMtByg3usgA==}
++  esrap@2.2.0:
++    resolution: {integrity: sha512-WBmtxe7R9C5mvL4n2le8nMUe4mD5V9oiK2vJpQ9I3y20ENPUomPcphBXE8D1x/Bm84oN1V+lOfgXxtqmxTp3Xg==}
+ 
+   esrecurse@4.3.0:
+     resolution: {integrity: sha512-KmfKL3b6G+RXvP8N1vr3Tq1kL/oCFgn2NYXEtqP8/L3pKapUA4G8cFVaoF3SU323CD4XypR/ffioHmkti6/Tag==}
+@@ -3648,10 +3648,10 @@ snapshots:
+     transitivePeerDependencies:
+       - supports-color
+ 
+-  '@typescript-eslint/project-service@8.46.2(typescript@5.5.4)':
++  '@typescript-eslint/project-service@8.48.0(typescript@5.5.4)':
+     dependencies:
+-      '@typescript-eslint/tsconfig-utils': 8.46.2(typescript@5.5.4)
+-      '@typescript-eslint/types': 8.46.2
++      '@typescript-eslint/tsconfig-utils': 8.48.0(typescript@5.5.4)
++      '@typescript-eslint/types': 8.48.0
+       debug: 4.4.3
+       typescript: 5.5.4
+     transitivePeerDependencies:
+@@ -3662,12 +3662,12 @@ snapshots:
+       '@typescript-eslint/types': 8.26.0
+       '@typescript-eslint/visitor-keys': 8.26.0
+ 
+-  '@typescript-eslint/scope-manager@8.46.2':
++  '@typescript-eslint/scope-manager@8.48.0':
+     dependencies:
+-      '@typescript-eslint/types': 8.46.2
+-      '@typescript-eslint/visitor-keys': 8.46.2
++      '@typescript-eslint/types': 8.48.0
++      '@typescript-eslint/visitor-keys': 8.48.0
+ 
+-  '@typescript-eslint/tsconfig-utils@8.46.2(typescript@5.5.4)':
++  '@typescript-eslint/tsconfig-utils@8.48.0(typescript@5.5.4)':
+     dependencies:
+       typescript: 5.5.4
+ 
+@@ -3684,7 +3684,7 @@ snapshots:
+ 
+   '@typescript-eslint/types@8.26.0': {}
+ 
+-  '@typescript-eslint/types@8.46.2': {}
++  '@typescript-eslint/types@8.48.0': {}
+ 
+   '@typescript-eslint/typescript-estree@8.26.0(typescript@5.5.4)':
+     dependencies:
+@@ -3700,17 +3700,16 @@ snapshots:
+     transitivePeerDependencies:
+       - supports-color
+ 
+-  '@typescript-eslint/typescript-estree@8.46.2(typescript@5.5.4)':
++  '@typescript-eslint/typescript-estree@8.48.0(typescript@5.5.4)':
+     dependencies:
+-      '@typescript-eslint/project-service': 8.46.2(typescript@5.5.4)
+-      '@typescript-eslint/tsconfig-utils': 8.46.2(typescript@5.5.4)
+-      '@typescript-eslint/types': 8.46.2
+-      '@typescript-eslint/visitor-keys': 8.46.2
++      '@typescript-eslint/project-service': 8.48.0(typescript@5.5.4)
++      '@typescript-eslint/tsconfig-utils': 8.48.0(typescript@5.5.4)
++      '@typescript-eslint/types': 8.48.0
++      '@typescript-eslint/visitor-keys': 8.48.0
+       debug: 4.4.3
+-      fast-glob: 3.3.3
+-      is-glob: 4.0.3
+       minimatch: 9.0.5
+       semver: 7.7.3
++      tinyglobby: 0.2.15
+       ts-api-utils: 2.1.0(typescript@5.5.4)
+       typescript: 5.5.4
+     transitivePeerDependencies:
+@@ -3727,12 +3726,12 @@ snapshots:
+     transitivePeerDependencies:
+       - supports-color
+ 
+-  '@typescript-eslint/utils@8.46.2(eslint@9.9.1)(typescript@5.5.4)':
++  '@typescript-eslint/utils@8.48.0(eslint@9.9.1)(typescript@5.5.4)':
+     dependencies:
+       '@eslint-community/eslint-utils': 4.9.0(eslint@9.9.1)
+-      '@typescript-eslint/scope-manager': 8.46.2
+-      '@typescript-eslint/types': 8.46.2
+-      '@typescript-eslint/typescript-estree': 8.46.2(typescript@5.5.4)
++      '@typescript-eslint/scope-manager': 8.48.0
++      '@typescript-eslint/types': 8.48.0
++      '@typescript-eslint/typescript-estree': 8.48.0(typescript@5.5.4)
+       eslint: 9.9.1
+       typescript: 5.5.4
+     transitivePeerDependencies:
+@@ -3743,9 +3742,9 @@ snapshots:
+       '@typescript-eslint/types': 8.26.0
+       eslint-visitor-keys: 4.2.1
+ 
+-  '@typescript-eslint/visitor-keys@8.46.2':
++  '@typescript-eslint/visitor-keys@8.48.0':
+     dependencies:
+-      '@typescript-eslint/types': 8.46.2
++      '@typescript-eslint/types': 8.48.0
+       eslint-visitor-keys: 4.2.1
+ 
+   '@vitest/coverage-v8@2.1.9(vitest@2.1.9(@types/node@20.19.17)(jsdom@25.0.1)(lightningcss@1.23.0)(sass@1.70.0)(terser@5.27.0))':
+@@ -4145,7 +4144,7 @@ snapshots:
+   eslint-plugin-n@17.16.1(eslint@9.9.1)(typescript@5.5.4):
+     dependencies:
+       '@eslint-community/eslint-utils': 4.9.0(eslint@9.9.1)
+-      '@typescript-eslint/utils': 8.46.2(eslint@9.9.1)(typescript@5.5.4)
++      '@typescript-eslint/utils': 8.48.0(eslint@9.9.1)(typescript@5.5.4)
+       enhanced-resolve: 5.18.3
+       eslint: 9.9.1
+       eslint-plugin-es-x: 7.8.0(eslint@9.9.1)
+@@ -4245,7 +4244,7 @@ snapshots:
+     dependencies:
+       estraverse: 5.3.0
+ 
+-  esrap@2.1.0:
++  esrap@2.2.0:
+     dependencies:
+       '@jridgewell/sourcemap-codec': 1.5.0
+ 

@@ -1,0 +1,372 @@
+diff --git a/actionmailbox/app/controllers/action_mailbox/ingresses/mandrill/inbound_emails_controller.rb b/actionmailbox/app/controllers/action_mailbox/ingresses/mandrill/inbound_emails_controller.rb
+index f72b10d7ba..15249c3803 100644
+--- a/actionmailbox/app/controllers/action_mailbox/ingresses/mandrill/inbound_emails_controller.rb
++++ b/actionmailbox/app/controllers/action_mailbox/ingresses/mandrill/inbound_emails_controller.rb
+@@ -22,7 +22,7 @@ def create
+       head :ok
+     rescue JSON::ParserError => error
+       logger.error error.message
+-      head :unprocessable_entity
++      head ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     end
+ 
+     def health_check
+diff --git a/actionmailbox/app/controllers/action_mailbox/ingresses/postmark/inbound_emails_controller.rb b/actionmailbox/app/controllers/action_mailbox/ingresses/postmark/inbound_emails_controller.rb
+index db4e141627..cb32a58767 100644
+--- a/actionmailbox/app/controllers/action_mailbox/ingresses/postmark/inbound_emails_controller.rb
++++ b/actionmailbox/app/controllers/action_mailbox/ingresses/postmark/inbound_emails_controller.rb
+@@ -57,7 +57,7 @@ def create
+         When configuring your Postmark inbound webhook, be sure to check the box
+         labeled "Include raw email content in JSON payload".
+       MESSAGE
+-      head :unprocessable_entity
++      head ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     end
+ 
+     private
+diff --git a/actionmailbox/app/controllers/action_mailbox/ingresses/relay/inbound_emails_controller.rb b/actionmailbox/app/controllers/action_mailbox/ingresses/relay/inbound_emails_controller.rb
+index d569e04334..2cf5ceece8 100644
+--- a/actionmailbox/app/controllers/action_mailbox/ingresses/relay/inbound_emails_controller.rb
++++ b/actionmailbox/app/controllers/action_mailbox/ingresses/relay/inbound_emails_controller.rb
+@@ -55,7 +55,7 @@ def create
+       if request.body
+         ActionMailbox::InboundEmail.create_and_extract_message_id! request.body.read
+       else
+-        head :unprocessable_entity
++        head ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+       end
+     end
+ 
+diff --git a/actionmailbox/app/controllers/action_mailbox/ingresses/sendgrid/inbound_emails_controller.rb b/actionmailbox/app/controllers/action_mailbox/ingresses/sendgrid/inbound_emails_controller.rb
+index fc2d7aba92..19904c1aae 100644
+--- a/actionmailbox/app/controllers/action_mailbox/ingresses/sendgrid/inbound_emails_controller.rb
++++ b/actionmailbox/app/controllers/action_mailbox/ingresses/sendgrid/inbound_emails_controller.rb
+@@ -52,7 +52,7 @@ def create
+       ActionMailbox::InboundEmail.create_and_extract_message_id! mail
+     rescue JSON::ParserError => error
+       logger.error error.message
+-      head :unprocessable_entity
++      head ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     end
+ 
+     private
+diff --git a/actionmailbox/test/controllers/ingresses/postmark/inbound_emails_controller_test.rb b/actionmailbox/test/controllers/ingresses/postmark/inbound_emails_controller_test.rb
+index c371ad0cba..11982f74e8 100644
+--- a/actionmailbox/test/controllers/ingresses/postmark/inbound_emails_controller_test.rb
++++ b/actionmailbox/test/controllers/ingresses/postmark/inbound_emails_controller_test.rb
+@@ -53,7 +53,7 @@ class ActionMailbox::Ingresses::Postmark::InboundEmailsControllerTest < ActionDi
+         headers: { authorization: credentials }, params: { From: "someone@example.com" }
+     end
+ 
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+   end
+ 
+   test "rejecting an unauthorized inbound email from Postmark" do
+diff --git a/actionmailbox/test/controllers/ingresses/relay/inbound_emails_controller_test.rb b/actionmailbox/test/controllers/ingresses/relay/inbound_emails_controller_test.rb
+index ac0a6fab75..a0b121bb4b 100644
+--- a/actionmailbox/test/controllers/ingresses/relay/inbound_emails_controller_test.rb
++++ b/actionmailbox/test/controllers/ingresses/relay/inbound_emails_controller_test.rb
+@@ -37,7 +37,7 @@ class ActionMailbox::Ingresses::Relay::InboundEmailsControllerTest < ActionDispa
+         env: { "rack.input" => nil }
+     end
+ 
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+   end
+ 
+   test "rejecting an unauthorized inbound email" do
+diff --git a/actionpack/lib/action_controller/metal/redirecting.rb b/actionpack/lib/action_controller/metal/redirecting.rb
+index ad0e23ba8b..3f457b2bb5 100644
+--- a/actionpack/lib/action_controller/metal/redirecting.rb
++++ b/actionpack/lib/action_controller/metal/redirecting.rb
+@@ -249,9 +249,9 @@ def _allow_other_host
+ 
+       def _extract_redirect_to_status(options, response_options)
+         if options.is_a?(Hash) && options.key?(:status)
+-          Rack::Utils.status_code(options.delete(:status))
++          ActionDispatch::Response.rack_status_code(options.delete(:status))
+         elsif response_options.key?(:status)
+-          Rack::Utils.status_code(response_options[:status])
++          ActionDispatch::Response.rack_status_code(response_options[:status])
+         else
+           302
+         end
+diff --git a/actionpack/lib/action_controller/metal/rendering.rb b/actionpack/lib/action_controller/metal/rendering.rb
+index 1c8fb1f80a..eb2ac71d2b 100644
+--- a/actionpack/lib/action_controller/metal/rendering.rb
++++ b/actionpack/lib/action_controller/metal/rendering.rb
+@@ -238,7 +238,7 @@ def _normalize_options(options)
+         end
+ 
+         if options[:status]
+-          options[:status] = Rack::Utils.status_code(options[:status])
++          options[:status] = ActionDispatch::Response.rack_status_code(options[:status])
+         end
+ 
+         super
+diff --git a/actionpack/lib/action_dispatch/constants.rb b/actionpack/lib/action_dispatch/constants.rb
+index c1b53150e1..3250404003 100644
+--- a/actionpack/lib/action_dispatch/constants.rb
++++ b/actionpack/lib/action_dispatch/constants.rb
+@@ -30,5 +30,11 @@ module Constants
+       SERVER_TIMING = "server-timing"
+       STRICT_TRANSPORT_SECURITY = "strict-transport-security"
+     end
++
++    if Gem::Version.new(Rack::RELEASE) < Gem::Version.new("3.1")
++      UNPROCESSABLE_CONTENT = :unprocessable_entity
++    else
++      UNPROCESSABLE_CONTENT = :unprocessable_content
++    end
+   end
+ end
+diff --git a/actionpack/lib/action_dispatch/http/response.rb b/actionpack/lib/action_dispatch/http/response.rb
+index e3792aea8f..a29b99cf8e 100644
+--- a/actionpack/lib/action_dispatch/http/response.rb
++++ b/actionpack/lib/action_dispatch/http/response.rb
+@@ -46,6 +46,20 @@ class Response
+       Headers = ::Rack::Utils::HeaderHash
+     end
+ 
++    class << self
++      if ActionDispatch::Constants::UNPROCESSABLE_CONTENT == :unprocessable_content
++        def rack_status_code(status) # :nodoc:
++          status = :unprocessable_content if status == :unprocessable_entity
++          Rack::Utils.status_code(status)
++        end
++      else
++        def rack_status_code(status) # :nodoc:
++          status = :unprocessable_entity if status == :unprocessable_content
++          Rack::Utils.status_code(status)
++        end
++      end
++    end
++
+     # To be deprecated:
+     Header = Headers
+ 
+@@ -257,7 +271,7 @@ def sent?;      synchronize { @sent };      end
+ 
+     # Sets the HTTP status code.
+     def status=(status)
+-      @status = Rack::Utils.status_code(status)
++      @status = Response.rack_status_code(status)
+     end
+ 
+     # Sets the HTTP response's content MIME type. For example, in the controller you
+diff --git a/actionpack/lib/action_dispatch/middleware/exception_wrapper.rb b/actionpack/lib/action_dispatch/middleware/exception_wrapper.rb
+index 1af4d84ddc..8ec62b7b27 100644
+--- a/actionpack/lib/action_dispatch/middleware/exception_wrapper.rb
++++ b/actionpack/lib/action_dispatch/middleware/exception_wrapper.rb
+@@ -18,8 +18,8 @@ class ExceptionWrapper
+       "ActionController::UnknownFormat"                    => :not_acceptable,
+       "ActionDispatch::Http::MimeNegotiation::InvalidType" => :not_acceptable,
+       "ActionController::MissingExactTemplate"             => :not_acceptable,
+-      "ActionController::InvalidAuthenticityToken"         => :unprocessable_entity,
+-      "ActionController::InvalidCrossOriginRequest"        => :unprocessable_entity,
++      "ActionController::InvalidAuthenticityToken"         => ActionDispatch::Constants::UNPROCESSABLE_CONTENT,
++      "ActionController::InvalidCrossOriginRequest"        => ActionDispatch::Constants::UNPROCESSABLE_CONTENT,
+       "ActionDispatch::Http::Parameters::ParseError"       => :bad_request,
+       "ActionController::BadRequest"                       => :bad_request,
+       "ActionController::ParameterMissing"                 => :bad_request,
+@@ -178,7 +178,7 @@ def traces
+     end
+ 
+     def self.status_code_for_exception(class_name)
+-      Rack::Utils.status_code(@@rescue_responses[class_name])
++      ActionDispatch::Response.rack_status_code(@@rescue_responses[class_name])
+     end
+ 
+     def show?(request)
+diff --git a/actionpack/lib/action_dispatch/testing/assertion_response.rb b/actionpack/lib/action_dispatch/testing/assertion_response.rb
+index bc81475b2d..753285ac89 100644
+--- a/actionpack/lib/action_dispatch/testing/assertion_response.rb
++++ b/actionpack/lib/action_dispatch/testing/assertion_response.rb
+@@ -38,7 +38,7 @@ def code_and_name
+ 
+     private
+       def code_from_name(name)
+-        GENERIC_RESPONSE_CODES[name] || Rack::Utils.status_code(name)
++        GENERIC_RESPONSE_CODES[name] || ActionDispatch::Response.rack_status_code(name)
+       end
+ 
+       def name_from_code(code)
+diff --git a/actionpack/test/controller/rescue_test.rb b/actionpack/test/controller/rescue_test.rb
+index 8c2397cf48..642e16e49e 100644
+--- a/actionpack/test/controller/rescue_test.rb
++++ b/actionpack/test/controller/rescue_test.rb
+@@ -147,7 +147,7 @@ def deny_access
+     end
+ 
+     def show_errors(exception)
+-      head :unprocessable_entity
++      head ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     end
+ end
+ 
+@@ -289,12 +289,12 @@ def test_block_rescue_handler_with_argument_as_string
+ 
+   test "rescue when cause has more specific handler than wrapper" do
+     get :exception_with_more_specific_handler_for_cause
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+   end
+ 
+   test "rescue when cause has handler, but wrapper doesn't" do
+     get :exception_with_no_handler_for_wrapper
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+   end
+ 
+   test "can rescue a ParseError" do
+diff --git a/actionpack/test/dispatch/debug_exceptions_test.rb b/actionpack/test/dispatch/debug_exceptions_test.rb
+index 5d350ced92..e3cde6ba91 100644
+--- a/actionpack/test/dispatch/debug_exceptions_test.rb
++++ b/actionpack/test/dispatch/debug_exceptions_test.rb
+@@ -86,8 +86,6 @@ def call(env)
+         raise ActionController::UnknownHttpMethod
+       when "/not_implemented"
+         raise ActionController::NotImplemented
+-      when "/unprocessable_entity"
+-        raise ActionController::InvalidAuthenticityToken
+       when "/invalid_mimetype"
+         raise ActionDispatch::Http::MimeNegotiation::InvalidType
+       when "/not_found_original_exception"
+diff --git a/activerecord/lib/active_record/railtie.rb b/activerecord/lib/active_record/railtie.rb
+index c680a70110..023a3eafc0 100644
+--- a/activerecord/lib/active_record/railtie.rb
++++ b/activerecord/lib/active_record/railtie.rb
+@@ -23,8 +23,8 @@ class Railtie < Rails::Railtie # :nodoc:
+     config.action_dispatch.rescue_responses.merge!(
+       "ActiveRecord::RecordNotFound"   => :not_found,
+       "ActiveRecord::StaleObjectError" => :conflict,
+-      "ActiveRecord::RecordInvalid"    => :unprocessable_entity,
+-      "ActiveRecord::RecordNotSaved"   => :unprocessable_entity
++      "ActiveRecord::RecordInvalid"    => ActionDispatch::Constants::UNPROCESSABLE_CONTENT,
++      "ActiveRecord::RecordNotSaved"   => ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     )
+ 
+     config.active_record.use_schema_cache_dump = true
+diff --git a/activestorage/app/controllers/active_storage/disk_controller.rb b/activestorage/app/controllers/active_storage/disk_controller.rb
+index 97ac584f73..398acc22b1 100644
+--- a/activestorage/app/controllers/active_storage/disk_controller.rb
++++ b/activestorage/app/controllers/active_storage/disk_controller.rb
+@@ -25,13 +25,13 @@ def update
+         named_disk_service(token[:service_name]).upload token[:key], request.body, checksum: token[:checksum]
+         head :no_content
+       else
+-        head :unprocessable_entity
++        head ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+       end
+     else
+       head :not_found
+     end
+   rescue ActiveStorage::IntegrityError
+-    head :unprocessable_entity
++    head ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+   end
+ 
+   private
+diff --git a/activestorage/test/controllers/disk_controller_test.rb b/activestorage/test/controllers/disk_controller_test.rb
+index ea563e6363..cb26184445 100644
+--- a/activestorage/test/controllers/disk_controller_test.rb
++++ b/activestorage/test/controllers/disk_controller_test.rb
+@@ -86,7 +86,7 @@ class ActiveStorage::DiskControllerTest < ActionDispatch::IntegrationTest
+     blob = create_blob_before_direct_upload byte_size: data.size, checksum: ActiveStorage.checksum_implementation.base64digest("bad data")
+ 
+     put blob.service_url_for_direct_upload, params: data
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     assert_not blob.service.exist?(blob.key)
+   end
+ 
+@@ -95,7 +95,7 @@ class ActiveStorage::DiskControllerTest < ActionDispatch::IntegrationTest
+     blob = create_blob_before_direct_upload byte_size: data.size, checksum: ActiveStorage.checksum_implementation.base64digest(data)
+ 
+     put blob.service_url_for_direct_upload, params: data, headers: { "Content-Type" => "application/octet-stream" }
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     assert_not blob.service.exist?(blob.key)
+   end
+ 
+@@ -114,7 +114,7 @@ class ActiveStorage::DiskControllerTest < ActionDispatch::IntegrationTest
+     blob = create_blob_before_direct_upload byte_size: data.size - 1, checksum: ActiveStorage.checksum_implementation.base64digest(data)
+ 
+     put blob.service_url_for_direct_upload, params: data, headers: { "Content-Type" => "text/plain" }
+-    assert_response :unprocessable_entity
++    assert_response ActionDispatch::Constants::UNPROCESSABLE_CONTENT
+     assert_not blob.service.exist?(blob.key)
+   end
+ 
+diff --git a/railties/lib/rails/generators/rails/scaffold_controller/templates/api_controller.rb.tt b/railties/lib/rails/generators/rails/scaffold_controller/templates/api_controller.rb.tt
+index e742714ae8..6a2685ba87 100644
+--- a/railties/lib/rails/generators/rails/scaffold_controller/templates/api_controller.rb.tt
++++ b/railties/lib/rails/generators/rails/scaffold_controller/templates/api_controller.rb.tt
+@@ -21,7 +21,7 @@ class <%= controller_class_name %>Controller < ApplicationController
+     if @<%= orm_instance.save %>
+       render json: <%= "@#{singular_table_name}" %>, status: :created, location: <%= "@#{singular_table_name}" %>
+     else
+-      render json: <%= "@#{orm_instance.errors}" %>, status: :unprocessable_entity
++      render json: <%= "@#{orm_instance.errors}" %>, status: <%= ActionDispatch::Constants::UNPROCESSABLE_CONTENT.inspect %>
+     end
+   end
+ 
+@@ -30,7 +30,7 @@ class <%= controller_class_name %>Controller < ApplicationController
+     if @<%= orm_instance.update("#{singular_table_name}_params") %>
+       render json: <%= "@#{singular_table_name}" %>
+     else
+-      render json: <%= "@#{orm_instance.errors}" %>, status: :unprocessable_entity
++      render json: <%= "@#{orm_instance.errors}" %>, status: <%= ActionDispatch::Constants::UNPROCESSABLE_CONTENT.inspect %>
+     end
+   end
+ 
+diff --git a/railties/lib/rails/generators/rails/scaffold_controller/templates/controller.rb.tt b/railties/lib/rails/generators/rails/scaffold_controller/templates/controller.rb.tt
+index 3efa3dc064..b795607cc3 100644
+--- a/railties/lib/rails/generators/rails/scaffold_controller/templates/controller.rb.tt
++++ b/railties/lib/rails/generators/rails/scaffold_controller/templates/controller.rb.tt
+@@ -27,7 +27,7 @@ class <%= controller_class_name %>Controller < ApplicationController
+     if @<%= orm_instance.save %>
+       redirect_to <%= redirect_resource_name %>, notice: <%= %("#{human_name} was successfully created.") %>
+     else
+-      render :new, status: :unprocessable_entity
++      render :new, status: <%= ActionDispatch::Constants::UNPROCESSABLE_CONTENT.inspect %>
+     end
+   end
+ 
+@@ -36,7 +36,7 @@ class <%= controller_class_name %>Controller < ApplicationController
+     if @<%= orm_instance.update("#{singular_table_name}_params") %>
+       redirect_to <%= redirect_resource_name %>, notice: <%= %("#{human_name} was successfully updated.") %>, status: :see_other
+     else
+-      render :edit, status: :unprocessable_entity
++      render :edit, status: <%= ActionDispatch::Constants::UNPROCESSABLE_CONTENT.inspect %>
+     end
+   end
+ 
+diff --git a/railties/test/application/active_storage/uploads_integration_test.rb b/railties/test/application/active_storage/uploads_integration_test.rb
+index ad8f48327a..82d23db8ff 100644
+--- a/railties/test/application/active_storage/uploads_integration_test.rb
++++ b/railties/test/application/active_storage/uploads_integration_test.rb
+@@ -45,7 +45,7 @@ def create
+             if @user.save
+               redirect_to user_url(@user), notice: "User was successfully created."
+             else
+-              render :new, status: :unprocessable_entity
++              render :new, status: #{ActionDispatch::Constants::UNPROCESSABLE_CONTENT.inspect}
+             end
+           end
+ 
+diff --git a/tools/strict_warnings.rb b/tools/strict_warnings.rb
+index 6776e532b7..2f8e2bb2c0 100644
+--- a/tools/strict_warnings.rb
++++ b/tools/strict_warnings.rb
+@@ -13,9 +13,6 @@ class WarningError < StandardError; end
+     # Expected non-verbose warning emitted by Rails.
+     /Ignoring .*\.yml because it has expired/,
+     /Failed to validate the schema cache because/,
+-
+-    # TODO: We need to decide what to do with this.
+-    /Status code :unprocessable_entity is deprecated/,
+   )
+ 
+   SUPPRESSED_WARNINGS = Regexp.union(

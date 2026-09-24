@@ -1,0 +1,32 @@
+task_id: projectdiscovery_nuclei_utils_aa8fcd73e5a8
+hidden_test_patches:
+- repo: nuclei
+  patch: hidden/patches/nuclei-hidden-tests.patch
+  test_profile: nuclei-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id001
+  - pkg/fuzz/component/path_contract_test.go
+  hidden_file: *id001
+  semantic_changes: Replaces PR debug and playground tests with observable path-item fuzzing, numeric-segment replacement, and final URL encoding behavior required by the prompt.
+  source: contract-aligned tests based on projectdiscovery/nuclei PR 6400 and issues 6162 and 6398
+- repo: utils
+  patch: hidden/patches/utils-hidden-tests.patch
+  test_profile: utils-hidden
+  origin: contract_aligned_hidden_test
+  source_file: &id002
+  - url/path_contract_generator.go
+  - url/path_contract_test.go
+  hidden_file: *id002
+  semantic_changes: Preserves the prompt's path encode/decode contract while discovering public helpers by signature instead of requiring Gold-specific function names.
+  source: contract-aligned tests based on projectdiscovery/utils PR 671 and the cross-repository path behavior in projectdiscovery/nuclei PR 6400
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - nuclei-hidden
+    - utils-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

@@ -1,0 +1,1183 @@
+diff --git a/tests/Fixtures/runtime/frankenphp/index.php b/tests/Fixtures/runtime/frankenphp/index.php
+new file mode 100644
+index 0000000..640f78e
+--- /dev/null
++++ b/tests/Fixtures/runtime/frankenphp/index.php
+@@ -0,0 +1,84 @@
++<?php
++
++declare(strict_types=1);
++
++use Sentry\Event;
++use Sentry\SentrySdk;
++use Sentry\State\Scope;
++
++use function Sentry\configureScope;
++use function Sentry\getTraceparent;
++use function Sentry\init;
++use function Sentry\withContext;
++
++require dirname(__DIR__, 4) . '/vendor/autoload.php';
++
++ignore_user_abort(true);
++
++init([
++    'dsn' => false,
++    'default_integrations' => false,
++]);
++
++configureScope(static function (Scope $scope): void {
++    $scope->setTag('baseline', 'yes');
++});
++
++$handler = static function (): void {
++    $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', \PHP_URL_PATH);
++
++    if ($path === '/ping') {
++        header('Content-Type: text/plain');
++        echo 'pong';
++
++        return;
++    }
++
++    if ($path !== '/scope') {
++        http_response_code(404);
++        header('Content-Type: text/plain');
++        echo 'not found';
++
++        return;
++    }
++
++    $requestTag = isset($_GET['request']) ? (string) $_GET['request'] : 'none';
++    $leakTag = isset($_GET['leak']) ? (string) $_GET['leak'] : null;
++
++    withContext(static function () use ($requestTag, $leakTag): void {
++        configureScope(static function (Scope $scope) use ($requestTag, $leakTag): void {
++            $scope->setTag('request', $requestTag);
++
++            if ($leakTag !== null) {
++                $scope->setTag('leak', $leakTag);
++            }
++        });
++
++        $event = Event::createEvent();
++        configureScope(static function (Scope $scope) use (&$event): void {
++            $event = $scope->applyToEvent($event);
++        });
++
++        $tags = [];
++
++        if ($event !== null) {
++            $tags = $event->getTags();
++        }
++
++        header('Content-Type: application/json');
++        echo json_encode([
++            'runtime_context_id' => spl_object_id(SentrySdk::getCurrentHub()),
++            'traceparent' => getTraceparent(),
++            'tags' => $tags,
++        ]);
++    });
++};
++
++while (true) {
++    $keepRunning = frankenphp_handle_request($handler);
++    gc_collect_cycles();
++
++    if (!$keepRunning) {
++        break;
++    }
++}
+diff --git a/tests/Fixtures/runtime/roadrunner-worker.php b/tests/Fixtures/runtime/roadrunner-worker.php
+new file mode 100644
+index 0000000..e173cf2
+--- /dev/null
++++ b/tests/Fixtures/runtime/roadrunner-worker.php
+@@ -0,0 +1,138 @@
++<?php
++
++declare(strict_types=1);
++
++use Nyholm\Psr7\Factory\Psr17Factory;
++use Nyholm\Psr7\Response;
++use Sentry\Event;
++use Sentry\SentrySdk;
++use Sentry\State\Scope;
++use Spiral\RoadRunner\Http\PSR7Worker;
++use Spiral\RoadRunner\Worker;
++
++use function Sentry\configureScope;
++use function Sentry\getTraceparent;
++use function Sentry\init;
++use function Sentry\withContext;
++
++require dirname(__DIR__, 3) . '/vendor/autoload.php';
++
++$requiredClasses = [
++    Worker::class,
++    PSR7Worker::class,
++    Psr17Factory::class,
++    Response::class,
++];
++
++foreach ($requiredClasses as $class) {
++    if (!class_exists($class)) {
++        fwrite(\STDERR, sprintf("Required class '%s' is not available for RoadRunner fixture worker.\n", $class));
++
++        exit(2);
++    }
++}
++
++init([
++    'dsn' => false,
++    'default_integrations' => false,
++]);
++
++configureScope(static function (Scope $scope): void {
++    $scope->setTag('baseline', 'yes');
++});
++
++$factory = new Psr17Factory();
++$worker = Worker::create();
++$psrWorker = createPsrWorker($worker, $factory);
++
++while (true) {
++    try {
++        $request = $psrWorker->waitRequest();
++    } catch (Throwable $exception) {
++        $worker->error((string) $exception);
++
++        continue;
++    }
++
++    if ($request === null) {
++        break;
++    }
++
++    try {
++        $response = handleRequest($request);
++    } catch (Throwable $exception) {
++        $worker->error((string) $exception);
++        $response = new Response(500, ['Content-Type' => 'text/plain'], 'internal error');
++    }
++
++    try {
++        $psrWorker->respond($response);
++    } catch (Throwable $exception) {
++        $worker->error((string) $exception);
++    }
++}
++
++function createPsrWorker($worker, $factory)
++{
++    $reflectionClass = new ReflectionClass(PSR7Worker::class);
++    $constructor = $reflectionClass->getConstructor();
++    $requiredParameterCount = $constructor !== null ? $constructor->getNumberOfRequiredParameters() : 0;
++
++    $arguments = [$worker, $factory, $factory, $factory, $factory];
++
++    return $reflectionClass->newInstanceArgs(array_slice($arguments, 0, $requiredParameterCount));
++}
++
++function handleRequest($request): Response
++{
++    $path = $request->getUri()->getPath();
++
++    if ($path === '/ping') {
++        return new Response(200, ['Content-Type' => 'text/plain'], 'pong');
++    }
++
++    if ($path !== '/scope') {
++        return new Response(404, ['Content-Type' => 'text/plain'], 'not found');
++    }
++
++    $query = [];
++    parse_str($request->getUri()->getQuery(), $query);
++
++    $requestTag = isset($query['request']) ? (string) $query['request'] : 'none';
++    $leakTag = isset($query['leak']) ? (string) $query['leak'] : null;
++
++    $payload = withContext(static function () use ($requestTag, $leakTag): string {
++        configureScope(static function (Scope $scope) use ($requestTag, $leakTag): void {
++            $scope->setTag('request', $requestTag);
++
++            if ($leakTag !== null) {
++                $scope->setTag('leak', $leakTag);
++            }
++        });
++
++        $event = Event::createEvent();
++        configureScope(static function (Scope $scope) use (&$event): void {
++            $event = $scope->applyToEvent($event);
++        });
++
++        $tags = [];
++
++        if ($event !== null) {
++            $tags = $event->getTags();
++        }
++
++        $encoded = json_encode([
++            'runtime_context_id' => spl_object_id(SentrySdk::getCurrentHub()),
++            'traceparent' => getTraceparent(),
++            'tags' => $tags,
++        ]);
++
++        if ($encoded === false) {
++            return '{}';
++        }
++
++        return $encoded;
++    });
++
++    return new Response(200, ['Content-Type' => 'application/json'], $payload);
++}
+diff --git a/tests/Fixtures/runtime/roadrunner.rr.yaml b/tests/Fixtures/runtime/roadrunner.rr.yaml
+new file mode 100644
+index 0000000..8e8f266
+--- /dev/null
++++ b/tests/Fixtures/runtime/roadrunner.rr.yaml
+@@ -0,0 +1,12 @@
++version: "3"
++
++rpc:
++  listen: tcp://127.0.0.1:6001
++
++server:
++  command: "php roadrunner-worker.php"
++
++http:
++  address: 127.0.0.1:8080
++  pool:
++    num_workers: 1
+diff --git a/tests/FunctionsTest.php b/tests/FunctionsTest.php
+index 07e0bd9..060b89d 100644
+--- a/tests/FunctionsTest.php
++++ b/tests/FunctionsTest.php
+@@ -27,6 +27,8 @@
+ use Sentry\Tracing\TraceId;
+ use Sentry\Tracing\Transaction;
+ use Sentry\Tracing\TransactionContext;
++use Sentry\Transport\Result;
++use Sentry\Transport\ResultStatus;
+ use Sentry\Util\SentryUid;
+ 
+ use function Sentry\addBreadcrumb;
+@@ -37,11 +39,14 @@
+ use function Sentry\captureMessage;
+ use function Sentry\configureScope;
+ use function Sentry\continueTrace;
++use function Sentry\endContext;
+ use function Sentry\getBaggage;
+ use function Sentry\getTraceparent;
+ use function Sentry\init;
++use function Sentry\startContext;
+ use function Sentry\startTransaction;
+ use function Sentry\trace;
++use function Sentry\withContext;
+ use function Sentry\withMonitor;
+ use function Sentry\withScope;
+ 
+@@ -331,6 +336,99 @@ public function testConfigureScope(): void
+         $this->assertTrue($callbackInvoked);
+     }
+ 
++    public function testStartAndEndContext(): void
++    {
++        SentrySdk::init();
++
++        $globalHub = SentrySdk::getCurrentHub();
++
++        startContext();
++
++        $requestHub = SentrySdk::getCurrentHub();
++
++        $this->assertNotSame($globalHub, $requestHub);
++
++        endContext();
++
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
++    public function testWithContext(): void
++    {
++        SentrySdk::init();
++
++        $globalHub = SentrySdk::getCurrentHub();
++
++        $result = withContext(function () use ($globalHub): string {
++            $this->assertNotSame($globalHub, SentrySdk::getCurrentHub());
++
++            return 'ok';
++        });
++
++        $this->assertSame('ok', $result);
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
++    public function testNestedWithContextReusesOuterContext(): void
++    {
++        SentrySdk::init();
++
++        $globalHub = SentrySdk::getCurrentHub();
++        $outerHub = null;
++        $innerHub = null;
++
++        withContext(function () use (&$outerHub, &$innerHub, $globalHub): void {
++            $outerHub = SentrySdk::getCurrentHub();
++
++            configureScope(static function (Scope $scope): void {
++                $scope->setTag('outer', 'yes');
++            });
++
++            withContext(static function () use (&$innerHub): void {
++                $innerHub = SentrySdk::getCurrentHub();
++            });
++
++            $event = Event::createEvent();
++
++            configureScope(static function (Scope $scope) use (&$event): void {
++                $event = $scope->applyToEvent($event);
++            });
++
++            $this->assertNotSame($globalHub, SentrySdk::getCurrentHub());
++            $this->assertSame('yes', $event->getTags()['outer'] ?? null);
++        });
++
++        $this->assertNotNull($outerHub);
++        $this->assertNotNull($innerHub);
++        $this->assertSame($outerHub, $innerHub);
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
++    public function testWithContextAlwaysEndsContextWithOptionalTimeout(): void
++    {
++        /** @var ClientInterface&MockObject $client */
++        $client = $this->createMock(ClientInterface::class);
++        $client->expects($this->atLeastOnce())
++            ->method('getOptions')
++            ->willReturn(new Options());
++        $client->expects($this->once())
++            ->method('flush')
++            ->with(13)
++            ->willReturn(new Result(ResultStatus::success()));
++
++        SentrySdk::init()->bindClient($client);
++
++        try {
++            withContext(static function (): void {
++                throw new \RuntimeException('callback failed');
++            }, 13);
++
++            $this->fail('The callback exception should be rethrown.');
++        } catch (\RuntimeException $exception) {
++            $this->assertSame('callback failed', $exception->getMessage());
++        }
++    }
++
+     public function testStartTransaction(): void
+     {
+         $transactionContext = new TransactionContext('foo');
+diff --git a/tests/Integration/FrankenPhpWorkerModeIntegrationTest.php b/tests/Integration/FrankenPhpWorkerModeIntegrationTest.php
+new file mode 100644
+index 0000000..dfc8947
+--- /dev/null
++++ b/tests/Integration/FrankenPhpWorkerModeIntegrationTest.php
+@@ -0,0 +1,35 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Sentry\Tests\Integration;
++
++final class FrankenPhpWorkerModeIntegrationTest extends RuntimeContextWorkerModeIntegrationTestCase
++{
++    protected function skipUnlessRuntimeIsAvailable(): void
++    {
++        if (!$this->commandIsAvailable('frankenphp version')) {
++            $this->markTestSkipped('FrankenPHP is not available on PATH.');
++        }
++    }
++
++    protected function startRuntimeServer(): void
++    {
++        $serverPort = $this->reserveServerPort();
++        $this->setServerPort($serverPort);
++
++        $fixtureRoot = realpath(__DIR__ . '/../Fixtures/runtime/frankenphp');
++
++        if ($fixtureRoot === false) {
++            throw new \RuntimeException('Could not resolve FrankenPHP fixture directory.');
++        }
++
++        $command = \sprintf(
++            'frankenphp php-server --root . --worker index.php --listen 127.0.0.1:%d',
++            $serverPort
++        );
++
++        $this->startServerProcess($command, $fixtureRoot);
++        $this->waitUntilServerIsReady();
++    }
++}
+diff --git a/tests/Integration/RoadRunnerWorkerModeIntegrationTest.php b/tests/Integration/RoadRunnerWorkerModeIntegrationTest.php
+new file mode 100644
+index 0000000..fac638e
+--- /dev/null
++++ b/tests/Integration/RoadRunnerWorkerModeIntegrationTest.php
+@@ -0,0 +1,49 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Sentry\Tests\Integration;
++
++final class RoadRunnerWorkerModeIntegrationTest extends RuntimeContextWorkerModeIntegrationTestCase
++{
++    protected function skipUnlessRuntimeIsAvailable(): void
++    {
++        if (!$this->commandIsAvailable('rr --version')) {
++            $this->markTestSkipped('RoadRunner binary is not available on PATH.');
++        }
++
++        if (!$this->isRoadRunnerPhpWorkerStackAvailable()) {
++            $this->markTestSkipped('RoadRunner worker classes are missing. Install optional dev deps: spiral/roadrunner-worker, spiral/roadrunner-http, nyholm/psr7.');
++        }
++    }
++
++    protected function startRuntimeServer(): void
++    {
++        $httpPort = $this->reserveServerPort();
++        $rpcPort = $this->reserveServerPort();
++        $this->setServerPort($httpPort);
++
++        $fixtureRoot = realpath(__DIR__ . '/../Fixtures/runtime');
++
++        if ($fixtureRoot === false) {
++            throw new \RuntimeException('Could not resolve runtime fixture directory.');
++        }
++
++        $command = \sprintf(
++            'rr serve -c roadrunner.rr.yaml -o http.address=127.0.0.1:%d -o rpc.listen=tcp://127.0.0.1:%d',
++            $httpPort,
++            $rpcPort
++        );
++
++        $this->startServerProcess($command, $fixtureRoot);
++        $this->waitUntilServerIsReady();
++    }
++
++    private function isRoadRunnerPhpWorkerStackAvailable(): bool
++    {
++        return class_exists(\Spiral\RoadRunner\Worker::class)
++            && class_exists(\Spiral\RoadRunner\Http\PSR7Worker::class)
++            && class_exists(\Nyholm\Psr7\Factory\Psr17Factory::class)
++            && class_exists(\Nyholm\Psr7\Response::class);
++    }
++}
+diff --git a/tests/Integration/RuntimeContextWorkerModeIntegrationTestCase.php b/tests/Integration/RuntimeContextWorkerModeIntegrationTestCase.php
+new file mode 100644
+index 0000000..a50dc30
+--- /dev/null
++++ b/tests/Integration/RuntimeContextWorkerModeIntegrationTestCase.php
+@@ -0,0 +1,256 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Sentry\Tests\Integration;
++
++use PHPUnit\Framework\TestCase;
++
++abstract class RuntimeContextWorkerModeIntegrationTestCase extends TestCase
++{
++    /**
++     * @var resource|null
++     */
++    private $serverProcess;
++
++    /**
++     * @var resource|null
++     */
++    private $serverStdout;
++
++    /**
++     * @var resource|null
++     */
++    private $serverStderr;
++
++    /**
++     * @var int|null
++     */
++    private $serverPort;
++
++    final protected function tearDown(): void
++    {
++        $this->stopServerProcess();
++
++        parent::tearDown();
++    }
++
++    final public function testWithContextPreventsScopeBleedingAcrossWorkerRequests(): void
++    {
++        $this->skipUnlessRuntimeIsAvailable();
++        $this->startRuntimeServer();
++
++        try {
++            $firstResponse = $this->requestJson('/scope?request=first&leak=first-only');
++            $secondResponse = $this->requestJson('/scope?request=second');
++        } finally {
++            $this->stopServerProcess();
++        }
++
++        $this->assertSame('yes', $firstResponse['tags']['baseline'] ?? null);
++        $this->assertSame('yes', $secondResponse['tags']['baseline'] ?? null);
++
++        $this->assertSame('first', $firstResponse['tags']['request'] ?? null);
++        $this->assertSame('second', $secondResponse['tags']['request'] ?? null);
++
++        $this->assertSame('first-only', $firstResponse['tags']['leak'] ?? null);
++        $this->assertArrayNotHasKey('leak', $secondResponse['tags']);
++
++        $this->assertNotSame($firstResponse['runtime_context_id'], $secondResponse['runtime_context_id']);
++        $this->assertNotSame($firstResponse['traceparent'] ?? null, $secondResponse['traceparent'] ?? null);
++    }
++
++    abstract protected function skipUnlessRuntimeIsAvailable(): void;
++
++    abstract protected function startRuntimeServer(): void;
++
++    final protected function reserveServerPort(): int
++    {
++        $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errorMessage);
++
++        if ($server === false) {
++            throw new \RuntimeException(\sprintf('Failed allocating a test port: %s', $errorMessage));
++        }
++
++        $address = stream_socket_get_name($server, false);
++        fclose($server);
++
++        if (!\is_string($address)) {
++            throw new \RuntimeException('Could not determine allocated test port.');
++        }
++
++        $parts = explode(':', $address);
++        $port = (int) array_pop($parts);
++
++        if ($port <= 0) {
++            throw new \RuntimeException(\sprintf('Invalid allocated test port from address "%s".', $address));
++        }
++
++        return $port;
++    }
++
++    final protected function setServerPort(int $serverPort): void
++    {
++        $this->serverPort = $serverPort;
++    }
++
++    final protected function startServerProcess(string $command, string $workingDirectory): void
++    {
++        if ($this->serverProcess !== null) {
++            throw new \RuntimeException('Server process is already running.');
++        }
++
++        $pipes = [];
++        $this->serverProcess = proc_open(
++            $command,
++            [
++                1 => ['pipe', 'w'],
++                2 => ['pipe', 'w'],
++            ],
++            $pipes,
++            $workingDirectory
++        );
++
++        if (!\is_resource($this->serverProcess)) {
++            throw new \RuntimeException(\sprintf('Unable to start server process with command: %s', $command));
++        }
++
++        $this->serverStdout = $pipes[1];
++        $this->serverStderr = $pipes[2];
++
++        stream_set_blocking($this->serverStdout, false);
++        stream_set_blocking($this->serverStderr, false);
++    }
++
++    final protected function waitUntilServerIsReady(string $path = '/ping', int $attempts = 200, int $sleepMicros = 50000): void
++    {
++        $context = stream_context_create(['http' => ['timeout' => 1]]);
++        $url = \sprintf('http://127.0.0.1:%d%s', $this->getServerPort(), $path);
++
++        for ($i = 0; $i < $attempts; ++$i) {
++            $response = @file_get_contents($url, false, $context);
++
++            if ($response === 'pong') {
++                return;
++            }
++
++            if ($this->serverProcess === null) {
++                throw new \RuntimeException('Server process is not running.');
++            }
++
++            $status = proc_get_status($this->serverProcess);
++
++            if (!$status['running']) {
++                throw new \RuntimeException('Server process exited before becoming ready: ' . $this->collectServerOutput());
++            }
++
++            usleep($sleepMicros);
++        }
++
++        throw new \RuntimeException('Timed out waiting for server readiness: ' . $this->collectServerOutput());
++    }
++
++    /**
++     * @return array{runtime_context_id: int, traceparent: string, tags: array<string, string>}
++     */
++    final protected function requestJson(string $path): array
++    {
++        $url = \sprintf('http://127.0.0.1:%d%s', $this->getServerPort(), $path);
++        $context = stream_context_create(['http' => ['timeout' => 2, 'ignore_errors' => true]]);
++        $body = @file_get_contents($url, false, $context);
++        $responseHeaders = $http_response_header ?? [];
++
++        if ($body === false) {
++            throw new \RuntimeException(\sprintf('Failed HTTP request to %s.', $url));
++        }
++
++        $statusLine = $responseHeaders[0] ?? '';
++
++        if (strpos($statusLine, '200') === false) {
++            throw new \RuntimeException(\sprintf('Unexpected HTTP status for %s: %s Body: %s', $url, $statusLine, $body));
++        }
++
++        $decoded = json_decode($body, true);
++
++        if (!\is_array($decoded)) {
++            throw new \RuntimeException(\sprintf('Response body was not valid JSON for %s: %s', $url, $body));
++        }
++
++        return $decoded;
++    }
++
++    final protected function stopServerProcess(): void
++    {
++        if ($this->serverProcess === null) {
++            return;
++        }
++
++        $status = proc_get_status($this->serverProcess);
++
++        if ($status['running']) {
++            $this->killProcessTree((int) $status['pid']);
++        }
++
++        proc_close($this->serverProcess);
++
++        if (\is_resource($this->serverStdout)) {
++            fclose($this->serverStdout);
++        }
++
++        if (\is_resource($this->serverStderr)) {
++            fclose($this->serverStderr);
++        }
++
++        $this->serverProcess = null;
++        $this->serverStdout = null;
++        $this->serverStderr = null;
++        $this->serverPort = null;
++    }
++
++    final protected function commandIsAvailable(string $command): bool
++    {
++        $output = [];
++        $exitCode = 1;
++
++        exec($command . ' 2>&1', $output, $exitCode);
++
++        return $exitCode === 0;
++    }
++
++    private function getServerPort(): int
++    {
++        if ($this->serverPort === null) {
++            throw new \RuntimeException('Server port has not been set.');
++        }
++
++        return $this->serverPort;
++    }
++
++    private function collectServerOutput(): string
++    {
++        $stdout = '';
++        $stderr = '';
++
++        if (\is_resource($this->serverStdout)) {
++            $stdout = stream_get_contents($this->serverStdout);
++        }
++
++        if (\is_resource($this->serverStderr)) {
++            $stderr = stream_get_contents($this->serverStderr);
++        }
++
++        return trim($stdout . "\n" . $stderr);
++    }
++
++    private function killProcessTree(int $pid): void
++    {
++        if (\PHP_OS_FAMILY === 'Windows') {
++            exec(\sprintf('taskkill /pid %d /f /t', $pid));
++        } else {
++            exec(\sprintf('pkill -P %d', $pid));
++            exec(\sprintf('kill %d', $pid));
++        }
++
++        proc_terminate($this->serverProcess, 9);
++    }
++}
+diff --git a/tests/SentrySdkTest.php b/tests/SentrySdkTest.php
+index f2f9d39..3b9096a 100644
+--- a/tests/SentrySdkTest.php
++++ b/tests/SentrySdkTest.php
+@@ -4,9 +4,18 @@
+ 
+ namespace Sentry\Tests;
+ 
++use PHPUnit\Framework\MockObject\MockObject;
+ use PHPUnit\Framework\TestCase;
++use Sentry\ClientInterface;
++use Sentry\Event;
++use Sentry\Options;
+ use Sentry\SentrySdk;
+ use Sentry\State\Hub;
++use Sentry\State\Scope;
++use Sentry\Tracing\Span;
++use Sentry\Tracing\SpanContext;
++use Sentry\Transport\Result;
++use Sentry\Transport\ResultStatus;
+ 
+ final class SentrySdkTest extends TestCase
+ {
+@@ -36,4 +45,226 @@ public function testSetCurrentHub(): void
+         $this->assertSame($hub, SentrySdk::setCurrentHub($hub));
+         $this->assertSame($hub, SentrySdk::getCurrentHub());
+     }
++
++    public function testStartAndEndContextIsolateScopeData(): void
++    {
++        SentrySdk::init();
++
++        SentrySdk::getCurrentHub()->configureScope(static function (Scope $scope): void {
++            $scope->setTag('baseline', 'yes');
++        });
++
++        SentrySdk::startContext();
++
++        SentrySdk::getCurrentHub()->configureScope(static function (Scope $scope): void {
++            $scope->setTag('request', 'yes');
++        });
++
++        SentrySdk::endContext();
++
++        $event = Event::createEvent();
++
++        SentrySdk::getCurrentHub()->configureScope(static function (Scope $scope) use (&$event): void {
++            $event = $scope->applyToEvent($event);
++        });
++
++        $this->assertArrayHasKey('baseline', $event->getTags());
++        $this->assertArrayNotHasKey('request', $event->getTags());
++    }
++
++    public function testStartContextDoesNotInheritBaselineSpan(): void
++    {
++        SentrySdk::init();
++
++        $baselineSpan = new Span(new SpanContext());
++        SentrySdk::getCurrentHub()->setSpan($baselineSpan);
++
++        SentrySdk::startContext();
++        $contextHub = SentrySdk::getCurrentHub();
++
++        $this->assertNull($contextHub->getSpan());
++
++        SentrySdk::endContext();
++
++        $this->assertSame($baselineSpan, SentrySdk::getCurrentHub()->getSpan());
++    }
++
++    public function testStartContextCreatesFreshPropagationContext(): void
++    {
++        SentrySdk::init();
++
++        $globalTraceparent = $this->getCurrentScopeTraceparent();
++
++        SentrySdk::startContext();
++        $firstContextTraceparent = $this->getCurrentScopeTraceparent();
++        SentrySdk::endContext();
++
++        SentrySdk::startContext();
++        $secondContextTraceparent = $this->getCurrentScopeTraceparent();
++        SentrySdk::endContext();
++
++        $this->assertNotSame($globalTraceparent, $firstContextTraceparent);
++        $this->assertNotSame($firstContextTraceparent, $secondContextTraceparent);
++    }
++
++    public function testWithContextResetsSpanAndTransactionAcrossInvocations(): void
++    {
++        SentrySdk::init();
++
++        SentrySdk::withContext(function (): void {
++            $transaction = SentrySdk::getCurrentHub()->startTransaction(new \Sentry\Tracing\TransactionContext('request-1'));
++            SentrySdk::getCurrentHub()->setSpan($transaction);
++
++            $this->assertSame($transaction, SentrySdk::getCurrentHub()->getSpan());
++            $this->assertSame($transaction, SentrySdk::getCurrentHub()->getTransaction());
++        });
++
++        SentrySdk::withContext(function (): void {
++            $this->assertNull(SentrySdk::getCurrentHub()->getSpan());
++            $this->assertNull(SentrySdk::getCurrentHub()->getTransaction());
++        });
++    }
++
++    public function testNestedStartContextIsNoOp(): void
++    {
++        SentrySdk::init();
++
++        $globalHub = SentrySdk::getCurrentHub();
++
++        SentrySdk::startContext();
++        $firstContextHub = SentrySdk::getCurrentHub();
++
++        SentrySdk::startContext();
++        $secondContextHub = SentrySdk::getCurrentHub();
++
++        $this->assertNotSame($globalHub, $firstContextHub);
++        $this->assertSame($firstContextHub, $secondContextHub);
++
++        SentrySdk::endContext();
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++
++        SentrySdk::endContext();
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
++    public function testEndContextFlushesClientTransportWithOptionalTimeout(): void
++    {
++        /** @var ClientInterface&MockObject $client */
++        $client = $this->createMock(ClientInterface::class);
++        $client->expects($this->atLeastOnce())
++            ->method('getOptions')
++            ->willReturn(new Options());
++        $client->expects($this->once())
++            ->method('flush')
++            ->with(12)
++            ->willReturn(new Result(ResultStatus::success()));
++
++        SentrySdk::init()->bindClient($client);
++
++        SentrySdk::startContext();
++        SentrySdk::endContext(12);
++    }
++
++    public function testFlushFlushesClientTransport(): void
++    {
++        /** @var ClientInterface&MockObject $client */
++        $client = $this->createMock(ClientInterface::class);
++        $client->expects($this->once())
++            ->method('flush')
++            ->with(null)
++            ->willReturn(new Result(ResultStatus::success()));
++
++        SentrySdk::init()->bindClient($client);
++
++        SentrySdk::flush();
++    }
++
++    public function testWithContextReturnsCallbackResultAndRestoresGlobalHub(): void
++    {
++        SentrySdk::init();
++
++        $globalHub = SentrySdk::getCurrentHub();
++        $callbackHub = null;
++
++        $result = SentrySdk::withContext(static function () use (&$callbackHub): string {
++            $callbackHub = SentrySdk::getCurrentHub();
++
++            return 'ok';
++        });
++
++        $this->assertSame('ok', $result);
++        $this->assertNotNull($callbackHub);
++        $this->assertNotSame($globalHub, $callbackHub);
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
++    public function testNestedWithContextReusesOuterContext(): void
++    {
++        SentrySdk::init();
++
++        $globalHub = SentrySdk::getCurrentHub();
++        $outerHub = null;
++        $innerHub = null;
++
++        SentrySdk::withContext(function () use (&$outerHub, &$innerHub, $globalHub): void {
++            $outerHub = SentrySdk::getCurrentHub();
++
++            SentrySdk::getCurrentHub()->configureScope(static function (Scope $scope): void {
++                $scope->setTag('outer', 'yes');
++            });
++
++            SentrySdk::withContext(static function () use (&$innerHub): void {
++                $innerHub = SentrySdk::getCurrentHub();
++            });
++
++            $event = Event::createEvent();
++
++            SentrySdk::getCurrentHub()->configureScope(static function (Scope $scope) use (&$event): void {
++                $event = $scope->applyToEvent($event);
++            });
++
++            $this->assertNotSame($globalHub, SentrySdk::getCurrentHub());
++            $this->assertSame('yes', $event->getTags()['outer'] ?? null);
++        });
++
++        $this->assertNotNull($outerHub);
++        $this->assertNotNull($innerHub);
++        $this->assertSame($outerHub, $innerHub);
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
++    public function testWithContextEndsContextWhenCallbackThrows(): void
++    {
++        SentrySdk::init();
++
++        $globalHub = SentrySdk::getCurrentHub();
++        $callbackHub = null;
++
++        try {
++            SentrySdk::withContext(static function () use (&$callbackHub): void {
++                $callbackHub = SentrySdk::getCurrentHub();
++
++                throw new \RuntimeException('boom');
++            });
++
++            $this->fail('The callback exception should be rethrown.');
++        } catch (\RuntimeException $exception) {
++            $this->assertSame('boom', $exception->getMessage());
++        }
++
++        $this->assertNotNull($callbackHub);
++        $this->assertNotSame($globalHub, $callbackHub);
++        $this->assertSame($globalHub, SentrySdk::getCurrentHub());
++    }
++
++    private function getCurrentScopeTraceparent(): string
++    {
++        $traceparent = '';
++
++        SentrySdk::getCurrentHub()->configureScope(static function (Scope $scope) use (&$traceparent): void {
++            $traceparent = $scope->getPropagationContext()->toTraceparent();
++        });
++
++        return $traceparent;
++    }
+ }
+diff --git a/tests/phpt-oom/php84/out_of_memory_fatal_error_increases_memory_limit.phpt b/tests/phpt-oom/php84/out_of_memory_fatal_error_increases_memory_limit.phpt
+index 321ed41..35a32c8 100644
+--- a/tests/phpt-oom/php84/out_of_memory_fatal_error_increases_memory_limit.phpt
++++ b/tests/phpt-oom/php84/out_of_memory_fatal_error_increases_memory_limit.phpt
+@@ -32,6 +32,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $options = new Options([
+     'dsn' => 'http://public@example.com/sentry/1',
+ ]);
+diff --git a/tests/phpt-oom/php85/out_of_memory_fatal_error_increases_memory_limit.phpt b/tests/phpt-oom/php85/out_of_memory_fatal_error_increases_memory_limit.phpt
+index 92e0305..a547854 100644
+--- a/tests/phpt-oom/php85/out_of_memory_fatal_error_increases_memory_limit.phpt
++++ b/tests/phpt-oom/php85/out_of_memory_fatal_error_increases_memory_limit.phpt
+@@ -24,6 +24,8 @@ use Sentry\Transport\Result;
+ use Sentry\Transport\ResultStatus;
+ use Sentry\Transport\TransportInterface;
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $vendor = __DIR__;
+ 
+ while (!file_exists($vendor . '/vendor')) {
+diff --git a/tests/phpt/error_handler_captures_errors_not_silencable_on_php_8_and_up.phpt b/tests/phpt/error_handler_captures_errors_not_silencable_on_php_8_and_up.phpt
+index f52c129..fe1cf65 100644
+--- a/tests/phpt/error_handler_captures_errors_not_silencable_on_php_8_and_up.phpt
++++ b/tests/phpt/error_handler_captures_errors_not_silencable_on_php_8_and_up.phpt
+@@ -45,7 +45,7 @@ $transport = new class implements TransportInterface {
+     }
+ };
+ 
+-error_reporting(E_ALL & ~E_USER_ERROR);
++error_reporting(E_ALL & ~E_USER_ERROR & ~E_DEPRECATED & ~E_USER_DEPRECATED);
+ 
+ $options = [
+     'dsn' => 'http://public@example.com/sentry/1',
+diff --git a/tests/phpt/error_handler_respects_capture_silenced_errors_option.phpt b/tests/phpt/error_handler_respects_capture_silenced_errors_option.phpt
+index 0063489..11ffa7c 100644
+--- a/tests/phpt/error_handler_respects_capture_silenced_errors_option.phpt
++++ b/tests/phpt/error_handler_respects_capture_silenced_errors_option.phpt
+@@ -25,6 +25,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $transport = new class implements TransportInterface {
+     public function send(Event $event): Result
+     {
+diff --git a/tests/phpt/error_handler_respects_error_types_option_regardless_of_error_reporting.phpt b/tests/phpt/error_handler_respects_error_types_option_regardless_of_error_reporting.phpt
+index 35deede..592ebaa 100644
+--- a/tests/phpt/error_handler_respects_error_types_option_regardless_of_error_reporting.phpt
++++ b/tests/phpt/error_handler_respects_error_types_option_regardless_of_error_reporting.phpt
+@@ -39,7 +39,7 @@ $transport = new class implements TransportInterface {
+     }
+ };
+ 
+-error_reporting(E_ALL & ~E_USER_NOTICE & ~E_USER_WARNING & ~E_USER_ERROR);
++error_reporting(E_ALL & ~E_USER_NOTICE & ~E_USER_WARNING & ~E_USER_ERROR & ~E_DEPRECATED & ~E_USER_DEPRECATED);
+ 
+ $options = [
+     'dsn' => 'http://public@example.com/sentry/1',
+diff --git a/tests/phpt/error_listener_integration_respects_error_types_option.phpt b/tests/phpt/error_listener_integration_respects_error_types_option.phpt
+index 4c66a5f..20d413e 100644
+--- a/tests/phpt/error_listener_integration_respects_error_types_option.phpt
++++ b/tests/phpt/error_listener_integration_respects_error_types_option.phpt
+@@ -28,6 +28,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $transport = new class implements TransportInterface {
+     public function send(Event $event): Result
+     {
+diff --git a/tests/phpt/php84/error_handler_captures_fatal_error.phpt b/tests/phpt/php84/error_handler_captures_fatal_error.phpt
+index 2c4b914..9225fba 100644
+--- a/tests/phpt/php84/error_handler_captures_fatal_error.phpt
++++ b/tests/phpt/php84/error_handler_captures_fatal_error.phpt
+@@ -29,6 +29,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $transport = new class implements TransportInterface {
+     public function send(Event $event): Result
+     {
+diff --git a/tests/phpt/php84/fatal_error_integration_captures_fatal_error.phpt b/tests/phpt/php84/fatal_error_integration_captures_fatal_error.phpt
+index 2c8e40c..7b76f6f 100644
+--- a/tests/phpt/php84/fatal_error_integration_captures_fatal_error.phpt
++++ b/tests/phpt/php84/fatal_error_integration_captures_fatal_error.phpt
+@@ -31,6 +31,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $transport = new class implements TransportInterface {
+     public function send(Event $event): Result
+     {
+diff --git a/tests/phpt/php84/fatal_error_integration_respects_error_types_option.phpt b/tests/phpt/php84/fatal_error_integration_respects_error_types_option.phpt
+index 6dc65c4..56620b1 100644
+--- a/tests/phpt/php84/fatal_error_integration_respects_error_types_option.phpt
++++ b/tests/phpt/php84/fatal_error_integration_respects_error_types_option.phpt
+@@ -31,6 +31,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $transport = new class implements TransportInterface {
+     public function send(Event $event): Result
+     {
+diff --git a/tests/phpt/php85/error_handler_captures_fatal_error.phpt b/tests/phpt/php85/error_handler_captures_fatal_error.phpt
+index 4a4fe0e..03f77c5 100644
+--- a/tests/phpt/php85/error_handler_captures_fatal_error.phpt
++++ b/tests/phpt/php85/error_handler_captures_fatal_error.phpt
+@@ -29,6 +29,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $transport = new class implements TransportInterface {
+     public function send(Event $event): Result
+     {
+diff --git a/tests/phpt/php85/fatal_error_integration_captures_fatal_error.phpt b/tests/phpt/php85/fatal_error_integration_captures_fatal_error.phpt
+index 88fdd8f..b6c62b6 100644
+--- a/tests/phpt/php85/fatal_error_integration_captures_fatal_error.phpt
++++ b/tests/phpt/php85/fatal_error_integration_captures_fatal_error.phpt
+@@ -31,6 +31,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $transport = new class implements TransportInterface {
+     public function send(Event $event): Result
+     {
+diff --git a/tests/phpt/php85/fatal_error_integration_respects_error_types_option.phpt b/tests/phpt/php85/fatal_error_integration_respects_error_types_option.phpt
+index 7d74233..dbf4e83 100644
+--- a/tests/phpt/php85/fatal_error_integration_respects_error_types_option.phpt
++++ b/tests/phpt/php85/fatal_error_integration_respects_error_types_option.phpt
+@@ -31,6 +31,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $transport = new class implements TransportInterface {
+     public function send(Event $event): Result
+     {
+diff --git a/tests/phpt/serialize_broken_class.phpt b/tests/phpt/serialize_broken_class.phpt
+index 0df9ab8..14021bc 100644
+--- a/tests/phpt/serialize_broken_class.phpt
++++ b/tests/phpt/serialize_broken_class.phpt
+@@ -19,6 +19,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ // issue present itself in backtrace serialization, see:
+ // - https://github.com/getsentry/sentry-php/pull/818
+ // - https://github.com/getsentry/sentry-symfony/issues/63#issuecomment-493046411
+diff --git a/tests/phpt/serialize_callable_that_makes_autoloader_throw.phpt b/tests/phpt/serialize_callable_that_makes_autoloader_throw.phpt
+index 57f31ba..3ea72c1 100644
+--- a/tests/phpt/serialize_callable_that_makes_autoloader_throw.phpt
++++ b/tests/phpt/serialize_callable_that_makes_autoloader_throw.phpt
+@@ -20,6 +20,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ function testSerialization(int $depth = 3) {
+     $serializer = new Serializer(new Options(), $depth);
+ 
+diff --git a/tests/phpt/test_callable_serialization.phpt b/tests/phpt/test_callable_serialization.phpt
+index 416628c..ff5a2d7 100644
+--- a/tests/phpt/test_callable_serialization.phpt
++++ b/tests/phpt/test_callable_serialization.phpt
+@@ -27,6 +27,8 @@ while (!file_exists($vendor . '/vendor')) {
+ 
+ require $vendor . '/vendor/autoload.php';
+ 
++error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
++
+ $transport = new class implements TransportInterface {
+     public function send(Event $event): Result
+     {

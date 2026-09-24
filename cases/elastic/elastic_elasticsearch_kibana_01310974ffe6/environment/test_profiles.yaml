@@ -1,0 +1,40 @@
+profiles:
+  elasticsearch-hidden:
+    repo: elasticsearch
+    workdir: repos/elastic/elasticsearch
+    command: ./gradlew :x-pack:plugin:inference:internalClusterTest --tests
+      AuthorizationTaskExecutorIT.testRemovedEndpointsContract_*
+    status: candidate_profile_implemented
+    docker_service: elastic-java
+    dependency_image: ecosyncbench/base/elastic-java:21
+    test_files:
+    - x-pack/plugin/inference/src/internalClusterTest/java/org/elasticsearch/xpack/inference/integration/AuthorizationTaskExecutorIT.java
+    sandbox_user: host
+    public_smoke_command: if [ -d /gradle-cache ] && [ -w /gradle-cache ]; then GRADLE_USER_HOME=/gradle-cache;
+      else GRADLE_USER_HOME=/ecosync-scratch/cache/gradle; mkdir -p "$GRADLE_USER_HOME";
+      fi; export GRADLE_USER_HOME; if [ -d "$GRADLE_USER_HOME/caches/modules-2" ];
+      then ./gradlew --offline --no-scan --no-daemon :libs:core:test --tests "org.elasticsearch.core.StringsTests";
+      else ./gradlew --no-scan --no-daemon :libs:core:test --tests "org.elasticsearch.core.StringsTests";
+      fi
+  kibana-hidden:
+    repo: kibana
+    workdir: repos/elastic/kibana
+    command: yarn kbn bootstrap && node scripts/jest with plugin configs for the upstream
+      test files
+    status: candidate_profile_implemented
+    evaluator_node_modules_mode: persistent
+    docker_service: elastic-node
+    dependency_image: ecosyncbench/base/elastic-node:22.22.0
+    test_files:
+    - x-pack/platform/plugins/shared/actions/server/plugin.test.ts
+    - x-pack/platform/plugins/shared/search_inference_endpoints/server/lib/dynamic_connectors.test.ts
+    - x-pack/platform/plugins/shared/search_inference_endpoints/server/utils/in_memory_connectors.test.ts
+    public_smoke_command: corepack prepare yarn@1.22.22 --activate || true; if [ !
+      -d node_modules ] || [ -z "$(find node_modules -mindepth 1 -maxdepth 1 -print
+      -quit 2>/dev/null)" ]; then YARN_IGNORE_SCRIPTS=1 corepack yarn install --frozen-lockfile
+      --non-interactive --ignore-scripts || YARN_IGNORE_SCRIPTS=1 corepack yarn install
+      --non-interactive --ignore-scripts; fi; if [ ! -s src/platform/packages/private/kbn-repo-packages/package-map.json
+      ] && [ ! -s packages/kbn-repo-packages/package-map.json ]; then node -e 'const
+      fs=require("fs"); const p=fs.existsSync("./src/platform/packages/private/kbn-repo-packages")?"./src/platform/packages/private/kbn-repo-packages":"./packages/kbn-repo-packages";
+      const m=require(p); m.updatePackageMap(process.cwd(), Array.from(m.getRepoRelsSync(process.cwd(),
+      ["**/kibana.jsonc"])));'; fi; node scripts/jest.js --runInBand --forceExit src/platform/packages/shared/kbn-std/src/promise.test.ts

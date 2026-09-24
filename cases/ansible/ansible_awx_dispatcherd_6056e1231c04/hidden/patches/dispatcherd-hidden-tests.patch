@@ -1,0 +1,149 @@
+diff --git a/tests/unit/test_cli_control_args.py b/tests/unit/test_cli_control_args.py
+new file mode 100644
+index 0000000..c6e6a7f
+--- /dev/null
++++ b/tests/unit/test_cli_control_args.py
+@@ -0,0 +1,76 @@
++import argparse
++
++import pytest
++
++from dispatcherd import cli
++
++
++def command_parser(parser):
++    subparsers = next(
++        (action for action in parser._actions if isinstance(action, argparse._SubParsersAction)), None
++    )
++    if subparsers is not None:
++        return subparsers.choices['set_log_level']
++    command = next(action for action in parser._actions if action.dest == 'command')
++    assert 'set_log_level' in command.choices
++    return parser
++
++
++def level_action(parser):
++    return next(action for action in command_parser(parser)._actions if action.dest == 'level')
++
++
++def parse_set_log_level(*extra):
++    def parse(parser):
++        action = level_action(parser)
++        argv = ['set_log_level']
++        if action.option_strings:
++            argv.extend((action.option_strings[0], 'INFO'))
++        else:
++            argv.append('INFO')
++        return parser.parse_args([*argv, *extra])
++
++    return parse
++
++
++def parse_set_log_level_without_value(parser):
++    level_action(parser)
++    return parser.parse_args(['set_log_level'])
++
++
++def test_control_entrypoint_invokes_control(monkeypatch, capsys):
++    captured = {}
++
++    class DummyControl:
++        def control_with_reply(self, command, data, expected_replies):
++            captured['command'] = command
++            captured['data'] = data
++            captured['expected'] = expected_replies
++            return [{'node_id': 'dummy', 'result': 'ok'}]
++
++    monkeypatch.setattr(cli, 'get_control_from_settings', lambda: DummyControl())
++    monkeypatch.setattr(cli, 'setup_from_parser', parse_set_log_level())
++
++    cli.control()
++
++    assert captured == {'command': 'set_log_level', 'data': {'level': 'INFO'}, 'expected': 1}
++    output = capsys.readouterr().out
++    assert 'result: ok' in output
++
++
++def test_set_log_level_requires_level(monkeypatch):
++    monkeypatch.setattr(cli, 'setup_from_parser', parse_set_log_level_without_value)
++
++    with pytest.raises(SystemExit):
++        cli.control()
++
++
++def test_control_command_rejects_unrelated_arguments(monkeypatch, capsys):
++    monkeypatch.setattr(cli, 'setup_from_parser', parse_set_log_level('--task', 'demo'))
++
++    with pytest.raises(SystemExit):
++        cli.control()
++
++    error = capsys.readouterr().err
++    assert '--task' in error
++    assert 'set_log_level' not in error or 'invalid choice' not in error
+diff --git a/tests/unit/test_control_tasks.py b/tests/unit/test_control_tasks.py
+new file mode 100644
+index 0000000..eb85640
+--- /dev/null
++++ b/tests/unit/test_control_tasks.py
+@@ -0,0 +1,61 @@
++import asyncio
++import logging
++
++import pytest
++
++from dispatcherd.service import control_tasks
++
++
++def _as_level(value):
++    if isinstance(value, int):
++        return value
++    return logging.getLevelNamesMapping().get(str(value).upper())
++
++
++def _reported_levels(result):
++    assert isinstance(result, dict)
++    assert 'error' not in result
++    return {_as_level(value) for value in result.values() if _as_level(value) is not None}
++
++
++@pytest.fixture
++def dispatcherd_logger():
++    logger = logging.getLogger('dispatcherd')
++    previous_level = logger.level
++    try:
++        yield logger
++    finally:
++        logger.setLevel(previous_level)
++
++
++def test_set_log_level_updates_dispatcherd_logger(dispatcherd_logger):
++    dispatcherd_logger.setLevel(logging.INFO)
++    result = asyncio.run(control_tasks.set_log_level(dispatcher=None, data={'level': 'debug'}))
++    assert dispatcherd_logger.level == logging.DEBUG
++    assert {logging.INFO, logging.DEBUG}.issubset(_reported_levels(result))
++
++
++def test_set_log_level_rejects_unknown_level(dispatcherd_logger):
++    dispatcherd_logger.setLevel(logging.WARNING)
++    result = asyncio.run(control_tasks.set_log_level(dispatcher=None, data={'level': 'bogus'}))
++    assert 'error' in result
++    assert dispatcherd_logger.level == logging.WARNING
++
++
++def test_set_log_level_bad_type(dispatcherd_logger):
++    dispatcherd_logger.setLevel(logging.ERROR)
++    # container type
++    result = asyncio.run(control_tasks.set_log_level(dispatcher=None, data={'level': [True]}))
++    assert 'error' in result
++    assert dispatcherd_logger.level == logging.ERROR
++    # bad boolean
++    result = asyncio.run(control_tasks.set_log_level(dispatcher=None, data={'level': True}))
++    assert 'error' in result
++    assert dispatcherd_logger.level == logging.ERROR
++
++
++def test_set_log_level_integer(dispatcherd_logger):
++    dispatcherd_logger.setLevel(logging.ERROR)
++    result = asyncio.run(control_tasks.set_log_level(dispatcher=None, data={'level': 30}))
++    assert dispatcherd_logger.level == logging.WARNING
++    assert {logging.ERROR, logging.WARNING}.issubset(_reported_levels(result))

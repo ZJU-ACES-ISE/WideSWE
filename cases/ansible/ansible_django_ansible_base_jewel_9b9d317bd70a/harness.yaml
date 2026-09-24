@@ -1,0 +1,31 @@
+task_id: ansible_django_ansible_base_jewel_9b9d317bd70a
+hidden_test_patches:
+- repo: django-ansible-base
+  patch: hidden/patches/django-ansible-base-hidden-tests.patch
+  test_profile: django_ansible_base-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test_app/tests/lib/abstract_models/test_common_query_optimization.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from ansible/django-ansible-base PR 992
+- repo: jewel
+  patch: hidden/patches/jewel-hidden-tests.patch
+  test_profile: jewel-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - aap_gateway_api/tests/views/api/v1/user/test_user_list_performance.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from ansible/jewel PR 24
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - django_ansible_base-hidden
+    - jewel-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

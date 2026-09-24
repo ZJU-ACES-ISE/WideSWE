@@ -1,0 +1,93 @@
+diff --git a/pkg/fuzz/component/path_contract_test.go b/pkg/fuzz/component/path_contract_test.go
+new file mode 100644
+index 00000000..df9ecc8b
+--- /dev/null
++++ b/pkg/fuzz/component/path_contract_test.go
+@@ -0,0 +1,87 @@
++package component
++
++import (
++	"net/http"
++	"net/url"
++	"strings"
++	"testing"
++
++	"github.com/projectdiscovery/retryablehttp-go"
++	"github.com/stretchr/testify/require"
++)
++
++func TestPathFuzzingIndividualSegments(t *testing.T) {
++	req, err := retryablehttp.NewRequest(http.MethodGet, "https://example.com/shop/category/55/display", nil)
++	require.NoError(t, err)
++
++	path := NewPath()
++	found, err := path.Parse(req)
++	require.NoError(t, err)
++	require.True(t, found)
++
++	segments := make(map[string]string)
++	err = path.Iterate(func(key string, value interface{}) error {
++		segments[value.(string)] = key
++		return nil
++	})
++	require.NoError(t, err)
++	for _, segment := range []string{"shop", "category", "55", "display"} {
++		require.Contains(t, segments, segment, "path item %q was not exposed for fuzzing", segment)
++	}
++
++	require.NoError(t, path.SetValue(segments["55"], "(select 1 from sleep(5)"))
++	rebuilt, err := path.Rebuild()
++	require.NoError(t, err)
++	require.Equal(t, "/shop/category/(select 1 from sleep(5)/display", rebuilt.Path)
++	target := dumpedRequestTarget(t, rebuilt)
++	require.Contains(t, target, "%20")
++	require.NotContains(t, target, "+")
++	require.NotContains(t, target, "%2520")
++	decoded, err := url.PathUnescape(target)
++	require.NoError(t, err)
++	require.Equal(t, rebuilt.Path, decoded)
++}
++
++func TestPathFuzzingEncoding(t *testing.T) {
++	tests := []struct {
++		payload string
++		url     string
++	}{
++		{"55 OR True", "https://example.com/user/55%20OR%20True/profile"},
++		{"55%20OR%20True", "https://example.com/user/55%20OR%20True/profile"},
++		{"55+OR+True", "https://example.com/user/55+OR+True/profile"},
++	}
++
++	for _, test := range tests {
++		req, err := retryablehttp.NewRequest(http.MethodGet, "https://example.com/user/55/profile", nil)
++		require.NoError(t, err)
++
++		path := NewPath()
++		_, err = path.Parse(req)
++		require.NoError(t, err)
++
++		var numericKey string
++		err = path.Iterate(func(key string, value interface{}) error {
++			if value.(string) == "55" {
++				numericKey = key
++			}
++			return nil
++		})
++		require.NoError(t, err)
++		require.NotEmpty(t, numericKey, "numeric path item was not exposed for fuzzing")
++		require.NoError(t, path.SetValue(numericKey, test.payload))
++
++		rebuilt, err := path.Rebuild()
++		require.NoError(t, err)
++		require.Equal(t, strings.TrimPrefix(test.url, "https://example.com"), dumpedRequestTarget(t, rebuilt))
++	}
++}
++
++func dumpedRequestTarget(t *testing.T, req *retryablehttp.Request) string {
++	t.Helper()
++	dump, err := req.Dump()
++	require.NoError(t, err)
++	parts := strings.SplitN(string(dump), " ", 3)
++	require.Len(t, parts, 3)
++	return parts[1]
++}

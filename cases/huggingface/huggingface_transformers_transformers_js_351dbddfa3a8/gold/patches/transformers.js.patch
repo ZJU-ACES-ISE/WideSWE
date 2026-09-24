@@ -1,0 +1,533 @@
+diff --git a/README.md b/README.md
+index 920ceec..3da8c1c 100644
+--- a/README.md
++++ b/README.md
+@@ -261,6 +261,7 @@ To find compatible models on the Hub, select the "transformers.js" library tag i
+ 1. **[CodeLlama](https://huggingface.co/docs/transformers/model_doc/llama_code)** (from MetaAI) released with the paper [Code Llama: Open Foundation Models for Code](https://ai.meta.com/research/publications/code-llama-open-foundation-models-for-code/) by Baptiste Rozière, Jonas Gehring, Fabian Gloeckle, Sten Sootla, Itai Gat, Xiaoqing Ellen Tan, Yossi Adi, Jingyu Liu, Tal Remez, Jérémy Rapin, Artyom Kozhevnikov, Ivan Evtimov, Joanna Bitton, Manish Bhatt, Cristian Canton Ferrer, Aaron Grattafiori, Wenhan Xiong, Alexandre Défossez, Jade Copet, Faisal Azhar, Hugo Touvron, Louis Martin, Nicolas Usunier, Thomas Scialom, Gabriel Synnaeve.
+ 1. **[Cohere](https://huggingface.co/docs/transformers/main/model_doc/cohere)** (from Cohere) released with the blog post [Command-R: Retrieval Augmented Generation at Production Scale](https://cohere.com/blog/command-r) by Cohere.
+ 1. **[Cohere2](https://huggingface.co/docs/transformers/main/model_doc/cohere2)** (from Cohere) released with the blog post [Introducing Command R7B: Fast and efficient generative AI](https://cohere.com/blog/command-r7b) by Cohere.
++1. **[Cohere ASR](https://huggingface.co/docs/transformers/main/model_doc/cohere_asr)** (from Cohere) released with the blog post [Introducing Cohere Transcribe: a new state-of-the-art in open-source speech recognition](https://cohere.com/blog/transcribe) by Cohere.
+ 1. **[ConvBERT](https://huggingface.co/docs/transformers/model_doc/convbert)** (from YituTech) released with the paper [ConvBERT: Improving BERT with Span-based Dynamic Convolution](https://huggingface.co/papers/2008.02496) by Zihang Jiang, Weihao Yu, Daquan Zhou, Yunpeng Chen, Jiashi Feng, Shuicheng Yan.
+ 1. **[ConvNeXT](https://huggingface.co/docs/transformers/model_doc/convnext)** (from Facebook AI) released with the paper [A ConvNet for the 2020s](https://huggingface.co/papers/2201.03545) by Zhuang Liu, Hanzi Mao, Chao-Yuan Wu, Christoph Feichtenhofer, Trevor Darrell, Saining Xie.
+ 1. **[ConvNeXTV2](https://huggingface.co/docs/transformers/model_doc/convnextv2)** (from Facebook AI) released with the paper [ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders](https://huggingface.co/papers/2301.00808) by Sanghyun Woo, Shoubhik Debnath, Ronghang Hu, Xinlei Chen, Zhuang Liu, In So Kweon, Saining Xie.
+diff --git a/packages/transformers/docs/snippets/5_supported-models.snippet b/packages/transformers/docs/snippets/5_supported-models.snippet
+index 66e79db..e2ec38e 100644
+--- a/packages/transformers/docs/snippets/5_supported-models.snippet
++++ b/packages/transformers/docs/snippets/5_supported-models.snippet
+@@ -22,6 +22,7 @@
+ 1. **[CodeLlama](https://huggingface.co/docs/transformers/model_doc/llama_code)** (from MetaAI) released with the paper [Code Llama: Open Foundation Models for Code](https://ai.meta.com/research/publications/code-llama-open-foundation-models-for-code/) by Baptiste Rozière, Jonas Gehring, Fabian Gloeckle, Sten Sootla, Itai Gat, Xiaoqing Ellen Tan, Yossi Adi, Jingyu Liu, Tal Remez, Jérémy Rapin, Artyom Kozhevnikov, Ivan Evtimov, Joanna Bitton, Manish Bhatt, Cristian Canton Ferrer, Aaron Grattafiori, Wenhan Xiong, Alexandre Défossez, Jade Copet, Faisal Azhar, Hugo Touvron, Louis Martin, Nicolas Usunier, Thomas Scialom, Gabriel Synnaeve.
+ 1. **[Cohere](https://huggingface.co/docs/transformers/main/model_doc/cohere)** (from Cohere) released with the blog post [Command-R: Retrieval Augmented Generation at Production Scale](https://cohere.com/blog/command-r) by Cohere.
+ 1. **[Cohere2](https://huggingface.co/docs/transformers/main/model_doc/cohere2)** (from Cohere) released with the blog post [Introducing Command R7B: Fast and efficient generative AI](https://cohere.com/blog/command-r7b) by Cohere.
++1. **[Cohere ASR](https://huggingface.co/docs/transformers/main/model_doc/cohere_asr)** (from Cohere) released with the blog post [Introducing Cohere Transcribe: a new state-of-the-art in open-source speech recognition](https://cohere.com/blog/transcribe) by Cohere.
+ 1. **[ConvBERT](https://huggingface.co/docs/transformers/model_doc/convbert)** (from YituTech) released with the paper [ConvBERT: Improving BERT with Span-based Dynamic Convolution](https://huggingface.co/papers/2008.02496) by Zihang Jiang, Weihao Yu, Daquan Zhou, Yunpeng Chen, Jiashi Feng, Shuicheng Yan.
+ 1. **[ConvNeXT](https://huggingface.co/docs/transformers/model_doc/convnext)** (from Facebook AI) released with the paper [A ConvNet for the 2020s](https://huggingface.co/papers/2201.03545) by Zhuang Liu, Hanzi Mao, Chao-Yuan Wu, Christoph Feichtenhofer, Trevor Darrell, Saining Xie.
+ 1. **[ConvNeXTV2](https://huggingface.co/docs/transformers/model_doc/convnextv2)** (from Facebook AI) released with the paper [ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders](https://huggingface.co/papers/2301.00808) by Sanghyun Woo, Shoubhik Debnath, Ronghang Hu, Xinlei Chen, Zhuang Liu, In So Kweon, Saining Xie.
+diff --git a/packages/transformers/src/configs.js b/packages/transformers/src/configs.js
+index eca16e3..25e951f 100644
+--- a/packages/transformers/src/configs.js
++++ b/packages/transformers/src/configs.js
+@@ -266,6 +266,24 @@ function getNormalizedConfig(config) {
+             mapping['num_encoder_heads'] = 'encoder_num_key_value_heads';
+             mapping['encoder_hidden_size'] = mapping['decoder_hidden_size'] = 'hidden_size';
+             break;
++        case 'cohere_asr':
++            mapping['num_decoder_layers'] = 'num_hidden_layers';
++            mapping['num_decoder_heads'] = 'num_key_value_heads';
++            mapping['decoder_hidden_size'] = 'hidden_size';
++            mapping['decoder_dim_kv'] = 'head_dim';
++            const {
++                num_hidden_layers: num_encoder_layers,
++                num_attention_heads: num_encoder_heads,
++                hidden_size: encoder_hidden_size,
++            } = /** @type {any} */ (config).encoder_config;
++            init_normalized_config = {
++                num_encoder_layers,
++                num_encoder_heads,
++                encoder_hidden_size,
++                // @ts-expect-error TS2339
++                encoder_dim_kv: config.head_dim,
++            };
++            break;
+         case 'vision-encoder-decoder':
+             // @ts-expect-error TS2339
+             const decoderConfig = getNormalizedConfig(config.decoder);
+diff --git a/packages/transformers/src/models/cohere_asr/feature_extraction_cohere_asr.js b/packages/transformers/src/models/cohere_asr/feature_extraction_cohere_asr.js
+new file mode 100644
+index 0000000..8dcd1e4
+--- /dev/null
++++ b/packages/transformers/src/models/cohere_asr/feature_extraction_cohere_asr.js
+@@ -0,0 +1,117 @@
++import { validate_audio_inputs } from '../../feature_extraction_utils.js';
++import { Random } from '../../utils/random.js';
++import { ParakeetFeatureExtractor } from '../parakeet/feature_extraction_parakeet.js';
++
++export class CohereAsrFeatureExtractor extends ParakeetFeatureExtractor {
++    /**
++     * Apply deterministic dithering seeded by the waveform length.
++     * @param {Float64Array} waveform
++     * @returns {Float64Array} The dithered waveform (mutated in-place).
++     */
++    _apply_dither(waveform) {
++        const dither = this.config.dither ?? 0;
++        if (dither <= 0) return waveform;
++
++        const rng = new Random(waveform.length);
++        for (let i = 0; i < waveform.length; ++i) {
++            waveform[i] += dither * rng.gauss();
++        }
++        return waveform;
++    }
++
++    /**
++     * Split audio into chunks at energy-based boundaries for long audio.
++     * @param {Float32Array|Float64Array} audio The raw audio waveform.
++     * @returns {(Float32Array|Float64Array)[]} Array of audio chunks.
++     */
++    split_audio(audio) {
++        const max_audio_clip_s = this.config.max_audio_clip_s ?? 35.0;
++        const overlap_chunk_second = this.config.overlap_chunk_second ?? 5.0;
++        const min_energy_window_samples = this.config.min_energy_window_samples ?? 1600;
++        const sampling_rate = this.config.sampling_rate;
++
++        const chunk_size = Math.max(1, Math.round(max_audio_clip_s * sampling_rate));
++        const boundary_context_size = Math.max(1, Math.round(overlap_chunk_second * sampling_rate));
++
++        if (audio.length <= chunk_size) {
++            return [audio];
++        }
++
++        const chunks = [];
++        let idx = 0;
++        const total_samples = audio.length;
++
++        while (idx < total_samples) {
++            if (idx + chunk_size >= total_samples) {
++                chunks.push(audio.slice(idx, total_samples));
++                break;
++            }
++
++            const search_start = Math.max(idx, idx + chunk_size - boundary_context_size);
++            const search_end = Math.min(idx + chunk_size, total_samples);
++
++            let split_point;
++            if (search_end <= search_start) {
++                split_point = idx + chunk_size;
++            } else {
++                split_point = this._find_split_point_energy(audio, search_start, search_end, min_energy_window_samples);
++            }
++
++            split_point = Math.max(idx + 1, Math.min(split_point, total_samples));
++            chunks.push(audio.slice(idx, split_point));
++            idx = split_point;
++        }
++
++        return chunks;
++    }
++
++    /**
++     * Find the quietest point (minimum energy) within a segment of audio.
++     * @param {Float32Array|Float64Array} waveform
++     * @param {number} start_idx
++     * @param {number} end_idx
++     * @param {number} window_size
++     * @returns {number} Index of the quietest point.
++     */
++    _find_split_point_energy(waveform, start_idx, end_idx, window_size) {
++        const segment_len = end_idx - start_idx;
++        if (segment_len <= window_size) {
++            return Math.floor((start_idx + end_idx) / 2);
++        }
++
++        let min_energy = Infinity;
++        let quietest_idx = start_idx;
++        const upper = segment_len - window_size;
++
++        for (let i = 0; i <= upper; i += window_size) {
++            let energy = 0;
++            for (let j = 0; j < window_size; ++j) {
++                const val = waveform[start_idx + i + j];
++                energy += val * val;
++            }
++            energy = Math.sqrt(energy / window_size);
++
++            if (energy < min_energy) {
++                min_energy = energy;
++                quietest_idx = start_idx + i;
++            }
++        }
++
++        return quietest_idx;
++    }
++
++    /**
++     * Extracts features from a given audio waveform.
++     * @param {Float32Array|Float64Array} audio The audio data.
++     * @returns {Promise<{ input_features: import('../../utils/tensor.js').Tensor; attention_mask: import('../../utils/tensor.js').Tensor; }>}
++     */
++    async _call(audio) {
++        validate_audio_inputs(audio, 'CohereAsrFeatureExtractor');
++
++        // Clone to Float64Array and apply dithering before feature extraction
++        const waveform = new Float64Array(audio);
++        this._apply_dither(waveform);
++
++        return super._call(waveform);
++    }
++}
+diff --git a/packages/transformers/src/models/cohere_asr/modeling_cohere_asr.js b/packages/transformers/src/models/cohere_asr/modeling_cohere_asr.js
+new file mode 100644
+index 0000000..c25d5fd
+--- /dev/null
++++ b/packages/transformers/src/models/cohere_asr/modeling_cohere_asr.js
+@@ -0,0 +1,11 @@
++import { PreTrainedModel } from '../modeling_utils.js';
++
++export class CohereAsrPreTrainedModel extends PreTrainedModel {
++    requires_attention_mask = false;
++    main_input_name = 'input_features';
++    forward_params = ['input_features', 'decoder_input_ids', 'decoder_attention_mask', 'past_key_values'];
++}
++
++export class CohereAsrModel extends CohereAsrPreTrainedModel {}
++
++export class CohereAsrForConditionalGeneration extends CohereAsrPreTrainedModel {}
+diff --git a/packages/transformers/src/models/cohere_asr/processing_cohere_asr.js b/packages/transformers/src/models/cohere_asr/processing_cohere_asr.js
+new file mode 100644
+index 0000000..7cbcc37
+--- /dev/null
++++ b/packages/transformers/src/models/cohere_asr/processing_cohere_asr.js
+@@ -0,0 +1,55 @@
++import { AutoFeatureExtractor } from '../auto/feature_extraction_auto.js';
++import { AutoTokenizer } from '../auto/tokenization_auto.js';
++import { Processor } from '../../processing_utils.js';
++
++const NO_SPACE_LANGUAGES = new Set(['ja', 'zh']);
++
++export class CohereAsrProcessor extends Processor {
++    static tokenizer_class = AutoTokenizer;
++    static feature_extractor_class = AutoFeatureExtractor;
++    static uses_processor_config = true;
++
++    /**
++     * Build the 10-token decoder prompt for the given language.
++     * @param {string} [language='en'] Language code.
++     * @returns {number[]} Token IDs for the decoder prompt.
++     */
++    get_decoder_prompt_ids(language = 'en') {
++        const tokens = [
++            '▁',
++            '<|startofcontext|>',
++            '<|startoftranscript|>',
++            '<|emo:undefined|>',
++            `<|${language}|>`,
++            `<|${language}|>`,
++            '<|pnc|>',
++            '<|noitn|>',
++            '<|notimestamp|>',
++            '<|nodiarize|>',
++        ];
++        return this.tokenizer.convert_tokens_to_ids(tokens);
++    }
++
++    /**
++     * Join chunk texts back together, using the appropriate separator for the language.
++     * @param {string[]} texts Decoded texts, one per chunk.
++     * @param {string} [language='en'] Language code.
++     * @returns {string} The joined text.
++     */
++    static join_chunks(texts, language = 'en') {
++        const non_empty = texts.filter((t) => t && t.trim());
++        if (non_empty.length === 0) return '';
++        const separator = NO_SPACE_LANGUAGES.has(language) ? '' : ' ';
++        const parts = [non_empty[0].trimEnd(), ...non_empty.slice(1).map((t) => t.trim())];
++        return parts.join(separator);
++    }
++
++    /**
++     * Calls the feature_extractor function with the given audio input.
++     * @param {any} audio The audio input to extract features from.
++     * @returns {Promise<any>}
++     */
++    async _call(audio) {
++        return await this.feature_extractor(audio);
++    }
++}
+diff --git a/packages/transformers/src/models/cohere_asr/tokenization_cohere_asr.js b/packages/transformers/src/models/cohere_asr/tokenization_cohere_asr.js
+new file mode 100644
+index 0000000..440b78f
+--- /dev/null
++++ b/packages/transformers/src/models/cohere_asr/tokenization_cohere_asr.js
+@@ -0,0 +1,3 @@
++import { PreTrainedTokenizer } from '../../tokenization_utils.js';
++
++export class CohereAsrTokenizer extends PreTrainedTokenizer {}
+diff --git a/packages/transformers/src/models/feature_extractors.js b/packages/transformers/src/models/feature_extractors.js
+index d10b659..160481e 100644
+--- a/packages/transformers/src/models/feature_extractors.js
++++ b/packages/transformers/src/models/feature_extractors.js
+@@ -2,6 +2,7 @@ export * from './audio_spectrogram_transformer/feature_extraction_audio_spectrog
+ export * from './encodec/feature_extraction_encodec.js';
+ export * from './chatterbox/feature_extraction_chatterbox.js';
+ export * from './clap/feature_extraction_clap.js';
++export * from './cohere_asr/feature_extraction_cohere_asr.js';
+ export * from './dac/feature_extraction_dac.js';
+ export * from './gemma3n/feature_extraction_gemma3n.js';
+ export * from './granite_speech/feature_extraction_granite_speech.js';
+diff --git a/packages/transformers/src/models/modeling_utils.js b/packages/transformers/src/models/modeling_utils.js
+index 88521c6..c920900 100644
+--- a/packages/transformers/src/models/modeling_utils.js
++++ b/packages/transformers/src/models/modeling_utils.js
+@@ -752,7 +752,10 @@ export class PreTrainedModel extends Callable {
+                 1,
+             );
+         } else if ('decoder_attention_mask' in model_inputs) {
+-            // TODO: update decoder attention mask if the model requires it
++            model_inputs.decoder_attention_mask = cat(
++                [model_inputs.decoder_attention_mask, ones([model_inputs.decoder_attention_mask.dims[0], 1])],
++                1,
++            );
+         }
+ 
+         // force recreate position_ids in next iteration
+@@ -896,7 +899,7 @@ export class PreTrainedModel extends Callable {
+             decoder_input_ids = toI64Tensor(decoder_input_ids);
+         }
+ 
+-        model_kwargs['decoder_attention_mask'] = ones_like(decoder_input_ids);
++        model_inputs['decoder_attention_mask'] = ones_like(decoder_input_ids);
+ 
+         return { input_ids: decoder_input_ids, model_inputs };
+     }
+@@ -1258,7 +1261,7 @@ export class PreTrainedModel extends Callable {
+  * @private
+  */
+ export async function seq2seq_forward(self, model_inputs) {
+-    let { encoder_outputs, input_ids, decoder_input_ids, ...other_decoder_inputs } = model_inputs;
++    let { encoder_outputs, input_ids, decoder_input_ids, decoder_attention_mask, ...other_decoder_inputs } = model_inputs;
+     // Encode if needed
+     if (!encoder_outputs) {
+         const encoder_inputs = pick(model_inputs, self.sessions['model'].inputNames);
+@@ -1273,6 +1276,11 @@ export async function seq2seq_forward(self, model_inputs) {
+         other_decoder_inputs.encoder_attention_mask = model_inputs.attention_mask;
+     }
+ 
++    // Pass decoder_attention_mask as attention_mask to the decoder session
++    if (decoder_attention_mask && !other_decoder_inputs.attention_mask) {
++        other_decoder_inputs.attention_mask = decoder_attention_mask;
++    }
++
+     return await decoder_forward(self, other_decoder_inputs, true);
+ }
+ 
+diff --git a/packages/transformers/src/models/models.js b/packages/transformers/src/models/models.js
+index 8d30ee9..8bc6703 100644
+--- a/packages/transformers/src/models/models.js
++++ b/packages/transformers/src/models/models.js
+@@ -19,6 +19,7 @@ export * from './clipseg/modeling_clipseg.js';
+ export * from './codegen/modeling_codegen.js';
+ export * from './cohere/modeling_cohere.js';
+ export * from './cohere2/modeling_cohere2.js';
++export * from './cohere_asr/modeling_cohere_asr.js';
+ export * from './convbert/modeling_convbert.js';
+ export * from './convnext/modeling_convnext.js';
+ export * from './convnextv2/modeling_convnextv2.js';
+diff --git a/packages/transformers/src/models/processors.js b/packages/transformers/src/models/processors.js
+index d7f87e1..c21c76f 100644
+--- a/packages/transformers/src/models/processors.js
++++ b/packages/transformers/src/models/processors.js
+@@ -1,4 +1,5 @@
+ export * from './chatterbox/processing_chatterbox.js';
++export * from './cohere_asr/processing_cohere_asr.js';
+ export * from './florence2/processing_florence2.js';
+ export * from './gemma3/processing_gemma3.js';
+ export * from './gemma3n/processing_gemma3n.js';
+diff --git a/packages/transformers/src/models/registry.js b/packages/transformers/src/models/registry.js
+index ee9a7a7..200af2f 100644
+--- a/packages/transformers/src/models/registry.js
++++ b/packages/transformers/src/models/registry.js
+@@ -107,6 +107,7 @@ const MODEL_MAPPING_NAMES_ENCODER_DECODER = new Map([
+     ['mbart', 'MBartModel'],
+     ['marian', 'MarianModel'],
+     ['whisper', 'WhisperModel'],
++    ['cohere_asr', 'CohereAsrModel'],
+     ['m2m_100', 'M2M100Model'],
+     ['blenderbot', 'BlenderbotModel'],
+     ['blenderbot-small', 'BlenderbotSmallModel'],
+@@ -185,6 +186,7 @@ export const MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES = new Map([
+     ['whisper', 'WhisperForConditionalGeneration'],
+     ['lite-whisper', 'LiteWhisperForConditionalGeneration'],
+     ['moonshine', 'MoonshineForConditionalGeneration'],
++    ['cohere_asr', 'CohereAsrForConditionalGeneration'],
+ ]);
+ 
+ const MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES = new Map([['speecht5', 'SpeechT5ForTextToSpeech']]);
+diff --git a/packages/transformers/src/models/tokenizers.js b/packages/transformers/src/models/tokenizers.js
+index be6c7e8..4fe335f 100644
+--- a/packages/transformers/src/models/tokenizers.js
++++ b/packages/transformers/src/models/tokenizers.js
+@@ -10,6 +10,7 @@ export * from './clip/tokenization_clip.js';
+ export * from './code_llama/tokenization_code_llama.js';
+ export * from './codegen/tokenization_codegen.js';
+ export * from './cohere/tokenization_cohere.js';
++export * from './cohere_asr/tokenization_cohere_asr.js';
+ export * from './convbert/tokenization_convbert.js';
+ export * from './deberta_v2/tokenization_deberta_v2.js';
+ export * from './deberta/tokenization_deberta.js';
+diff --git a/packages/transformers/src/pipelines/automatic-speech-recognition.js b/packages/transformers/src/pipelines/automatic-speech-recognition.js
+index d4ab074..b7b24de 100644
+--- a/packages/transformers/src/pipelines/automatic-speech-recognition.js
++++ b/packages/transformers/src/pipelines/automatic-speech-recognition.js
+@@ -154,6 +154,8 @@ export class AutomaticSpeechRecognitionPipeline
+                 return this._call_wav2vec2(audio, kwargs);
+             case 'moonshine':
+                 return this._call_moonshine(audio, kwargs);
++            case 'cohere_asr':
++                return this._call_cohere_asr(audio, kwargs);
+             default:
+                 throw new Error(
+                     `AutomaticSpeechRecognitionPipeline does not support model type '${this.model.config.model_type}'.`,
+@@ -320,4 +322,45 @@ export class AutomaticSpeechRecognitionPipeline
+         }
+         return single ? toReturn[0] : toReturn;
+     }
++
++    async _call_cohere_asr(audio, kwargs) {
++        const single = !Array.isArray(audio);
++        const batchedAudio = single ? [audio] : audio;
++
++        const feature_extractor = this.processor.feature_extractor;
++        const sampling_rate = feature_extractor.config.sampling_rate;
++        const preparedAudios = await prepareAudios(batchedAudio, sampling_rate);
++
++        const language = kwargs.language ?? 'en';
++        // @ts-expect-error TS2339
++        const decoder_input_ids = this.processor.get_decoder_prompt_ids(language);
++
++        const toReturn = [];
++        for (const aud of preparedAudios) {
++            // Split long audio at energy-based boundaries
++            // @ts-expect-error TS2339
++            const audioChunks = feature_extractor.split_audio(aud);
++
++            const chunk_texts = [];
++            for (const chunk of audioChunks) {
++                const inputs = await this.processor(chunk);
++
++                const outputs = await this.model.generate({
++                    ...inputs,
++                    decoder_input_ids,
++                    ...kwargs,
++                });
++
++                const text = this.tokenizer
++                    .decode(/** @type {Tensor} */ (outputs)[0].tolist(), { skip_special_tokens: true })
++                    .trim();
++                chunk_texts.push(text);
++            }
++
++            // @ts-expect-error TS2339
++            const full_text = this.processor.constructor.join_chunks(chunk_texts, language);
++            toReturn.push({ text: full_text });
++        }
++        return single ? toReturn[0] : toReturn;
++    }
+ }
+diff --git a/packages/transformers/tests/models/cohere_asr/test_feature_extraction_cohere_asr.js b/packages/transformers/tests/models/cohere_asr/test_feature_extraction_cohere_asr.js
+new file mode 100644
+index 0000000..e56ab30
+--- /dev/null
++++ b/packages/transformers/tests/models/cohere_asr/test_feature_extraction_cohere_asr.js
+@@ -0,0 +1,93 @@
++import { AutoFeatureExtractor } from "../../../src/transformers.js";
++
++import { load_cached_audio } from "../../asset_cache.js";
++import { MAX_FEATURE_EXTRACTOR_LOAD_TIME, MAX_TEST_EXECUTION_TIME } from "../../init.js";
++
++export default () => {
++  describe("CohereAsrFeatureExtractor", () => {
++    const model_id = "onnx-community/cohere-transcribe-03-2026-ONNX";
++
++    let feature_extractor;
++    beforeAll(async () => {
++      feature_extractor = await AutoFeatureExtractor.from_pretrained(model_id);
++    }, MAX_FEATURE_EXTRACTOR_LOAD_TIME);
++
++    it(
++      "default",
++      async () => {
++        const audio = await load_cached_audio("mlk");
++        const { input_features, attention_mask } = await feature_extractor(audio);
++
++        // Shape: [1, num_frames, 128] (transposed mel spectrogram)
++        expect(input_features.dims).toEqual([1, 1301, 128]);
++
++        // Attention mask: [1, num_frames], 1300 valid frames
++        expect(attention_mask.dims).toEqual([1, 1301]);
++        const mask_sum = attention_mask.data.reduce((a, b) => a + b, 0n);
++        expect(Number(mask_sum)).toEqual(1300);
++
++        // Check feature values against Python reference
++        // NOTE: Small differences (~1e-3) are expected due to mel filter precision
++        // (librosa float32 vs JS float64) and different dithering PRNGs.
++        expect(input_features.mean().item()).toBeCloseTo(0.0, 3);
++        expect(input_features.data[0]).toBeCloseTo(1.9019224644, 2); // [0,0,0]
++        expect(input_features.data[1]).toBeCloseTo(1.4606336355, 2); // [0,0,1]
++        expect(input_features.data[128]).toBeCloseTo(1.6364065409, 2); // [0,1,0]
++        expect(input_features.data[127]).toBeCloseTo(-0.8954101205, 2); // [0,0,127]
++        expect(input_features.data[12800]).toBeCloseTo(0.9838520288, 2); // [0,100,0]
++        expect(input_features.data[64050]).toBeCloseTo(-0.6117327809, 2); // [0,500,50]
++      },
++      MAX_TEST_EXECUTION_TIME,
++    );
++
++    it(
++      "short audio",
++      async () => {
++        const audio = await load_cached_audio("mlk");
++        const { input_features, attention_mask } = await feature_extractor(audio.slice(0, 16000));
++
++        expect(input_features.dims).toEqual([1, 101, 128]);
++        expect(attention_mask.dims).toEqual([1, 101]);
++
++        const mask_sum = attention_mask.data.reduce((a, b) => a + b, 0n);
++        expect(Number(mask_sum)).toEqual(100);
++
++        expect(input_features.mean().item()).toBeCloseTo(0.0, 3);
++        expect(input_features.data[0]).toBeCloseTo(1.5188870430, 2); // [0,0,0]
++        expect(input_features.data[1]).toBeCloseTo(1.1131993532, 2); // [0,0,1]
++        expect(input_features.data[128]).toBeCloseTo(1.2305405140, 2); // [0,1,0]
++      },
++      MAX_TEST_EXECUTION_TIME,
++    );
++
++    it(
++      "split_audio for long audio",
++      async () => {
++        const audio = await load_cached_audio("mlk");
++        // mlk is ~13 seconds, below 35s threshold, should not split
++        const chunks = feature_extractor.split_audio(audio);
++        expect(chunks.length).toEqual(1);
++        expect(chunks[0].length).toEqual(audio.length);
++      },
++      MAX_TEST_EXECUTION_TIME,
++    );
++
++    it(
++      "split_audio triggers for very long audio",
++      async () => {
++        // Create a fake long audio (>35s at 16kHz = 560000 samples)
++        const long_audio = new Float32Array(600000);
++        for (let i = 0; i < long_audio.length; ++i) {
++          long_audio[i] = Math.sin(i / 100) * 0.1;
++        }
++        const chunks = feature_extractor.split_audio(long_audio);
++        expect(chunks.length).toBeGreaterThan(1);
++
++        // All chunks together should cover the full audio
++        const total = chunks.reduce((acc, c) => acc + c.length, 0);
++        expect(total).toEqual(long_audio.length);
++      },
++      MAX_TEST_EXECUTION_TIME,
++    );
++  });
++};

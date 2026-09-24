@@ -1,0 +1,232 @@
+diff --git a/src/Logs/LogsAggregator.php b/src/Logs/LogsAggregator.php
+index 16a61ad..a94b8c3 100644
+--- a/src/Logs/LogsAggregator.php
++++ b/src/Logs/LogsAggregator.php
+@@ -152,6 +152,12 @@ public function add(
+         }
+ 
+         $this->logs[] = $log;
++
++        $logFlushThreshold = $options->getLogFlushThreshold();
++
++        if ($logFlushThreshold !== null && \count($this->logs) >= $logFlushThreshold) {
++            $this->flush($hub);
++        }
+     }
+ 
+     public function flush(?HubInterface $hub = null): ?EventId
+diff --git a/src/Options.php b/src/Options.php
+index fb43d42..853d479 100644
+--- a/src/Options.php
++++ b/src/Options.php
+@@ -184,6 +184,32 @@ public function getEnableLogs(): bool
+         return $this->options['enable_logs'] ?? false;
+     }
+ 
++    /**
++     * Gets the number of buffered logs that trigger an immediate flush.
++     */
++    public function getLogFlushThreshold(): ?int
++    {
++        /**
++         * @var int|null $logFlushThreshold
++         */
++        $logFlushThreshold = $this->options['log_flush_threshold'];
++
++        return $logFlushThreshold;
++    }
++
++    /**
++     * Sets the number of buffered logs that trigger an immediate flush.
++     * null will never trigger an immediate flush.
++     */
++    public function setLogFlushThreshold(?int $logFlushThreshold): self
++    {
++        $options = array_merge($this->options, ['log_flush_threshold' => $logFlushThreshold]);
++
++        $this->options = $this->resolver->resolve($options);
++
++        return $this;
++    }
++
+     /**
+      * Sets if metrics should be enabled or not.
+      */
+@@ -1337,6 +1363,7 @@ private function configureOptions(OptionsResolver $resolver): void
+             'sample_rate' => 1,
+             'enable_tracing' => null,
+             'enable_logs' => false,
++            'log_flush_threshold' => null,
+             'enable_metrics' => true,
+             'traces_sample_rate' => null,
+             'traces_sampler' => null,
+@@ -1414,6 +1441,7 @@ private function configureOptions(OptionsResolver $resolver): void
+         $resolver->setAllowedTypes('sample_rate', ['int', 'float']);
+         $resolver->setAllowedTypes('enable_tracing', ['null', 'bool']);
+         $resolver->setAllowedTypes('enable_logs', 'bool');
++        $resolver->setAllowedTypes('log_flush_threshold', ['null', 'int']);
+         $resolver->setAllowedTypes('enable_metrics', 'bool');
+         $resolver->setAllowedTypes('traces_sample_rate', ['null', 'int', 'float']);
+         $resolver->setAllowedTypes('traces_sampler', ['null', 'callable']);
+@@ -1467,6 +1495,7 @@ private function configureOptions(OptionsResolver $resolver): void
+         $resolver->setAllowedValues('max_breadcrumbs', \Closure::fromCallable([$this, 'validateMaxBreadcrumbsOptions']));
+         $resolver->setAllowedValues('class_serializers', \Closure::fromCallable([$this, 'validateClassSerializersOption']));
+         $resolver->setAllowedValues('context_lines', \Closure::fromCallable([$this, 'validateContextLinesOption']));
++        $resolver->setAllowedValues('log_flush_threshold', \Closure::fromCallable([$this, 'validateLogFlushThresholdOption']));
+ 
+         $resolver->setNormalizer('dsn', \Closure::fromCallable([$this, 'normalizeDsnOption']));
+ 
+@@ -1632,4 +1661,14 @@ private function validateContextLinesOption(?int $contextLines): bool
+     {
+         return $contextLines === null || $contextLines >= 0;
+     }
++
++    /**
++     * Validates that the value passed to the "log_flush_threshold" option is valid.
++     *
++     * @param int|null $logFlushThreshold The value to validate
++     */
++    private function validateLogFlushThresholdOption(?int $logFlushThreshold): bool
++    {
++        return $logFlushThreshold === null || $logFlushThreshold > 0;
++    }
+ }
+diff --git a/src/functions.php b/src/functions.php
+index 913778d..0fd90b7 100644
+--- a/src/functions.php
++++ b/src/functions.php
+@@ -49,6 +49,7 @@
+  *     in_app_include?: array<string>,
+  *     integrations?: IntegrationInterface[]|callable(IntegrationInterface[]): IntegrationInterface[],
+  *     logger?: LoggerInterface|null,
++ *     log_flush_threshold?: int|null,
+  *     max_breadcrumbs?: int,
+  *     max_request_body_size?: "none"|"never"|"small"|"medium"|"always",
+  *     max_value_length?: int,
+diff --git a/tests/Logs/LogsAggregatorTest.php b/tests/Logs/LogsAggregatorTest.php
+index 89e175a..f421209 100644
+--- a/tests/Logs/LogsAggregatorTest.php
++++ b/tests/Logs/LogsAggregatorTest.php
+@@ -12,6 +12,7 @@
+ use Sentry\SentrySdk;
+ use Sentry\State\Hub;
+ use Sentry\State\Scope;
++use Sentry\Tests\StubTransport;
+ use Sentry\Tracing\Span;
+ use Sentry\Tracing\SpanContext;
+ use Sentry\Tracing\SpanId;
+@@ -207,4 +208,55 @@ public function testAttributesAreAddedToLogMessage(): void
+         $this->assertSame('foo@example.com', $attributes->get('user.email')->getValue());
+         $this->assertSame('my_user', $attributes->get('user.name')->getValue());
+     }
++
++    public function testFlushesImmediatelyWhenThresholdIsReached(): void
++    {
++        StubTransport::$events = [];
++
++        $transport = new StubTransport();
++        $client = ClientBuilder::create([
++            'enable_logs' => true,
++            'log_flush_threshold' => 2,
++        ])->setTransport($transport)->getClient();
++
++        $hub = new Hub($client);
++        SentrySdk::setCurrentHub($hub);
++
++        $aggregator = new LogsAggregator();
++
++        $aggregator->add(LogLevel::info(), 'First message');
++
++        $this->assertCount(1, $aggregator->all());
++        $this->assertCount(0, StubTransport::$events);
++
++        $aggregator->add(LogLevel::warn(), 'Second message');
++
++        $this->assertCount(0, $aggregator->all());
++        $this->assertCount(1, StubTransport::$events);
++        $this->assertCount(2, StubTransport::$events[0]->getLogs());
++        $this->assertSame('First message', StubTransport::$events[0]->getLogs()[0]->getBody());
++        $this->assertSame('Second message', StubTransport::$events[0]->getLogs()[1]->getBody());
++    }
++
++    public function testDoesNotFlushImmediatelyWhenThresholdIsNull(): void
++    {
++        StubTransport::$events = [];
++
++        $transport = new StubTransport();
++        $client = ClientBuilder::create([
++            'enable_logs' => true,
++            'log_flush_threshold' => null,
++        ])->setTransport($transport)->getClient();
++
++        $hub = new Hub($client);
++        SentrySdk::setCurrentHub($hub);
++
++        $aggregator = new LogsAggregator();
++
++        $aggregator->add(LogLevel::info(), 'First message');
++        $aggregator->add(LogLevel::warn(), 'Second message');
++
++        $this->assertCount(2, $aggregator->all());
++        $this->assertCount(0, StubTransport::$events);
++    }
+ }
+diff --git a/tests/OptionsTest.php b/tests/OptionsTest.php
+index 5c9e498..9ae0419 100644
+--- a/tests/OptionsTest.php
++++ b/tests/OptionsTest.php
+@@ -100,6 +100,20 @@ public static function optionsDataProvider(): \Generator
+             'setEnableLogs',
+         ];
+ 
++        yield [
++            'log_flush_threshold',
++            10,
++            'getLogFlushThreshold',
++            'setLogFlushThreshold',
++        ];
++
++        yield [
++            'log_flush_threshold',
++            null,
++            'getLogFlushThreshold',
++            'setLogFlushThreshold',
++        ];
++
+         yield [
+             'traces_sample_rate',
+             0.5,
+@@ -641,6 +655,33 @@ public static function contextLinesOptionValidatesInputValueDataProvider(): \Gen
+         ];
+     }
+ 
++    /**
++     * @dataProvider logFlushThresholdOptionIsValidatedCorrectlyDataProvider
++     */
++    public function testLogFlushThresholdOptionIsValidatedCorrectly(bool $isValid, $value): void
++    {
++        if (!$isValid) {
++            $this->expectException(InvalidOptionsException::class);
++        }
++
++        $options = new Options(['log_flush_threshold' => $value]);
++
++        $this->assertSame($value, $options->getLogFlushThreshold());
++    }
++
++    public static function logFlushThresholdOptionIsValidatedCorrectlyDataProvider(): array
++    {
++        return [
++            [false, -1],
++            [false, 0],
++            [true, 1],
++            [true, 10],
++            [true, null],
++            [false, 'string'],
++            [false, '1'],
++        ];
++    }
++
+     /**
+      * @backupGlobals enabled
+      */

@@ -1,0 +1,39 @@
+task_id: mapbox_mcp_devkit_server_mcp_server_9b91dd7e7a54
+hidden_test_patches:
+- repo: mcp-devkit-server
+  patch: hidden/patches/mcp-devkit-server-hidden-tests.patch
+  test_profile: mcp_devkit_server-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test/tools/create-token-tool/CreateTokenTool.test.ts
+  - test/tools/list-styles-tool/ListStylesTool.test.ts
+  - test/tools/list-tokens-tool/ListTokensTool.test.ts
+  hidden_file: *id001
+  semantic_changes:
+  - Warning assertions require the documented validation-failure phrase without
+    requiring Gold's tool-class prefix; warning level and raw response behavior
+    remain required.
+  source: upstream test changes from mapbox/mcp-devkit-server PR(s) 43
+- repo: mcp-server
+  patch: hidden/patches/mcp-server-hidden-tests.patch
+  test_profile: mcp_server-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.test.ts
+  - test/tools/version-tool/VersionTool.test.ts
+  hidden_file: *id002
+  semantic_changes:
+  - Replaces direct calls to Gold's protected validateOutput helper with public
+    VersionTool run behavior under an invalid version schema response.
+  source: upstream test changes from mapbox/mcp-server PR(s) 74
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - mcp_devkit_server-hidden
+    - mcp_server-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

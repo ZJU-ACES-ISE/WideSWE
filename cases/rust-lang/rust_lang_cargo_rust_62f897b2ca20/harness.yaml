@@ -1,0 +1,31 @@
+task_id: rust_lang_cargo_rust_62f897b2ca20
+hidden_test_patches:
+- repo: cargo
+  patch: hidden/patches/cargo-hidden-tests.patch
+  test_profile: cargo-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/testsuite/warning_override.rs
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from rust-lang/cargo PR(s) 16213
+- repo: rust
+  patch: hidden/patches/rust-hidden-tests.patch
+  test_profile: rust-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - src/bootstrap/bootstrap_test.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from rust-lang/rust PR(s) 148332
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - cargo-hidden
+    - rust-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

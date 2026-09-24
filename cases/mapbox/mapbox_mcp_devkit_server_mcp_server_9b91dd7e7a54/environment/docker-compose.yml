@@ -1,0 +1,36 @@
+services:
+  mcp_devkit_server-hidden:
+    image: ecosyncbench/deps/mapbox-mcp-devkit-server-npm:9b91dd7e7a54-node22
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/node-npm-ci-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/node:22-bookworm
+        ECOSYNC_TASK_ID: mapbox_mcp_devkit_server_mcp_server_9b91dd7e7a54
+        ECOSYNC_REPO: mapbox/mcp-devkit-server
+        ECOSYNC_REPO_PATH: repos/mapbox/mcp-devkit-server
+        ECOSYNC_BASE_COMMIT: 2b2ba533bdd504c766fd89c309fb0e6ed31e9e8e
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 9b91dd7e7a54-mcp-devkit-server-node22
+        ECOSYNC_INSTALL_FLAGS: --ignore-scripts --prefer-offline --fetch-retries=2 --fetch-timeout=60000
+    working_dir: /workspace/repos/mapbox/mcp-devkit-server
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-mapbox-vitest.sh mcp_devkit_server-hidden test/tools/create-token-tool/CreateTokenTool.test.ts test/tools/list-styles-tool/ListStylesTool.test.ts test/tools/list-tokens-tool/ListTokensTool.test.ts'
+
+  mcp_server-hidden:
+    image: ecosyncbench/deps/mapbox-mcp-server-npm:9b91dd7e7a54-node22-shallow-full
+    build:
+      context: ${ECOSYNC_BUILD_CONTEXT:-.}
+      dockerfile: ${ECOSYNC_REPO_ROOT}/benchmark/images/deps/node-npm-ci-project/Dockerfile
+      args:
+        ECOSYNC_BASE_IMAGE: ecosyncbench/base/node:22-bookworm
+        ECOSYNC_TASK_ID: mapbox_mcp_devkit_server_mcp_server_9b91dd7e7a54
+        ECOSYNC_REPO: mapbox/mcp-server
+        ECOSYNC_REPO_PATH: repos/mapbox/mcp-server
+        ECOSYNC_BASE_COMMIT: 1ea679c6e6692371f8f4e7e635e348d7b5c72f0c
+        ECOSYNC_DEPENDENCY_FINGERPRINT: 9b91dd7e7a54-mcp-server-node22-shallow-full
+        ECOSYNC_INSTALL_FLAGS: --ignore-scripts --prefer-offline --fetch-retries=2 --fetch-timeout=60000 --install-strategy=shallow
+    working_dir: /workspace/repos/mapbox/mcp-server
+    volumes:
+    - ${ECOSYNC_WORKSPACE:-../../../../}:/workspace
+    command: bash -lc 'bash /opt/ecosync/run-mapbox-vitest.sh mcp_server-hidden test/tools/version-tool/VersionTool.test.ts test/tools/search-and-geocode-tool/SearchAndGeocodeTool.output.schema.test.ts'

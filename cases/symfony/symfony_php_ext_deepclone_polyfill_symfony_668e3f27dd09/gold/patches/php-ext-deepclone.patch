@@ -1,0 +1,1013 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index fd55b82..556f108 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,28 @@ All notable changes to this extension will be documented in this file.
+ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+ 
++## [0.2.0] - 2026-04-12
++
++### Added
++
++- `deepclone_hydrate(object|string $object_or_class, array $scoped_vars = [], array $mangled_vars = []): object` —
++  instantiates a class (or takes an existing object) and sets its properties,
++  including private, protected, and readonly ones. Handles mangled key formats
++  (`"\0ClassName\0prop"`, `"\0*\0prop"`), SPL special cases (ArrayObject,
++  ArrayIterator, SplObjectStorage via `"\0"` key), and preserves PHP `&`
++  references with correct type source tracking for typed properties.
++- Instantiability validation for `deepclone_hydrate`: rejects the same classes
++  as `deepclone_from_array` (abstract, interface, trait, enum, anonymous,
++  Reflector subclasses, internal classes without serialization API). Results
++  are cached per class for zero-cost repeated calls.
++- `ValueError` on invalid input: integer keys in `$mangled_vars`, non-array
++  values in `$scoped_vars`.
++
++### Changed
++
++- All function parameters now use snake_case to follow PHP conventions:
++  `$allowed_classes`, `$object_or_class`, `$scoped_vars`, `$mangled_vars`.
++
+ ## [0.1.1] - 2026-04-10
+ 
+ ### Fixed
+diff --git a/README.md b/README.md
+index b98dfa8..f4a4794 100644
+--- a/README.md
++++ b/README.md
+@@ -51,18 +51,67 @@ $json = json_encode($payload);   // safe — no objects in the array
+ $clone = deepclone_from_array(json_decode($json, true));
+ ```
+ 
++**Fast object instantiation and hydration.** Create objects and set their
++properties — including private, protected, and readonly ones — without calling
++their constructor, faster than Reflection:
++
++```php
++// Set private properties via scoped array (fastest path)
++$user = deepclone_hydrate(User::class, [
++    User::class => ['id' => 42, 'name' => 'Alice'],
++    AbstractEntity::class => ['createdAt' => new \DateTimeImmutable()],
++]);
++
++// Instantiate from class name with mangled keys (same format as (array) cast)
++$user = deepclone_hydrate(User::class, [], ['name' => 'Alice', 'email' => 'alice@example.com']);
++
++// Hydrate an existing object
++deepclone_hydrate($existingUser, ['User' => ['name' => 'Bob']]);
++```
++
+ ## API
+ 
+ ```php
+-function deepclone_to_array(mixed $value, ?array $allowedClasses = null): array;
+-function deepclone_from_array(array $data, ?array $allowedClasses = null): mixed;
++function deepclone_to_array(mixed $value, ?array $allowed_classes = null): array;
++function deepclone_from_array(array $data, ?array $allowed_classes = null): mixed;
++function deepclone_hydrate(object|string $object_or_class, array $scoped_vars = [], array $mangled_vars = []): object;
+ ```
+ 
+-`$allowedClasses` restricts which classes may be serialized or deserialized
++`$allowed_classes` restricts which classes may be serialized or deserialized
+ (`null` = allow all, `[]` = allow none). Case-insensitive, matching
+ `unserialize()`'s `allowed_classes` option. Closures require `"Closure"` in
+ the list.
+ 
++`deepclone_hydrate()` accepts either an object to hydrate in place or a class
++name to instantiate without calling its constructor. Both `$scoped_vars` and
++`$mangled_vars` can be used together; `$mangled_vars` values are resolved
++and merged into `$scoped_vars` before hydration. PHP `&` references are
++preserved in both.
++
++`$scoped_vars` is the **fastest path** — it writes directly to property
++slots with no key parsing, making it ideal for hot loops. It is keyed by
++declaring class name, each value being an array of property names to values.
++
++`$mangled_vars` accepts the same mangled key format as `(array) $object`
++(`"\0ClassName\0prop"` for private, `"\0*\0prop"` for protected, bare name
++for public/dynamic). It resolves each key to the correct scope automatically,
++which is handy when round-tripping with `(array)` casts.
++
++The special `"\0"` key sets the internal state of SPL classes. In
++`$scoped_vars` it goes inside a scope entry; in `$mangled_vars` it is a
++flat key:
++
++```php
++// Via $scoped_vars:
++$ao = deepclone_hydrate('ArrayObject', ['ArrayObject' => ["\0" => [['x' => 1]]]]);
++
++// Via $mangled_vars:
++$ao = deepclone_hydrate('ArrayObject', [], ["\0" => [['x' => 1], ArrayObject::ARRAY_AS_PROPS]]);
++
++// SplObjectStorage: "\0" => [$obj1, $info1, $obj2, $info2, ...]
++$s = deepclone_hydrate('SplObjectStorage', [], ["\0" => [$obj, 'metadata']]);
++```
++
+ ## What it preserves
+ 
+ - Object identity (shared references stay shared)
+@@ -76,11 +125,11 @@ the list.
+ 
+ ## Error handling
+ 
+-| Exception                            | Thrown by             | When                                                     |
+-| ------------------------------------ | --------------------- | -------------------------------------------------------- |
+-| `DeepClone\NotInstantiableException` | `deepclone_to_array`  | Resource, anonymous class, `Reflection*`, internal class without serialization support |
+-| `DeepClone\ClassNotFoundException`   | `deepclone_from_array`| Payload references a class that doesn't exist            |
+-| `ValueError`                         | both                  | Malformed input, or class not in `$allowedClasses`       |
++| Exception                            | Thrown by                                  | When                                                     |
++| ------------------------------------ | ------------------------------------------ | -------------------------------------------------------- |
++| `DeepClone\NotInstantiableException` | `deepclone_to_array`, `deepclone_hydrate`  | Resource, anonymous class, `Reflection*`, internal class without serialization support |
++| `DeepClone\ClassNotFoundException`   | `deepclone_from_array`, `deepclone_hydrate`| Payload/class name references a class that doesn't exist |
++| `ValueError`                         | all three                                  | Malformed input, or class not in `$allowed_classes`      |
+ 
+ Both exception classes extend `\InvalidArgumentException`.
+ 
+@@ -114,9 +163,12 @@ sudo make install
+ ## With Symfony
+ 
+ `symfony/var-exporter` and `symfony/polyfill-deepclone` provide the same
+-`deepclone_to_array()` / `deepclone_from_array()` functions in pure PHP.
+-When this extension is loaded it replaces the polyfill transparently —
+-no code change needed, just a 4–5× speedup.
++`deepclone_to_array()`, `deepclone_from_array()`, and `deepclone_hydrate()`
++functions in pure PHP. When this extension is loaded it replaces the polyfill
++transparently — no code change needed.
++
++Symfony's `Hydrator::hydrate()` and `Instantiator::instantiate()` delegate
++directly to `deepclone_hydrate()`, making them thin one-liner wrappers.
+ 
+ ## License
+ 
+diff --git a/deepclone.c b/deepclone.c
+index 1c30078..365af2d 100644
+--- a/deepclone.c
++++ b/deepclone.c
+@@ -37,6 +37,8 @@
+ #include "Zend/zend_interfaces.h"
+ #include "ext/spl/spl_iterators.h"
+ #include "ext/spl/spl_exceptions.h"
++#include "ext/spl/spl_array.h"
++#include "ext/spl/spl_observer.h"
+ 
+ /* ext/reflection's class entries are PHPAPI but Debian's php-dev does not
+  * ship ext/reflection/php_reflection.h. Forward-declare what we use; the
+@@ -2571,6 +2573,402 @@ cleanup:
+ }
+ #undef DC_INVALID
+ 
++/* ── deepclone_hydrate() — instantiate/hydrate with scoped property writes ── */
++
++PHP_FUNCTION(deepclone_hydrate)
++{
++	zval *object_or_class;
++	HashTable *scoped_props = NULL;
++	HashTable *mangled_vars = NULL;
++
++	ZEND_PARSE_PARAMETERS_START(1, 3)
++		Z_PARAM_ZVAL(object_or_class)
++		Z_PARAM_OPTIONAL
++		Z_PARAM_ARRAY_HT(scoped_props)
++		Z_PARAM_ARRAY_HT(mangled_vars)
++	ZEND_PARSE_PARAMETERS_END();
++
++	zval obj_zval;
++	bool created = false;
++
++	if (EXPECTED(Z_TYPE_P(object_or_class) == IS_OBJECT)) {
++		ZVAL_COPY(&obj_zval, object_or_class);
++	} else if (EXPECTED(Z_TYPE_P(object_or_class) == IS_STRING)) {
++		zend_class_entry *ce = zend_lookup_class(Z_STR_P(object_or_class));
++		if (UNEXPECTED(!ce)) {
++			zend_throw_exception_ex(dc_ce_class_not_found_exception, 0,
++				"Class \"%s\" not found.", Z_STRVAL_P(object_or_class));
++			return;
++		}
++		if (UNEXPECTED(ce->ce_flags & (ZEND_ACC_INTERFACE|ZEND_ACC_TRAIT|ZEND_ACC_EXPLICIT_ABSTRACT_CLASS|ZEND_ACC_IMPLICIT_ABSTRACT_CLASS|ZEND_ACC_ENUM))) {
++			zend_throw_exception_ex(dc_ce_not_instantiable_exception, 0,
++				"Class \"%s\" is not instantiable.", ZSTR_VAL(ce->name));
++			return;
++		}
++		/* Reject classes that cannot function without their constructor,
++		 * using the same rules as dc_get_class_info / deepclone_from_array.
++		 * User classes always pass; internal classes are checked and cached. */
++		if (UNEXPECTED(ce->type == ZEND_INTERNAL_CLASS)) {
++			static HashTable hydrate_cache;
++			static bool hydrate_cache_inited = false;
++			if (UNEXPECTED(!hydrate_cache_inited)) {
++				zend_hash_init(&hydrate_cache, 8, NULL, NULL, 1);
++				hydrate_cache_inited = true;
++			}
++			zval *cached = zend_hash_find(&hydrate_cache, ce->name);
++			if (EXPECTED(cached)) {
++				if (UNEXPECTED(!Z_LVAL_P(cached))) {
++					zend_throw_exception_ex(dc_ce_not_instantiable_exception, 0,
++						"Class \"%s\" is not instantiable.", ZSTR_VAL(ce->name));
++					return;
++				}
++			} else {
++				bool ok = true;
++				bool has_unser = ce->__unserialize != NULL;
++				bool has_wakeup = zend_hash_find_known_hash(&ce->function_table, ZSTR_KNOWN(ZEND_STR_WAKEUP)) != NULL;
++				bool has_ser_api = has_unser || has_wakeup || ce->serialize != NULL;
++				if (!has_ser_api
++				 && ((ce->ce_flags & ZEND_ACC_ANON_CLASS)
++				  || instanceof_function(ce, reflector_ptr)
++				  || instanceof_function(ce, reflection_type_ptr)
++				  || instanceof_function(ce, spl_ce_IteratorIterator)
++				  || instanceof_function(ce, spl_ce_RecursiveIteratorIterator)
++				  || (dc_ce_reflection_generator && instanceof_function(ce, dc_ce_reflection_generator)))) {
++					ok = false;
++				}
++				if (ok && (ce->ce_flags & ZEND_ACC_NOT_SERIALIZABLE) && !has_ser_api) {
++					ok = false;
++				}
++				if (ok && ce->create_object != NULL && ce != php_ce_incomplete_class && !has_ser_api
++				 && !(ce->__serialize) && !(zend_hash_find_known_hash(&ce->function_table, ZSTR_KNOWN(ZEND_STR_SLEEP)))) {
++					if (ce->ce_flags & ZEND_ACC_FINAL) {
++						zval probe;
++						if (object_init_ex(&probe, ce) != SUCCESS || EG(exception)) {
++							zend_clear_exception();
++							ok = false;
++						} else {
++							zval_ptr_dtor(&probe);
++						}
++					} else {
++						ok = false;
++					}
++				}
++				zval zok;
++				ZVAL_LONG(&zok, ok ? 1 : 0);
++				zend_hash_add_new(&hydrate_cache, ce->name, &zok);
++				if (!ok) {
++					zend_throw_exception_ex(dc_ce_not_instantiable_exception, 0,
++						"Class \"%s\" is not instantiable.", ZSTR_VAL(ce->name));
++					return;
++				}
++			}
++		}
++		if (UNEXPECTED(object_init_ex(&obj_zval, ce) != SUCCESS)) {
++			return;
++		}
++		created = true;
++	} else {
++		zend_type_error("deepclone_hydrate(): Argument #1 ($object_or_class) must be of type object|string, %s given",
++			zend_zval_value_name(object_or_class));
++		return;
++	}
++
++	/* Resolve $mangled_vars (flat mangled-key array) into scoped_props.
++	 *   "\0ClassName\0propName" → scope = ClassName
++	 *   "\0*\0propName"         → scope = declaring class (or object class)
++	 *   "propName"              → scope = declaring class (or object class)
++	 */
++	zval local_scoped;
++	bool scoped_owned = false;
++	if (mangled_vars && zend_hash_num_elements(mangled_vars)) {
++		zend_class_entry *obj_ce = Z_OBJCE(obj_zval);
++
++		if (!scoped_props || !zend_hash_num_elements(scoped_props)) {
++			array_init(&local_scoped);
++			scoped_props = Z_ARRVAL(local_scoped);
++			scoped_owned = true;
++		} else {
++			/* Copy scoped_props so we can add to it without modifying the caller's array */
++			array_init(&local_scoped);
++			zend_hash_copy(Z_ARRVAL(local_scoped), scoped_props, zval_add_ref);
++			scoped_props = Z_ARRVAL(local_scoped);
++			scoped_owned = true;
++		}
++
++		zend_string *prop_key;
++		zval *prop_val;
++		ZEND_HASH_FOREACH_STR_KEY_VAL(mangled_vars, prop_key, prop_val) {
++			if (UNEXPECTED(!prop_key)) {
++				zend_value_error("deepclone_hydrate(): Argument #3 ($mangled_vars) must have only string keys");
++				if (scoped_owned) zval_ptr_dtor(&local_scoped);
++				if (created) zval_ptr_dtor(&obj_zval);
++				return;
++			}
++
++			const char *key = ZSTR_VAL(prop_key);
++			size_t key_len = ZSTR_LEN(prop_key);
++			zend_string *scope_str;
++			zend_string *real_name;
++
++			if (key_len > 0 && key[0] == '\0') {
++				if (key_len == 1) {
++					/* Special "\0" key (SplObjectStorage/ArrayObject/ArrayIterator) —
++					 * route to object's own class scope with key "\0" */
++					scope_str = obj_ce->name;
++					real_name = prop_key; /* keep as-is */
++					goto add_to_scope;
++				}
++
++				/* Find second \0 separator */
++				const char *sep = memchr(key + 1, '\0', key_len - 1);
++				if (!sep) {
++					/* Malformed — skip */
++					continue;
++				}
++				size_t class_len = sep - (key + 1);
++				size_t name_len = key_len - class_len - 2;
++				real_name = zend_string_init(sep + 1, name_len, 0);
++
++				/* Reject embedded NUL in the property name portion */
++				if (UNEXPECTED(memchr(sep + 1, '\0', name_len) != NULL)) {
++					zend_string_release(real_name);
++					zend_value_error("deepclone_hydrate(): Argument #3 ($mangled_vars) contains an invalid mangled key");
++					if (scoped_owned) zval_ptr_dtor(&local_scoped);
++					if (created) zval_ptr_dtor(&obj_zval);
++					return;
++				}
++
++				if (class_len == 1 && key[1] == '*') {
++					/* Protected: "\0*\0propName" — find declaring class */
++					zend_property_info *pi = zend_hash_find_ptr(&obj_ce->properties_info, real_name);
++					if (pi && !(pi->flags & ZEND_ACC_STATIC)) {
++						scope_str = pi->ce->name;
++					} else {
++						scope_str = obj_ce->name;
++					}
++				} else {
++					/* Private: "\0ClassName\0propName" */
++					scope_str = zend_string_init(key + 1, class_len, 0);
++				}
++			} else {
++				/* Bare name — find declaring class */
++				real_name = prop_key;
++				zend_property_info *pi = zend_hash_find_ptr(&obj_ce->properties_info, real_name);
++				if (pi && !(pi->flags & ZEND_ACC_STATIC)) {
++					scope_str = pi->ce->name;
++					/* For private-set properties, use the declaring class as write scope */
++					if (pi->flags & ZEND_ACC_PRIVATE_SET) {
++						scope_str = pi->ce->name;
++					}
++				} else {
++					scope_str = obj_ce->name;
++				}
++				real_name = NULL; /* don't free — it's prop_key */
++			}
++
++add_to_scope:
++			/* Add to scoped_props[scope_str][real_name] = &prop_val */
++			zval *scope_bucket = zend_hash_find(scoped_props, scope_str);
++			if (!scope_bucket) {
++				zval new_arr;
++				array_init(&new_arr);
++				scope_bucket = zend_hash_update(scoped_props, scope_str, &new_arr);
++			}
++			if (Z_TYPE_P(scope_bucket) != IS_ARRAY) {
++				if (real_name && real_name != prop_key) zend_string_release(real_name);
++				if (key_len > 2 && key[0] == '\0' && key[1] != '*') {
++					zend_string_release(scope_str);
++				}
++				continue;
++			}
++			SEPARATE_ARRAY(scope_bucket);
++			zend_string *name_to_use = real_name ? real_name : prop_key;
++			Z_TRY_ADDREF_P(prop_val);
++			zend_hash_update(Z_ARRVAL_P(scope_bucket), name_to_use, prop_val);
++
++			if (real_name && real_name != prop_key) zend_string_release(real_name);
++			/* Free scope_str only if we allocated it (private "\0ClassName\0" case) */
++			if (key_len > 2 && key[0] == '\0' && key[1] != '*') {
++				zend_string_release(scope_str);
++			}
++		} ZEND_HASH_FOREACH_END();
++	}
++
++	if (!scoped_props || !zend_hash_num_elements(scoped_props)) {
++		if (scoped_owned) zval_ptr_dtor(&local_scoped);
++		ZVAL_COPY_VALUE(return_value, &obj_zval);
++		return;
++	}
++
++	zend_string *scope_name;
++	zval *scope_props;
++	ZEND_HASH_FOREACH_STR_KEY_VAL(scoped_props, scope_name, scope_props) {
++		if (UNEXPECTED(!scope_name)) {
++			continue;
++		}
++		if (UNEXPECTED(Z_TYPE_P(scope_props) != IS_ARRAY)) {
++			zend_value_error("deepclone_hydrate(): Argument #2 ($scoped_vars) must have only array values, %s given for key \"%s\"",
++				zend_zval_value_name(scope_props), ZSTR_VAL(scope_name));
++			if (scoped_owned) zval_ptr_dtor(&local_scoped);
++			if (created) zval_ptr_dtor(&obj_zval);
++			return;
++		}
++
++		/* Resolve scope class entry — must be obj->ce, a parent class, or stdClass.
++		 * No autoloader is triggered; interfaces are not valid scopes. */
++		zend_object *obj = Z_OBJ(obj_zval);
++		zend_class_entry *scope_ce = NULL;
++		if (EXPECTED(zend_string_equals(scope_name, obj->ce->name))) {
++			scope_ce = obj->ce;
++		} else if (zend_string_equals(scope_name, ZEND_STANDARD_CLASS_DEF_PTR->name)) {
++			/* stdClass scope = dynamic/public properties, fake_scope stays NULL */
++		} else {
++			zend_class_entry *p = obj->ce->parent;
++			while (p) {
++				if (zend_string_equals(scope_name, p->name)) {
++					scope_ce = p;
++					break;
++				}
++				p = p->parent;
++			}
++			if (UNEXPECTED(!scope_ce)) {
++				zend_value_error("deepclone_hydrate(): Argument #2 ($scoped_vars) scope \"%s\" is not a parent of \"%s\"",
++					ZSTR_VAL(scope_name), ZSTR_VAL(obj->ce->name));
++				if (scoped_owned) zval_ptr_dtor(&local_scoped);
++				if (created) zval_ptr_dtor(&obj_zval);
++				return;
++			}
++		}
++
++#if PHP_VERSION_ID >= 80500
++		const zend_class_entry *old_scope = EG(fake_scope);
++#else
++		zend_class_entry *old_scope = EG(fake_scope);
++#endif
++		if (scope_ce) {
++			EG(fake_scope) = scope_ce;
++		}
++
++		if (obj->ce == zend_standard_class_def && UNEXPECTED(!obj->properties)) {
++			rebuild_object_properties_internal(obj);
++		}
++
++		zend_string *prop_name;
++		zval *prop_val;
++		ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(scope_props), prop_name, prop_val) {
++			if (UNEXPECTED(!prop_name)) {
++				zend_value_error("deepclone_hydrate(): Argument #2 ($scoped_vars) scope \"%s\" must have only string keys",
++					ZSTR_VAL(scope_name));
++				EG(fake_scope) = old_scope;
++				if (scoped_owned) zval_ptr_dtor(&local_scoped);
++				if (created) zval_ptr_dtor(&obj_zval);
++				return;
++			}
++
++			/* "\0" key = internal state for ArrayObject/ArrayIterator/SplObjectStorage */
++			if (ZSTR_LEN(prop_name) == 1 && ZSTR_VAL(prop_name)[0] == '\0') {
++				if (Z_TYPE_P(prop_val) != IS_ARRAY) continue;
++
++				if (instanceof_function(obj->ce, spl_ce_SplObjectStorage)) {
++					/* [$obj1, $info1, $obj2, $info2, ...] → offsetSet(obj, info) */
++					uint32_t count = zend_hash_num_elements(Z_ARRVAL_P(prop_val));
++					for (uint32_t i = 0; i + 1 < count; i += 2) {
++						zval *zkey = zend_hash_index_find(Z_ARRVAL_P(prop_val), i);
++						zval *zinfo = zend_hash_index_find(Z_ARRVAL_P(prop_val), i + 1);
++						if (!zkey || !zinfo) continue;
++						zend_call_method_with_2_params(obj, obj->ce, NULL, "offsetset", NULL, zkey, zinfo);
++						if (UNEXPECTED(EG(exception))) {
++							EG(fake_scope) = old_scope;
++							if (scoped_owned) zval_ptr_dtor(&local_scoped);
++							if (created) zval_ptr_dtor(&obj_zval);
++							return;
++						}
++					}
++				} else if (instanceof_function(obj->ce, spl_ce_ArrayObject)
++				        || instanceof_function(obj->ce, spl_ce_ArrayIterator)) {
++					/* [$array, $flags?, $iteratorClass?] — call constructor */
++					zend_function *ctor = obj->ce->constructor;
++					if (ctor) {
++						uint32_t argc = zend_hash_num_elements(Z_ARRVAL_P(prop_val));
++						if (argc > 3) argc = 3;
++						zval args[3];
++						for (uint32_t a = 0; a < argc; a++) {
++							zval *arg = zend_hash_index_find(Z_ARRVAL_P(prop_val), a);
++							ZVAL_COPY_VALUE(&args[a], arg ? arg : &EG(uninitialized_zval));
++						}
++						zval retval;
++						ZVAL_UNDEF(&retval);
++						zend_call_known_function(ctor, obj, obj->ce, &retval, argc, args, NULL);
++						zval_ptr_dtor(&retval);
++						if (UNEXPECTED(EG(exception))) {
++							EG(fake_scope) = old_scope;
++							if (scoped_owned) zval_ptr_dtor(&local_scoped);
++							if (created) zval_ptr_dtor(&obj_zval);
++							return;
++						}
++					}
++				}
++				continue;
++			}
++
++			if (obj->ce == zend_standard_class_def) {
++				if (UNEXPECTED(memchr(ZSTR_VAL(prop_name), '\0', ZSTR_LEN(prop_name)) != NULL)) {
++					zend_value_error("deepclone_hydrate(): Argument #2 ($scoped_vars) scope \"%s\" contains an invalid property name; "
++						"use bare property names in $scoped_vars, or pass mangled keys via $mangled_vars",
++						ZSTR_VAL(scope_name));
++					EG(fake_scope) = old_scope;
++					if (scoped_owned) zval_ptr_dtor(&local_scoped);
++					if (created) zval_ptr_dtor(&obj_zval);
++					return;
++				}
++				Z_TRY_ADDREF_P(prop_val);
++				zend_hash_update(obj->properties, prop_name, prop_val);
++			} else {
++				/* Try direct property slot write first — declared property names
++				 * are engine-interned and never contain NUL, so a successful
++				 * lookup is a fast-path that skips all validation. */
++				zend_property_info *pi = scope_ce
++					? zend_hash_find_ptr(&scope_ce->properties_info, prop_name)
++					: NULL;
++				if (EXPECTED(pi) && !(pi->flags & ZEND_ACC_STATIC)) {
++					zval *slot = OBJ_PROP(obj, pi->offset);
++					if (Z_ISREF_P(slot) && ZEND_TYPE_IS_SET(pi->type)) {
++						ZEND_REF_DEL_TYPE_SOURCE(Z_REF_P(slot), pi);
++					}
++					zval_ptr_dtor(slot);
++					ZVAL_COPY(slot, prop_val);
++					if (Z_ISREF_P(prop_val) && ZEND_TYPE_IS_SET(pi->type)) {
++						ZEND_REF_ADD_TYPE_SOURCE(Z_REF_P(slot), pi);
++					}
++				} else {
++					/* Fallback: dynamic property or unknown name — validate first */
++					if (UNEXPECTED(memchr(ZSTR_VAL(prop_name), '\0', ZSTR_LEN(prop_name)) != NULL)) {
++						zend_value_error("deepclone_hydrate(): Argument #2 ($scoped_vars) scope \"%s\" contains an invalid property name; "
++							"use bare property names in $scoped_vars, or pass mangled keys via $mangled_vars",
++							ZSTR_VAL(scope_name));
++						EG(fake_scope) = old_scope;
++						if (scoped_owned) zval_ptr_dtor(&local_scoped);
++						if (created) zval_ptr_dtor(&obj_zval);
++						return;
++					}
++					zend_std_write_property(obj, prop_name, prop_val, NULL);
++					if (UNEXPECTED(EG(exception))) {
++						EG(fake_scope) = old_scope;
++						if (scoped_owned) zval_ptr_dtor(&local_scoped);
++						if (created) zval_ptr_dtor(&obj_zval);
++						return;
++					}
++				}
++			}
++		} ZEND_HASH_FOREACH_END();
++
++		EG(fake_scope) = old_scope;
++	} ZEND_HASH_FOREACH_END();
++
++	if (scoped_owned) zval_ptr_dtor(&local_scoped);
++	ZVAL_COPY_VALUE(return_value, &obj_zval);
++}
++
+ /* ── Module boilerplate ─────────────────────────────────────── */
+ 
+ /* Function arginfo and ext_functions[] are generated from deepclone.stub.php
+diff --git a/deepclone.stub.php b/deepclone.stub.php
+index be43fd4..3514904 100644
+--- a/deepclone.stub.php
++++ b/deepclone.stub.php
+@@ -11,7 +11,9 @@ namespace DeepClone {
+ }
+ 
+ namespace {
+-    function deepclone_to_array(mixed $value, ?array $allowedClasses = null): array {}
++    function deepclone_to_array(mixed $value, ?array $allowed_classes = null): array {}
+ 
+-    function deepclone_from_array(array $data, ?array $allowedClasses = null): mixed {}
++    function deepclone_from_array(array $data, ?array $allowed_classes = null): mixed {}
++
++    function deepclone_hydrate(object|string $object_or_class, array $scoped_vars = [], array $mangled_vars = []): object {}
+ }
+diff --git a/deepclone_arginfo.h b/deepclone_arginfo.h
+index 882fa49..082ccce 100644
+--- a/deepclone_arginfo.h
++++ b/deepclone_arginfo.h
+@@ -1,22 +1,30 @@
+-/* This is a generated file, edit the .stub.php file instead.
+- * Stub hash: 571596a6888d66145a5b0d1b8391a4fa7d88506d */
++/* This is a generated file, edit deepclone.stub.php instead.
++ * Stub hash: 6aeb61465f527b63ceb6109ecda8fbcb037879fc */
+ 
+ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_deepclone_to_array, 0, 1, IS_ARRAY, 0)
+ 	ZEND_ARG_TYPE_INFO(0, value, IS_MIXED, 0)
+-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, allowedClasses, IS_ARRAY, 1, "null")
++	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, allowed_classes, IS_ARRAY, 1, "null")
+ ZEND_END_ARG_INFO()
+ 
+ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_deepclone_from_array, 0, 1, IS_MIXED, 0)
+ 	ZEND_ARG_TYPE_INFO(0, data, IS_ARRAY, 0)
+-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, allowedClasses, IS_ARRAY, 1, "null")
++	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, allowed_classes, IS_ARRAY, 1, "null")
++ZEND_END_ARG_INFO()
++
++ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_deepclone_hydrate, 0, 1, IS_OBJECT, 0)
++	ZEND_ARG_TYPE_MASK(0, object_or_class, MAY_BE_OBJECT|MAY_BE_STRING, NULL)
++	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, scoped_vars, IS_ARRAY, 0, "[]")
++	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, mangled_vars, IS_ARRAY, 0, "[]")
+ ZEND_END_ARG_INFO()
+ 
+ ZEND_FUNCTION(deepclone_to_array);
+ ZEND_FUNCTION(deepclone_from_array);
++ZEND_FUNCTION(deepclone_hydrate);
+ 
+ static const zend_function_entry ext_functions[] = {
+ 	ZEND_FE(deepclone_to_array, arginfo_deepclone_to_array)
+ 	ZEND_FE(deepclone_from_array, arginfo_deepclone_from_array)
++	ZEND_FE(deepclone_hydrate, arginfo_deepclone_hydrate)
+ 	ZEND_FE_END
+ };
+ 
+diff --git a/php_deepclone.h b/php_deepclone.h
+index 43c4083..764901f 100644
+--- a/php_deepclone.h
++++ b/php_deepclone.h
+@@ -4,6 +4,6 @@
+ extern zend_module_entry deepclone_module_entry;
+ #define phpext_deepclone_ptr &deepclone_module_entry
+ 
+-#define PHP_DEEPCLONE_VERSION "0.1.1"
++#define PHP_DEEPCLONE_VERSION "0.2.0"
+ 
+ #endif
+diff --git a/tests/deepclone_hydrate.phpt b/tests/deepclone_hydrate.phpt
+new file mode 100644
+index 0000000..cbe529e
+--- /dev/null
++++ b/tests/deepclone_hydrate.phpt
+@@ -0,0 +1,383 @@
++--TEST--
++deepclone_hydrate() instantiates and hydrates objects with scoped properties
++--EXTENSIONS--
++deepclone
++--FILE--
++<?php
++
++class Base {
++    private string $secret = '';
++    public function getSecret(): string { return $this->secret; }
++}
++
++class Child extends Base {
++    protected int $num = 0;
++    public string $pub = '';
++    public function getNum(): int { return $this->num; }
++}
++
++class Foo {
++    protected $prot;
++    private $priv;
++    public readonly int $ro;
++}
++
++#[AllowDynamicProperties]
++class Bar extends Foo {
++    private $priv;
++}
++
++// === Scoped vars (2nd parameter) ===
++
++// Instantiate from class name
++$obj = deepclone_hydrate('Child', [
++    'Base' => ['secret' => 'hidden'],
++    'Child' => ['num' => 42],
++    'stdClass' => ['pub' => 'visible'],
++]);
++var_dump($obj instanceof Child);
++var_dump($obj->getSecret() === 'hidden');
++var_dump($obj->getNum() === 42);
++var_dump($obj->pub === 'visible');
++
++// Hydrate existing object
++$existing = new Child();
++$result = deepclone_hydrate($existing, [
++    'Base' => ['secret' => 'updated'],
++    'stdClass' => ['pub' => 'changed'],
++]);
++var_dump($result === $existing);
++var_dump($result->getSecret() === 'updated');
++var_dump($result->pub === 'changed');
++var_dump($result->getNum() === 0); // untouched
++
++// stdClass
++$o = deepclone_hydrate('stdClass', ['stdClass' => ['x' => 1, 'y' => 'hi']]);
++var_dump($o->x === 1);
++var_dump($o->y === 'hi');
++
++// SplObjectStorage — "\0" key convention
++$s = new SplObjectStorage();
++$o1 = new stdClass(); $o1->name = 'a';
++$o2 = new stdClass(); $o2->name = 'b';
++$result = deepclone_hydrate($s, ['stdClass' => ["\0" => [$o1, 'info1', $o2, 'info2']]]);
++var_dump($result === $s);
++var_dump($result->count() === 2);
++$result->rewind();
++var_dump($result->current() === $o1);
++var_dump($result->getInfo() === 'info1');
++
++// ArrayObject — "\0" key convention
++$ao = deepclone_hydrate('ArrayObject', [
++    'stdClass' => ["\0" => [['x' => 1, 'y' => 2], ArrayObject::ARRAY_AS_PROPS]],
++]);
++var_dump($ao instanceof ArrayObject);
++var_dump($ao['x'] === 1);
++var_dump($ao->getFlags() === ArrayObject::ARRAY_AS_PROPS);
++
++// ArrayIterator — "\0" key convention
++$ai = deepclone_hydrate('ArrayIterator', [
++    'stdClass' => ["\0" => [['a', 'b', 'c']]],
++]);
++var_dump($ai instanceof ArrayIterator);
++var_dump(count($ai) === 3);
++
++// === Mangled vars (3rd parameter) ===
++
++// stdClass with flat properties
++$o = deepclone_hydrate('stdClass', [], ['p' => 123]);
++var_dump($o->p === 123);
++
++// Case-insensitive class name
++$o = deepclone_hydrate('STDcLASS', [], ['p' => 123]);
++var_dump($o->p === 123);
++
++// ArrayObject via "\0" key in $mangled_vars
++$ao = deepclone_hydrate('ArrayObject', [], ["\0" => [[123]]]);
++var_dump($ao[0] === 123);
++
++// ArrayObject via "\0" key in $scoped_vars (own class as scope)
++$ao = deepclone_hydrate('ArrayObject', ['ArrayObject' => ["\0" => [[456]]]]);
++var_dump($ao[0] === 456);
++
++// SplObjectStorage via "\0" key in $mangled_vars
++$o1 = new stdClass();
++$s = deepclone_hydrate('SplObjectStorage', [], ["\0" => [$o1, 'data']]);
++var_dump($s->count() === 1);
++
++// SplObjectStorage via "\0" key in $scoped_vars
++$o1 = new stdClass();
++$s = deepclone_hydrate('SplObjectStorage', ['SplObjectStorage' => ["\0" => [$o1, 'info']]]);
++var_dump($s->count() === 1);
++
++// Inheritance with mixed $properties + $scopedProperties
++$actual = (array) deepclone_hydrate('Bar', [Foo::class => ['priv' => 234]], [
++    'dyn' => 456, 'ro' => 567, 'prot' => 345, 'priv' => 123,
++]);
++ksort($actual);
++$expected = [
++    "\0*\0prot" => 345,
++    "\0Bar\0priv" => 123,
++    "\0Foo\0priv" => 234,
++    'dyn' => 456,
++    'ro' => 567,
++];
++var_dump($actual === $expected);
++
++// Mangled key format in $properties
++$actual = (array) deepclone_hydrate('Bar', [], [
++    "\0*\0prot" => 345,
++    "\0Bar\0priv" => 123,
++    "\0Foo\0priv" => 234,
++    'dyn' => 456,
++    'ro' => 567,
++]);
++ksort($actual);
++var_dump($actual === $expected);
++
++// Exception trace (internal class hydration)
++$e = deepclone_hydrate('Exception', [], ['trace' => [234]]);
++var_dump($e->getTrace() === [234]);
++
++// Readonly: direct slot write overwrites even initialized readonly
++class ReadonlyClass {
++    public string $status = 'new';
++    private readonly int $value;
++    public function __construct(int $value) { $this->value = $value; }
++    public function getValue(): int { return $this->value; }
++}
++$obj = new ReadonlyClass(123);
++$obj = deepclone_hydrate($obj, [], ['value' => 456, 'status' => 'hydrated']);
++var_dump($obj->getValue() === 456);
++var_dump($obj->status === 'hydrated');
++
++// Readonly: uninitialized → sets value
++$obj = deepclone_hydrate('ReadonlyClass', ['ReadonlyClass' => ['value' => 456]]);
++var_dump($obj->getValue() === 456);
++
++// PHP references preservation
++$a = 1;
++$props = ['p1' => &$a, 'p2' => &$a];
++$obj = deepclone_hydrate('stdClass', [], $props);
++var_dump($obj->p1 === 1 && $obj->p2 === 1);
++$a = 2;
++var_dump($obj->p1 === 2 && $obj->p2 === 2);
++
++// References in scoped properties
++$v = 'hello';
++$obj = deepclone_hydrate('stdClass', ['stdClass' => ['x' => &$v, 'y' => &$v]]);
++$v = 'world';
++var_dump($obj->x === 'world' && $obj->y === 'world');
++
++// === Grandparent private (3-level inheritance) ===
++class GP { private string $secret = ''; public function getSecret(): string { return $this->secret; } }
++class P extends GP { private int $mid = 0; public function getMid(): int { return $this->mid; } }
++class C extends P { public string $pub = ''; }
++
++$o = deepclone_hydrate('C', [], ["\0GP\0secret" => 'gp_val', "\0P\0mid" => 42, 'pub' => 'hi']);
++var_dump($o->getSecret() === 'gp_val');
++var_dump($o->getMid() === 42);
++var_dump($o->pub === 'hi');
++
++// === Both $scopedProperties and $properties writing same property ===
++// $properties are resolved and merged into scopedProperties, overwriting same scope+name
++$o = deepclone_hydrate('stdClass', ['stdClass' => ['x' => 'from_scoped']], ['x' => 'from_flat']);
++var_dump($o->x === 'from_flat');
++
++// === Error cases ===
++
++// Unknown class
++try {
++    deepclone_hydrate('NoSuchClass99', []);
++} catch (\DeepClone\ClassNotFoundException $e) {
++    var_dump(str_contains($e->getMessage(), 'NoSuchClass99'));
++}
++
++// Abstract class
++try {
++    deepclone_hydrate('SplHeap', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(str_contains($e->getMessage(), 'SplHeap'));
++}
++
++// Interface
++try {
++    deepclone_hydrate('Throwable', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(str_contains($e->getMessage(), 'Throwable'));
++}
++
++// Enum
++enum HydrateColor { case Red; }
++try {
++    deepclone_hydrate('HydrateColor', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(str_contains($e->getMessage(), 'HydrateColor'));
++}
++
++// Trait
++trait HydrateTrait {}
++try {
++    deepclone_hydrate('HydrateTrait', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(str_contains($e->getMessage(), 'HydrateTrait'));
++}
++
++// Reflector subclass (internal, cannot function without constructor)
++try {
++    deepclone_hydrate('ReflectionClass', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(str_contains($e->getMessage(), 'ReflectionClass'));
++}
++
++// Closure (internal final with create_object)
++try {
++    deepclone_hydrate('Closure', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(str_contains($e->getMessage(), 'Closure'));
++}
++
++// SplFileInfo (internal, serialize fails)
++try {
++    deepclone_hydrate('SplFileInfo', []);
++} catch (\DeepClone\NotInstantiableException $e) {
++    var_dump(str_contains($e->getMessage(), 'SplFileInfo'));
++}
++
++// Bad type
++try {
++    deepclone_hydrate(123, []);
++} catch (\TypeError $e) {
++    var_dump(str_contains($e->getMessage(), 'must be of type object|string'));
++}
++
++// Integer key in $mangled_vars → ValueError
++try {
++    deepclone_hydrate('stdClass', [], [0 => 'val']);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'string keys'));
++}
++
++// Non-array in $scoped_vars → ValueError
++try {
++    deepclone_hydrate('stdClass', ['stdClass' => 'not-array']);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'array values'));
++}
++
++// NUL byte in property name inside scoped array → ValueError
++try {
++    deepclone_hydrate('stdClass', ['stdClass' => ["foo\0bar" => 'val']]);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'invalid property name'));
++}
++
++// NUL byte in mangled key property portion → ValueError
++try {
++    deepclone_hydrate('stdClass', [], ["\0*\0foo\0bar" => 'val']);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'invalid mangled key'));
++}
++
++// Integer key inside scoped array → ValueError
++try {
++    deepclone_hydrate('stdClass', ['stdClass' => [0 => 'val']]);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'string keys'));
++}
++
++// Mangled key inside scoped array → ValueError
++try {
++    deepclone_hydrate('stdClass', ['stdClass' => ["\0stdClass\0x" => 'val']]);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'mangled key'));
++}
++
++// Interface as scope → ValueError
++interface HydrateIface {}
++class HydrateImpl implements HydrateIface { public string $x = ''; }
++try {
++    deepclone_hydrate('HydrateImpl', ['HydrateIface' => ['x' => 'hello']]);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'not a parent'));
++}
++
++// Unrelated scope → ValueError
++try {
++    deepclone_hydrate('stdClass', ['SplHeap' => ['x' => 1]]);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'not a parent'));
++}
++
++// Non-existing scope → ValueError (no autoloader triggered)
++try {
++    deepclone_hydrate('stdClass', ['NonExistent' => ['x' => 1]]);
++} catch (\ValueError $e) {
++    var_dump(str_contains($e->getMessage(), 'not a parent'));
++}
++
++// No arguments (just instantiate)
++$o = deepclone_hydrate('stdClass');
++var_dump($o instanceof stdClass);
++
++echo "Done\n";
++?>
++--EXPECT--
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++bool(true)
++Done

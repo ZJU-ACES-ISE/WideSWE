@@ -1,0 +1,34 @@
+profiles:
+  sentry_javascript_bundler_plugins-hidden:
+    repo: sentry-javascript-bundler-plugins
+    workdir: repos/getsentry/sentry-javascript-bundler-plugins
+    command: yarn workspace @sentry/babel-plugin-component-annotate vitest run test/sentry-label.test.ts
+      --reporter=default --reporter=junit --outputFile=/workspace/.ecosyncbench/test-reports/sentry-javascript-bundler-plugins-hidden.xml
+    status: implemented
+    dependency_image: ecosyncbench/base/node:22-bookworm
+    persist_node_modules: true
+    persist_node_modules_paths:
+    - .
+    - packages/babel-plugin-component-annotate
+    test_files:
+    - packages/babel-plugin-component-annotate/test/sentry-label.test.ts
+    patched_files:
+    - packages/babel-plugin-component-annotate/test/sentry-label.test.ts
+  sentry_react_native-hidden:
+    repo: sentry-react-native
+    workdir: repos/getsentry/sentry-react-native
+    command: yarn workspace @sentry/react-native jest --config jest.config.tools.js
+      test/tools/sentryBabelTransformer.test.ts --runInBand --ci --json --outputFile=/workspace/.ecosyncbench/test-reports/sentry-react-native-hidden.json
+    public_smoke_command: if [ ! -x packages/core/node_modules/.bin/jest ]; then yarn
+      install --immutable; fi; yarn workspace @sentry/react-native jest --config jest.config.tools.js
+      test/tools/sentryBabelTransformer.test.ts --runInBand --ci --json --outputFile=/workspace/.ecosyncbench/test-reports/sentry-react-native-hidden.json
+    status: implemented
+    dependency_image: ecosyncbench/base/node:18-bookworm-slim
+    persist_node_modules: true
+    persist_node_modules_paths:
+    - .
+    - packages/core
+    test_files:
+    - packages/core/test/tools/sentryBabelTransformer.test.ts
+    patched_files:
+    - packages/core/test/tools/sentryBabelTransformer.test.ts

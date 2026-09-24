@@ -1,0 +1,120 @@
+diff --git a/test/ecosync-contract.test.js b/test/ecosync-contract.test.js
+new file mode 100644
+index 0000000..e2a8d54
+--- /dev/null
++++ b/test/ecosync-contract.test.js
+@@ -0,0 +1,114 @@
++import { expect, test } from 'vitest';
++
++async function parse_source(source, jsx = false) {
++	const [{ Parser }, { tsPlugin }] = await Promise.all([
++		import('acorn'),
++		import('@sveltejs/acorn-typescript')
++	]);
++	const comments = [];
++	const parser = Parser.extend(tsPlugin({ jsx }));
++	const ast = parser.parse(source, {
++		ecmaVersion: 'latest',
++		sourceType: 'module',
++		locations: true,
++		onComment: comments
++	});
++	return { ast, comments, parser };
++}
++
++test('contract: custom node visitors write output and visit children', async () => {
++	const { print } = await import('../src/index.js');
++	const result = print(
++		{
++			type: 'List',
++			children: [
++				{ type: 'Word', value: 'alpha' },
++				{ type: 'Word', value: 'beta' }
++			]
++		},
++		{
++			List(node, context) {
++				context.write('<');
++				for (const child of node.children) context.visit(child);
++				context.write('>');
++			},
++			Word(node, context) {
++				if (!context.empty()) context.write(' ');
++				context.write(node.value);
++			}
++		}
++	);
++
++	expect(result.code).toBe('< alpha beta>');
++	expect(result.map).toBeDefined();
++});
++
++test('contract: fallback visitor can wrap arbitrary node types', async () => {
++	const { print } = await import('../src/index.js');
++	const result = print(
++		{
++			type: 'List',
++			children: [{ type: 'Foo' }, { type: 'Bar' }]
++		},
++		{
++			_(node, context, visit) {
++				context.write('[');
++				visit(node);
++				context.write(']');
++			},
++			List(node, context) {
++				for (const child of node.children) context.visit(child);
++			},
++			Foo(_node, context) {
++				context.write('foo');
++			},
++			Bar(_node, context) {
++				context.write('bar');
++			}
++		}
++	);
++
++	expect(result.code).toBe('[[foo][bar]]');
++});
++
++test('contract: TypeScript language preserves syntax, comments, quote option and source map', async () => {
++	const [{ print }, { default: ts }] = await Promise.all([
++		import('../src/index.js'),
++		import('../src/languages/ts/index.js')
++	]);
++	const source = `// account marker\ninterface Account { name: string }\nconst account: Account = { name: 'Ada' };`;
++	const { ast, comments, parser } = await parse_source(source);
++	for (const node of ast.body) {
++		if (node.type === 'VariableDeclaration') {
++			delete node.declarations[0].init.properties[0].value.raw;
++		}
++	}
++	const result = print(ast, ts({ comments, quotes: 'double' }), {
++		sourceMapSource: 'input.ts',
++		sourceMapContent: source
++	});
++
++	expect(() => parser.parse(result.code, { ecmaVersion: 'latest', sourceType: 'module' })).not.toThrow();
++	expect(result.code).toContain('interface');
++	expect(result.code).toContain('Account');
++	expect(result.code).toContain('"Ada"');
++	expect(result.code).toContain('account marker');
++	const map = JSON.parse(result.map.toString());
++	expect(map.sources).toEqual(['input.ts']);
++	expect(map.sourcesContent).toEqual([source]);
++});
++
++test('contract: experimental TSX language prints parseable JSX', async () => {
++	const [{ print }, { default: tsx }] = await Promise.all([
++		import('../src/index.js'),
++		import('../src/languages/tsx/index.js')
++	]);
++	const source = `const view = <section title="hello">{value}</section>;`;
++	const { ast, comments, parser } = await parse_source(source, true);
++	const result = print(ast, tsx({ comments }));
++
++	expect(() => parser.parse(result.code, { ecmaVersion: 'latest', sourceType: 'module' })).not.toThrow();
++	expect(result.code).toContain('<section');
++	expect(result.code).toContain('{value}');
++	expect(result.code).toContain('</section>');
++});

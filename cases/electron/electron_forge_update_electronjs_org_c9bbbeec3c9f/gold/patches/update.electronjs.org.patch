@@ -1,0 +1,576 @@
+diff --git a/README.md b/README.md
+index fc74dfb..4e0a397 100644
+--- a/README.md
++++ b/README.md
+@@ -77,9 +77,12 @@ The following API endpoints are available:
+ 
+ - `/:owner/:repo/:platform/:version`
+ - `/:owner/:repo/:platform-:arch/:version`
++- `/:owner/:repo/:platform/:format/:version`
++- `/:owner/:repo/:platform-:arch/:format/:version`
+ - `/:owner/:repo/:platform/:version/RELEASES`
+ 
+ These API endpoints support the query path arguments as defined below:
++
+ - `:owner` - GitHub repository owner (organization or user)
+ - `:repo` - GitHub repository name
+ - `:platform` - Platform type
+@@ -88,6 +91,9 @@ These API endpoints support the query path arguments as defined below:
+ - `:arch` - Architecture type
+   - Windows: `x64`, `ia32`, `arm64`
+   - macOS: `x64`, `arm64`, `universal`
++- `:format` - (Optional) Update format type
++  - `squirrel` - Squirrel.Windows (default for Windows when omitted)
++  - `msix` - MSIX auto-update (available on Electron 41+)
+ - `:version` - Semantic Versioning (SemVer) compatible application version number
+   
+ 
+@@ -98,13 +104,16 @@ This project supports specific naming conventions for GitHub Releases assets.
+ The following heuristics are used to identify update availability for a specific platform and architecture:
+ 
+ ### macOS Assets
++
+ - Asset must be a `.zip` file.
+ - Asset name must include one of the following platform identifiers: `-mac`, `-darwin`, or `-osx`.
+ - Asset name may specify the architecture (if not specified, will default to `-x64`):
+   - `-arm64` for Apple Silicon.
+   - `-x64` for Intel-based macOS.
+-  -  `-universal` for Universal binaries.
++  - `-universal` for Universal binaries.
++
+ **Example asset names:**
++
+ - `app-mac-arm64-0.0.1.zip`
+ - `app-mac-arm64.zip`
+ - `app-0.0.1-osx-x64.zip`
+@@ -112,7 +121,8 @@ The following heuristics are used to identify update availability for a specific
+ - `app-darwin-universal.zip`
+ - `app-mac.zip` (no architecture specified - treated as `-x64`) 
+ 
+-### Windows Assets
++### Windows Assets (Squirrel)
++
+ - Asset must be a `.zip` or `.exe` file.
+ - Asset name must include the `-win32` platform identifier.
+ - Asset name may specify the architecture (if not specified, will default to `-x64`):
+@@ -122,6 +132,7 @@ The following heuristics are used to identify update availability for a specific
+ - `.exe` files without specific architecture tags or the `-win32` platform identifier are assumed to be `-x64` by default.  
+ 
+ **Example asset names:**
++
+ - `app-win32-ia32-0.0.1.zip`
+ - `app-win32-ia32.zip`
+ - `app-0.0.1-win32-x64.zip`
+@@ -132,6 +143,34 @@ The following heuristics are used to identify update availability for a specific
+ - `app-win32.exe` (no architecture specified - treated as `-x64`)  
+ - `app-installer.exe` (generic `.exe` file with no architecture or platform identifier specified - treated as `-x64`) 
+ 
++### Windows Assets (MSIX)
++
++- Asset must be a `.msix` file.
++- Asset name must include the `-win32` platform identifier.
++- Asset name may specify the architecture (if not specified, will default to `-x64`):
++  - `-x64` for 64-bit Windows.
++  - `-arm64` for ARM-based Windows.
++- `.msix` files without specific architecture tags or the `-win32` platform identifier are assumed to be `-x64` by default.
++
++**Example asset names:**
++
++- `app-win32-x64.msix`
++- `app-1.0.0-win32-x64.msix`
++- `app-win32-arm64.msix`
++- `app-win32.msix` (no architecture specified - treated as `-x64`)
++- `app-installer.msix` (generic `.msix` file with no architecture or platform identifier specified - treated as `-x64`)
++
++To use MSIX updates, include the `msix` format segment in the update feed URL:
++
++```javascript
++const server = 'https://update.electronjs.org'
++const feed = `${server}/OWNER/REPO/${process.platform}-${process.arch}/msix/${app.getVersion()}`
++
++autoUpdater.setFeedURL(feed)
++```
++
++The MSIX updater returns the same JSON format as macOS (`{ name, notes, url }`) and does not use the `RELEASES` endpoint.
++
+ ## Development
+ 
+ You'll first need to have a running Redis server. There are two options:
+diff --git a/src/asset-platform.ts b/src/asset-platform.ts
+index 7aec2d4..56c2ac8 100644
+--- a/src/asset-platform.ts
++++ b/src/asset-platform.ts
+@@ -8,6 +8,17 @@ export const assetPlatform = (fileName: string): PlatformArch | false => {
+     return PLATFORM_ARCH.DARWIN_X64;
+   }
+ 
++  // Handle all .msix files early so they don't fall through to Squirrel detection.
++  // Only match assets with an explicit -win32-(x64|arm64) prefix.
++  if (/.*-win32-(x64|arm64).*\.msix$/i.test(fileName)) {
++    if (/-arm64/.test(fileName)) return PLATFORM_ARCH.WIN_ARM64_MSIX;
++
++    return PLATFORM_ARCH.WIN_X64_MSIX;
++  }
++
++  // Reject any other .msix files (ia32, generic, etc.)
++  if (/\.msix$/i.test(fileName)) return false;
++
+   if (/.*-win32-(ia32|x64|arm64).*$/i.test(fileName)) {
+     if (/-ia32/.test(fileName)) return PLATFORM_ARCH.WIN_IA32;
+     if (/-arm64/.test(fileName)) return PLATFORM_ARCH.WIN_ARM64;
+diff --git a/src/constants.ts b/src/constants.ts
+index 9c02d8b..c33a56d 100644
+--- a/src/constants.ts
++++ b/src/constants.ts
+@@ -10,11 +10,35 @@ export const PLATFORM_ARCH = {
+   WIN_X64: 'win32-x64',
+   WIN_IA32: 'win32-ia32',
+   WIN_ARM64: 'win32-arm64',
++  WIN_X64_MSIX: 'win32-x64-msix',
++  WIN_ARM64_MSIX: 'win32-arm64-msix',
++} as const;
++
++export const UPDATE_FORMAT = {
++  SQUIRREL: 'squirrel',
++  MSIX: 'msix',
+ } as const;
+ 
+ export type Platform = (typeof PLATFORM)[keyof typeof PLATFORM];
+ export type PlatformArch = (typeof PLATFORM_ARCH)[keyof typeof PLATFORM_ARCH];
++export type UpdateFormat = (typeof UPDATE_FORMAT)[keyof typeof UPDATE_FORMAT];
+ 
+ export const ENV = process.env.NODE_ENV || 'development';
+ 
+-export const PLATFORM_ARCHS: readonly PlatformArch[] = Object.values(PLATFORM_ARCH);
++// Base platform-archs used for URL validation (excludes internal MSIX variants)
++export const PLATFORM_ARCHS: readonly PlatformArch[] = (
++  Object.values(PLATFORM_ARCH) as PlatformArch[]
++).filter((v) => !v.endsWith('-msix'));
++
++export const UPDATE_FORMATS: readonly UpdateFormat[] = Object.values(UPDATE_FORMAT);
++
++type SquirrelWindowsPlatform =
++  | typeof PLATFORM_ARCH.WIN_X64
++  | typeof PLATFORM_ARCH.WIN_IA32
++  | typeof PLATFORM_ARCH.WIN_ARM64;
++type MsixPlatform = typeof PLATFORM_ARCH.WIN_X64_MSIX | typeof PLATFORM_ARCH.WIN_ARM64_MSIX;
++
++export const SQUIRREL_TO_MSIX: Partial<Record<SquirrelWindowsPlatform, MsixPlatform>> = {
++  [PLATFORM_ARCH.WIN_X64]: PLATFORM_ARCH.WIN_X64_MSIX,
++  [PLATFORM_ARCH.WIN_ARM64]: PLATFORM_ARCH.WIN_ARM64_MSIX,
++};
+diff --git a/src/updates.ts b/src/updates.ts
+index 9e728c9..0488990 100644
+--- a/src/updates.ts
++++ b/src/updates.ts
+@@ -6,7 +6,17 @@ import { pino } from 'pino';
+ import requestIp from 'request-ip';
+ 
+ import { assetPlatform } from './asset-platform.js';
+-import { PLATFORM, PLATFORM_ARCH, PLATFORM_ARCHS, ENV, type PlatformArch } from './constants.js';
++import {
++  PLATFORM,
++  PLATFORM_ARCH,
++  PLATFORM_ARCHS,
++  UPDATE_FORMAT,
++  UPDATE_FORMATS,
++  SQUIRREL_TO_MSIX,
++  ENV,
++  type PlatformArch,
++  type UpdateFormat,
++} from './constants.js';
+ 
+ const log = pino({
+   level: process.env.NODE_ENV === 'test' ? 'error' : 'info',
+@@ -94,25 +104,69 @@ export default class Updates {
+ 
+   async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+     const segs = (req.url || '').split(/[/?]/).filter(Boolean);
+-    const [account, repository, , version, file] = segs;
++    const [account, repository] = segs;
+     let platform = segs[2];
+ 
+     if (platform === PLATFORM.WIN32) platform = PLATFORM_ARCH.WIN_X64;
+     if (platform === PLATFORM.DARWIN) platform = PLATFORM_ARCH.DARWIN_X64;
+ 
+-    if (!account || !repository || !platform || !version) {
++    // Validate platform before parsing format
++    if (!account || !repository || !platform) {
+       redirect(res, 'https://github.com/electron/update.electronjs.org');
++      return;
+     } else if (!PLATFORM_ARCHS.includes(platform as PlatformArch)) {
+       const message = `Unsupported platform: "${platform}". Supported: ${PLATFORM_ARCHS.join(
+         ', ',
+       )}.`;
+       notFound(res, message);
++      return;
++    }
++
++    // Detect optional format segment: /:platform/:format/:version
++    // If segs[3] is a known update format, it's the format param;
++    // otherwise it's the version (existing behavior).
++    let format: UpdateFormat | undefined;
++    let version: string | undefined;
++    let file: string | undefined;
++
++    if (segs[3] && UPDATE_FORMATS.includes(segs[3] as UpdateFormat)) {
++      format = segs[3] as UpdateFormat;
++      version = segs[4];
++      file = segs[5];
++    } else {
++      version = segs[3];
++      file = segs[4];
++    }
++
++    // Map win32 platform to MSIX variant when format is "msix"
++    if (format === UPDATE_FORMAT.MSIX) {
++      const msixPlatform = SQUIRREL_TO_MSIX[platform as keyof typeof SQUIRREL_TO_MSIX];
++      if (msixPlatform) {
++        platform = msixPlatform;
++      } else {
++        badRequest(
++          res,
++          `MSIX format is not supported for platform "${platform}". MSIX is available for: win32-x64, win32-arm64.`,
++        );
++        return;
++      }
++    }
++
++    if (!version) {
++      redirect(res, 'https://github.com/electron/update.electronjs.org');
+     } else if (version && !semver.valid(version)) {
+       badRequest(res, `Invalid SemVer: "${version}"`);
+     } else if (file === 'RELEASES') {
++      if (format === UPDATE_FORMAT.MSIX) {
++        notFound(
++          res,
++          'The RELEASES endpoint is not available for MSIX updates. MSIX uses JSON responses from the base update URL.',
++        );
++        return;
++      }
+       await this.handleReleases(res, account, repository, platform as PlatformArch, version);
+     } else {
+-      await this.handleUpdate(res, account, repository, platform as PlatformArch, version);
++      await this.handleUpdate(res, account, repository, platform as PlatformArch, version, format);
+     }
+   }
+ 
+@@ -134,6 +188,7 @@ export default class Updates {
+     repository: string,
+     platform: PlatformArch,
+     version: string,
++    format?: UpdateFormat,
+   ): Promise<void> {
+     let latest = await this.cachedGetLatest(account, repository, platform, version);
+ 
+@@ -153,9 +208,17 @@ export default class Updates {
+     }
+ 
+     if (!latest) {
+-      const message = platform.includes(PLATFORM.DARWIN)
+-        ? 'No updates found (needs asset matching .*-(mac|darwin|osx).*.zip in public repository)'
+-        : 'No updates found (needs asset containing .*-win32-(x64|ia32|arm64) or .exe in public repository)';
++      let message: string;
++      if (platform.includes(PLATFORM.DARWIN)) {
++        message =
++          'No updates found (needs asset matching .*-(mac|darwin|osx).*.zip in public repository)';
++      } else if (format === UPDATE_FORMAT.MSIX) {
++        message =
++          'No updates found (needs asset matching .*-win32-(x64|arm64).*.msix in public repository)';
++      } else {
++        message =
++          'No updates found (needs asset containing .*-win32-(x64|ia32|arm64) or .exe in public repository)';
++      }
+       notFound(res, message);
+     } else if (semver.lte(latest.version, version)) {
+       log.debug({ account, repository, platform, version }, 'up to date');
+@@ -283,13 +346,6 @@ export default class Updates {
+             notes: release.body,
+           };
+         }
+-        if (hasAllAssets(latest)) {
+-          break;
+-        }
+-      }
+-
+-      if (hasAllAssets(latest)) {
+-        break;
+       }
+     }
+ 
+@@ -338,17 +394,6 @@ const needsSpecificReleaseTag = (
+   return null;
+ };
+ 
+-const hasAllAssets = (latest: LatestReleases): boolean => {
+-  return !!(
+-    latest[PLATFORM_ARCH.DARWIN_X64] &&
+-    latest[PLATFORM_ARCH.DARWIN_ARM64] &&
+-    latest[PLATFORM_ARCH.DARWIN_UNIVERSAL] &&
+-    latest[PLATFORM_ARCH.WIN_X64] &&
+-    latest[PLATFORM_ARCH.WIN_IA32] &&
+-    latest[PLATFORM_ARCH.WIN_ARM64]
+-  );
+-};
+-
+ const hasAnyAsset = (latest: LatestReleases): boolean => {
+   return !!(
+     latest[PLATFORM_ARCH.DARWIN_X64] ||
+@@ -356,7 +401,9 @@ const hasAnyAsset = (latest: LatestReleases): boolean => {
+     latest[PLATFORM_ARCH.DARWIN_UNIVERSAL] ||
+     latest[PLATFORM_ARCH.WIN_X64] ||
+     latest[PLATFORM_ARCH.WIN_IA32] ||
+-    latest[PLATFORM_ARCH.WIN_ARM64]
++    latest[PLATFORM_ARCH.WIN_ARM64] ||
++    latest[PLATFORM_ARCH.WIN_X64_MSIX] ||
++    latest[PLATFORM_ARCH.WIN_ARM64_MSIX]
+   );
+ };
+ 
+diff --git a/test/asset-platform.test.ts b/test/asset-platform.test.ts
+index 61e729f..fce0dc7 100644
+--- a/test/asset-platform.test.ts
++++ b/test/asset-platform.test.ts
+@@ -72,6 +72,42 @@ describe('assetPlatform()', () => {
+         name: 'osx.zip',
+         platform: false,
+       },
++      {
++        name: 'app-1.0.0-win32-x64.msix',
++        platform: PLATFORM_ARCH.WIN_X64_MSIX,
++      },
++      {
++        name: 'app-1.0.0-win32-arm64.msix',
++        platform: PLATFORM_ARCH.WIN_ARM64_MSIX,
++      },
++      {
++        name: 'app-win32-x64-setup.msix',
++        platform: PLATFORM_ARCH.WIN_X64_MSIX,
++      },
++      {
++        name: 'app-win32-arm64.msix',
++        platform: PLATFORM_ARCH.WIN_ARM64_MSIX,
++      },
++      {
++        name: 'app-installer.msix',
++        platform: false,
++      },
++      {
++        name: 'win32.msix',
++        platform: false,
++      },
++      {
++        name: 'win32-arm64.msix',
++        platform: false,
++      },
++      {
++        name: 'app-win32-ia32.msix',
++        platform: false,
++      },
++      {
++        name: 'app-1.0.0-win32-ia32.msix',
++        platform: false,
++      },
+     ];
+ 
+     for (const release of releases) {
+diff --git a/test/msix.test.ts b/test/msix.test.ts
+new file mode 100644
+index 0000000..3e023a4
+--- /dev/null
++++ b/test/msix.test.ts
+@@ -0,0 +1,194 @@
++import http from 'node:http';
++import nock from 'nock';
++import { describe, it, expect, beforeAll, afterAll } from 'vitest';
++import { createServer } from './helpers/create-server.js';
++
++nock.disableNetConnect();
++nock.enableNetConnect('localhost');
++
++// Repo with both Squirrel (.exe) and MSIX assets
++nock('https://api.github.com')
++  .get('/repos/owner/repo-msix/releases?per_page=100')
++  .reply(200, [
++    {
++      name: 'name',
++      tag_name: '1.0.0',
++      body: 'notes',
++      assets: [
++        {
++          name: 'app-1.0.0-win32-x64-setup.exe',
++          browser_download_url: 'app-1.0.0-win32-x64-setup.exe',
++        },
++        {
++          name: 'app-1.0.0-win32-ia32-setup.exe',
++          browser_download_url: 'app-1.0.0-win32-ia32-setup.exe',
++        },
++        {
++          name: 'app-1.0.0-win32-arm64-setup.exe',
++          browser_download_url: 'app-1.0.0-win32-arm64-setup.exe',
++        },
++        {
++          name: 'app-1.0.0-win32-x64.msix',
++          browser_download_url: 'app-1.0.0-win32-x64.msix',
++        },
++        {
++          name: 'app-1.0.0-win32-arm64.msix',
++          browser_download_url: 'app-1.0.0-win32-arm64.msix',
++        },
++        {
++          name: 'app-mac.zip',
++          browser_download_url: 'app-mac.zip',
++        },
++      ],
++    },
++  ])
++  .get('/repos/owner/repo-msix-only/releases?per_page=100')
++  .reply(200, [
++    {
++      name: 'name',
++      tag_name: '1.0.0',
++      body: 'notes',
++      assets: [
++        {
++          name: 'app-1.0.0-win32-x64.msix',
++          browser_download_url: 'app-1.0.0-win32-x64.msix',
++        },
++      ],
++    },
++  ]);
++
++nock('https://github.com')
++  .get('/owner/repo-msix/releases/download/1.0.0/RELEASES')
++  .times(4)
++  .reply(200, 'HASH name.nupkg NUMBER');
++
++describe('MSIX Updates', () => {
++  let server: http.Server;
++  let address: string;
++
++  beforeAll(async () => {
++    const result = await createServer();
++    server = result.server;
++    address = result.address;
++  });
++
++  afterAll(() => {
++    server.close();
++  });
++
++  describe('format parameter routing', () => {
++    it('win32-x64/msix returns MSIX asset', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32-x64/msix/0.0.0`);
++      expect(res.status).toBe(200);
++      const body = (await res.json()) as any;
++      expect(body.url).toBe('app-1.0.0-win32-x64.msix');
++      expect(body.name).toBe('name');
++      expect(body.notes).toBe('notes');
++    });
++
++    it('win32-arm64/msix returns correct arch MSIX asset', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32-arm64/msix/0.0.0`);
++      expect(res.status).toBe(200);
++      const body = (await res.json()) as any;
++      expect(body.url).toBe('app-1.0.0-win32-arm64.msix');
++    });
++
++    it('win32/msix defaults to x64 MSIX', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32/msix/0.0.0`);
++      expect(res.status).toBe(200);
++      const body = (await res.json()) as any;
++      expect(body.url).toBe('app-1.0.0-win32-x64.msix');
++    });
++  });
++
++  describe('204 when up to date', () => {
++    it('returns 204 when MSIX version is current', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32-x64/msix/1.0.0`);
++      expect(res.status).toBe(204);
++    });
++  });
++
++  describe('RELEASES not available for MSIX', () => {
++    it('returns 404 with informative message for RELEASES endpoint with MSIX format', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32-x64/msix/0.0.0/RELEASES`);
++      expect(res.status).toBe(404);
++      const body = await res.text();
++      expect(body).toBe(
++        'The RELEASES endpoint is not available for MSIX updates. MSIX uses JSON responses from the base update URL.',
++      );
++    });
++  });
++
++  describe('backward compatibility', () => {
++    it('win32-x64 without format still returns Squirrel asset', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32-x64/0.0.0`);
++      expect(res.status).toBe(200);
++      const body = (await res.json()) as any;
++      expect(body.url).toBe('app-1.0.0-win32-x64-setup.exe');
++    });
++
++    it('win32-x64/squirrel explicitly returns Squirrel asset', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32-x64/squirrel/0.0.0`);
++      expect(res.status).toBe(200);
++      const body = (await res.json()) as any;
++      expect(body.url).toBe('app-1.0.0-win32-x64-setup.exe');
++    });
++
++    it('RELEASES endpoint still works without format', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32-x64/0.0.0/RELEASES`);
++      expect(res.status).toBe(200);
++      const body = await res.text();
++      expect(body).toMatch(/\.nupkg/);
++    });
++  });
++
++  describe('darwin with format', () => {
++    it('darwin/msix returns 400 (MSIX not supported on darwin)', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/darwin/msix/0.0.0`);
++      expect(res.status).toBe(400);
++      const body = await res.text();
++      expect(body).toContain('MSIX format is not supported for platform');
++    });
++  });
++
++  describe('MSIX-only repo', () => {
++    it('returns MSIX asset when only MSIX assets exist', async () => {
++      const res = await fetch(`${address}/owner/repo-msix-only/win32-x64/msix/0.0.0`);
++      expect(res.status).toBe(200);
++      const body = (await res.json()) as any;
++      expect(body.url).toBe('app-1.0.0-win32-x64.msix');
++    });
++
++    it('returns 404 for squirrel when only MSIX assets exist', async () => {
++      const res = await fetch(`${address}/owner/repo-msix-only/win32-x64/0.0.0`);
++      expect(res.status).toBe(404);
++    });
++
++    it('shows MSIX-specific error when MSIX asset missing', async () => {
++      const res = await fetch(`${address}/owner/repo-msix-only/win32-arm64/msix/0.0.0`);
++      expect(res.status).toBe(404);
++      const body = await res.text();
++      expect(body).toBe(
++        'No updates found (needs asset matching .*-win32-(x64|arm64).*.msix in public repository)',
++      );
++    });
++  });
++
++  describe('unsupported platform + MSIX', () => {
++    it('win32-ia32/msix returns 400', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32-ia32/msix/0.0.0`);
++      expect(res.status).toBe(400);
++      const body = await res.text();
++      expect(body).toContain('MSIX format is not supported for platform');
++    });
++  });
++
++  describe('explicit squirrel format', () => {
++    it('RELEASES endpoint works with explicit squirrel format', async () => {
++      const res = await fetch(`${address}/owner/repo-msix/win32-x64/squirrel/0.0.0/RELEASES`);
++      expect(res.status).toBe(200);
++      const body = await res.text();
++      expect(body).toMatch(/\.nupkg/);
++    });
++  });
++});

@@ -1,0 +1,46 @@
+task_id: elastic_beats_elastic_agent_libs_caea539132d1
+hidden_test_patches:
+- repo: beats
+  patch: hidden/patches/beats-hidden-tests.patch
+  test_profile: beats-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - filebeat/input/redis/redis_integration_test.go
+  - metricbeat/helper/http_test.go
+  - metricbeat/helper/http_windows_test.go
+  - metricbeat/mb/module/example_test.go
+  - metricbeat/module/aerospike/aerospike_test.go
+  - metricbeat/module/elasticsearch/cluster_stats/data_test.go
+  - metricbeat/module/elasticsearch/index/data_test.go
+  - metricbeat/module/mongodb/replstatus/replstatus_integration_test.go
+  - x-pack/filebeat/input/http_endpoint/input_test.go
+  - x-pack/metricbeat/module/sql/query/dsn_test.go
+  hidden_file:
+  - libbeat/common/transport/tlsloggercontract/logger_contract_test.go
+  semantic_changes: Consolidate signature-bound upstream test edits into a public loader contract test that accepts either parameter order. Affected production packages are built without their stale private tests, while compatible existing package tests remain as P2P coverage.
+  source: upstream test changes from elastic/beats PR(s) 45720
+- repo: elastic-agent-libs
+  patch: hidden/patches/elastic-agent-libs-hidden-tests.patch
+  test_profile: elastic_agent_libs-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - transport/tlscommon/ca_pinning_test.go
+  - transport/tlscommon/tls_config_test.go
+  - transport/tlscommon/tls_fips_test.go
+  - transport/tlscommon/tls_nofips_test.go
+  - transport/tlscommon/tls_test.go
+  hidden_file:
+  - transport/tlscommon/loggercontract/logger_contract_test.go
+  semantic_changes: Replace direct private-helper calls and fixed loader parameter order with an independent public-loader and observable caller-local logging contract test. Production packages are built separately so caller migration is checked without binding to stale private test signatures.
+  source: upstream test changes from elastic/elastic-agent-libs PR(s) 334
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - beats-hidden
+    - elastic_agent_libs-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

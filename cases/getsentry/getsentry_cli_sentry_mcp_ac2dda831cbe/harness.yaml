@@ -1,0 +1,35 @@
+task_id: getsentry_cli_sentry_mcp_ac2dda831cbe
+hidden_test_patches:
+- repo: cli
+  patch: hidden/patches/cli-hidden-tests.patch
+  test_profile: cli-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test/commands/local/behavior.test.ts
+  - test/commands/local/run.test.ts
+  - test/commands/local/server.test.ts
+  - test/lib/formatters/local.test.ts
+  - test/lib/formatters/semantic-behavior.test.ts
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from getsentry/cli PR 1015
+- repo: sentry-mcp
+  patch: hidden/patches/sentry-mcp-hidden-tests.patch
+  test_profile: sentry_mcp-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - packages/mcp-core/src/tools/get-trace-details.test.ts
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from getsentry/sentry-mcp PR 981
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - cli-hidden
+    - sentry_mcp-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

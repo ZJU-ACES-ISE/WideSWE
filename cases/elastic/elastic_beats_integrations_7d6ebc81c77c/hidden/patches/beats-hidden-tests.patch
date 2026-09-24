@@ -1,0 +1,168 @@
+diff --git a/x-pack/filebeat/input/azureeventhub/auth_contract_test.go b/x-pack/filebeat/input/azureeventhub/auth_contract_test.go
+new file mode 100644
+index 00000000..3aea6fcd
+--- /dev/null
++++ b/x-pack/filebeat/input/azureeventhub/auth_contract_test.go
+@@ -0,0 +1,161 @@
++//go:build !aix
++
++package azureeventhub_test
++
++import (
++	"testing"
++
++	"github.com/elastic/beats/v7/x-pack/filebeat/input/azureeventhub"
++	conf "github.com/elastic/elastic-agent-libs/config"
++	"github.com/elastic/elastic-agent-libs/logp"
++)
++
++const eventHubConnectionString = "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret"
++
++func createInput(config map[string]any) error {
++	_, err := azureeventhub.Plugin(logp.NewNopLogger()).Manager.Create(conf.MustNewConfigFrom(config))
++	return err
++}
++
++func baseConfig() map[string]any {
++	return map[string]any{
++		"eventhub":        "events",
++		"storage_account": "storage",
++	}
++}
++
++func cloneConfig(config map[string]any) map[string]any {
++	clone := make(map[string]any, len(config))
++	for key, value := range config {
++		clone[key] = value
++	}
++	return clone
++}
++
++func clientSecretConfig(version string) map[string]any {
++	config := baseConfig()
++	config["auth_type"] = "client_secret"
++	config["eventhub_namespace"] = "example.servicebus.windows.net"
++	config["tenant_id"] = "tenant"
++	config["client_id"] = "client"
++	config["client_secret"] = "secret"
++	config["processor_version"] = version
++	return config
++}
++
++func connectionStringConfig(version string) map[string]any {
++	config := baseConfig()
++	config["auth_type"] = "connection_string"
++	config["connection_string"] = eventHubConnectionString
++	config["processor_version"] = version
++	return config
++}
++
++func TestAuthenticationConfigContract(t *testing.T) {
++	t.Run("omitted auth type defaults to connection string", func(t *testing.T) {
++		config := connectionStringConfig("v2")
++		delete(config, "auth_type")
++		config["storage_account_connection_string"] = "DefaultEndpointsProtocol=https;AccountName=storage;AccountKey=secret;EndpointSuffix=core.windows.net"
++		if err := createInput(config); err != nil {
++			t.Fatalf("valid default authentication config was rejected: %v", err)
++		}
++	})
++
++	t.Run("unsupported auth type is rejected", func(t *testing.T) {
++		config := baseConfig()
++		config["auth_type"] = "unsupported"
++		if err := createInput(config); err == nil {
++			t.Fatal("unsupported auth_type was accepted")
++		}
++	})
++
++	t.Run("connection string is required", func(t *testing.T) {
++		config := baseConfig()
++		config["auth_type"] = "connection_string"
++		if err := createInput(config); err == nil {
++			t.Fatal("connection_string authentication without connection_string was accepted")
++		}
++	})
++
++	t.Run("connection string processor v1", func(t *testing.T) {
++		config := connectionStringConfig("v1")
++		config["storage_account_key"] = "storage-key"
++		if err := createInput(config); err != nil {
++			t.Fatalf("valid processor v1 config was rejected: %v", err)
++		}
++	})
++
++	t.Run("connection string processor v1 requires storage key", func(t *testing.T) {
++		if err := createInput(connectionStringConfig("v1")); err == nil {
++			t.Fatal("processor v1 config without storage_account_key was accepted")
++		}
++	})
++
++	t.Run("connection string processor v2 accepts storage connection string", func(t *testing.T) {
++		config := connectionStringConfig("v2")
++		config["storage_account_connection_string"] = "DefaultEndpointsProtocol=https;AccountName=storage;AccountKey=secret;EndpointSuffix=core.windows.net"
++		if err := createInput(config); err != nil {
++			t.Fatalf("valid processor v2 storage connection string was rejected: %v", err)
++		}
++	})
++
++	t.Run("connection string processor v2 constructs storage connection string", func(t *testing.T) {
++		config := connectionStringConfig("v2")
++		config["storage_account_key"] = "storage-key"
++		if err := createInput(config); err != nil {
++			t.Fatalf("valid processor v2 storage account credentials were rejected: %v", err)
++		}
++	})
++
++	t.Run("connection string processor v2 requires storage credentials", func(t *testing.T) {
++		if err := createInput(connectionStringConfig("v2")); err == nil {
++			t.Fatal("processor v2 config without storage credentials was accepted")
++		}
++	})
++
++	t.Run("client secret processor v1", func(t *testing.T) {
++		config := clientSecretConfig("v1")
++		config["storage_account_key"] = "storage-key"
++		if err := createInput(config); err != nil {
++			t.Fatalf("valid client-secret processor v1 config was rejected: %v", err)
++		}
++	})
++
++	t.Run("client secret processor v1 requires storage key", func(t *testing.T) {
++		if err := createInput(clientSecretConfig("v1")); err == nil {
++			t.Fatal("client-secret processor v1 config without storage_account_key was accepted")
++		}
++	})
++
++	t.Run("client secret processor v2 reuses credentials for storage", func(t *testing.T) {
++		if err := createInput(clientSecretConfig("v2")); err != nil {
++			t.Fatalf("valid client-secret processor v2 config was rejected: %v", err)
++		}
++	})
++
++	for _, field := range []string{"eventhub_namespace", "tenant_id", "client_id", "client_secret"} {
++		t.Run("client secret requires "+field, func(t *testing.T) {
++			config := clientSecretConfig("v2")
++			delete(config, field)
++			if err := createInput(config); err == nil {
++				t.Fatalf("client-secret config without %s was accepted", field)
++			}
++		})
++	}
++
++	for name, authorityHost := range map[string]string{
++		"public cloud":     "https://login.microsoftonline.com",
++		"government cloud": "https://login.microsoftonline.us",
++		"china cloud":      "https://login.chinacloudapi.cn",
++		"empty fallback":   "",
++		"unknown fallback": "https://login.example.invalid",
++	} {
++		t.Run("authority host "+name, func(t *testing.T) {
++			config := cloneConfig(clientSecretConfig("v2"))
++			config["authority_host"] = authorityHost
++			if err := createInput(config); err != nil {
++				t.Fatalf("supported authority_host behavior was rejected: %v", err)
++			}
++		})
++	}
++}
+

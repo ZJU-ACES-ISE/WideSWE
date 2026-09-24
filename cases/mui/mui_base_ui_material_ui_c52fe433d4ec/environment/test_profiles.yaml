@@ -1,0 +1,24 @@
+profiles:
+  base_ui-hidden:
+    repo: base-ui
+    workdir: repos/mui/base-ui
+    command: pnpm --filter @base-ui-components/utils... install --ignore-scripts
+      && pnpm rebuild esbuild && pnpm --dir packages/utils exec vitest run src/useControlled.test.tsx
+      --environment jsdom
+    dependency_image: ecosyncbench/base/node:22-bookworm
+    evaluator_node_modules_mode: persistent
+    status: implemented
+    test_files:
+    - packages/utils/src/useControlled.test.tsx
+  material_ui-hidden:
+    repo: material-ui
+    workdir: repos/mui/material-ui
+    command: pnpm --filter @mui/utils... install --ignore-scripts && pnpm rebuild
+      esbuild && pnpm --filter @mui/internal-test-utils build && NODE_ENV=test pnpm
+      exec mocha packages/mui-utils/src/useControlled/useControlled.test.tsx
+    dependency_image: ecosyncbench/base/node:22-bookworm
+    evaluator_node_modules_mode: tmpfs
+    evaluator_node_modules_tmpfs_size: 12g
+    status: implemented
+    test_files:
+    - packages/mui-utils/src/useControlled/useControlled.test.tsx

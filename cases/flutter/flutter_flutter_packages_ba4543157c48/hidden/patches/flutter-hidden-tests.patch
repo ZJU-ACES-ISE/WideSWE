@@ -1,0 +1,42 @@
+diff --git a/packages/flutter/test/widgets/selectable_region_context_menu_test.dart b/packages/flutter/test/widgets/selectable_region_context_menu_test.dart
+index 05a54bfd5c..6ab42eaa78 100644
+--- a/packages/flutter/test/widgets/selectable_region_context_menu_test.dart
++++ b/packages/flutter/test/widgets/selectable_region_context_menu_test.dart
+@@ -134,6 +134,37 @@ void main() {
+     expect((selectWordEvent!.globalPosition.dx - 200).abs() < precisionErrorTolerance, isTrue);
+     expect((selectWordEvent.globalPosition.dy - 300).abs() < precisionErrorTolerance, isTrue);
+   });
++
++  // Regression test for https://github.com/flutter/flutter/issues/157579
++  testWidgets('prevents default action of mousedown events', (WidgetTester tester) async {
++    final int currentViewId = platformViewsRegistry.getNextPlatformViewId();
++
++    await tester.pumpWidget(
++      MaterialApp(
++        home: SelectableRegion(
++          selectionControls: emptyTextSelectionControls,
++          child: const SizedBox.shrink(),
++        ),
++      ),
++    );
++
++    final web.HTMLElement element =
++        fakePlatformViewRegistry.getViewById(currentViewId + 1) as web.HTMLElement;
++    expect(element, isNotNull);
++
++    final web.MouseEvent event = web.MouseEvent(
++      'mousedown',
++      web.MouseEventInit(
++        button: 0,
++        clientX: 200,
++        clientY: 300,
++        bubbles: true,
++        cancelable: true,
++      ),
++    );
++    element.dispatchEvent(event);
++    expect(event.defaultPrevented, isTrue);
++  });
+ }
+ 
+ void removeAllStyleElements() {

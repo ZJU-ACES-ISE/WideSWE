@@ -1,0 +1,134 @@
+diff --git a/x-pack/plugin/esql/src/internalClusterTest/java/org/elasticsearch/xpack/esql/action/InSubqueryContractIT.java b/x-pack/plugin/esql/src/internalClusterTest/java/org/elasticsearch/xpack/esql/action/InSubqueryContractIT.java
+new file mode 100644
+index 000000000000..66beaf1b3ad2
+--- /dev/null
++++ b/x-pack/plugin/esql/src/internalClusterTest/java/org/elasticsearch/xpack/esql/action/InSubqueryContractIT.java
+@@ -0,0 +1,128 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++package org.elasticsearch.xpack.esql.action;
++
++import org.elasticsearch.action.index.IndexRequest;
++import org.elasticsearch.action.support.WriteRequest;
++import org.elasticsearch.common.settings.Settings;
++import org.junit.Before;
++
++import java.util.List;
++
++import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
++
++/** User-visible contract tests for WHERE ... IN (subquery). */
++public class InSubqueryContractIT extends AbstractEsqlIntegTestCase {
++
++    private static final String INDEX = "in_subquery_contract";
++
++    @Before
++    public void setupIndex() {
++        assertAcked(
++            client().admin()
++                .indices()
++                .prepareCreate(INDEX)
++                .setSettings(Settings.builder().put("index.number_of_shards", 1))
++                .setMapping(
++                    "id",
++                    "type=integer",
++                    "category",
++                    "type=keyword",
++                    "score",
++                    "type=double",
++                    "event_time",
++                    "type=date",
++                    "address",
++                    "type=ip"
++                )
++        );
++        client().prepareBulk()
++            .add(new IndexRequest(INDEX).id("1").source("id", 1, "category", "red", "score", 1.5, "event_time", "2026-01-01", "address", "10.0.0.1"))
++            .add(new IndexRequest(INDEX).id("2").source("id", 2, "category", "blue", "score", 2.5, "event_time", "2026-01-02", "address", "10.0.0.2"))
++            .add(new IndexRequest(INDEX).id("3").source("id", 3, "category", "red", "score", 3.5, "event_time", "2026-01-03", "address", "10.0.0.3"))
++            .add(new IndexRequest(INDEX).id("4").source("id", 4, "category", "blue", "score", 4.5, "event_time", "2026-01-04", "address", "10.0.0.4"))
++            .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
++            .get();
++        ensureYellow(INDEX);
++    }
++
++    public void testInAndNotInSubqueries() {
++        try (var response = run("""
++            FROM in_subquery_contract
++            | WHERE id IN (FROM in_subquery_contract | WHERE category == "red" | KEEP id)
++            | SORT id
++            | KEEP id
++            """)) {
++            assertColumnNames(response.columns(), List.of("id"));
++            assertValues(response.values(), List.of(List.of(1), List.of(3)));
++        }
++        try (var response = run("""
++            FROM in_subquery_contract
++            | WHERE category NOT IN (FROM in_subquery_contract | WHERE id == 1 | KEEP category)
++            | SORT id
++            | KEEP id
++            """)) {
++            assertValues(response.values(), List.of(List.of(2), List.of(4)));
++        }
++    }
++
++    public void testConjunctionAndDisjunction() {
++        try (var response = run("""
++            FROM in_subquery_contract
++            | WHERE (id IN (FROM in_subquery_contract | WHERE id <= 3 | KEEP id) AND category == "red")
++                OR id IN (FROM in_subquery_contract | WHERE id == 4 | KEEP id)
++            | SORT id
++            | KEEP id
++            """)) {
++            assertValues(response.values(), List.of(List.of(1), List.of(3), List.of(4)));
++        }
++    }
++
++    public void testNestedInSubquery() {
++        try (var response = run("""
++            FROM in_subquery_contract
++            | WHERE id IN (
++                FROM in_subquery_contract
++                | WHERE id IN (FROM in_subquery_contract | WHERE category == "red" | KEEP id)
++                | WHERE score >= 3.0
++                | KEEP id
++              )
++            | KEEP id
++            """)) {
++            assertValues(response.values(), List.of(List.of(3)));
++        }
++    }
++
++    public void testPrimitiveTypes() {
++        try (var response = run("""
++            FROM in_subquery_contract
++            | WHERE event_time IN (FROM in_subquery_contract | WHERE id == 2 | KEEP event_time)
++                OR address IN (FROM in_subquery_contract | WHERE id == 4 | KEEP address)
++            | SORT id
++            | KEEP id
++            """)) {
++            assertValues(response.values(), List.of(List.of(2), List.of(4)));
++        }
++    }
++
++    public void testRequiresOneCompatibleOutputColumn() {
++        expectQueryFailure("FROM in_subquery_contract | WHERE id IN (FROM in_subquery_contract | KEEP id, category)");
++        expectQueryFailure("FROM in_subquery_contract | WHERE id IN (FROM in_subquery_contract | KEEP category)");
++    }
++
++    public void testRejectsUnsupportedExpressionLocations() {
++        expectQueryFailure("FROM in_subquery_contract | EVAL selected = id IN (FROM in_subquery_contract | KEEP id)");
++        expectQueryFailure("FROM in_subquery_contract | SORT id IN (FROM in_subquery_contract | KEEP id)");
++        expectQueryFailure("FROM in_subquery_contract | STATS count = COUNT(*) BY id IN (FROM in_subquery_contract | KEEP id)");
++        expectQueryFailure("FROM in_subquery_contract | WHERE CASE(id IN (FROM in_subquery_contract | KEEP id), true, false)");
++    }
++
++    private void expectQueryFailure(String query) {
++        expectThrows(RuntimeException.class, () -> run(query).close());
++    }
++}

@@ -1,0 +1,2080 @@
+diff --git a/collectors/cache.go b/collectors/cache.go
+index 1761fdc..c60fde9 100644
+--- a/collectors/cache.go
++++ b/collectors/cache.go
+@@ -73,22 +73,22 @@ func (d *descriptorCache) Store(prefix string, data []*monitoring.MetricDescript
+ 	d.cache[prefix] = &entry
+ }
+ 
+-// collectorCache is a cache for MonitoringCollectors
+-type CollectorCache struct {
++// collectorCache caches MonitoringCollectors keyed by (project, prefix-filter)
++// for the duration of the configured TTL. It exists so HTTP scrape paths that
++// rebuild per request can preserve delta-counter state across calls.
++type collectorCache struct {
+ 	cache map[string]*collectorCacheEntry
+ 	lock  sync.RWMutex
+ 	ttl   time.Duration
+ }
+ 
+-// collectorCacheEntry is a cache entry for a MonitoringCollector
+ type collectorCacheEntry struct {
+ 	collector *MonitoringCollector
+ 	expiry    time.Time
+ }
+ 
+-// NewCollectorCache returns a new CollectorCache with the given TTL
+-func NewCollectorCache(ttl time.Duration) *CollectorCache {
+-	c := &CollectorCache{
++func newCollectorCache(ttl time.Duration) *collectorCache {
++	c := &collectorCache{
+ 		cache: make(map[string]*collectorCacheEntry),
+ 		ttl:   ttl,
+ 	}
+@@ -97,9 +97,8 @@ func NewCollectorCache(ttl time.Duration) *CollectorCache {
+ 	return c
+ }
+ 
+-// Get returns a MonitoringCollector if the key is found and not expired
+-// If key is found it resets the TTL for the collector
+-func (c *CollectorCache) Get(key string) (*MonitoringCollector, bool) {
++// Get returns the cached collector for key, refreshing its TTL on hit.
++func (c *collectorCache) Get(key string) (*MonitoringCollector, bool) {
+ 	c.lock.RLock()
+ 	defer c.lock.RUnlock()
+ 
+@@ -118,7 +117,7 @@ func (c *CollectorCache) Get(key string) (*MonitoringCollector, bool) {
+ 	return entry.collector, true
+ }
+ 
+-func (c *CollectorCache) Store(key string, collector *MonitoringCollector) {
++func (c *collectorCache) Store(key string, collector *MonitoringCollector) {
+ 	entry := &collectorCacheEntry{
+ 		collector: collector,
+ 		expiry:    time.Now().Add(c.ttl),
+@@ -129,7 +128,7 @@ func (c *CollectorCache) Store(key string, collector *MonitoringCollector) {
+ 	c.cache[key] = entry
+ }
+ 
+-func (c *CollectorCache) cleanup() {
++func (c *collectorCache) cleanup() {
+ 	ticker := time.NewTicker(5 * time.Minute)
+ 	defer ticker.Stop()
+ 	for range ticker.C {
+@@ -137,7 +136,7 @@ func (c *CollectorCache) cleanup() {
+ 	}
+ }
+ 
+-func (c *CollectorCache) removeExpired() {
++func (c *collectorCache) removeExpired() {
+ 	c.lock.Lock()
+ 	defer c.lock.Unlock()
+ 
+diff --git a/collectors/cache_test.go b/collectors/cache_test.go
+index 3be2eec..d8960b5 100644
+--- a/collectors/cache_test.go
++++ b/collectors/cache_test.go
+@@ -84,7 +84,7 @@ func TestCollectorCache(t *testing.T) {
+ 
+ 	t.Run("basic cache Op", func(t *testing.T) {
+ 		ttl := 1 * time.Second
+-		cache := NewCollectorCache(ttl)
++		cache := newCollectorCache(ttl)
+ 		collector := createCollector("test-project")
+ 		key := "test-key"
+ 
+@@ -102,7 +102,7 @@ func TestCollectorCache(t *testing.T) {
+ 
+ 	t.Run("multiple collectors", func(t *testing.T) {
+ 		ttl := 1 * time.Second
+-		cache := NewCollectorCache(ttl)
++		cache := newCollectorCache(ttl)
+ 
+ 		collectors := map[string]*MonitoringCollector{
+ 			"test-key-1": createCollector("test-project-1"),
+diff --git a/collectors/monitoring_collector.go b/collectors/monitoring_collector.go
+index e6418d6..7d5b138 100644
+--- a/collectors/monitoring_collector.go
++++ b/collectors/monitoring_collector.go
+@@ -25,8 +25,6 @@ import (
+ 
+ 	"github.com/prometheus/client_golang/prometheus"
+ 	"google.golang.org/api/monitoring/v3"
+-
+-	"github.com/prometheus-community/stackdriver_exporter/utils"
+ )
+ 
+ const namespace = "stackdriver"
+@@ -39,7 +37,7 @@ type MetricFilter struct {
+ func ParseMetricExtraFilters(raw []string) []MetricFilter {
+ 	out := make([]MetricFilter, 0, len(raw))
+ 	for _, entry := range raw {
+-		prefix, filter := utils.SplitExtraFilter(entry, ":")
++		prefix, filter := splitExtraFilter(entry, ":")
+ 		if prefix == "" {
+ 			continue
+ 		}
+@@ -51,6 +49,18 @@ func ParseMetricExtraFilters(raw []string) []MetricFilter {
+ 	return out
+ }
+ 
++func splitExtraFilter(extraFilter string, separator string) (string, string) {
++	mPrefix := strings.SplitN(extraFilter, separator, 2)
++	if len(mPrefix) != 2 {
++		return "", ""
++	}
++	return mPrefix[0], mPrefix[1]
++}
++
++func projectResource(projectID string) string {
++	return "projects/" + projectID
++}
++
+ type MonitoringCollector struct {
+ 	projectID                       string
+ 	metricsTypePrefixes             []string
+@@ -329,7 +339,7 @@ func (c *MonitoringCollector) reportMonitoringMetrics(ch chan<- prometheus.Metri
+ 
+ 				c.logger.Debug("retrieving Google Stackdriver Monitoring metrics with filter", "filter", filter)
+ 
+-				timeSeriesListCall := c.monitoringService.Projects.TimeSeries.List(utils.ProjectResource(c.projectID)).
++				timeSeriesListCall := c.monitoringService.Projects.TimeSeries.List(projectResource(c.projectID)).
+ 					Filter(filter).
+ 					IntervalStartTime(startTime.Format(time.RFC3339Nano)).
+ 					IntervalEndTime(endTime.Format(time.RFC3339Nano))
+@@ -396,7 +406,7 @@ func (c *MonitoringCollector) reportMonitoringMetrics(ch chan<- prometheus.Metri
+ 				}
+ 
+ 				c.logger.Debug("listing Google Stackdriver Monitoring metric descriptors starting with", "prefix", metricsTypePrefix)
+-				if err := c.monitoringService.Projects.MetricDescriptors.List(utils.ProjectResource(c.projectID)).
++				if err := c.monitoringService.Projects.MetricDescriptors.List(projectResource(c.projectID)).
+ 					Filter(filter).
+ 					Pages(ctx, callback); err != nil {
+ 					errChannel <- err
+diff --git a/collectors/monitoring_collector_test.go b/collectors/monitoring_collector_test.go
+index a7706f3..9e391ef 100644
+--- a/collectors/monitoring_collector_test.go
++++ b/collectors/monitoring_collector_test.go
+@@ -64,3 +64,52 @@ func TestParseMetricExtraFilters(t *testing.T) {
+ 		t.Fatalf("ParseMetricExtraFilters() = %#v, want %#v", got, want)
+ 	}
+ }
++
++func TestSplitExtraFilter(t *testing.T) {
++	t.Parallel()
++
++	tests := []struct {
++		name       string
++		input      string
++		wantPrefix string
++		wantFilter string
++	}{
++		{
++			name:       "incomplete filter returns empty",
++			input:      "This_is__a-MetricName.Example/with/no/filter",
++			wantPrefix: "",
++			wantFilter: "",
++		},
++		{
++			name:       "basic filter",
++			input:      "This_is__a-MetricName.Example/with:filter.name=filter_value",
++			wantPrefix: "This_is__a-MetricName.Example/with",
++			wantFilter: "filter.name=filter_value",
++		},
++		{
++			name:       "filter value containing the separator",
++			input:      `This_is__a-MetricName.Example/with:filter.name="filter:value"`,
++			wantPrefix: "This_is__a-MetricName.Example/with",
++			wantFilter: `filter.name="filter:value"`,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			t.Parallel()
++
++			gotPrefix, gotFilter := splitExtraFilter(tt.input, ":")
++			if gotPrefix != tt.wantPrefix || gotFilter != tt.wantFilter {
++				t.Fatalf("splitExtraFilter() = (%q, %q), want (%q, %q)", gotPrefix, gotFilter, tt.wantPrefix, tt.wantFilter)
++			}
++		})
++	}
++}
++
++func TestProjectResource(t *testing.T) {
++	t.Parallel()
++
++	if got := projectResource("fake-project-1"); got != "projects/fake-project-1" {
++		t.Fatalf("projectResource() = %q, want %q", got, "projects/fake-project-1")
++	}
++}
+diff --git a/collectors/monitoring_metrics.go b/collectors/monitoring_metrics.go
+index 68ca73e..2241300 100644
+--- a/collectors/monitoring_metrics.go
++++ b/collectors/monitoring_metrics.go
+@@ -14,23 +14,38 @@
+ package collectors
+ 
+ import (
++	"regexp"
++	"sort"
++	"strings"
+ 	"time"
+ 
++	"github.com/fatih/camelcase"
+ 	"github.com/prometheus/client_golang/prometheus"
+ 	"google.golang.org/api/monitoring/v3"
+ 
+-	"sort"
+-
+ 	"github.com/prometheus-community/stackdriver_exporter/hash"
+-	"github.com/prometheus-community/stackdriver_exporter/utils"
+ )
+ 
++var safeNameRE = regexp.MustCompile(`[^a-zA-Z0-9_]*$`)
++
+ func buildFQName(timeSeries *monitoring.TimeSeries) string {
+ 	// The metric name to report is composed by the 3 parts:
+ 	// 1. namespace is a constant prefix (stackdriver)
+ 	// 2. subsystem is the monitored resource type (ie gce_instance)
+ 	// 3. name is the metric type (ie compute.googleapis.com/instance/cpu/usage_time)
+-	return prometheus.BuildFQName(namespace, utils.NormalizeMetricName(timeSeries.Resource.Type), utils.NormalizeMetricName(timeSeries.Metric.Type))
++	return prometheus.BuildFQName(namespace, normalizeMetricName(timeSeries.Resource.Type), normalizeMetricName(timeSeries.Metric.Type))
++}
++
++func normalizeMetricName(metricName string) string {
++	var parts []string
++	for _, word := range camelcase.Split(metricName) {
++		safe := strings.Trim(safeNameRE.ReplaceAllLiteralString(word, "_"), "_")
++		lower := strings.TrimSpace(strings.ToLower(safe))
++		if lower != "" {
++			parts = append(parts, lower)
++		}
++	}
++	return strings.Join(parts, "_")
+ }
+ 
+ type timeSeriesMetrics struct {
+diff --git a/utils/utils_suite_test.go b/collectors/monitoring_metrics_test.go
+similarity index 66%
+rename from utils/utils_suite_test.go
+rename to collectors/monitoring_metrics_test.go
+index cd9a33b..06a447d 100644
+--- a/utils/utils_suite_test.go
++++ b/collectors/monitoring_metrics_test.go
+@@ -11,16 +11,16 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
+-package utils_test
++package collectors
+ 
+-import (
+-	. "github.com/onsi/ginkgo"
+-	. "github.com/onsi/gomega"
++import "testing"
+ 
+-	"testing"
+-)
++func TestNormalizeMetricName(t *testing.T) {
++	t.Parallel()
+ 
+-func TestUtils(t *testing.T) {
+-	RegisterFailHandler(Fail)
+-	RunSpecs(t, "Utils Suite")
++	got := normalizeMetricName("This_is__a-MetricName.Example/with:0totals")
++	want := "this_is_a_metric_name_example_with_0_totals"
++	if got != want {
++		t.Fatalf("normalizeMetricName() = %q, want %q", got, want)
++	}
+ }
+diff --git a/collectors/runtime.go b/collectors/runtime.go
+new file mode 100644
+index 0000000..f07c0e9
+--- /dev/null
++++ b/collectors/runtime.go
+@@ -0,0 +1,254 @@
++// Copyright The Prometheus Authors
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++// http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package collectors
++
++import (
++	"context"
++	"fmt"
++	"log/slog"
++	"slices"
++	"strings"
++	"time"
++
++	"golang.org/x/oauth2/google"
++	"google.golang.org/api/cloudresourcemanager/v1"
++	"google.golang.org/api/compute/v1"
++	"google.golang.org/api/monitoring/v3"
++
++	"github.com/prometheus-community/stackdriver_exporter/config"
++)
++
++// CounterStoreFactory creates a DeltaCounterStore for a given TTL.
++type CounterStoreFactory func(logger *slog.Logger, ttl time.Duration) DeltaCounterStore
++
++// HistogramStoreFactory creates a DeltaHistogramStore for a given TTL.
++type HistogramStoreFactory func(logger *slog.Logger, ttl time.Duration) DeltaHistogramStore
++
++// Runtime holds the resolved state produced by NewRuntime.
++type Runtime struct {
++	cfg                   *config.Config
++	projectIDs            []string
++	service               *monitoring.Service
++	logger                *slog.Logger
++	counterStoreFactory   CounterStoreFactory
++	histogramStoreFactory HistogramStoreFactory
++	cache                 *collectorCache
++}
++
++// NewRuntime resolves project IDs and creates the monitoring service. The
++// caller must have run cfg.Validate first.
++//
++// counterFactory and histogramFactory are invoked each time a new collector
++// is built. The returned Runtime does not cache collectors; call WithCache
++// to derive a sibling that does.
++func NewRuntime(ctx context.Context, logger *slog.Logger, cfg *config.Config, counterFactory CounterStoreFactory, histogramFactory HistogramStoreFactory) (*Runtime, error) {
++	if !cfg.Validated() {
++		return nil, fmt.Errorf("config has not been validated; call cfg.Validate before NewRuntime")
++	}
++
++	var projectIDs []string
++
++	if cfg.ProjectsFilter != "" {
++		ids, err := getProjectIDsFromFilter(ctx, cfg.ProjectsFilter)
++		if err != nil {
++			return nil, fmt.Errorf("failed to resolve project IDs from projects_filter: %w", err)
++		}
++		projectIDs = append(projectIDs, ids...)
++	}
++
++	projectIDs = append(projectIDs, cfg.ProjectIDs...)
++
++	if len(projectIDs) == 0 {
++		id, err := discoverDefaultProjectID(ctx)
++		if err != nil {
++			return nil, fmt.Errorf("failed to discover default GCP project: %w", err)
++		}
++		projectIDs = append(projectIDs, id)
++	}
++
++	projectIDs = deduplicateProjectIDs(projectIDs)
++
++	service, err := createMonitoringService(ctx, cfg)
++	if err != nil {
++		return nil, err
++	}
++
++	return &Runtime{
++		cfg:                   cfg,
++		projectIDs:            projectIDs,
++		service:               service,
++		logger:                logger,
++		counterStoreFactory:   counterFactory,
++		histogramStoreFactory: histogramFactory,
++	}, nil
++}
++
++// WithCache returns a Runtime configured to cache its collectors per
++// (project, prefix-filter). Subsequent calls to Collectors or
++// CollectorsForPrefixes reuse cached entries until they expire, which lets
++// delta-counter state survive repeated rebuilds. The TTL is derived from
++// AggregateDeltasTTL and DescriptorCacheTTL.
++//
++// HTTP scrape paths that rebuild collectors per request (?collect= filtering)
++// want this; embedded callers that hold a long-lived registry do not.
++//
++// Each call allocates a fresh cache (and its cleanup goroutine); call it
++// once per consumer and discard the receiver.
++func (r *Runtime) WithCache() *Runtime {
++	sibling := *r
++	sibling.cache = newCollectorCache(collectorCacheTTL(r.cfg))
++	return &sibling
++}
++
++// Collectors builds one MonitoringCollector per resolved project scoped to all
++// configured prefixes.
++func (r *Runtime) Collectors() ([]*MonitoringCollector, error) {
++	return r.buildCollectors(nil)
++}
++
++// CollectorsForPrefixes builds one MonitoringCollector per resolved project
++// restricted to the given metric type prefixes. A nil or empty prefixFilter
++// is equivalent to Collectors.
++func (r *Runtime) CollectorsForPrefixes(prefixFilter []string) ([]*MonitoringCollector, error) {
++	return r.buildCollectors(prefixFilter)
++}
++
++func (r *Runtime) buildCollectors(prefixFilter []string) ([]*MonitoringCollector, error) {
++	result := make([]*MonitoringCollector, 0, len(r.projectIDs))
++	for _, projectID := range r.projectIDs {
++		c, err := r.collectorFor(projectID, prefixFilter)
++		if err != nil {
++			return nil, fmt.Errorf("collector for %q: %w", projectID, err)
++		}
++		result = append(result, c)
++	}
++	return result, nil
++}
++
++func (r *Runtime) collectorFor(projectID string, prefixFilter []string) (*MonitoringCollector, error) {
++	if r.cache == nil {
++		return r.newCollector(projectID, prefixFilter)
++	}
++	key := collectorCacheKey(projectID, prefixFilter)
++	if c, ok := r.cache.Get(key); ok {
++		return c, nil
++	}
++	c, err := r.newCollector(projectID, prefixFilter)
++	if err != nil {
++		return nil, err
++	}
++	r.cache.Store(key, c)
++	return c, nil
++}
++
++func (r *Runtime) newCollector(projectID string, prefixFilter []string) (*MonitoringCollector, error) {
++	filtered := r.filterMetricTypePrefixes(prefixFilter)
++	return NewMonitoringCollector(
++		projectID,
++		r.service,
++		monitoringCollectorOptionsForPrefixes(r.cfg, filtered),
++		r.logger,
++		r.counterStoreFactory(r.logger, r.cfg.AggregateDeltasTTL),
++		r.histogramStoreFactory(r.logger, r.cfg.AggregateDeltasTTL),
++	)
++}
++
++// filterMetricTypePrefixes resolves a request-time prefix filter against the
++// configured prefixes. nil/empty means "use everything configured"; otherwise
++// only the request prefixes whose configured parent matches are kept.
++func (r *Runtime) filterMetricTypePrefixes(prefixFilter []string) []string {
++	if len(prefixFilter) == 0 {
++		return parseMetricTypePrefixes(r.cfg.MetricsPrefixes)
++	}
++	var filtered []string
++	for _, prefix := range r.cfg.MetricsPrefixes {
++		for _, f := range prefixFilter {
++			if strings.HasPrefix(f, prefix) {
++				filtered = append(filtered, f)
++			}
++		}
++	}
++	return parseMetricTypePrefixes(filtered)
++}
++
++// collectorCacheKey builds a deterministic cache key for a (project, prefix)
++// pair. Prefixes are sorted defensively so callers that pass the same set in
++// a different order share a cache entry.
++func collectorCacheKey(projectID string, prefixFilter []string) string {
++	sorted := slices.Clone(prefixFilter)
++	slices.Sort(sorted)
++	return fmt.Sprintf("%s-%v", projectID, sorted)
++}
++
++func collectorCacheTTL(cfg *config.Config) time.Duration {
++	if cfg.AggregateDeltas || cfg.DescriptorCacheTTL > 0 {
++		return max(cfg.AggregateDeltasTTL, cfg.DescriptorCacheTTL)
++	}
++	return 2 * time.Hour
++}
++
++func deduplicateProjectIDs(projectIDs []string) []string {
++	normalized := slices.Clone(projectIDs)
++	slices.Sort(normalized)
++	return slices.Compact(normalized)
++}
++
++func discoverDefaultProjectID(ctx context.Context) (string, error) {
++	credentials, err := google.FindDefaultCredentials(ctx, compute.ComputeScope)
++	if err != nil {
++		return "", err
++	}
++	if credentials.ProjectID == "" {
++		return "", fmt.Errorf("unable to identify default GCP project")
++	}
++	return credentials.ProjectID, nil
++}
++
++// getProjectIDsFromFilter returns the list of project IDs that match a Google
++// Cloud organization-scoped projects filter.
++func getProjectIDsFromFilter(ctx context.Context, filter string) ([]string, error) {
++	service, err := cloudresourcemanager.NewService(ctx)
++	if err != nil {
++		return nil, err
++	}
++
++	var projectIDs []string
++	err = service.Projects.List().Filter(filter).Pages(ctx, func(page *cloudresourcemanager.ListProjectsResponse) error {
++		for _, project := range page.Projects {
++			projectIDs = append(projectIDs, project.ProjectId)
++		}
++		return nil
++	})
++	if err != nil {
++		return nil, err
++	}
++	return projectIDs, nil
++}
++
++// parseMetricTypePrefixes sorts prefixes, removes duplicates, and skips prefixes
++// already covered by a broader parent prefix.
++func parseMetricTypePrefixes(inputPrefixes []string) []string {
++	sorted := slices.Clone(inputPrefixes)
++	slices.Sort(sorted)
++	unique := slices.Compact(sorted)
++	out := make([]string, 0, len(unique))
++
++	for _, prefix := range unique {
++		if len(out) > 0 && strings.HasPrefix(prefix, out[len(out)-1]) {
++			continue
++		}
++		out = append(out, prefix)
++	}
++	return out
++}
+diff --git a/collectors/runtime_test.go b/collectors/runtime_test.go
+new file mode 100644
+index 0000000..cdf2327
+--- /dev/null
++++ b/collectors/runtime_test.go
+@@ -0,0 +1,191 @@
++// Copyright The Prometheus Authors
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++// http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package collectors
++
++import (
++	"context"
++	"log/slog"
++	"reflect"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/prometheus-community/stackdriver_exporter/config"
++)
++
++func TestNewRuntimeRequiresValidatedConfig(t *testing.T) {
++	t.Parallel()
++
++	cfg := &config.Config{MetricsPrefixes: []string{"compute.googleapis.com/"}}
++	_, err := NewRuntime(context.Background(), slog.Default(), cfg, nil, nil)
++	if err == nil {
++		t.Fatal("expected error for un-Validated config, got nil")
++	}
++	if !strings.Contains(err.Error(), "validated") {
++		t.Fatalf("expected error to mention validation, got %v", err)
++	}
++}
++
++func TestDeduplicateProjectIDs(t *testing.T) {
++	t.Parallel()
++
++	input := []string{"project-b", "project-a", "project-b"}
++	want := []string{"project-a", "project-b"}
++
++	got := deduplicateProjectIDs(input)
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("deduplicateProjectIDs() = %#v, want %#v", got, want)
++	}
++	if !reflect.DeepEqual(input, []string{"project-b", "project-a", "project-b"}) {
++		t.Fatalf("deduplicateProjectIDs() mutated input = %#v", input)
++	}
++}
++
++func TestCollectorCacheTTL(t *testing.T) {
++	t.Parallel()
++
++	tests := []struct {
++		name string
++		cfg  config.Config
++		want time.Duration
++	}{
++		{
++			name: "default fallback",
++			cfg:  config.Config{},
++			want: 2 * time.Hour,
++		},
++		{
++			name: "aggregate deltas uses deltas ttl",
++			cfg: config.Config{
++				AggregateDeltas:    true,
++				AggregateDeltasTTL: 30 * time.Minute,
++			},
++			want: 30 * time.Minute,
++		},
++		{
++			name: "descriptor ttl wins when larger",
++			cfg: config.Config{
++				AggregateDeltas:    true,
++				AggregateDeltasTTL: 30 * time.Minute,
++				DescriptorCacheTTL: 45 * time.Minute,
++			},
++			want: 45 * time.Minute,
++		},
++		{
++			name: "descriptor cache alone enables cache ttl",
++			cfg: config.Config{
++				DescriptorCacheTTL: 15 * time.Minute,
++			},
++			want: 15 * time.Minute,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			t.Parallel()
++
++			if got := collectorCacheTTL(&tt.cfg); got != tt.want {
++				t.Fatalf("collectorCacheTTL() = %v, want %v", got, tt.want)
++			}
++		})
++	}
++}
++
++func TestCollectorCacheKeyIsOrderIndependent(t *testing.T) {
++	t.Parallel()
++
++	a := collectorCacheKey("proj", []string{"compute.googleapis.com/", "pubsub.googleapis.com/"})
++	b := collectorCacheKey("proj", []string{"pubsub.googleapis.com/", "compute.googleapis.com/"})
++	if a != b {
++		t.Fatalf("cache key changed with input order: %q vs %q", a, b)
++	}
++}
++
++func TestParseMetricTypePrefixes(t *testing.T) {
++	t.Parallel()
++
++	input := []string{
++		"redis.googleapis.com/stats/memory/usage",
++		"loadbalancing.googleapis.com/https/request_count",
++		"loadbalancing.googleapis.com",
++		"redis.googleapis.com/stats/memory/usage_ratio",
++		"redis.googleapis.com/stats/memory/usage_ratio",
++	}
++	want := []string{
++		"loadbalancing.googleapis.com",
++		"redis.googleapis.com/stats/memory/usage",
++	}
++
++	got := parseMetricTypePrefixes(input)
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("parseMetricTypePrefixes() = %#v, want %#v", got, want)
++	}
++
++	wantInput := []string{
++		"redis.googleapis.com/stats/memory/usage",
++		"loadbalancing.googleapis.com/https/request_count",
++		"loadbalancing.googleapis.com",
++		"redis.googleapis.com/stats/memory/usage_ratio",
++		"redis.googleapis.com/stats/memory/usage_ratio",
++	}
++	if !reflect.DeepEqual(input, wantInput) {
++		t.Fatalf("parseMetricTypePrefixes mutated input = %#v, want %#v", input, wantInput)
++	}
++}
++
++func TestRuntimeFilterMetricTypePrefixes(t *testing.T) {
++	t.Parallel()
++
++	tests := []struct {
++		name             string
++		configuredPrefix []string
++		prefixFilter     []string
++		want             []string
++	}{
++		{
++			name:             "nil filter returns configured prefixes",
++			configuredPrefix: []string{"compute.googleapis.com/instance/", "pubsub.googleapis.com/"},
++			prefixFilter:     nil,
++			want:             []string{"compute.googleapis.com/instance/", "pubsub.googleapis.com/"},
++		},
++		{
++			name:             "filter narrows to matching subprefixes and parse drops shorter overlaps",
++			configuredPrefix: []string{"redis.googleapis.com/stats/"},
++			prefixFilter: []string{
++				"redis.googleapis.com/stats/memory/usage",
++				"redis.googleapis.com/stats/memory/usage_ratio",
++				"redis.googleapis.com",
++			},
++			want: []string{"redis.googleapis.com/stats/memory/usage"},
++		},
++		{
++			name:             "filter with no matches returns empty",
++			configuredPrefix: []string{"compute.googleapis.com/instance/"},
++			prefixFilter:     []string{"pubsub.googleapis.com/topic/foo"},
++			want:             []string{},
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			t.Parallel()
++
++			r := &Runtime{cfg: &config.Config{MetricsPrefixes: tt.configuredPrefix}}
++			got := r.filterMetricTypePrefixes(tt.prefixFilter)
++			if !reflect.DeepEqual(got, tt.want) {
++				t.Fatalf("filterMetricTypePrefixes() = %#v, want %#v", got, tt.want)
++			}
++		})
++	}
++}
+diff --git a/collectors/service.go b/collectors/service.go
+new file mode 100644
+index 0000000..4ec9450
+--- /dev/null
++++ b/collectors/service.go
+@@ -0,0 +1,64 @@
++// Copyright The Prometheus Authors
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++// http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package collectors
++
++import (
++	"context"
++	"fmt"
++
++	"github.com/PuerkitoBio/rehttp"
++	"golang.org/x/oauth2/google"
++	"google.golang.org/api/monitoring/v3"
++	"google.golang.org/api/option"
++
++	"github.com/prometheus-community/stackdriver_exporter/config"
++)
++
++func monitoringCollectorOptionsForPrefixes(cfg *config.Config, metricPrefixes []string) MonitoringCollectorOptions {
++	return MonitoringCollectorOptions{
++		MetricTypePrefixes:        metricPrefixes,
++		ExtraFilters:              ParseMetricExtraFilters(cfg.Filters),
++		RequestInterval:           cfg.MetricsInterval,
++		RequestOffset:             cfg.MetricsOffset,
++		IngestDelay:               cfg.MetricsIngestDelay,
++		FillMissingLabels:         cfg.FillMissingLabels,
++		DropDelegatedProjects:     cfg.DropDelegatedProjects,
++		AggregateDeltas:           cfg.AggregateDeltas,
++		DescriptorCacheTTL:        cfg.DescriptorCacheTTL,
++		DescriptorCacheOnlyGoogle: cfg.DescriptorCacheOnlyGoogle,
++	}
++}
++
++func createMonitoringService(ctx context.Context, cfg *config.Config) (*monitoring.Service, error) {
++	googleClient, err := google.DefaultClient(ctx, monitoring.MonitoringReadScope)
++	if err != nil {
++		return nil, fmt.Errorf("error creating Google client: %w", err)
++	}
++
++	googleClient.Timeout = cfg.HTTPTimeout
++	googleClient.Transport = rehttp.NewTransport(
++		googleClient.Transport,
++		rehttp.RetryAll(
++			rehttp.RetryMaxRetries(cfg.MaxRetries),
++			rehttp.RetryStatuses(cfg.RetryStatuses...),
++		),
++		rehttp.ExpJitterDelay(cfg.BackoffJitter, cfg.MaxBackoff),
++	)
++
++	service, err := monitoring.NewService(ctx, option.WithHTTPClient(googleClient), option.WithUniverseDomain(cfg.UniverseDomain))
++	if err != nil {
++		return nil, fmt.Errorf("error creating Google Stackdriver Monitoring service: %w", err)
++	}
++	return service, nil
++}
+diff --git a/config/config.go b/config/config.go
+index 1d8eba3..e630147 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -11,220 +11,96 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
++// Package config is the pure value-type definition of the stackdriver_exporter
++// configuration. It has no dependencies on the collectors package or any GCP
++// client libraries.
+ package config
+ 
+ import (
+-	"context"
+ 	"fmt"
+ 	"net/http"
+-	"slices"
+ 	"time"
+-
+-	"github.com/PuerkitoBio/rehttp"
+-	"github.com/prometheus-community/stackdriver_exporter/collectors"
+-	"github.com/prometheus-community/stackdriver_exporter/utils"
+-	"golang.org/x/oauth2/google"
+-	"google.golang.org/api/compute/v1"
+-	"google.golang.org/api/monitoring/v3"
+-	"google.golang.org/api/option"
+ )
+ 
+-type Option struct {
+-	CLIFlag string
+-	OTelKey string
+-	Default any
+-}
+-
+ const (
+ 	DefaultUniverseDomain       = "googleapis.com"
+ 	DefaultMaxRetries           = 0
+-	DefaultHTTPTimeout          = "10s"
+-	DefaultMaxBackoff           = "5s"
+-	DefaultBackoffJitter        = "1s"
+-	DefaultMetricsInterval      = "5m"
+-	DefaultMetricsOffset        = "0s"
++	DefaultHTTPTimeout          = 10 * time.Second
++	DefaultMaxBackoff           = 5 * time.Second
++	DefaultBackoffJitter        = 1 * time.Second
++	DefaultMetricsInterval      = 5 * time.Minute
++	DefaultMetricsOffset        = 0 * time.Second
+ 	DefaultMetricsIngest        = false
+ 	DefaultFillMissing          = true
+ 	DefaultDropDelegated        = false
+ 	DefaultAggregateDeltas      = false
+-	DefaultDeltasTTL            = "30m"
+-	DefaultDescriptorTTL        = "0s"
++	DefaultDeltasTTL            = 30 * time.Minute
++	DefaultDescriptorTTL        = 0 * time.Second
+ 	DefaultDescriptorGoogleOnly = true
+ )
+ 
+ // DefaultRetryStatuses must be treated as immutable after declaration.
+ var DefaultRetryStatuses = []int{http.StatusServiceUnavailable}
+ 
+-var (
+-	ProjectIDs           = Option{CLIFlag: "google.project-ids", OTelKey: "project_ids"}
+-	ProjectsFilter       = Option{CLIFlag: "google.projects.filter", OTelKey: "projects_filter"}
+-	UniverseDomain       = Option{CLIFlag: "google.universe-domain", OTelKey: "universe_domain", Default: DefaultUniverseDomain}
+-	MaxRetries           = Option{CLIFlag: "stackdriver.max-retries", OTelKey: "max_retries", Default: DefaultMaxRetries}
+-	HTTPTimeout          = Option{CLIFlag: "stackdriver.http-timeout", OTelKey: "http_timeout", Default: DefaultHTTPTimeout}
+-	MaxBackoff           = Option{CLIFlag: "stackdriver.max-backoff", OTelKey: "max_backoff", Default: DefaultMaxBackoff}
+-	BackoffJitter        = Option{CLIFlag: "stackdriver.backoff-jitter", OTelKey: "backoff_jitter", Default: DefaultBackoffJitter}
+-	RetryStatuses        = Option{CLIFlag: "stackdriver.retry-statuses", OTelKey: "retry_statuses", Default: DefaultRetryStatuses}
+-	MetricsPrefixes      = Option{CLIFlag: "monitoring.metrics-prefixes", OTelKey: "metrics_prefixes"}
+-	MetricsInterval      = Option{CLIFlag: "monitoring.metrics-interval", OTelKey: "metrics_interval", Default: DefaultMetricsInterval}
+-	MetricsOffset        = Option{CLIFlag: "monitoring.metrics-offset", OTelKey: "metrics_offset", Default: DefaultMetricsOffset}
+-	MetricsIngest        = Option{CLIFlag: "monitoring.metrics-ingest-delay", OTelKey: "metrics_ingest_delay", Default: DefaultMetricsIngest}
+-	FillMissing          = Option{CLIFlag: "collector.fill-missing-labels", OTelKey: "fill_missing_labels", Default: DefaultFillMissing}
+-	DropDelegated        = Option{CLIFlag: "monitoring.drop-delegated-projects", OTelKey: "drop_delegated_projects", Default: DefaultDropDelegated}
+-	Filters              = Option{CLIFlag: "monitoring.filters", OTelKey: "filters"}
+-	AggregateDeltas      = Option{CLIFlag: "monitoring.aggregate-deltas", OTelKey: "aggregate_deltas", Default: DefaultAggregateDeltas}
+-	DeltasTTL            = Option{CLIFlag: "monitoring.aggregate-deltas-ttl", OTelKey: "aggregate_deltas_ttl", Default: DefaultDeltasTTL}
+-	DescriptorTTL        = Option{CLIFlag: "monitoring.descriptor-cache-ttl", OTelKey: "descriptor_cache_ttl", Default: DefaultDescriptorTTL}
+-	DescriptorGoogleOnly = Option{CLIFlag: "monitoring.descriptor-cache-only-google", OTelKey: "descriptor_cache_only_google", Default: DefaultDescriptorGoogleOnly}
+-
+-	AllOptions = []Option{
+-		ProjectIDs,
+-		ProjectsFilter,
+-		UniverseDomain,
+-		MaxRetries,
+-		HTTPTimeout,
+-		MaxBackoff,
+-		BackoffJitter,
+-		RetryStatuses,
+-		MetricsPrefixes,
+-		MetricsInterval,
+-		MetricsOffset,
+-		MetricsIngest,
+-		FillMissing,
+-		DropDelegated,
+-		Filters,
+-		AggregateDeltas,
+-		DeltasTTL,
+-		DescriptorTTL,
+-		DescriptorGoogleOnly,
+-	}
+-)
+-
+-type RuntimeConfig struct {
+-	ProjectIDs           []string
+-	ProjectsFilter       string
+-	UniverseDomain       string
+-	MaxRetries           int
+-	HTTPTimeout          time.Duration
+-	MaxBackoff           time.Duration
+-	BackoffJitter        time.Duration
+-	RetryStatuses        []int
+-	MetricsPrefixes      []string
+-	MetricsInterval      time.Duration
+-	MetricsOffset        time.Duration
+-	MetricsIngest        bool
+-	FillMissing          bool
+-	DropDelegated        bool
+-	Filters              []string
+-	AggregateDeltas      bool
+-	DeltasTTL            time.Duration
+-	DescriptorTTL        time.Duration
+-	DescriptorGoogleOnly bool
++type Config struct {
++	ProjectIDs                []string
++	ProjectsFilter            string
++	UniverseDomain            string
++	MaxRetries                int
++	HTTPTimeout               time.Duration
++	MaxBackoff                time.Duration
++	BackoffJitter             time.Duration
++	RetryStatuses             []int
++	MetricsPrefixes           []string
++	MetricsInterval           time.Duration
++	MetricsOffset             time.Duration
++	MetricsIngestDelay        bool
++	FillMissingLabels         bool
++	DropDelegatedProjects     bool
++	Filters                   []string
++	AggregateDeltas           bool
++	AggregateDeltasTTL        time.Duration
++	DescriptorCacheTTL        time.Duration
++	DescriptorCacheOnlyGoogle bool
++
++	// validated is set by Validate on success.
++	validated bool
+ }
+ 
+-func OTelComponentDefaults() map[string]interface{} {
+-	defaults := make(map[string]interface{}, len(AllOptions))
+-	for _, option := range AllOptions {
+-		if option.Default == nil {
+-			continue
+-		}
+-		// Option defaults are shared values and must not be mutated by callers.
+-		defaults[option.OTelKey] = option.Default
++// NewConfigWithDefaults returns a Config populated with package defaults. Fields
++// without a default (project IDs, metrics prefixes, filters) are left zero and
++// must be set by the caller before Validate succeeds.
++func NewConfigWithDefaults() *Config {
++	return &Config{
++		UniverseDomain:            DefaultUniverseDomain,
++		MaxRetries:                DefaultMaxRetries,
++		HTTPTimeout:               DefaultHTTPTimeout,
++		MaxBackoff:                DefaultMaxBackoff,
++		BackoffJitter:             DefaultBackoffJitter,
++		RetryStatuses:             append([]int(nil), DefaultRetryStatuses...),
++		MetricsInterval:           DefaultMetricsInterval,
++		MetricsOffset:             DefaultMetricsOffset,
++		MetricsIngestDelay:        DefaultMetricsIngest,
++		FillMissingLabels:         DefaultFillMissing,
++		DropDelegatedProjects:     DefaultDropDelegated,
++		AggregateDeltas:           DefaultAggregateDeltas,
++		AggregateDeltasTTL:        DefaultDeltasTTL,
++		DescriptorCacheTTL:        DefaultDescriptorTTL,
++		DescriptorCacheOnlyGoogle: DefaultDescriptorGoogleOnly,
+ 	}
+-	return defaults
+ }
+ 
+-func ParseDuration(name, raw string) (time.Duration, error) {
+-	duration, err := time.ParseDuration(raw)
+-	if err != nil {
+-		return 0, fmt.Errorf("%s: invalid duration %q: %w", name, raw, err)
+-	}
+-	return duration, nil
+-}
+-
+-func ValidateRetryStatuses(codes []int) error {
+-	for _, code := range codes {
+-		if code < http.StatusContinue || code > 599 {
+-			return fmt.Errorf("retry status %d is not a valid HTTP status code", code)
+-		}
++// Validate reports configuration errors that prevent the exporter from starting
++// and marks the Config as validated.
++func (c *Config) Validate() error {
++	if len(c.MetricsPrefixes) == 0 {
++		return fmt.Errorf("metrics_prefixes must have at least one entry")
+ 	}
++	c.validated = true
+ 	return nil
+ }
+ 
+-func ParseMetricPrefixes(prefixes []string) []string {
+-	return utils.ParseMetricTypePrefixes(prefixes)
+-}
+-
+-func ParseMetricFilters(filters []string) []collectors.MetricFilter {
+-	return collectors.ParseMetricExtraFilters(filters)
+-}
+-
+-func DeduplicateProjectIDs(projectIDs []string) []string {
+-	normalized := slices.Clone(projectIDs)
+-	slices.Sort(normalized)
+-	return slices.Compact(normalized)
+-}
+-
+-func (c RuntimeConfig) MonitoringCollectorOptions() collectors.MonitoringCollectorOptions {
+-	return c.MonitoringCollectorOptionsForPrefixes(ParseMetricPrefixes(c.MetricsPrefixes))
+-}
+-
+-func (c RuntimeConfig) MonitoringCollectorOptionsForPrefixes(metricPrefixes []string) collectors.MonitoringCollectorOptions {
+-	return collectors.MonitoringCollectorOptions{
+-		MetricTypePrefixes:        metricPrefixes,
+-		ExtraFilters:              ParseMetricFilters(c.Filters),
+-		RequestInterval:           c.MetricsInterval,
+-		RequestOffset:             c.MetricsOffset,
+-		IngestDelay:               c.MetricsIngest,
+-		FillMissingLabels:         c.FillMissing,
+-		DropDelegatedProjects:     c.DropDelegated,
+-		AggregateDeltas:           c.AggregateDeltas,
+-		DescriptorCacheTTL:        c.DescriptorTTL,
+-		DescriptorCacheOnlyGoogle: c.DescriptorGoogleOnly,
+-	}
+-}
+-
+-func (c RuntimeConfig) CollectorCacheTTL() time.Duration {
+-	if c.AggregateDeltas || c.DescriptorTTL > 0 {
+-		ttl := c.DeltasTTL
+-		if c.DescriptorTTL > ttl {
+-			ttl = c.DescriptorTTL
+-		}
+-		return ttl
+-	}
+-
+-	return 2 * time.Hour
+-}
+-
+-func DiscoverDefaultProjectID(ctx context.Context) (string, error) {
+-	credentials, err := google.FindDefaultCredentials(ctx, compute.ComputeScope)
+-	if err != nil {
+-		return "", err
+-	}
+-	if credentials.ProjectID == "" {
+-		return "", fmt.Errorf("unable to identify default GCP project")
+-	}
+-	return credentials.ProjectID, nil
+-}
+-
+-func (c RuntimeConfig) CreateMonitoringService(ctx context.Context) (*monitoring.Service, error) {
+-	googleClient, err := google.DefaultClient(ctx, monitoring.MonitoringReadScope)
+-	if err != nil {
+-		return nil, fmt.Errorf("error creating Google client: %w", err)
+-	}
+-
+-	googleClient.Timeout = c.HTTPTimeout
+-	googleClient.Transport = rehttp.NewTransport(
+-		googleClient.Transport,
+-		rehttp.RetryAll(
+-			rehttp.RetryMaxRetries(c.MaxRetries),
+-			rehttp.RetryStatuses(c.RetryStatuses...),
+-		),
+-		rehttp.ExpJitterDelay(c.BackoffJitter, c.MaxBackoff),
+-	)
+-
+-	service, err := monitoring.NewService(ctx, option.WithHTTPClient(googleClient), option.WithUniverseDomain(c.UniverseDomain))
+-	if err != nil {
+-		return nil, fmt.Errorf("error creating Google Stackdriver Monitoring service: %w", err)
+-	}
+-	return service, nil
++// Validated reports whether Validate has been called successfully on c.
++func (c *Config) Validated() bool {
++	return c.validated
+ }
+diff --git a/config/config_test.go b/config/config_test.go
+index c8299a3..07b44e3 100644
+--- a/config/config_test.go
++++ b/config/config_test.go
+@@ -13,212 +13,67 @@
+ 
+ package config
+ 
+-import (
+-	"reflect"
+-	"testing"
+-	"time"
++import "testing"
+ 
+-	"github.com/prometheus-community/stackdriver_exporter/collectors"
+-)
+-
+-func TestParseDuration(t *testing.T) {
++func TestValidate(t *testing.T) {
+ 	t.Parallel()
+ 
+ 	tests := []struct {
+ 		name    string
+-		raw     string
+-		want    time.Duration
++		cfg     Config
+ 		wantErr bool
+ 	}{
+ 		{
+-			name: "valid",
+-			raw:  "5m",
+-			want: 5 * time.Minute,
+-		},
+-		{
+-			name:    "invalid",
+-			raw:     "nope",
++			name:    "missing metrics prefixes",
++			cfg:     Config{},
+ 			wantErr: true,
+ 		},
+-	}
+-
+-	for _, tt := range tests {
+-		tt := tt
+-		t.Run(tt.name, func(t *testing.T) {
+-			t.Parallel()
+-
+-			got, err := ParseDuration("metrics_interval", tt.raw)
+-			if (err != nil) != tt.wantErr {
+-				t.Fatalf("ParseDuration() error = %v, wantErr %v", err, tt.wantErr)
+-			}
+-			if err == nil && got != tt.want {
+-				t.Fatalf("ParseDuration() = %v, want %v", got, tt.want)
+-			}
+-		})
+-	}
+-}
+-
+-func TestValidateRetryStatuses(t *testing.T) {
+-	t.Parallel()
+-
+-	tests := []struct {
+-		name    string
+-		codes   []int
+-		wantErr bool
+-	}{
+ 		{
+-			name:  "valid",
+-			codes: []int{429, 503},
+-		},
+-		{
+-			name:    "too low",
+-			codes:   []int{99},
+-			wantErr: true,
+-		},
+-		{
+-			name:    "too high",
+-			codes:   []int{600},
+-			wantErr: true,
++			name:    "valid with single prefix",
++			cfg:     Config{MetricsPrefixes: []string{"compute.googleapis.com/"}},
++			wantErr: false,
+ 		},
+ 	}
+ 
+ 	for _, tt := range tests {
+-		tt := tt
+ 		t.Run(tt.name, func(t *testing.T) {
+ 			t.Parallel()
+ 
+-			err := ValidateRetryStatuses(tt.codes)
++			err := tt.cfg.Validate()
+ 			if (err != nil) != tt.wantErr {
+-				t.Fatalf("ValidateRetryStatuses() error = %v, wantErr %v", err, tt.wantErr)
++				t.Fatalf("Validate() err = %v, wantErr = %v", err, tt.wantErr)
++			}
++			if got := tt.cfg.Validated(); got != (err == nil) {
++				t.Fatalf("Validated() = %v after Validate err = %v; want %v", got, err, err == nil)
+ 			}
+ 		})
+ 	}
+ }
+ 
+-func TestAllOptionsHaveUniqueKeys(t *testing.T) {
+-	t.Parallel()
+-
+-	cliFlags := make(map[string]struct{}, len(AllOptions))
+-	otelKeys := make(map[string]struct{}, len(AllOptions))
+-
+-	for _, option := range AllOptions {
+-		if option.CLIFlag == "" {
+-			t.Fatal("AllOptions contains an option with an empty CLI flag")
+-		}
+-		if _, ok := cliFlags[option.CLIFlag]; ok {
+-			t.Fatalf("AllOptions contains duplicate CLI flag %q", option.CLIFlag)
+-		}
+-		cliFlags[option.CLIFlag] = struct{}{}
+-
+-		if option.OTelKey == "" {
+-			t.Fatal("AllOptions contains an option with an empty OTel key")
+-		}
+-		if _, ok := otelKeys[option.OTelKey]; ok {
+-			t.Fatalf("AllOptions contains duplicate OTel key %q", option.OTelKey)
+-		}
+-		otelKeys[option.OTelKey] = struct{}{}
+-	}
+-}
+-
+-func TestNormalizeProjectIDs(t *testing.T) {
++func TestValidatedDefaultsFalse(t *testing.T) {
+ 	t.Parallel()
+ 
+-	input := []string{"project-b", "project-a", "project-b"}
+-	want := []string{"project-a", "project-b"}
+-
+-	got := DeduplicateProjectIDs(input)
+-	if !reflect.DeepEqual(got, want) {
+-		t.Fatalf("NormalizeProjectIDs() = %#v, want %#v", got, want)
+-	}
+-	if !reflect.DeepEqual(input, []string{"project-b", "project-a", "project-b"}) {
+-		t.Fatalf("NormalizeProjectIDs() mutated input = %#v", input)
++	c := Config{}
++	if c.Validated() {
++		t.Fatal("Validated() = true on fresh Config; expected false until Validate is called")
+ 	}
+ }
+ 
+-func TestRuntimeConfigMonitoringCollectorOptions(t *testing.T) {
++func TestNewConfigWithDefaults(t *testing.T) {
+ 	t.Parallel()
+ 
+-	cfg := RuntimeConfig{
+-		MetricsPrefixes:      []string{"pubsub.googleapis.com/topic/", "compute.googleapis.com/instance"},
+-		Filters:              []string{"pubsub.googleapis.com/topic:resource.labels.topic_id=has_substring(\"prod\")"},
+-		MetricsInterval:      5 * time.Minute,
+-		MetricsOffset:        30 * time.Second,
+-		MetricsIngest:        true,
+-		FillMissing:          true,
+-		DropDelegated:        true,
+-		AggregateDeltas:      true,
+-		DescriptorTTL:        10 * time.Minute,
+-		DescriptorGoogleOnly: true,
++	c := NewConfigWithDefaults()
++	if c.UniverseDomain != DefaultUniverseDomain {
++		t.Errorf("UniverseDomain = %q, want %q", c.UniverseDomain, DefaultUniverseDomain)
+ 	}
+-
+-	want := collectors.MonitoringCollectorOptions{
+-		MetricTypePrefixes:        ParseMetricPrefixes(cfg.MetricsPrefixes),
+-		ExtraFilters:              []collectors.MetricFilter{{TargetedMetricPrefix: "pubsub.googleapis.com/topic", FilterQuery: "resource.labels.topic_id=has_substring(\"prod\")"}},
+-		RequestInterval:           5 * time.Minute,
+-		RequestOffset:             30 * time.Second,
+-		IngestDelay:               true,
+-		FillMissingLabels:         true,
+-		DropDelegatedProjects:     true,
+-		AggregateDeltas:           true,
+-		DescriptorCacheTTL:        10 * time.Minute,
+-		DescriptorCacheOnlyGoogle: true,
++	if c.HTTPTimeout != DefaultHTTPTimeout {
++		t.Errorf("HTTPTimeout = %v, want %v", c.HTTPTimeout, DefaultHTTPTimeout)
+ 	}
+-
+-	got := cfg.MonitoringCollectorOptions()
+-	if !reflect.DeepEqual(got, want) {
+-		t.Fatalf("MonitoringCollectorOptions() = %#v, want %#v", got, want)
++	if len(c.RetryStatuses) != len(DefaultRetryStatuses) || c.RetryStatuses[0] != DefaultRetryStatuses[0] {
++		t.Errorf("RetryStatuses = %v, want %v", c.RetryStatuses, DefaultRetryStatuses)
+ 	}
+-}
+-
+-func TestRuntimeConfigCollectorCacheTTL(t *testing.T) {
+-	t.Parallel()
+-
+-	tests := []struct {
+-		name string
+-		cfg  RuntimeConfig
+-		want time.Duration
+-	}{
+-		{
+-			name: "default fallback",
+-			cfg:  RuntimeConfig{},
+-			want: 2 * time.Hour,
+-		},
+-		{
+-			name: "aggregate deltas uses deltas ttl",
+-			cfg: RuntimeConfig{
+-				AggregateDeltas: true,
+-				DeltasTTL:       30 * time.Minute,
+-			},
+-			want: 30 * time.Minute,
+-		},
+-		{
+-			name: "descriptor ttl wins when larger",
+-			cfg: RuntimeConfig{
+-				AggregateDeltas: true,
+-				DeltasTTL:       30 * time.Minute,
+-				DescriptorTTL:   45 * time.Minute,
+-			},
+-			want: 45 * time.Minute,
+-		},
+-		{
+-			name: "descriptor cache alone enables cache ttl",
+-			cfg: RuntimeConfig{
+-				DeltasTTL:     30 * time.Minute,
+-				DescriptorTTL: 15 * time.Minute,
+-			},
+-			want: 30 * time.Minute,
+-		},
+-	}
+-
+-	for _, tt := range tests {
+-		tt := tt
+-		t.Run(tt.name, func(t *testing.T) {
+-			t.Parallel()
+-
+-			got := tt.cfg.CollectorCacheTTL()
+-			if got != tt.want {
+-				t.Fatalf("CollectorCacheTTL() = %v, want %v", got, tt.want)
+-			}
+-		})
++	c.RetryStatuses[0] = 999
++	if DefaultRetryStatuses[0] == 999 {
++		t.Fatal("NewConfigWithDefaults did not copy RetryStatuses; default mutated")
+ 	}
+ }
+diff --git a/delta/counter.go b/delta/counter.go
+index 67da32c..06c5cb9 100644
+--- a/delta/counter.go
++++ b/delta/counter.go
+@@ -39,14 +39,12 @@ type InMemoryCounterStore struct {
+ }
+ 
+ // NewInMemoryCounterStore returns an implementation of CounterStore which is persisted in-memory
+-func NewInMemoryCounterStore(logger *slog.Logger, ttl time.Duration) *InMemoryCounterStore {
+-	store := &InMemoryCounterStore{
++func NewInMemoryCounterStore(logger *slog.Logger, ttl time.Duration) collectors.DeltaCounterStore {
++	return &InMemoryCounterStore{
+ 		store:  &sync.Map{},
+ 		logger: logger,
+ 		ttl:    ttl,
+ 	}
+-
+-	return store
+ }
+ 
+ func (s *InMemoryCounterStore) Increment(metricDescriptor *monitoring.MetricDescriptor, currentValue *collectors.ConstMetric) {
+diff --git a/delta/counter_test.go b/delta/counter_test.go
+index 2236c81..3affc6f 100644
+--- a/delta/counter_test.go
++++ b/delta/counter_test.go
+@@ -26,7 +26,7 @@ import (
+ )
+ 
+ var _ = Describe("Counter", func() {
+-	var store *delta.InMemoryCounterStore
++	var store collectors.DeltaCounterStore
+ 	var metric *collectors.ConstMetric
+ 	descriptor := &monitoring.MetricDescriptor{Name: "This is a metric"}
+ 
+diff --git a/delta/histogram.go b/delta/histogram.go
+index e82162a..eb28bba 100644
+--- a/delta/histogram.go
++++ b/delta/histogram.go
+@@ -39,14 +39,12 @@ type InMemoryHistogramStore struct {
+ }
+ 
+ // NewInMemoryHistogramStore returns an implementation of HistogramStore which is persisted in-memory
+-func NewInMemoryHistogramStore(logger *slog.Logger, ttl time.Duration) *InMemoryHistogramStore {
+-	store := &InMemoryHistogramStore{
++func NewInMemoryHistogramStore(logger *slog.Logger, ttl time.Duration) collectors.DeltaHistogramStore {
++	return &InMemoryHistogramStore{
+ 		store:  &sync.Map{},
+ 		logger: logger,
+ 		ttl:    ttl,
+ 	}
+-
+-	return store
+ }
+ 
+ func (s *InMemoryHistogramStore) Increment(metricDescriptor *monitoring.MetricDescriptor, currentValue *collectors.HistogramMetric) {
+diff --git a/delta/histogram_test.go b/delta/histogram_test.go
+index 35f7920..ed3dc9e 100644
+--- a/delta/histogram_test.go
++++ b/delta/histogram_test.go
+@@ -26,7 +26,7 @@ import (
+ )
+ 
+ var _ = Describe("HistogramStore", func() {
+-	var store *delta.InMemoryHistogramStore
++	var store collectors.DeltaHistogramStore
+ 	var histogram *collectors.HistogramMetric
+ 	descriptor := &monitoring.MetricDescriptor{Name: "This is a metric"}
+ 	bucketKey := 1.00000000000000000001
+diff --git a/stackdriver_exporter.go b/stackdriver_exporter.go
+index e20242b..fa7cda2 100644
+--- a/stackdriver_exporter.go
++++ b/stackdriver_exporter.go
+@@ -32,12 +32,10 @@ import (
+ 	"github.com/prometheus/common/version"
+ 	"github.com/prometheus/exporter-toolkit/web"
+ 	webflag "github.com/prometheus/exporter-toolkit/web/kingpinflag"
+-	"google.golang.org/api/monitoring/v3"
+ 
+ 	"github.com/prometheus-community/stackdriver_exporter/collectors"
+ 	"github.com/prometheus-community/stackdriver_exporter/config"
+ 	"github.com/prometheus-community/stackdriver_exporter/delta"
+-	"github.com/prometheus-community/stackdriver_exporter/utils"
+ )
+ 
+ var (
+@@ -58,35 +56,35 @@ var (
+ 	).String()
+ 
+ 	projectIDs = kingpin.Flag(
+-		config.ProjectIDs.CLIFlag, "Repeatable flag of Google Project IDs",
++		"google.project-ids", "Repeatable flag of Google Project IDs",
+ 	).Strings()
+ 
+ 	projectsFilter = kingpin.Flag(
+-		config.ProjectsFilter.CLIFlag, "Google projects search filter.",
++		"google.projects.filter", "Google projects search filter.",
+ 	).String()
+ 
+ 	googleUniverseDomain = kingpin.Flag(
+-		config.UniverseDomain.CLIFlag, "The Cloud universe to use.",
++		"google.universe-domain", "The Cloud universe to use.",
+ 	).Default(config.DefaultUniverseDomain).String()
+ 
+ 	stackdriverMaxRetries = kingpin.Flag(
+-		config.MaxRetries.CLIFlag, "Max number of retries that should be attempted on 503 errors from stackdriver.",
++		"stackdriver.max-retries", "Max number of retries that should be attempted on 503 errors from stackdriver.",
+ 	).Default(strconv.Itoa(config.DefaultMaxRetries)).Int()
+ 
+ 	stackdriverHttpTimeout = kingpin.Flag(
+-		config.HTTPTimeout.CLIFlag, "How long should stackdriver_exporter wait for a result from the Stackdriver API.",
+-	).Default(config.DefaultHTTPTimeout).Duration()
++		"stackdriver.http-timeout", "How long should stackdriver_exporter wait for a result from the Stackdriver API.",
++	).Default(config.DefaultHTTPTimeout.String()).Duration()
+ 
+ 	stackdriverMaxBackoffDuration = kingpin.Flag(
+-		config.MaxBackoff.CLIFlag, "Max time between each request in an exp backoff scenario.",
+-	).Default(config.DefaultMaxBackoff).Duration()
++		"stackdriver.max-backoff", "Max time between each request in an exp backoff scenario.",
++	).Default(config.DefaultMaxBackoff.String()).Duration()
+ 
+ 	stackdriverBackoffJitterBase = kingpin.Flag(
+-		config.BackoffJitter.CLIFlag, "The amount of jitter to introduce in a exp backoff scenario.",
+-	).Default(config.DefaultBackoffJitter).Duration()
++		"stackdriver.backoff-jitter", "The amount of jitter to introduce in a exp backoff scenario.",
++	).Default(config.DefaultBackoffJitter.String()).Duration()
+ 
+ 	stackdriverRetryStatuses = kingpin.Flag(
+-		config.RetryStatuses.CLIFlag, "The HTTP statuses that should trigger a retry.",
++		"stackdriver.retry-statuses", "The HTTP statuses that should trigger a retry.",
+ 	).Default(defaultRetryStatuses()...).Ints()
+ 
+ 	// Monitoring collector flags
+@@ -95,48 +93,48 @@ var (
+ 	).String()
+ 
+ 	monitoringMetricsPrefixes = kingpin.Flag(
+-		config.MetricsPrefixes.CLIFlag, "Google Stackdriver Monitoring Metric Type prefixes. Repeat this flag to scrape multiple prefixes.",
++		"monitoring.metrics-prefixes", "Google Stackdriver Monitoring Metric Type prefixes. Repeat this flag to scrape multiple prefixes.",
+ 	).Strings()
+ 
+ 	monitoringMetricsInterval = kingpin.Flag(
+-		config.MetricsInterval.CLIFlag, "Interval to request the Google Stackdriver Monitoring Metrics for. Only the most recent data point is used.",
+-	).Default(config.DefaultMetricsInterval).Duration()
++		"monitoring.metrics-interval", "Interval to request the Google Stackdriver Monitoring Metrics for. Only the most recent data point is used.",
++	).Default(config.DefaultMetricsInterval.String()).Duration()
+ 
+ 	monitoringMetricsOffset = kingpin.Flag(
+-		config.MetricsOffset.CLIFlag, "Offset for the Google Stackdriver Monitoring Metrics interval into the past.",
+-	).Default(config.DefaultMetricsOffset).Duration()
++		"monitoring.metrics-offset", "Offset for the Google Stackdriver Monitoring Metrics interval into the past.",
++	).Default(config.DefaultMetricsOffset.String()).Duration()
+ 
+ 	monitoringMetricsIngestDelay = kingpin.Flag(
+-		config.MetricsIngest.CLIFlag, "Offset for the Google Stackdriver Monitoring Metrics interval into the past by the ingest delay from the metric's metadata.",
++		"monitoring.metrics-ingest-delay", "Offset for the Google Stackdriver Monitoring Metrics interval into the past by the ingest delay from the metric's metadata.",
+ 	).Default(strconv.FormatBool(config.DefaultMetricsIngest)).Bool()
+ 
+ 	collectorFillMissingLabels = kingpin.Flag(
+-		config.FillMissing.CLIFlag, "Fill missing metrics labels with empty string to avoid label dimensions inconsistent failure.",
++		"collector.fill-missing-labels", "Fill missing metrics labels with empty string to avoid label dimensions inconsistent failure.",
+ 	).Default(strconv.FormatBool(config.DefaultFillMissing)).Bool()
+ 
+ 	monitoringDropDelegatedProjects = kingpin.Flag(
+-		config.DropDelegated.CLIFlag, "Drop metrics from attached projects and fetch `project_id` only.",
++		"monitoring.drop-delegated-projects", "Drop metrics from attached projects and fetch `project_id` only.",
+ 	).Default(strconv.FormatBool(config.DefaultDropDelegated)).Bool()
+ 
+ 	monitoringMetricsExtraFilter = kingpin.Flag(
+-		config.Filters.CLIFlag,
++		"monitoring.filters",
+ 		"Filters. i.e: pubsub.googleapis.com/subscription:resource.labels.subscription_id=monitoring.regex.full_match(\"my-subs-prefix.*\")",
+ 	).Strings()
+ 
+ 	monitoringMetricsAggregateDeltas = kingpin.Flag(
+-		config.AggregateDeltas.CLIFlag, "If enabled will treat all DELTA metrics as an in-memory counter instead of a gauge",
++		"monitoring.aggregate-deltas", "If enabled will treat all DELTA metrics as an in-memory counter instead of a gauge",
+ 	).Default(strconv.FormatBool(config.DefaultAggregateDeltas)).Bool()
+ 
+ 	monitoringMetricsDeltasTTL = kingpin.Flag(
+-		config.DeltasTTL.CLIFlag, "How long should a delta metric continue to be exported after GCP stops producing a metric",
+-	).Default(config.DefaultDeltasTTL).Duration()
++		"monitoring.aggregate-deltas-ttl", "How long should a delta metric continue to be exported after GCP stops producing a metric",
++	).Default(config.DefaultDeltasTTL.String()).Duration()
+ 
+ 	monitoringDescriptorCacheTTL = kingpin.Flag(
+-		config.DescriptorTTL.CLIFlag, "How long should the metric descriptors for a prefixed be cached for",
+-	).Default(config.DefaultDescriptorTTL).Duration()
++		"monitoring.descriptor-cache-ttl", "How long should the metric descriptors for a prefixed be cached for",
++	).Default(config.DefaultDescriptorTTL.String()).Duration()
+ 
+ 	monitoringDescriptorCacheOnlyGoogle = kingpin.Flag(
+-		config.DescriptorGoogleOnly.CLIFlag, "Only cache descriptors for *.googleapis.com metrics",
++		"monitoring.descriptor-cache-only-google", "Only cache descriptors for *.googleapis.com metrics",
+ 	).Default(strconv.FormatBool(config.DefaultDescriptorGoogleOnly)).Bool()
+ )
+ 
+@@ -145,14 +143,10 @@ func init() {
+ }
+ 
+ type handler struct {
+-	handler http.Handler
+-	logger  *slog.Logger
+-
+-	projectIDs         []string
+-	cfg                config.RuntimeConfig
++	handler            http.Handler
++	logger             *slog.Logger
++	runtime            *collectors.Runtime
+ 	additionalGatherer prometheus.Gatherer
+-	m                  *monitoring.Service
+-	collectors         *collectors.CollectorCache
+ }
+ 
+ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+@@ -163,63 +157,59 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 	}
+ 
+ 	if len(filters) > 0 {
+-		h.innerHandler(filters).ServeHTTP(w, r)
++		handler, err := h.filteredHandler(filters)
++		if err != nil {
++			h.logger.Error("error creating monitoring collector", "err", err)
++			http.Error(w, "internal error", http.StatusInternalServerError)
++			return
++		}
++		handler.ServeHTTP(w, r)
+ 		return
+ 	}
+ 
+ 	h.handler.ServeHTTP(w, r)
+ }
+ 
+-func newHandler(projectIDs []string, cfg config.RuntimeConfig, m *monitoring.Service, logger *slog.Logger, additionalGatherer prometheus.Gatherer) *handler {
+-	logger.Info("Creating collector cache", "ttl", cfg.CollectorCacheTTL())
+-
++func newHandler(runtime *collectors.Runtime, logger *slog.Logger, additionalGatherer prometheus.Gatherer) (*handler, error) {
+ 	h := &handler{
+ 		logger:             logger,
+-		projectIDs:         projectIDs,
+-		cfg:                cfg,
++		runtime:            runtime,
+ 		additionalGatherer: additionalGatherer,
+-		m:                  m,
+-		collectors:         collectors.NewCollectorCache(cfg.CollectorCacheTTL()),
+ 	}
+ 
+-	h.handler = h.innerHandler(nil)
+-	return h
++	cs, err := runtime.Collectors()
++	if err != nil {
++		return nil, fmt.Errorf("build collectors: %w", err)
++	}
++	registry := prometheus.NewRegistry()
++	for _, c := range cs {
++		if err := registry.Register(c); err != nil {
++			return nil, fmt.Errorf("register collector: %w", err)
++		}
++	}
++	h.handler = h.handlerFor(registry)
++	return h, nil
+ }
+ 
+-func (h *handler) getCollector(project string, filters map[string]bool) (*collectors.MonitoringCollector, error) {
+-	filterdPrefixes := h.filterMetricTypePrefixes(filters)
+-	collectorKey := fmt.Sprintf("%s-%v", project, filterdPrefixes)
+-
+-	if collector, found := h.collectors.Get(collectorKey); found {
+-		return collector, nil
++func (h *handler) filteredHandler(filters map[string]bool) (http.Handler, error) {
++	prefixFilter := make([]string, 0, len(filters))
++	for f := range filters {
++		prefixFilter = append(prefixFilter, f)
+ 	}
++	slices.Sort(prefixFilter)
+ 
+-	collector, err := collectors.NewMonitoringCollector(
+-		project,
+-		h.m,
+-		h.cfg.MonitoringCollectorOptionsForPrefixes(filterdPrefixes),
+-		h.logger,
+-		delta.NewInMemoryCounterStore(h.logger, h.cfg.DeltasTTL),
+-		delta.NewInMemoryHistogramStore(h.logger, h.cfg.DeltasTTL),
+-	)
++	cs, err := h.runtime.CollectorsForPrefixes(prefixFilter)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	h.collectors.Store(collectorKey, collector)
+-	return collector, nil
+-}
+-
+-func (h *handler) innerHandler(filters map[string]bool) http.Handler {
+ 	registry := prometheus.NewRegistry()
+-
+-	for _, project := range h.projectIDs {
+-		monitoringCollector, err := h.getCollector(project, filters)
+-		if err != nil {
+-			h.logger.Error("error creating monitoring collector", "err", err)
+-			os.Exit(1)
+-		}
+-		registry.MustRegister(monitoringCollector)
++	for _, c := range cs {
++		registry.MustRegister(c)
+ 	}
++	return h.handlerFor(registry), nil
++}
++
++func (h *handler) handlerFor(registry *prometheus.Registry) http.Handler {
+ 	var gatherers prometheus.Gatherer = registry
+ 	if h.additionalGatherer != nil {
+ 		gatherers = prometheus.Gatherers{
+@@ -228,27 +218,9 @@ func (h *handler) innerHandler(filters map[string]bool) http.Handler {
+ 		}
+ 	}
+ 	opts := promhttp.HandlerOpts{ErrorLog: slog.NewLogLogger(h.logger.Handler(), slog.LevelError)}
+-	// Delegate http serving to Prometheus client library, which will call collector.Collect.
+ 	return promhttp.HandlerFor(gatherers, opts)
+ }
+ 
+-// filterMetricTypePrefixes filters the initial list of metric type prefixes, with the ones coming from an individual
+-// prometheus collect request.
+-func (h *handler) filterMetricTypePrefixes(filters map[string]bool) []string {
+-	filteredPrefixes := h.cfg.MetricsPrefixes
+-	if len(filters) > 0 {
+-		filteredPrefixes = nil
+-		for _, prefix := range h.cfg.MetricsPrefixes {
+-			for filter := range filters {
+-				if strings.HasPrefix(filter, prefix) {
+-					filteredPrefixes = append(filteredPrefixes, filter)
+-				}
+-			}
+-		}
+-	}
+-	return config.ParseMetricPrefixes(filteredPrefixes)
+-}
+-
+ func main() {
+ 	promslogConfig := &promslog.Config{}
+ 	flag.AddFlags(kingpin.CommandLine, promslogConfig)
+@@ -264,70 +236,54 @@ func main() {
+ 	if *monitoringMetricsTypePrefixes != "" {
+ 		logger.Warn("The monitoring.metrics-type-prefixes flag is deprecated and will be replaced by monitoring.metrics-prefix.")
+ 	}
+-	if *monitoringMetricsTypePrefixes == "" && len(*monitoringMetricsPrefixes) == 0 {
+-		logger.Error("At least one GCP monitoring prefix is required.")
+-		os.Exit(1)
+-	}
+-
+ 	ctx := context.Background()
+-	runtimeCfg := collectorRuntimeConfigFromFlags()
+-	var discoveredProjectIDs []string
+-
+-	if len(runtimeCfg.ProjectIDs) == 0 && *projectID == "" && runtimeCfg.ProjectsFilter == "" {
+-		logger.Info("Neither projectIDs nor projectsFilter was provided. Trying to discover it")
+-		defaultProject, err := config.DiscoverDefaultProjectID(ctx)
+-		if err != nil {
+-			logger.Error("no explicit projectIDs and error trying to discover default GCloud project", "err", err)
+-			os.Exit(1)
+-		}
+-		discoveredProjectIDs = append(discoveredProjectIDs, defaultProject)
+-	}
+-
+-	monitoringService, err := runtimeCfg.CreateMonitoringService(ctx)
+-	if err != nil {
+-		logger.Error("failed to create monitoring service", "err", err)
+-		os.Exit(1)
+-	}
+ 
+-	if runtimeCfg.ProjectsFilter != "" {
+-		projectIDsFromFilter, err := utils.GetProjectIDsFromFilter(ctx, runtimeCfg.ProjectsFilter)
+-		if err != nil {
+-			logger.Error("failed to get project IDs from filter", "err", err)
+-			os.Exit(1)
+-		}
+-		discoveredProjectIDs = append(discoveredProjectIDs, projectIDsFromFilter...)
+-	}
++	cfg := collectorConfigFromFlags()
+ 
+-	if len(runtimeCfg.ProjectIDs) > 0 {
+-		discoveredProjectIDs = append(discoveredProjectIDs, runtimeCfg.ProjectIDs...)
+-	}
+ 	if *projectID != "" {
+-		discoveredProjectIDs = append(discoveredProjectIDs, strings.Split(*projectID, ",")...)
++		cfg.ProjectIDs = append(cfg.ProjectIDs, strings.Split(*projectID, ",")...)
+ 	}
+-
+ 	if *monitoringMetricsTypePrefixes != "" {
+-		runtimeCfg.MetricsPrefixes = append(runtimeCfg.MetricsPrefixes, strings.Split(*monitoringMetricsTypePrefixes, ",")...)
++		cfg.MetricsPrefixes = append(cfg.MetricsPrefixes, strings.Split(*monitoringMetricsTypePrefixes, ",")...)
+ 	}
+ 
+ 	logger.Info(
+ 		"Starting stackdriver_exporter",
+ 		"version", version.Info(),
+ 		"build_context", version.BuildContext(),
+-		"metric_prefixes", fmt.Sprintf("%v", runtimeCfg.MetricsPrefixes),
+-		"extra_filters", strings.Join(runtimeCfg.Filters, ","),
+-		"projectIDs", fmt.Sprintf("%v", discoveredProjectIDs),
+-		"projectsFilter", runtimeCfg.ProjectsFilter,
++		"metric_prefixes", fmt.Sprintf("%v", cfg.MetricsPrefixes),
++		"extra_filters", strings.Join(cfg.Filters, ","),
++		"projectIDs", fmt.Sprintf("%v", cfg.ProjectIDs),
++		"projectsFilter", cfg.ProjectsFilter,
+ 	)
+ 
+-	uniqueProjectIds := config.DeduplicateProjectIDs(discoveredProjectIDs)
++	if err := cfg.Validate(); err != nil {
++		logger.Error("invalid configuration", "err", err)
++		os.Exit(1)
++	}
++
++	runtime, err := collectors.NewRuntime(ctx, logger, cfg, delta.NewInMemoryCounterStore, delta.NewInMemoryHistogramStore)
++	if err != nil {
++		logger.Error("failed to initialize", "err", err)
++		os.Exit(1)
++	}
++	runtime = runtime.WithCache()
+ 
+ 	if *metricsPath == *stackdriverMetricsPath {
+-		handler := newHandler(uniqueProjectIds, runtimeCfg, monitoringService, logger, prometheus.DefaultGatherer)
+-		http.Handle(*metricsPath, promhttp.InstrumentMetricHandler(prometheus.DefaultRegisterer, handler))
++		h, err := newHandler(runtime, logger, prometheus.DefaultGatherer)
++		if err != nil {
++			logger.Error("failed to build handler", "err", err)
++			os.Exit(1)
++		}
++		http.Handle(*metricsPath, promhttp.InstrumentMetricHandler(prometheus.DefaultRegisterer, h))
+ 	} else {
+ 		logger.Info("Serving Stackdriver metrics at separate path", "path", *stackdriverMetricsPath)
+-		handler := newHandler(uniqueProjectIds, runtimeCfg, monitoringService, logger, nil)
+-		http.Handle(*stackdriverMetricsPath, promhttp.InstrumentMetricHandler(prometheus.DefaultRegisterer, handler))
++		h, err := newHandler(runtime, logger, nil)
++		if err != nil {
++			logger.Error("failed to build handler", "err", err)
++			os.Exit(1)
++		}
++		http.Handle(*stackdriverMetricsPath, promhttp.InstrumentMetricHandler(prometheus.DefaultRegisterer, h))
+ 		http.Handle(*metricsPath, promhttp.Handler())
+ 	}
+ 
+@@ -366,27 +322,27 @@ func main() {
+ 	}
+ }
+ 
+-func collectorRuntimeConfigFromFlags() config.RuntimeConfig {
+-	return config.RuntimeConfig{
+-		ProjectIDs:           slices.Clone(*projectIDs),
+-		ProjectsFilter:       *projectsFilter,
+-		UniverseDomain:       *googleUniverseDomain,
+-		MaxRetries:           *stackdriverMaxRetries,
+-		HTTPTimeout:          *stackdriverHttpTimeout,
+-		MaxBackoff:           *stackdriverMaxBackoffDuration,
+-		BackoffJitter:        *stackdriverBackoffJitterBase,
+-		RetryStatuses:        slices.Clone(*stackdriverRetryStatuses),
+-		MetricsPrefixes:      slices.Clone(*monitoringMetricsPrefixes),
+-		MetricsInterval:      *monitoringMetricsInterval,
+-		MetricsOffset:        *monitoringMetricsOffset,
+-		MetricsIngest:        *monitoringMetricsIngestDelay,
+-		FillMissing:          *collectorFillMissingLabels,
+-		DropDelegated:        *monitoringDropDelegatedProjects,
+-		Filters:              slices.Clone(*monitoringMetricsExtraFilter),
+-		AggregateDeltas:      *monitoringMetricsAggregateDeltas,
+-		DeltasTTL:            *monitoringMetricsDeltasTTL,
+-		DescriptorTTL:        *monitoringDescriptorCacheTTL,
+-		DescriptorGoogleOnly: *monitoringDescriptorCacheOnlyGoogle,
++func collectorConfigFromFlags() *config.Config {
++	return &config.Config{
++		ProjectIDs:                slices.Clone(*projectIDs),
++		ProjectsFilter:            *projectsFilter,
++		UniverseDomain:            *googleUniverseDomain,
++		MaxRetries:                *stackdriverMaxRetries,
++		HTTPTimeout:               *stackdriverHttpTimeout,
++		MaxBackoff:                *stackdriverMaxBackoffDuration,
++		BackoffJitter:             *stackdriverBackoffJitterBase,
++		RetryStatuses:             slices.Clone(*stackdriverRetryStatuses),
++		MetricsPrefixes:           slices.Clone(*monitoringMetricsPrefixes),
++		MetricsInterval:           *monitoringMetricsInterval,
++		MetricsOffset:             *monitoringMetricsOffset,
++		MetricsIngestDelay:        *monitoringMetricsIngestDelay,
++		FillMissingLabels:         *collectorFillMissingLabels,
++		DropDelegatedProjects:     *monitoringDropDelegatedProjects,
++		Filters:                   slices.Clone(*monitoringMetricsExtraFilter),
++		AggregateDeltas:           *monitoringMetricsAggregateDeltas,
++		AggregateDeltasTTL:        *monitoringMetricsDeltasTTL,
++		DescriptorCacheTTL:        *monitoringDescriptorCacheTTL,
++		DescriptorCacheOnlyGoogle: *monitoringDescriptorCacheOnlyGoogle,
+ 	}
+ }
+ 
+diff --git a/stackdriver_exporter_test.go b/stackdriver_exporter_test.go
+deleted file mode 100644
+index 2d9c0ba..0000000
+--- a/stackdriver_exporter_test.go
++++ /dev/null
+@@ -1,49 +0,0 @@
+-// Copyright 2024 The Prometheus Authors
+-// Licensed under the Apache License, Version 2.0 (the "License");
+-// you may not use this file except in compliance with the License.
+-// You may obtain a copy of the License at
+-//
+-// http://www.apache.org/licenses/LICENSE-2.0
+-//
+-// Unless required by applicable law or agreed to in writing, software
+-// distributed under the License is distributed on an "AS IS" BASIS,
+-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-// See the License for the specific language governing permissions and
+-// limitations under the License.
+-
+-package main
+-
+-import (
+-	"reflect"
+-	"testing"
+-
+-	"github.com/prometheus-community/stackdriver_exporter/config"
+-)
+-
+-func TestFilterMetricTypePrefixes(t *testing.T) {
+-	metricPrefixes := []string{
+-		"redis.googleapis.com/stats/",
+-	}
+-
+-	h := &handler{
+-		cfg: config.RuntimeConfig{
+-			MetricsPrefixes: metricPrefixes,
+-		},
+-	}
+-
+-	inputFilters := map[string]bool{
+-		"redis.googleapis.com/stats/memory/usage":       true,
+-		"redis.googleapis.com/stats/memory/usage_ratio": true,
+-		"redis.googleapis.com":                          true,
+-	}
+-
+-	expectedOutputPrefixes := []string{
+-		"redis.googleapis.com/stats/memory/usage",
+-	}
+-
+-	outputPrefixes := h.filterMetricTypePrefixes(inputFilters)
+-
+-	if !reflect.DeepEqual(outputPrefixes, expectedOutputPrefixes) {
+-		t.Errorf("filterMetricTypePrefixes did not produce expected output. Expected:\n%s\nGot:\n%s", expectedOutputPrefixes, outputPrefixes)
+-	}
+-}
+diff --git a/utils/utils.go b/utils/utils.go
+deleted file mode 100644
+index 67a23bd..0000000
+--- a/utils/utils.go
++++ /dev/null
+@@ -1,98 +0,0 @@
+-// Copyright 2020 The Prometheus Authors
+-// Licensed under the Apache License, Version 2.0 (the "License");
+-// you may not use this file except in compliance with the License.
+-// You may obtain a copy of the License at
+-//
+-// http://www.apache.org/licenses/LICENSE-2.0
+-//
+-// Unless required by applicable law or agreed to in writing, software
+-// distributed under the License is distributed on an "AS IS" BASIS,
+-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-// See the License for the specific language governing permissions and
+-// limitations under the License.
+-
+-package utils
+-
+-import (
+-	"context"
+-	"regexp"
+-	"slices"
+-	"strings"
+-
+-	"github.com/fatih/camelcase"
+-	"google.golang.org/api/cloudresourcemanager/v1"
+-)
+-
+-var (
+-	safeNameRE = regexp.MustCompile(`[^a-zA-Z0-9_]*$`)
+-)
+-
+-func NormalizeMetricName(metricName string) string {
+-	var normalizedMetricName []string
+-
+-	words := camelcase.Split(metricName)
+-	for _, word := range words {
+-		safeWord := strings.Trim(safeNameRE.ReplaceAllLiteralString(word, "_"), "_")
+-		lowerWord := strings.TrimSpace(strings.ToLower(safeWord))
+-		if lowerWord != "" {
+-			normalizedMetricName = append(normalizedMetricName, lowerWord)
+-		}
+-	}
+-
+-	return strings.Join(normalizedMetricName, "_")
+-}
+-
+-func SplitExtraFilter(extraFilter string, separator string) (string, string) {
+-	mPrefix := strings.SplitN(extraFilter, separator, 2)
+-	if len(mPrefix) != 2 {
+-		return "", ""
+-	}
+-	return mPrefix[0], mPrefix[1]
+-}
+-
+-// ParseMetricTypePrefixes sorts prefixes, removes duplicates, and skips prefixes
+-// already covered by a broader parent prefix.
+-func ParseMetricTypePrefixes(inputPrefixes []string) []string {
+-	sortedPrefixes := append([]string(nil), inputPrefixes...)
+-	slices.Sort(sortedPrefixes)
+-	uniquePrefixes := slices.Compact(sortedPrefixes)
+-	metricTypePrefixes := make([]string, 0, len(uniquePrefixes))
+-
+-	for _, prefix := range uniquePrefixes {
+-		if len(metricTypePrefixes) > 0 {
+-			previousIndex := len(metricTypePrefixes) - 1
+-			if strings.HasPrefix(prefix, metricTypePrefixes[previousIndex]) {
+-				continue
+-			}
+-		}
+-		metricTypePrefixes = append(metricTypePrefixes, prefix)
+-	}
+-
+-	return metricTypePrefixes
+-}
+-
+-func ProjectResource(projectID string) string {
+-	return "projects/" + projectID
+-}
+-
+-// GetProjectIDsFromFilter returns a list of project IDs from a Google Cloud organization using a filter.
+-func GetProjectIDsFromFilter(ctx context.Context, filter string) ([]string, error) {
+-	var projectIDs []string
+-
+-	service, err := cloudresourcemanager.NewService(ctx)
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	projects := service.Projects.List().Filter(filter)
+-	if err := projects.Pages(context.Background(), func(page *cloudresourcemanager.ListProjectsResponse) error {
+-		for _, project := range page.Projects {
+-			projectIDs = append(projectIDs, project.ProjectId)
+-		}
+-		return nil
+-	}); err != nil {
+-		return nil, err
+-	}
+-
+-	return projectIDs, nil
+-}
+diff --git a/utils/utils_test.go b/utils/utils_test.go
+deleted file mode 100644
+index f7b2f52..0000000
+--- a/utils/utils_test.go
++++ /dev/null
+@@ -1,77 +0,0 @@
+-// Copyright 2020 The Prometheus Authors
+-// Licensed under the Apache License, Version 2.0 (the "License");
+-// you may not use this file except in compliance with the License.
+-// You may obtain a copy of the License at
+-//
+-// http://www.apache.org/licenses/LICENSE-2.0
+-//
+-// Unless required by applicable law or agreed to in writing, software
+-// distributed under the License is distributed on an "AS IS" BASIS,
+-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-// See the License for the specific language governing permissions and
+-// limitations under the License.
+-
+-package utils_test
+-
+-import (
+-	. "github.com/onsi/ginkgo"
+-	. "github.com/onsi/gomega"
+-
+-	. "github.com/prometheus-community/stackdriver_exporter/utils"
+-)
+-
+-var _ = Describe("NormalizeMetricName", func() {
+-	It("returns a normalized metric name", func() {
+-		Expect(NormalizeMetricName("This_is__a-MetricName.Example/with:0totals")).To(Equal("this_is_a_metric_name_example_with_0_totals"))
+-	})
+-})
+-
+-var _ = Describe("ProjectResource", func() {
+-	It("returns a project resource", func() {
+-		Expect(ProjectResource("fake-project-1")).To(Equal("projects/fake-project-1"))
+-	})
+-})
+-
+-var _ = Describe("SplitExtraFilter", func() {
+-	It("returns an empty string from incomplete filter", func() {
+-		metricPrefix, filterQuery := SplitExtraFilter("This_is__a-MetricName.Example/with/no/filter", ":")
+-		Expect(metricPrefix).To(Equal(""))
+-		Expect(filterQuery).To(Equal(""))
+-	})
+-
+-	It("returns a metric prefix and filter query from basic filter", func() {
+-		metricPrefix, filterQuery := SplitExtraFilter("This_is__a-MetricName.Example/with:filter.name=filter_value", ":")
+-		Expect(metricPrefix).To(Equal("This_is__a-MetricName.Example/with"))
+-		Expect(filterQuery).To(Equal("filter.name=filter_value"))
+-	})
+-
+-	It("returns a metric prefix and filter query filter with colon", func() {
+-		metricPrefix, filterQuery := SplitExtraFilter(`This_is__a-MetricName.Example/with:filter.name="filter:value"`, ":")
+-		Expect(metricPrefix).To(Equal("This_is__a-MetricName.Example/with"))
+-		Expect(filterQuery).To(Equal("filter.name=\"filter:value\""))
+-	})
+-})
+-
+-var _ = Describe("ParseMetricTypePrefixes", func() {
+-	It("drops duplicates and redundant nested prefixes", func() {
+-		inputPrefixes := []string{
+-			"redis.googleapis.com/stats/memory/usage",
+-			"loadbalancing.googleapis.com/https/request_count",
+-			"loadbalancing.googleapis.com",
+-			"redis.googleapis.com/stats/memory/usage_ratio",
+-			"redis.googleapis.com/stats/memory/usage_ratio",
+-		}
+-
+-		Expect(ParseMetricTypePrefixes(inputPrefixes)).To(Equal([]string{
+-			"loadbalancing.googleapis.com",
+-			"redis.googleapis.com/stats/memory/usage",
+-		}))
+-		Expect(inputPrefixes).To(Equal([]string{
+-			"redis.googleapis.com/stats/memory/usage",
+-			"loadbalancing.googleapis.com/https/request_count",
+-			"loadbalancing.googleapis.com",
+-			"redis.googleapis.com/stats/memory/usage_ratio",
+-			"redis.googleapis.com/stats/memory/usage_ratio",
+-		}))
+-	})
+-})

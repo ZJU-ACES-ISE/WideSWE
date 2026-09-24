@@ -1,0 +1,493 @@
+diff --git a/tests/unit/tasks/collectors/test_collect_daily_metrics.py b/tests/unit/tasks/collectors/test_collect_daily_metrics.py
+new file mode 100644
+index 0000000..a8dc863
+--- /dev/null
++++ b/tests/unit/tasks/collectors/test_collect_daily_metrics.py
+@@ -0,0 +1,442 @@
++"""
++Unit tests for apps/tasks/collectors/collect_daily_metrics.py
++
++Tests cover:
++- _get_daily_collectors: registry returns expected keys
++- collect_daily_metrics: missing collector_type raises ValueError
++- collect_daily_metrics: invalid since/until strings raise ValueError
++- collect_daily_metrics: default since/until window (previous full day)
++- collect_daily_metrics: explicit since/until strings parsed correctly
++- collect_daily_metrics: collection_timestamp stored at 23:00 of since day
++- collect_daily_metrics: success path delegates to generic_collect_metrics
++- collect_daily_metrics: error propagation when generic_collect_metrics raises
++"""
++
++from datetime import UTC, datetime, timedelta
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++
++def _make_utc(year, month, day, hour=0, minute=0, second=0):
++    """Return a timezone-aware UTC datetime."""
++    return datetime(year, month, day, hour, minute, second, tzinfo=UTC)
++
++
++def _daily_dispatch_payload(fixed_now):
++    """Build the public scheduler payload used for a daily collection attempt."""
++    from apps.tasks.cron_scheduler import _inject_dispatch_timestamps
++
++    with patch("apps.tasks.cron_scheduler.timezone") as mock_tz:
++        mock_tz.now.return_value = fixed_now
++        return _inject_dispatch_timestamps(
++            "collect_daily_metrics",
++            {"collector_type": "task_executions_service"},
++        )
++
++
++def _assert_full_utc_day(since, until):
++    assert until - since == timedelta(days=1)
++    assert since.hour == since.minute == since.second == since.microsecond == 0
++    assert until.hour == until.minute == until.second == until.microsecond == 0
++    assert since.utcoffset().total_seconds() == 0
++    assert until.utcoffset().total_seconds() == 0
++
++
++# ---------------------------------------------------------------------------
++# Tests for _get_daily_collectors
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.unit
++class TestGetDailyCollectors:
++    """Tests for the _get_daily_collectors registry factory."""
++
++    def test_returns_task_executions_service_key(self):
++        """Registry must contain the 'task_executions_service' entry."""
++        from apps.tasks.collectors.collect_daily_metrics import _get_daily_collectors
++
++        registry = _get_daily_collectors()
++
++        assert "task_executions_service" in registry
++
++    def test_registry_entry_has_required_keys(self):
++        """The registered collector must connect the public collector and rollup."""
++        from apps.tasks.collectors.collect_daily_metrics import _get_daily_collectors
++
++        registry = _get_daily_collectors()
++
++        entry = registry["task_executions_service"]
++        assert callable(entry.get("collector_func"))
++        assert callable(entry.get("rollup_processor"))
++
++
++# ---------------------------------------------------------------------------
++# Tests for collect_daily_metrics
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.unit
++@pytest.mark.django_db
++class TestCollectDailyMetrics:
++    """Tests for the collect_daily_metrics task function."""
++
++    # ------------------------------------------------------------------
++    # Validation – missing / invalid parameters
++    # ------------------------------------------------------------------
++
++    def test_returns_error_when_collector_type_missing(self):
++        """collect_daily_metrics returns error dict when collector_type is absent."""
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        result = collect_daily_metrics()
++
++        assert result["status"] == "error"
++        assert result["error"]
++
++    def test_returns_error_when_collector_type_empty_string(self):
++        """collect_daily_metrics returns error dict for empty collector_type."""
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        result = collect_daily_metrics(collector_type="")
++
++        assert result["status"] == "error"
++        assert result["error"]
++
++    def test_returns_error_for_invalid_since_string(self):
++        """collect_daily_metrics returns error dict for unparseable since."""
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        result = collect_daily_metrics(collector_type="task_executions_service", since="not-a-date")
++
++        assert result["status"] == "error"
++        assert result["error"]
++
++    def test_returns_error_for_invalid_until_string(self):
++        """collect_daily_metrics returns error dict for unparseable until."""
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        result = collect_daily_metrics(
++            collector_type="task_executions_service",
++            since="2024-01-15T00:00:00+00:00",
++            until="bad-date",
++        )
++
++        assert result["status"] == "error"
++        assert result["error"]
++
++    # ------------------------------------------------------------------
++    # Default time window (no since/until provided)
++    # ------------------------------------------------------------------
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_default_window_covers_previous_full_day(self, mock_registry, mock_get_db, mock_generic):
++        """Without since/until the window should be yesterday 00:00 → today 00:00 UTC."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        before = datetime.now(UTC)
++        collect_daily_metrics(collector_type="task_executions_service")
++        after = datetime.now(UTC)
++
++        call_kwargs = mock_generic.call_args.kwargs
++        since = call_kwargs["collector_kwargs"]["since"]
++        until = call_kwargs["collector_kwargs"]["until"]
++        possible_untils = {
++            before.replace(hour=0, minute=0, second=0, microsecond=0),
++            after.replace(hour=0, minute=0, second=0, microsecond=0),
++        }
++
++        _assert_full_utc_day(since, until)
++        assert until in possible_untils
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_collection_timestamp_is_since_at_23h(self, mock_registry, mock_get_db, mock_generic):
++        """The stored timestamp must belong to the collected UTC day."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(collector_type="task_executions_service")
++
++        call_kwargs = mock_generic.call_args.kwargs
++        collection_timestamp = call_kwargs["timestamp"]
++        since = call_kwargs["collector_kwargs"]["since"]
++        assert collection_timestamp.date() == since.date()
++        assert collection_timestamp.utcoffset().total_seconds() == 0
++
++    # ------------------------------------------------------------------
++    # Explicit since / until strings
++    # ------------------------------------------------------------------
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_explicit_since_until_parsed_correctly(self, mock_registry, mock_get_db, mock_generic):
++        """Explicit ISO since/until strings must be parsed and forwarded."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(
++            collector_type="task_executions_service",
++            since="2024-01-15T00:00:00+00:00",
++            until="2024-01-16T00:00:00+00:00",
++        )
++
++        call_kwargs = mock_generic.call_args.kwargs
++        assert call_kwargs["collector_kwargs"]["since"] == _make_utc(2024, 1, 15, 0, 0, 0)
++        assert call_kwargs["collector_kwargs"]["until"] == _make_utc(2024, 1, 16, 0, 0, 0)
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_explicit_since_with_z_suffix(self, mock_registry, mock_get_db, mock_generic):
++        """'Z' suffix in ISO strings must be accepted (parsed as UTC)."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(
++            collector_type="task_executions_service",
++            since="2024-01-15T00:00:00Z",
++            until="2024-01-16T00:00:00Z",
++        )
++
++        call_kwargs = mock_generic.call_args.kwargs
++        assert call_kwargs["collector_kwargs"]["since"] == _make_utc(2024, 1, 15)
++        assert call_kwargs["collector_kwargs"]["until"] == _make_utc(2024, 1, 16)
++
++    # ------------------------------------------------------------------
++    # generic_collect_metrics wiring
++    # ------------------------------------------------------------------
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_passes_daily_collection_mode(self, mock_registry, mock_get_db, mock_generic):
++        """collection_mode='daily' must be passed to generic_collect_metrics."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(collector_type="task_executions_service")
++
++        assert mock_generic.call_args.kwargs["collection_mode"] == "daily"
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_uses_default_db_connection(self, mock_registry, mock_get_db, mock_generic):
++        """get_db_connection must be called with 'default' (metrics-service DB)."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        fake_conn = MagicMock()
++        mock_get_db.return_value = fake_conn
++        mock_generic.return_value = {"status": "success"}
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(collector_type="task_executions_service")
++
++        mock_get_db.assert_called_once()
++        assert mock_generic.call_args.kwargs["db_connection"] is fake_conn
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_passes_execution_id_when_provided(self, mock_registry, mock_get_db, mock_generic):
++        """execution_id kwarg must be forwarded as task_execution_id."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(collector_type="task_executions_service", execution_id=42)
++
++        assert mock_generic.call_args.kwargs["task_execution_id"] == 42
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_returns_generic_collect_metrics_result(self, mock_registry, mock_get_db, mock_generic):
++        """Return value of generic_collect_metrics must be propagated unchanged."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        expected = {"status": "success", "collection_id": 99, "task_type": "collect_task_executions_service"}
++        mock_generic.return_value = expected
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        result = collect_daily_metrics(collector_type="task_executions_service")
++
++        assert result is expected
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_passes_collector_type_to_generic(self, mock_registry, mock_get_db, mock_generic):
++        """collector_type must be forwarded verbatim to generic_collect_metrics."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(collector_type="task_executions_service")
++
++        assert mock_generic.call_args.kwargs["collector_type"] == "task_executions_service"
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_passes_registry_to_generic(self, mock_registry, mock_get_db, mock_generic):
++        """The registry returned by _get_daily_collectors must be forwarded."""
++        registry = {"task_executions_service": {"collector_func": MagicMock()}}
++        mock_registry.return_value = registry
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(collector_type="task_executions_service")
++
++        assert mock_generic.call_args.kwargs["collector_registry"] is registry
++
++    # ------------------------------------------------------------------
++    # task_execution_wrapper error handling
++    # ------------------------------------------------------------------
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_returns_error_dict_when_generic_raises(self, mock_registry, mock_get_db, mock_generic):
++        """When generic_collect_metrics raises, the wrapper returns an error dict."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.side_effect = RuntimeError("upstream failure")
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        result = collect_daily_metrics(collector_type="task_executions_service")
++
++        assert result["status"] == "error"
++        assert result["error"]
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_returns_error_dict_when_db_connection_raises(self, mock_registry, mock_get_db, mock_generic):
++        """When get_db_connection raises, the wrapper returns an error dict."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.side_effect = Exception("DB unavailable")
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        result = collect_daily_metrics(collector_type="task_executions_service")
++
++        assert result["status"] == "error"
++        assert result["error"]
++        mock_generic.assert_not_called()
++
++    # ------------------------------------------------------------------
++    # Scheduler-injected hour_timestamp (retry-safety)
++    # ------------------------------------------------------------------
++
++    def test_returns_error_for_invalid_hour_timestamp(self):
++        """The daily collector rejects an invalid public date-window value."""
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        result = collect_daily_metrics(
++            collector_type="task_executions_service",
++            since="not-a-date",
++        )
++
++        assert result["status"] == "error"
++        assert result["error"]
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_uses_injected_hour_timestamp_as_today_midnight(self, mock_registry, mock_get_db, mock_generic):
++        """The scheduler payload pins the intended full UTC day."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        payload = _daily_dispatch_payload(_make_utc(2024, 3, 10, 14, 30, 0))
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(**payload)
++
++        call_kwargs = mock_generic.call_args.kwargs
++        expected_since = _make_utc(2024, 3, 9, 0, 0, 0)
++        expected_until = _make_utc(2024, 3, 10, 0, 0, 0)
++
++        assert call_kwargs["collector_kwargs"]["since"] == expected_since
++        assert call_kwargs["collector_kwargs"]["until"] == expected_until
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_retry_with_injected_timestamp_ignores_wall_clock(self, mock_registry, mock_get_db, mock_generic):
++        """Reusing a dispatched payload must keep the originally intended day."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        payload = _daily_dispatch_payload(_make_utc(2024, 3, 10, 14, 30, 0))
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        first_result = collect_daily_metrics(**payload)
++        first_window = mock_generic.call_args.kwargs["collector_kwargs"]
++        second_result = collect_daily_metrics(**payload)
++        second_window = mock_generic.call_args.kwargs["collector_kwargs"]
++
++        assert first_result["status"] == "success"
++        assert second_result["status"] == "success"
++        assert first_window == second_window
++
++        # Window must still cover 2024-03-09 → 2024-03-10, not 2024-03-10 → 2024-03-11
++        assert second_window["since"] == _make_utc(2024, 3, 9, 0, 0, 0)
++        assert second_window["until"] == _make_utc(2024, 3, 10, 0, 0, 0)
++
++    @patch("apps.tasks.collectors.collect_daily_metrics.generic_collect_metrics")
++    @patch("apps.tasks.collectors.collect_daily_metrics.get_db_connection")
++    @patch("apps.tasks.collectors.collect_daily_metrics._get_daily_collectors")
++    def test_timezone_now_not_called_when_hour_timestamp_provided(self, mock_registry, mock_get_db, mock_generic):
++        """A dispatched schedule payload must determine the collected day."""
++        mock_registry.return_value = {"task_executions_service": {}}
++        mock_get_db.return_value = MagicMock()
++        mock_generic.return_value = {"status": "success"}
++
++        payload = _daily_dispatch_payload(_make_utc(2024, 3, 10, 14, 30, 0))
++
++        from apps.tasks.collectors.collect_daily_metrics import collect_daily_metrics
++
++        collect_daily_metrics(**payload)
++
++        call_kwargs = mock_generic.call_args.kwargs
++        assert call_kwargs["collector_kwargs"]["since"] == _make_utc(2024, 3, 9)
++        assert call_kwargs["collector_kwargs"]["until"] == _make_utc(2024, 3, 10)
+diff --git a/tests/unit/tasks/test_cron_scheduler.py b/tests/unit/tasks/test_cron_scheduler.py
+index 52347d2..c26b94e 100644
+--- a/tests/unit/tasks/test_cron_scheduler.py
++++ b/tests/unit/tasks/test_cron_scheduler.py
+@@ -512,3 +512,28 @@ class TestInjectDispatchTimestamps:
+         result = _inject_dispatch_timestamps("collect_hourly_metrics", original)
+         assert "hour_timestamp" not in original
+         assert "hour_timestamp" in result
++
++    def test_injects_hour_timestamp_for_daily_collector(self):
++        """collect_daily_metrics tasks pin the previous full UTC day."""
++        fixed_now = timezone.now().replace(hour=14, minute=30, second=0, microsecond=0)
++        expected_until = fixed_now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
++        expected_since = (fixed_now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).isoformat()
++
++        with patch("apps.tasks.cron_scheduler.timezone") as mock_tz:
++            mock_tz.now.return_value = fixed_now
++            result = _inject_dispatch_timestamps("collect_daily_metrics", {"collector_type": "task_executions_service"})
++
++        if "hour_timestamp" in result:
++            assert result["hour_timestamp"] == expected_until
++        else:
++            assert result["since"] == expected_since
++            assert result["until"] == expected_until
++
++    def test_does_not_overwrite_existing_hour_timestamp_for_daily_collector(self):
++        """An explicit hour_timestamp already in daily task_data must not be replaced."""
++        fixed_ts = "2024-01-15T00:00:00+00:00"
++        result = _inject_dispatch_timestamps(
++            "collect_daily_metrics",
++            {"collector_type": "task_executions_service", "hour_timestamp": fixed_ts},
++        )
++        assert result["hour_timestamp"] == fixed_ts
+diff --git a/tests/unit/tasks/test_task_groups.py b/tests/unit/tasks/test_task_groups.py
+index c2a0cd8..1ca625b 100644
+--- a/tests/unit/tasks/test_task_groups.py
++++ b/tests/unit/tasks/test_task_groups.py
+@@ -178,6 +178,7 @@ class TestPredefinedTaskGroups(TestCase):
+         # Daily snapshot collection
+         assert "daily_config" in task_ids
+         assert "daily_execution_environments" in task_ids
++        assert "daily_feature_flags" in task_ids
+         # Daily processing tasks
+         assert "cleanup_metrics_data" in task_ids
+         assert "daily_metrics_rollup" in task_ids

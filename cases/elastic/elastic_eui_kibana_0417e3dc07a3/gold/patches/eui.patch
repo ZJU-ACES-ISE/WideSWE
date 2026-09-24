@@ -1,0 +1,1636 @@
+diff --git a/packages/eui/changelogs/upcoming/9409.md b/packages/eui/changelogs/upcoming/9409.md
+new file mode 100644
+index 0000000000..32d3805b5e
+--- /dev/null
++++ b/packages/eui/changelogs/upcoming/9409.md
+@@ -0,0 +1,8 @@
++- Child flyout history in the Flyout Manager: sessions now track a stack of child flyouts (`childHistory`) so you can open multiple child flyouts in sequence and navigate back through them
++- Optional `level` argument to `goToFlyout(flyoutId, level?)` — when `level` is `'child'`, navigates to a child in the current session's history (e.g. from the history popover); when `'main'` or omitted, navigates by main session as before
++- `FlyoutSession` now includes `childTitle`, `childIconType`, and `childHistory` so the history popover can show child flyout titles and icons and support jumping back to a previous child
++- Back button now pops child history first (returning to the previous child flyout), then pops the current session when no child history remains
++
++**Bug fixes**
++
++- Fixed cascade close when child flyouts are rendered as siblings of the main (not nested): closing the main now correctly invokes each child's `onClose` so consumer state and DOM stay in sync and children do not remain visible as orphaned flyouts
+diff --git a/packages/eui/src/components/flyout/manager/__mocks__/index.ts b/packages/eui/src/components/flyout/manager/__mocks__/index.ts
+index 85cbfe4935..e5e8797477 100644
+--- a/packages/eui/src/components/flyout/manager/__mocks__/index.ts
++++ b/packages/eui/src/components/flyout/manager/__mocks__/index.ts
+@@ -7,7 +7,11 @@
+  */
+ 
+ import { LEVEL_MAIN } from '../const';
+-import { FlyoutManagerApi } from '../types';
++import type {
++  EuiFlyoutManagerState,
++  FlyoutManagerApi,
++  FlyoutSession,
++} from '../types';
+ 
+ /**
+  * Centralized test utilities for flyout manager tests.
+@@ -34,10 +38,14 @@ export const createMockFunctions = (): Omit<
+   setContainerElement: jest.fn(),
+ });
+ 
+-export const createMockState = () => ({
++/** Default state shape matching EuiFlyoutManagerState for tests. */
++export const createMockState = (): EuiFlyoutManagerState => ({
+   sessions: [],
+   flyouts: [],
+-  layoutMode: 'side-by-side' as const,
++  layoutMode: 'side-by-side',
++  pushPadding: { left: 0, right: 0 },
++  unmanagedFlyouts: [],
++  currentZIndex: 0,
+ });
+ 
+ /**
+@@ -58,26 +66,30 @@ export const createFlyoutManagerReducerMock = () => ({
+ });
+ 
+ /**
+- * Helper for creating dynamic test state.
++ * Helper for creating dynamic test state (merge overrides onto default state).
+  */
+ export const createTestState = (
+-  overrides: Partial<ReturnType<typeof createMockState>> = {}
+-) => ({
++  overrides: Partial<EuiFlyoutManagerState> = {}
++): EuiFlyoutManagerState => ({
+   ...createMockState(),
+   ...overrides,
+ });
+ 
+ /**
+- * Helper for creating test session data.
++ * Minimal session for tests (matches FlyoutSession shape).
+  */
+ export const createTestSession = (
+-  main: string,
++  mainFlyoutId: string,
+   title: string,
+-  child: string | null = null
+-) => ({
+-  main,
++  childFlyoutId: string | null = null,
++  overrides: Partial<FlyoutSession> = {}
++): FlyoutSession => ({
++  mainFlyoutId,
+   title,
+-  child,
++  childFlyoutId,
++  childHistory: [],
++  zIndex: 0,
++  ...overrides,
+ });
+ 
+ /**
+diff --git a/packages/eui/src/components/flyout/manager/actions.ts b/packages/eui/src/components/flyout/manager/actions.ts
+index 843cb0bd27..9f4768f6ad 100644
+--- a/packages/eui/src/components/flyout/manager/actions.ts
++++ b/packages/eui/src/components/flyout/manager/actions.ts
+@@ -107,10 +107,12 @@ export interface GoBackAction extends BaseAction {
+   type: typeof ACTION_GO_BACK;
+ }
+ 
+-/** Navigate to a specific flyout (remove all sessions after it). */
++/** Navigate to a specific flyout (remove all sessions after it, or pop to child in history). */
+ export interface GoToFlyoutAction extends BaseAction {
+   type: typeof ACTION_GO_TO_FLYOUT;
+   flyoutId: string;
++  /** When 'child', find flyout in current session's childHistory and pop to it. When 'main' or omitted, find session by mainFlyoutId. */
++  level?: EuiFlyoutLevel;
+ }
+ 
+ /** Set push padding offset for a specific side. */
+@@ -235,10 +237,14 @@ export const goBack = (): GoBackAction => ({
+   type: ACTION_GO_BACK,
+ });
+ 
+-/** Navigate to a specific flyout (remove all sessions after it). */
+-export const goToFlyout = (flyoutId: string): GoToFlyoutAction => ({
++/** Navigate to a specific flyout (remove all sessions after it, or pop to child in history when level === 'child'). */
++export const goToFlyout = (
++  flyoutId: string,
++  level?: EuiFlyoutLevel
++): GoToFlyoutAction => ({
+   type: ACTION_GO_TO_FLYOUT,
+   flyoutId,
++  level,
+ });
+ 
+ /** Set push padding offset for a specific side. */
+diff --git a/packages/eui/src/components/flyout/manager/flyout_managed.test.tsx b/packages/eui/src/components/flyout/manager/flyout_managed.test.tsx
+index 95afc972d2..fc540cf6a0 100644
+--- a/packages/eui/src/components/flyout/manager/flyout_managed.test.tsx
++++ b/packages/eui/src/components/flyout/manager/flyout_managed.test.tsx
+@@ -32,6 +32,11 @@ import {
+   PROPERTY_FLYOUT,
+   PROPERTY_LEVEL,
+ } from './const';
++import {
++  createFlyoutManagerMock,
++  mockCloseAllFlyouts,
++  mockCloseFlyout,
++} from './__mocks__';
+ 
+ const mockFlushSync: jest.Mock = jest.mocked(ReactDOM.flushSync);
+ 
+@@ -56,33 +61,7 @@ jest.mock('../flyout.component', () => {
+   };
+ });
+ 
+-// Shared mock functions - must be defined in module scope for Jest
+-const mockCloseFlyout = jest.fn();
+-const mockCloseAllFlyouts = jest.fn();
+-
+-// Create mock state and functions once at module scope to avoid redundant object creation
+-const mockState = {
+-  sessions: [],
+-  flyouts: [],
+-  layoutMode: 'side-by-side' as const,
+-};
+-
+-const mockFunctions = {
+-  dispatch: jest.fn(),
+-  addFlyout: jest.fn(),
+-  closeFlyout: mockCloseFlyout,
+-  closeAllFlyouts: mockCloseAllFlyouts,
+-  setActiveFlyout: jest.fn(),
+-  setFlyoutWidth: jest.fn(),
+-  goBack: jest.fn(),
+-  goToFlyout: jest.fn(),
+-  historyItems: [],
+-};
+-
+-const mockFlyoutManager = {
+-  state: mockState,
+-  ...mockFunctions,
+-};
++const mockFlyoutManager = createFlyoutManagerMock();
+ 
+ // Mock hooks that would otherwise depend on ResizeObserver or animation timing
+ jest.mock('./hooks', () => ({
+@@ -96,7 +75,7 @@ jest.mock('./hooks', () => ({
+ }));
+ 
+ jest.mock('./selectors', () => ({
+-  useIsFlyoutRegistered: () => false,
++  useIsFlyoutRegistered: jest.fn(() => false),
+   useIsFlyoutActive: () => true,
+   useHasChildFlyout: () => false,
+   useParentFlyoutSize: () => 'm',
+@@ -633,6 +612,49 @@ describe('EuiManagedFlyout', () => {
+       expect(onCloseMain).toHaveBeenCalled();
+     });
+ 
++    it('calls child onClose when child is sibling-rendered and unmounts after store was cleared (cascade-close detection in cleanup)', () => {
++      const onCloseChild = jest.fn();
++      const selectors = jest.requireMock('./selectors');
++      selectors.useIsFlyoutRegistered.mockReturnValue(true);
++
++      const { rerender } = renderInProvider(
++        <>
++          <EuiManagedFlyout
++            id="main-flyout"
++            level={LEVEL_MAIN}
++            onClose={() => {}}
++            flyoutMenuProps={{ title: 'Main Flyout' }}
++          />
++          <EuiManagedFlyout
++            id="child-flyout"
++            level={LEVEL_CHILD}
++            onClose={onCloseChild}
++            flyoutMenuProps={{ title: 'Child Flyout' }}
++          />
++        </>
++      );
++
++      expect(onCloseChild).not.toHaveBeenCalled();
++
++      // Unmount the child only (re-render with only main). The real store was never
++      // updated by the mocked context, so getFlyoutManagerStore().getState().flyouts
++      // is empty. Cleanup sees flyout not in store + wasRegisteredRef → cascade close.
++      rerender(
++        <EuiFlyoutManager>
++          <EuiManagedFlyout
++            id="main-flyout"
++            level={LEVEL_MAIN}
++            onClose={() => {}}
++            flyoutMenuProps={{ title: 'Main Flyout' }}
++          />
++        </EuiFlyoutManager>
++      );
++
++      expect(onCloseChild).toHaveBeenCalledTimes(1);
++
++      selectors.useIsFlyoutRegistered.mockReturnValue(false);
++    });
++
+     it('calls closeFlyout when closing a child flyout', () => {
+       const onCloseMain = jest.fn();
+       const onCloseChild = jest.fn();
+diff --git a/packages/eui/src/components/flyout/manager/flyout_managed.tsx b/packages/eui/src/components/flyout/manager/flyout_managed.tsx
+index e57498fc00..211874f49b 100644
+--- a/packages/eui/src/components/flyout/manager/flyout_managed.tsx
++++ b/packages/eui/src/components/flyout/manager/flyout_managed.tsx
+@@ -38,6 +38,7 @@ import { EuiFlyoutIsManagedProvider } from './context';
+ import { euiManagedFlyoutStyles } from './flyout_managed.styles';
+ import { useFlyoutManager as _useFlyoutManager, useFlyoutId } from './hooks';
+ import { useIsFlyoutRegistered } from './selectors';
++import { getFlyoutManagerStore } from './store';
+ import type { EuiFlyoutLevel } from './types';
+ import {
+   createValidationErrorMessage,
+@@ -216,13 +217,18 @@ export const EuiManagedFlyout = forwardRef<HTMLElement, EuiManagedFlyoutProps>(
+       );
+ 
+       return () => {
+-        // Only call closeFlyout if it wasn't already called via onClose
+-        // This prevents duplicate removal when using Escape/X button
+-        if (flyoutExistsInManagerRef.current) {
++        const currentStoreState = getFlyoutManagerStore().getState();
++        const stillInStore = currentStoreState.flyouts.some(
++          (f) => f.flyoutId === flyoutId
++        );
++
++        if (stillInStore) {
++          // Normal cleanup (deps changed or explicit close via isOpen=false)
+           level === LEVEL_MAIN ? closeAllFlyouts() : closeFlyout(flyoutId);
++        } else if (wasRegisteredRef.current) {
++          // Cascade close: was registered but removed externally (e.g. main closed)
++          onCloseCallbackRef.current?.(new MouseEvent('navigation'));
+         }
+-
+-        // Reset navigation tracking when explicitly closed via isOpen=false
+         wasRegisteredRef.current = false;
+       };
+     }, [
+@@ -282,7 +288,7 @@ export const EuiManagedFlyout = forwardRef<HTMLElement, EuiManagedFlyoutProps>(
+         level === LEVEL_MAIN ? closeAllFlyouts() : closeFlyout(flyoutId);
+       });
+ 
+-      // trigger parent callback, unmounts the component
++      wasRegisteredRef.current = false; // Prevent cleanup from double-firing onClose
+       if (onCloseCallbackRef.current) {
+         const event = e || new MouseEvent('click');
+         onCloseCallbackRef.current(event);
+diff --git a/packages/eui/src/components/flyout/manager/flyout_sessions.stories.tsx b/packages/eui/src/components/flyout/manager/flyout_sessions.stories.tsx
+index 5d6334b6f2..8b08055da8 100644
+--- a/packages/eui/src/components/flyout/manager/flyout_sessions.stories.tsx
++++ b/packages/eui/src/components/flyout/manager/flyout_sessions.stories.tsx
+@@ -52,9 +52,9 @@ export default meta;
+ 
+ interface FlyoutSessionProps {
+   title: string;
+-  mainSize?: 's' | 'm' | 'l' | 'fill';
++  mainSize: 's' | 'm' | 'l' | 'fill';
+   mainMaxWidth?: number;
+-  childSize?: 's' | 'm' | 'fill';
++  childSize: 's' | 'm' | 'fill';
+   childMaxWidth?: number;
+ }
+ 
+@@ -83,47 +83,91 @@ const DisplayContext: React.FC<{ title: string }> = ({ title }) => {
+   );
+ };
+ 
++/** Reusable session child flyout (shared props; body content passed as children). */
++const SessionChildFlyout: React.FC<{
++  id: string;
++  flyoutTitle: string;
++  size: 's' | 'm' | 'fill';
++  maxWidth?: number;
++  onClose: () => void;
++  onActive: () => void;
++  children: React.ReactNode;
++}> = ({ id, flyoutTitle, size, maxWidth, onClose, onActive, children }) => (
++  <EuiFlyout
++    id={id}
++    session="inherit"
++    flyoutMenuProps={{ title: flyoutTitle, iconType: 'faceNeutral' }}
++    size={size}
++    maxWidth={maxWidth}
++    onActive={onActive}
++    onClose={onClose}
++    resizable={false}
++    hasChildBackground={true}
++  >
++    <EuiFlyoutBody>{children}</EuiFlyoutBody>
++  </EuiFlyout>
++);
++
+ const FlyoutSession: React.FC<FlyoutSessionProps> = (props) => {
+   const { title, mainSize, childSize, mainMaxWidth, childMaxWidth } = props;
+ 
+   const [isFlyoutVisible, setIsFlyoutVisible] = useState(false);
+-  const [isChildFlyoutVisible, setIsChildFlyoutVisible] = useState(false);
++  const [isChild1FlyoutVisible, setIsChild1FlyoutVisible] = useState(false);
++  const [isChild2FlyoutVisible, setIsChild2FlyoutVisible] = useState(false);
++
++  const currentSession = useCurrentSession();
++  const flyoutManager = useFlyoutManager();
+ 
+   const [flyoutType, setFlyoutType] = useState<'overlay' | 'push'>('push');
+   const [flyoutOwnFocus, setFlyoutOwnFocus] = useState(false);
+ 
+-  // Handlers for "Open" buttons
++  const childIdsInSession = new Set<string>([
++    ...(currentSession?.childFlyoutId ? [currentSession.childFlyoutId] : []),
++    ...(currentSession?.childHistory ?? []).map((e) => e.flyoutId),
++  ]);
+ 
+   const handleOpenMainFlyout = () => {
+     setIsFlyoutVisible(true);
+   };
+ 
+-  const handleOpenChildFlyout = () => {
+-    setIsChildFlyoutVisible(true);
++  const handleOpenChild1 = () => {
++    setIsChild1FlyoutVisible(true);
+   };
+ 
+-  // Callbacks for state synchronization
++  const handleOpenChild2 = () => {
++    setIsChild2FlyoutVisible(true);
++  };
++
++  /** Switch to Child 1 when it's already in the session (e.g. from Child 2's "Open previous" button). */
++  const handleGoToChild1 = useCallback(() => {
++    flyoutManager?.goToFlyout(`childFlyout1-${title}`, 'child');
++  }, [flyoutManager, title]);
+ 
+   const mainFlyoutOnActive = useCallback(() => {
+     action('activate main flyout')(title);
+   }, [title]);
+ 
+-  const childFlyoutOnActive = useCallback(() => {
+-    action('activate child flyout')(title);
+-  }, [title]);
++  const childFlyoutOnActive = useCallback(
++    (which: 'child1' | 'child2') => () => {
++      action('activate child flyout')(`${title} - ${which}`);
++    },
++    [title]
++  );
+ 
+   const mainFlyoutOnClose = useCallback(() => {
+     action('close main flyout')(title);
+     setIsFlyoutVisible(false);
+-    setIsChildFlyoutVisible(false);
+   }, [title]);
+ 
+-  const childFlyoutOnClose = useCallback(() => {
+-    action('close child flyout')(title);
+-    setIsChildFlyoutVisible(false);
++  const child1FlyoutOnClose = useCallback(() => {
++    action('close child flyout')(`${title} - Child 1`);
++    setIsChild1FlyoutVisible(false);
+   }, [title]);
+ 
+-  // Render
++  const child2FlyoutOnClose = useCallback(() => {
++    action('close child flyout')(`${title} - Child 2`);
++    setIsChild2FlyoutVisible(false);
++  }, [title]);
+ 
+   return (
+     <>
+@@ -172,6 +216,7 @@ const FlyoutSession: React.FC<FlyoutSessionProps> = (props) => {
+           pushAnimation={true}
+           onActive={mainFlyoutOnActive}
+           onClose={mainFlyoutOnClose}
++          resizable={true}
+         >
+           <EuiFlyoutHeader>
+             <EuiTitle size="m">
+@@ -180,7 +225,7 @@ const FlyoutSession: React.FC<FlyoutSessionProps> = (props) => {
+           </EuiFlyoutHeader>
+           <EuiFlyoutBody>
+             <EuiText>
+-              <p>This is the content of {title}.</p>
++              <p>Child-to-child navigation: open one child, then the other.</p>
+               <EuiSpacer size="s" />
+               <EuiDescriptionList
+                 type="column"
+@@ -200,63 +245,92 @@ const FlyoutSession: React.FC<FlyoutSessionProps> = (props) => {
+                   },
+                 ]}
+               />
+-              {childSize && (
+-                <EuiButton
+-                  onClick={handleOpenChildFlyout}
+-                  disabled={isChildFlyoutVisible}
+-                >
+-                  Open child flyout
+-                </EuiButton>
+-              )}
++              <EuiSpacer size="m" />
++              <EuiFlexGroup gutterSize="s">
++                {([1, 2] as const).map((n) => (
++                  <EuiFlexItem key={n} grow={false}>
++                    <EuiButton
++                      onClick={n === 1 ? handleOpenChild1 : handleOpenChild2}
++                      disabled={childIdsInSession.has(
++                        `childFlyout${n}-${title}`
++                      )}
++                    >
++                      Open Child {n}
++                    </EuiButton>
++                  </EuiFlexItem>
++                ))}
++              </EuiFlexGroup>
+             </EuiText>
+           </EuiFlyoutBody>
+-          {childSize && isChildFlyoutVisible && (
+-            <EuiFlyout
+-              id={`childFlyout-${title}`}
+-              flyoutMenuProps={{
+-                title: `${title} - Child`,
+-                iconType: 'faceNeutral',
+-              }}
+-              size={childSize}
+-              maxWidth={childMaxWidth}
+-              onActive={childFlyoutOnActive}
+-              onClose={childFlyoutOnClose}
+-            >
+-              <EuiFlyoutBody>
+-                <EuiText>
+-                  <p>
+-                    This is the content of the child flyout of {title}. It
+-                    automatically inherits the session because it&apos;s nested
+-                    inside the parent.
+-                  </p>
+-                  <EuiSpacer size="s" />
+-                  <EuiDescriptionList
+-                    type="column"
+-                    listItems={[
+-                      {
+-                        title: 'Child flyout size',
+-                        description: childSize ?? 'N/A',
+-                      },
+-                      {
+-                        title: 'Child flyout maxWidth',
+-                        description: childMaxWidth ?? 'N/A',
+-                      },
+-                      {
+-                        title: 'session',
+-                        description: (
+-                          <>
+-                            <EuiCode>inherit</EuiCode> (auto)
+-                          </>
+-                        ),
+-                      },
+-                    ]}
+-                  />
+-                </EuiText>
+-              </EuiFlyoutBody>
+-            </EuiFlyout>
+-          )}
+         </EuiFlyout>
+       )}
++      {isChild1FlyoutVisible && (
++        <SessionChildFlyout
++          id={`childFlyout1-${title}`}
++          flyoutTitle={`${title} - Child 1`}
++          size={childSize}
++          maxWidth={childMaxWidth}
++          onClose={child1FlyoutOnClose}
++          onActive={childFlyoutOnActive('child1')}
++        >
++          <EuiText>
++            <p>
++              Child 1. Open &quot;Child 2&quot; to test child→child navigation.
++            </p>
++            <EuiSpacer size="s" />
++            <EuiDescriptionList
++              type="column"
++              listItems={[
++                { title: 'Child', description: '1' },
++                {
++                  title: 'Child flyout size',
++                  description: childSize ?? 'N/A',
++                },
++                {
++                  title: 'Child flyout maxWidth',
++                  description: childMaxWidth ?? 'N/A',
++                },
++                { title: 'session', description: <EuiCode>inherit</EuiCode> },
++              ]}
++            />
++            <EuiSpacer size="m" />
++            <EuiButton onClick={handleOpenChild2}>
++              Open next (Child 2)
++            </EuiButton>
++          </EuiText>
++        </SessionChildFlyout>
++      )}
++      {isChild2FlyoutVisible && (
++        <SessionChildFlyout
++          id={`childFlyout2-${title}`}
++          flyoutTitle={`${title} - Child 2`}
++          size={childSize}
++          maxWidth={childMaxWidth}
++          onClose={child2FlyoutOnClose}
++          onActive={childFlyoutOnActive('child2')}
++        >
++          <EuiText>
++            <p>
++              Child 2. You navigated from Child 1. Check manager state below.
++            </p>
++            <EuiSpacer size="s" />
++            <EuiDescriptionList
++              type="column"
++              listItems={[
++                { title: 'Child', description: '2' },
++                {
++                  title: 'session',
++                  description: <EuiCode>inherit</EuiCode>,
++                },
++              ]}
++            />
++            <EuiSpacer size="m" />
++            <EuiButton onClick={handleGoToChild1}>
++              Open previous (Child 1)
++            </EuiButton>
++          </EuiText>
++        </SessionChildFlyout>
++      )}
+     </>
+   );
+ };
+@@ -403,51 +477,28 @@ const MultiSessionFlyoutDemo: React.FC = () => {
+       ),
+     },
+     {
+-      title: 'Session E: main size = fill',
++      title: 'Session E: main size = fill, child size = m',
+       description: (
+         <FlyoutSession
+           // Session E
+           title="Session E"
+           mainSize="fill"
++          childSize="m"
+         />
+       ),
+     },
+     {
+-      title:
+-        'Session F: main size = undefined, child size = fill (maxWidth 1000px)',
++      title: 'Session F: main size = m, child size = fill (maxWidth 1000px)',
+       description: (
+         <FlyoutSession
+           // Session F
+           title="Session F"
+-          mainSize={undefined}
++          mainSize="m"
+           childSize="fill"
+           childMaxWidth={1000}
+         />
+       ),
+     },
+-    {
+-      title: 'Session G: main size = fill (maxWidth 1000px), child size = s',
+-      description: (
+-        <FlyoutSession
+-          // Session G
+-          title="Session G"
+-          mainSize="fill"
+-          mainMaxWidth={1000}
+-          childSize="s"
+-        />
+-      ),
+-    },
+-    {
+-      title: 'Session H: main size = s, child size = s',
+-      description: (
+-        <FlyoutSession
+-          // Session H
+-          title="Session H"
+-          mainSize="s"
+-          childSize="s"
+-        />
+-      ),
+-    },
+     {
+       title: 'Non-session flyout',
+       description: <NonSessionFlyout size="s" />,
+@@ -551,6 +602,7 @@ const ExternalRootChildFlyout: React.FC<{ parentId: string }> = ({
+           onClose={handleClose}
+           ownFocus={false}
+           flyoutMenuProps={{ title: `Child flyout of ${parentId}` }}
++          resizable={false}
+           data-test-subj="child-flyout-in-new-root"
+         >
+           <EuiFlyoutBody>
+@@ -631,6 +683,7 @@ const ExternalRootFlyout: React.FC<{ id: string }> = ({ id }) => {
+           onClose={() => setIsOpen(false)}
+           ownFocus={false}
+           flyoutMenuProps={{ title: `${id} flyout` }}
++          resizable={true}
+         >
+           <EuiFlyoutHeader>
+             <EuiTitle size="m">
+diff --git a/packages/eui/src/components/flyout/manager/reducer.test.ts b/packages/eui/src/components/flyout/manager/reducer.test.ts
+index ded5f5ed8a..fcc3d51985 100644
+--- a/packages/eui/src/components/flyout/manager/reducer.test.ts
++++ b/packages/eui/src/components/flyout/manager/reducer.test.ts
+@@ -76,6 +76,7 @@ describe('flyoutManagerReducer', () => {
+       expect(newState.sessions[0]).toEqual({
+         mainFlyoutId: 'main-1',
+         childFlyoutId: null,
++        childHistory: [],
+         title: 'main',
+         iconType: undefined,
+         zIndex: 0,
+@@ -131,6 +132,68 @@ describe('flyoutManagerReducer', () => {
+       expect(newState).toEqual(initialState);
+     });
+ 
++    it('should push current child to history and append new child when adding second child (do not remove previous)', () => {
++      let state = flyoutManagerReducer(
++        initialState,
++        addFlyout('main-1', 'Main', LEVEL_MAIN)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-1', 'Child 1', LEVEL_CHILD)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-2', 'Child 2', LEVEL_CHILD)
++      );
++
++      expect(state.flyouts).toHaveLength(3); // main + child-1 + child-2 (previous child not removed)
++      expect(state.sessions).toHaveLength(1);
++      expect(state.sessions[0].childFlyoutId).toBe('child-2');
++      expect(state.sessions[0].childTitle).toBe('Child 2');
++      expect(state.sessions[0].childHistory).toHaveLength(1);
++      expect(state.sessions[0].childHistory[0]).toEqual({
++        flyoutId: 'child-1',
++        title: 'Child 1',
++        iconType: undefined,
++      });
++    });
++
++    it('should treat addFlyout child as idempotent when childFlyoutId already matches (e.g. after goBack)', () => {
++      let state = flyoutManagerReducer(
++        initialState,
++        addFlyout('main-1', 'Main', LEVEL_MAIN)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-1', 'Child 1', LEVEL_CHILD)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-2', 'Child 2', LEVEL_CHILD)
++      );
++      // Go back: pop child history, current becomes child-1, child-2 removed from flyouts
++      state = flyoutManagerReducer(state, goBack());
++      const flyoutCountAfterGoBack = state.flyouts.length;
++
++      // Re-register child-1 (idempotent: already in flyouts and session.childFlyoutId === child-1)
++      state = flyoutManagerReducer(
++        state,
++        addFlyout(
++          'child-1',
++          'Child 1 Updated',
++          LEVEL_CHILD,
++          undefined,
++          'starFilled'
++        )
++      );
++
++      expect(state.flyouts).toHaveLength(flyoutCountAfterGoBack); // no duplicate flyout
++      expect(state.sessions[0].childFlyoutId).toBe('child-1');
++      expect(state.sessions[0].childTitle).toBe('Child 1 Updated');
++      expect(state.sessions[0].childIconType).toBe('starFilled');
++      expect(state.sessions[0].childHistory).toHaveLength(0); // popped by goBack
++    });
++
+     it('should handle multiple sessions correctly', () => {
+       // Add first main flyout
+       let state = flyoutManagerReducer(
+@@ -154,12 +217,16 @@ describe('flyoutManagerReducer', () => {
+       expect(state.sessions[0]).toEqual({
+         mainFlyoutId: 'main-1',
+         childFlyoutId: 'child-1',
++        childTitle: 'child',
++        childIconType: undefined,
++        childHistory: [],
+         title: 'main',
+         zIndex: 0,
+       });
+       expect(state.sessions[1]).toEqual({
+         mainFlyoutId: 'main-2',
+         childFlyoutId: null,
++        childHistory: [],
+         title: 'main',
+         zIndex: 3,
+       });
+@@ -200,6 +267,75 @@ describe('flyoutManagerReducer', () => {
+ 
+       expect(newState).toEqual(initialState);
+     });
++
++    it('should close all children of session when closing a child (clear childHistory, remove all child flyouts)', () => {
++      let state = flyoutManagerReducer(
++        initialState,
++        addFlyout('main-1', 'Main', LEVEL_MAIN)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-1', 'Child 1', LEVEL_CHILD)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-2', 'Child 2', LEVEL_CHILD)
++      );
++      expect(state.flyouts).toHaveLength(3);
++      expect(state.sessions[0].childFlyoutId).toBe('child-2');
++      expect(state.sessions[0].childHistory).toHaveLength(1);
++
++      state = flyoutManagerReducer(state, closeFlyout('child-2'));
++
++      expect(state.sessions[0].childFlyoutId).toBe(null);
++      expect(state.sessions[0].childHistory).toHaveLength(0);
++      expect(state.flyouts).toHaveLength(1);
++      expect(state.flyouts[0].flyoutId).toBe('main-1');
++    });
++
++    it('should clear child state of the session that owns the closed child when closing a child in a non-current session', () => {
++      // Session 0: main-1 + child-1. Session 1: main-2 + child-2 (current).
++      let state = flyoutManagerReducer(
++        initialState,
++        addFlyout('main-1', 'Main 1', LEVEL_MAIN)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-1', 'Child 1', LEVEL_CHILD)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('main-2', 'Main 2', LEVEL_MAIN)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-2', 'Child 2', LEVEL_CHILD)
++      );
++      expect(state.sessions).toHaveLength(2);
++      expect(state.sessions[0].childFlyoutId).toBe('child-1');
++      expect(state.sessions[1].childFlyoutId).toBe('child-2');
++      expect(state.flyouts.map((f) => f.flyoutId)).toEqual([
++        'main-1',
++        'child-1',
++        'main-2',
++        'child-2',
++      ]);
++
++      // Close child-1 (belongs to session 0, which is not the current session)
++      state = flyoutManagerReducer(state, closeFlyout('child-1'));
++
++      // Session 0's child state must be cleared so navigating back stays consistent
++      expect(state.sessions[0].childFlyoutId).toBe(null);
++      expect(state.sessions[0].childHistory).toHaveLength(0);
++      // Session 1 unchanged
++      expect(state.sessions[1].childFlyoutId).toBe('child-2');
++      // child-1 removed from flyouts; main-1, main-2, child-2 remain
++      expect(state.flyouts.map((f) => f.flyoutId)).toEqual([
++        'main-1',
++        'main-2',
++        'child-2',
++      ]);
++    });
+   });
+ 
+   describe('ACTION_CLOSE_ALL', () => {
+@@ -530,6 +666,33 @@ describe('flyoutManagerReducer', () => {
+       expect(newState).toEqual(initialState);
+     });
+ 
++    it('should pop child history first when current session has childHistory (remove current child from flyouts)', () => {
++      let state = flyoutManagerReducer(
++        initialState,
++        addFlyout('main-1', 'Main', LEVEL_MAIN)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-1', 'Child 1', LEVEL_CHILD)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-2', 'Child 2', LEVEL_CHILD)
++      );
++      expect(state.sessions[0].childFlyoutId).toBe('child-2');
++      expect(state.sessions[0].childHistory).toHaveLength(1);
++
++      state = flyoutManagerReducer(state, goBack());
++
++      expect(state.sessions).toHaveLength(1); // session not removed
++      expect(state.sessions[0].childFlyoutId).toBe('child-1');
++      expect(state.sessions[0].childHistory).toHaveLength(0);
++      expect(state.flyouts.map((f) => f.flyoutId)).toEqual([
++        'main-1',
++        'child-1',
++      ]); // child-2 removed
++    });
++
+     it('should remove the last session when only one exists', () => {
+       // Setup: create single session
+       let state = flyoutManagerReducer(
+@@ -685,6 +848,36 @@ describe('flyoutManagerReducer', () => {
+ 
+       expect(newState).toEqual(initialState);
+     });
++
++    it('should navigate to child in current session history when level is "child"', () => {
++      let state = flyoutManagerReducer(
++        initialState,
++        addFlyout('main-1', 'Main', LEVEL_MAIN)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-1', 'Child 1', LEVEL_CHILD)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-2', 'Child 2', LEVEL_CHILD)
++      );
++      state = flyoutManagerReducer(
++        state,
++        addFlyout('child-3', 'Child 3', LEVEL_CHILD)
++      );
++      expect(state.sessions[0].childFlyoutId).toBe('child-3');
++      expect(state.sessions[0].childHistory).toHaveLength(2);
++
++      state = flyoutManagerReducer(state, goToFlyout('child-1', 'child'));
++
++      expect(state.sessions[0].childFlyoutId).toBe('child-1');
++      expect(state.sessions[0].childHistory).toHaveLength(0); // popped to child-1
++      expect(state.flyouts.map((f) => f.flyoutId)).toEqual([
++        'main-1',
++        'child-1',
++      ]); // child-2, child-3 removed
++    });
+   });
+ 
+   describe('ACTION_ADD_UNMANAGED', () => {
+@@ -891,12 +1084,16 @@ describe('flyoutManagerReducer', () => {
+       expect(state.sessions[0]).toEqual({
+         mainFlyoutId: 'main-1',
+         childFlyoutId: 'child-1',
++        childTitle: 'child',
++        childIconType: undefined,
++        childHistory: [],
+         title: 'main',
+         zIndex: 0,
+       });
+       expect(state.sessions[1]).toEqual({
+         mainFlyoutId: 'main-2',
+         childFlyoutId: null,
++        childHistory: [],
+         title: 'main',
+         zIndex: 3,
+       });
+diff --git a/packages/eui/src/components/flyout/manager/reducer.ts b/packages/eui/src/components/flyout/manager/reducer.ts
+index f62cf60dc2..210628247b 100644
+--- a/packages/eui/src/components/flyout/manager/reducer.ts
++++ b/packages/eui/src/components/flyout/manager/reducer.ts
+@@ -23,7 +23,12 @@ import {
+   ACTION_SET_REFERENCE_WIDTH,
+   Action,
+ } from './actions';
+-import { LAYOUT_MODE_SIDE_BY_SIDE, LEVEL_MAIN, STAGE_OPENING } from './const';
++import {
++  LAYOUT_MODE_SIDE_BY_SIDE,
++  LEVEL_MAIN,
++  LEVEL_CHILD,
++  STAGE_OPENING,
++} from './const';
+ import {
+   EuiFlyoutManagerState,
+   FlyoutSession,
+@@ -90,8 +95,14 @@ export function flyoutManagerReducer(
+     case ACTION_ADD: {
+       const { flyoutId, title, level, size, iconType, minWidth } = action;
+ 
+-      // Ignore duplicate registrations
+-      if (state.flyouts.some((f) => f.flyoutId === flyoutId)) {
++      const isDuplicate = state.flyouts.some((f) => f.flyoutId === flyoutId);
++      const isIdempotentChild =
++        level === LEVEL_CHILD &&
++        state.sessions.length > 0 &&
++        state.sessions[state.sessions.length - 1].childFlyoutId === flyoutId;
++
++      // Ignore duplicate registrations (except idempotent child re-registration after goBack)
++      if (isDuplicate && !isIdempotentChild) {
+         return state;
+       }
+ 
+@@ -102,10 +113,9 @@ export function flyoutManagerReducer(
+         minWidth,
+         activityStage: STAGE_OPENING,
+       };
+-      const newFlyouts: EuiManagedFlyoutState[] = [
+-        ...state.flyouts,
+-        newFlyoutState,
+-      ];
++      const newFlyouts: EuiManagedFlyoutState[] = isIdempotentChild
++        ? state.flyouts
++        : [...state.flyouts, newFlyoutState];
+ 
+       if (level === LEVEL_MAIN) {
+         const newSession: FlyoutSession = {
+@@ -113,6 +123,7 @@ export function flyoutManagerReducer(
+           title: title,
+           iconType,
+           childFlyoutId: null,
++          childHistory: [],
+           zIndex: state.currentZIndex,
+         };
+ 
+@@ -133,10 +144,47 @@ export function flyoutManagerReducer(
+ 
+       const updatedSessions = [...state.sessions];
+       const currentSessionIndex = updatedSessions.length - 1;
++      const currentSession = updatedSessions[currentSessionIndex];
++      const childHistory = currentSession.childHistory ?? [];
++
++      // Idempotent re-registration (e.g. after goBack): flyout already in flyouts and session already points to it
++      if (state.flyouts.some((f) => f.flyoutId === flyoutId)) {
++        if (currentSession.childFlyoutId === flyoutId) {
++          updatedSessions[currentSessionIndex] = {
++            ...currentSession,
++            childTitle: title,
++            childIconType: iconType,
++            childHistory,
++          };
++          return { ...state, sessions: updatedSessions };
++        }
++        return state; // duplicate registration for a different child, ignore
++      }
+ 
++      // Session already has a child: push current child to history, then set new child (do not remove previous from flyouts)
++      if (currentSession.childFlyoutId) {
++        const historyEntry = {
++          flyoutId: currentSession.childFlyoutId,
++          title: currentSession.childTitle ?? '',
++          iconType: currentSession.childIconType,
++        };
++        updatedSessions[currentSessionIndex] = {
++          ...currentSession,
++          childHistory: [...childHistory, historyEntry],
++          childFlyoutId: flyoutId,
++          childTitle: title,
++          childIconType: iconType,
++        };
++        return { ...state, sessions: updatedSessions, flyouts: newFlyouts };
++      }
++
++      // First child in session
+       updatedSessions[currentSessionIndex] = {
+-        ...updatedSessions[currentSessionIndex],
++        ...currentSession,
+         childFlyoutId: flyoutId,
++        childTitle: title,
++        childIconType: iconType,
++        childHistory,
+       };
+ 
+       return { ...state, sessions: updatedSessions, flyouts: newFlyouts };
+@@ -144,8 +192,8 @@ export function flyoutManagerReducer(
+ 
+     // Unregister a flyout and update sessions accordingly.
+     // - When closing a `main` flyout, drop its entire session and all associated flyouts.
+-    // - When closing a `child` flyout, clear the child pointer on the most
+-    //   recent session if it matches.
++    // - When closing a `child` flyout, find the session that owns it (childFlyoutId or
++    //   childHistory) and clear that session's child state so navigation back stays consistent.
+     case ACTION_CLOSE: {
+       const removedFlyout = state.flyouts.find(
+         (f) => f.flyoutId === action.flyoutId
+@@ -162,11 +210,14 @@ export function flyoutManagerReducer(
+         );
+ 
+         if (sessionToRemove) {
+-          // Remove all flyouts associated with this session (main + child)
++          // Remove all flyouts associated with this session (main + current child + child history)
+           const flyoutsToRemove = new Set([action.flyoutId]);
+           if (sessionToRemove.childFlyoutId) {
+             flyoutsToRemove.add(sessionToRemove.childFlyoutId);
+           }
++          (sessionToRemove.childHistory ?? []).forEach((entry) =>
++            flyoutsToRemove.add(entry.flyoutId)
++          );
+ 
+           const newFlyouts = state.flyouts.filter(
+             (f) => !flyoutsToRemove.has(f.flyoutId)
+@@ -192,27 +243,49 @@ export function flyoutManagerReducer(
+         }
+       }
+ 
+-      // Handle child flyout closing (existing logic)
+-      const newFlyouts = state.flyouts.filter(
+-        (f) => f.flyoutId !== action.flyoutId
+-      );
+-
++      // Handle child flyout closing: find the session that owns this child and
++      // clear that session's child state (so we stay consistent when navigating back).
+       if (state.sessions.length === 0) {
+-        return { ...state, flyouts: newFlyouts };
++        return {
++          ...state,
++          flyouts: state.flyouts.filter((f) => f.flyoutId !== action.flyoutId),
++        };
+       }
+ 
+-      const updatedSessions = [...state.sessions];
+-      const currentSessionIndex = updatedSessions.length - 1;
++      const owningSessionIndex = state.sessions.findIndex(
++        (session) =>
++          session.childFlyoutId === action.flyoutId ||
++          (session.childHistory ?? []).some(
++            (entry) => entry.flyoutId === action.flyoutId
++          )
++      );
+ 
+-      if (
+-        updatedSessions[currentSessionIndex].childFlyoutId === action.flyoutId
+-      ) {
+-        updatedSessions[currentSessionIndex] = {
+-          ...updatedSessions[currentSessionIndex],
+-          childFlyoutId: null,
++      if (owningSessionIndex === -1) {
++        // Closed flyout not in any session's child state; just remove the one flyout
++        return {
++          ...state,
++          flyouts: state.flyouts.filter((f) => f.flyoutId !== action.flyoutId),
+         };
+       }
+ 
++      const owningSession = state.sessions[owningSessionIndex];
++      const childIds = new Set(
++        [
++          owningSession.childFlyoutId,
++          ...(owningSession.childHistory ?? []).map((e) => e.flyoutId),
++        ].filter(Boolean) as string[]
++      );
++
++      const newFlyouts = state.flyouts.filter((f) => !childIds.has(f.flyoutId));
++      const updatedSessions = [...state.sessions];
++      updatedSessions[owningSessionIndex] = {
++        ...owningSession,
++        childFlyoutId: null,
++        childTitle: undefined,
++        childIconType: undefined,
++        childHistory: [],
++      };
++
+       return { ...state, sessions: updatedSessions, flyouts: newFlyouts };
+     }
+ 
+@@ -279,7 +352,7 @@ export function flyoutManagerReducer(
+       return { ...state, flyouts: updatedFlyouts };
+     }
+ 
+-    // Go back one session (remove current session from stack)
++    // Go back: pop child history when any, else pop current session
+     case ACTION_GO_BACK: {
+       if (state.sessions.length === 0) {
+         return state;
+@@ -287,27 +360,87 @@ export function flyoutManagerReducer(
+ 
+       const currentSessionIndex = state.sessions.length - 1;
+       const currentSession = state.sessions[currentSessionIndex];
++      const childHistory = currentSession.childHistory ?? [];
+ 
+-      // Close all flyouts in the current session
++      if (childHistory.length > 0) {
++        // Pop one child: set current child to the last entry in history, remove the current child flyout
++        const popped = childHistory[childHistory.length - 1];
++        const newChildHistory = childHistory.slice(0, -1);
++        const updatedSessions = [...state.sessions];
++        updatedSessions[currentSessionIndex] = {
++          ...currentSession,
++          childHistory: newChildHistory,
++          childFlyoutId: popped.flyoutId,
++          childTitle: popped.title,
++          childIconType: popped.iconType,
++        };
++        const newFlyouts = state.flyouts.filter(
++          (f) => f.flyoutId !== currentSession.childFlyoutId
++        );
++        return { ...state, sessions: updatedSessions, flyouts: newFlyouts };
++      }
++
++      // No child history: pop current session (main + all its children)
+       const flyoutsToRemove = new Set([currentSession.mainFlyoutId]);
+       if (currentSession.childFlyoutId) {
+         flyoutsToRemove.add(currentSession.childFlyoutId);
+       }
++      (currentSession.childHistory ?? []).forEach((e) =>
++        flyoutsToRemove.add(e.flyoutId)
++      );
+ 
+       const newFlyouts = state.flyouts.filter(
+         (f) => !flyoutsToRemove.has(f.flyoutId)
+       );
+-
+       const newSessions = state.sessions.slice(0, currentSessionIndex);
+ 
+       return { ...state, sessions: newSessions, flyouts: newFlyouts };
+     }
+ 
+-    // Navigate to a specific flyout (remove all sessions after it)
++    // Navigate to a specific flyout (by main session or by child in current session's history)
+     case ACTION_GO_TO_FLYOUT: {
+-      const { flyoutId } = action;
++      const { flyoutId, level } = action;
++      const currentSessionIndex = state.sessions.length - 1;
+ 
+-      // Find the session containing the target flyout
++      if (level === LEVEL_CHILD && state.sessions.length > 0) {
++        const currentSession = state.sessions[currentSessionIndex];
++        const childHistory = currentSession.childHistory ?? [];
++        const targetIndex = childHistory.findIndex(
++          (entry) => entry.flyoutId === flyoutId
++        );
++
++        if (targetIndex === -1) {
++          return state; // Target child not in history
++        }
++
++        const targetEntry = childHistory[targetIndex];
++        const newChildHistory = childHistory.slice(0, targetIndex);
++
++        const flyoutsToRemove = new Set<string>();
++        if (currentSession.childFlyoutId) {
++          flyoutsToRemove.add(currentSession.childFlyoutId);
++        }
++        childHistory.slice(targetIndex + 1).forEach((e) => {
++          flyoutsToRemove.add(e.flyoutId);
++        });
++
++        const newFlyouts = state.flyouts.filter(
++          (f) => !flyoutsToRemove.has(f.flyoutId)
++        );
++
++        const updatedSessions = [...state.sessions];
++        updatedSessions[currentSessionIndex] = {
++          ...currentSession,
++          childHistory: newChildHistory,
++          childFlyoutId: targetEntry.flyoutId,
++          childTitle: targetEntry.title,
++          childIconType: targetEntry.iconType,
++        };
++
++        return { ...state, sessions: updatedSessions, flyouts: newFlyouts };
++      }
++
++      // Navigate by main flyout: remove all sessions after the target
+       const targetSessionIndex = state.sessions.findIndex(
+         (session) => session.mainFlyoutId === flyoutId
+       );
+@@ -316,7 +449,6 @@ export function flyoutManagerReducer(
+         return state; // Target flyout not found
+       }
+ 
+-      // Close all sessions after the target session
+       const sessionsToClose = state.sessions.slice(targetSessionIndex + 1);
+       const flyoutsToRemove = new Set<string>();
+ 
+@@ -325,6 +457,9 @@ export function flyoutManagerReducer(
+         if (session.childFlyoutId) {
+           flyoutsToRemove.add(session.childFlyoutId);
+         }
++        (session.childHistory ?? []).forEach((e) =>
++          flyoutsToRemove.add(e.flyoutId)
++        );
+       });
+ 
+       const newFlyouts = state.flyouts.filter(
+diff --git a/packages/eui/src/components/flyout/manager/selectors.test.tsx b/packages/eui/src/components/flyout/manager/selectors.test.tsx
+index cbc0707373..31ebd53b9e 100644
+--- a/packages/eui/src/components/flyout/manager/selectors.test.tsx
++++ b/packages/eui/src/components/flyout/manager/selectors.test.tsx
+@@ -14,10 +14,13 @@ import {
+   useHasChildFlyout,
+ } from './selectors';
+ import { useFlyoutManager } from './provider';
+-
+ import { LEVEL_MAIN, LEVEL_CHILD } from './const';
++import {
++  createFlyoutManagerMock,
++  createTestSession,
++  createTestState,
++} from './__mocks__';
+ 
+-// Mock the provider context
+ jest.mock('./provider', () => ({
+   EuiFlyoutManager: ({ children }: { children: React.ReactNode }) => children,
+   useFlyoutManager: jest.fn(),
+@@ -26,6 +29,7 @@ jest.mock('./provider', () => ({
+ const mockUseFlyoutManager = useFlyoutManager as jest.MockedFunction<
+   typeof useFlyoutManager
+ >;
++const baseMockManager = createFlyoutManagerMock();
+ 
+ describe('Flyout Manager Selectors', () => {
+   beforeEach(() => {
+@@ -35,26 +39,8 @@ describe('Flyout Manager Selectors', () => {
+   describe('useFlyoutWidth', () => {
+     it('should return undefined when flyout is not found', () => {
+       mockUseFlyoutManager.mockReturnValue({
+-        state: {
+-          sessions: [],
+-          flyouts: [],
+-          layoutMode: 'side-by-side',
+-          unmanagedFlyouts: [],
+-          currentZIndex: 0,
+-        },
+-        dispatch: jest.fn(),
+-        addFlyout: jest.fn(),
+-        closeFlyout: jest.fn(),
+-        closeAllFlyouts: jest.fn(),
+-        setActiveFlyout: jest.fn(),
+-        setFlyoutWidth: jest.fn(),
+-        setPushPadding: jest.fn(),
+-        setContainerElement: jest.fn(),
+-        goBack: jest.fn(),
+-        goToFlyout: jest.fn(),
+-        addUnmanagedFlyout: jest.fn(),
+-        closeUnmanagedFlyout: jest.fn(),
+-        historyItems: [],
++        ...baseMockManager,
++        state: createTestState(),
+       });
+ 
+       const { result } = renderHook(() =>
+@@ -66,8 +52,8 @@ describe('Flyout Manager Selectors', () => {
+ 
+     it('should return the width when flyout exists', () => {
+       mockUseFlyoutManager.mockReturnValue({
+-        state: {
+-          sessions: [],
++        ...baseMockManager,
++        state: createTestState({
+           flyouts: [
+             {
+               flyoutId: 'test-flyout',
+@@ -77,23 +63,7 @@ describe('Flyout Manager Selectors', () => {
+               width: 500,
+             },
+           ],
+-          layoutMode: 'side-by-side',
+-          currentZIndex: 0,
+-          unmanagedFlyouts: [],
+-        },
+-        dispatch: jest.fn(),
+-        addFlyout: jest.fn(),
+-        closeFlyout: jest.fn(),
+-        closeAllFlyouts: jest.fn(),
+-        setActiveFlyout: jest.fn(),
+-        setFlyoutWidth: jest.fn(),
+-        setPushPadding: jest.fn(),
+-        setContainerElement: jest.fn(),
+-        goBack: jest.fn(),
+-        goToFlyout: jest.fn(),
+-        addUnmanagedFlyout: jest.fn(),
+-        closeUnmanagedFlyout: jest.fn(),
+-        historyItems: [],
++        }),
+       });
+ 
+       const { result } = renderHook(() => useFlyoutWidth('test-flyout'));
+@@ -105,26 +75,8 @@ describe('Flyout Manager Selectors', () => {
+   describe('useParentFlyoutSize', () => {
+     it('should return undefined when no parent flyout exists', () => {
+       mockUseFlyoutManager.mockReturnValue({
+-        state: {
+-          sessions: [],
+-          flyouts: [],
+-          layoutMode: 'side-by-side',
+-          currentZIndex: 0,
+-          unmanagedFlyouts: [],
+-        },
+-        dispatch: jest.fn(),
+-        addFlyout: jest.fn(),
+-        closeFlyout: jest.fn(),
+-        closeAllFlyouts: jest.fn(),
+-        setActiveFlyout: jest.fn(),
+-        setFlyoutWidth: jest.fn(),
+-        setPushPadding: jest.fn(),
+-        setContainerElement: jest.fn(),
+-        goBack: jest.fn(),
+-        goToFlyout: jest.fn(),
+-        addUnmanagedFlyout: jest.fn(),
+-        closeUnmanagedFlyout: jest.fn(),
+-        historyItems: [],
++        ...baseMockManager,
++        state: createTestState(),
+       });
+ 
+       const { result } = renderHook(() => useParentFlyoutSize('child-flyout'));
+@@ -136,8 +88,8 @@ describe('Flyout Manager Selectors', () => {
+   describe('useHasChildFlyout', () => {
+     it('should return false when no child flyout exists', () => {
+       mockUseFlyoutManager.mockReturnValue({
+-        state: {
+-          sessions: [],
++        ...baseMockManager,
++        state: createTestState({
+           flyouts: [
+             {
+               flyoutId: 'parent-flyout',
+@@ -146,23 +98,7 @@ describe('Flyout Manager Selectors', () => {
+               activityStage: 'active',
+             },
+           ],
+-          layoutMode: 'side-by-side',
+-          currentZIndex: 0,
+-          unmanagedFlyouts: [],
+-        },
+-        dispatch: jest.fn(),
+-        addFlyout: jest.fn(),
+-        closeFlyout: jest.fn(),
+-        closeAllFlyouts: jest.fn(),
+-        setActiveFlyout: jest.fn(),
+-        setFlyoutWidth: jest.fn(),
+-        setPushPadding: jest.fn(),
+-        setContainerElement: jest.fn(),
+-        goBack: jest.fn(),
+-        goToFlyout: jest.fn(),
+-        addUnmanagedFlyout: jest.fn(),
+-        closeUnmanagedFlyout: jest.fn(),
+-        historyItems: [],
++        }),
+       });
+ 
+       const { result } = renderHook(() => useHasChildFlyout('parent-flyout'));
+@@ -172,14 +108,10 @@ describe('Flyout Manager Selectors', () => {
+ 
+     it('should return true when child flyout exists', () => {
+       mockUseFlyoutManager.mockReturnValue({
+-        state: {
++        ...baseMockManager,
++        state: createTestState({
+           sessions: [
+-            {
+-              mainFlyoutId: 'parent-flyout',
+-              childFlyoutId: 'child-flyout',
+-              title: 'Parent Flyout',
+-              zIndex: 0,
+-            },
++            createTestSession('parent-flyout', 'Parent Flyout', 'child-flyout'),
+           ],
+           flyouts: [
+             {
+@@ -195,23 +127,7 @@ describe('Flyout Manager Selectors', () => {
+               activityStage: 'active',
+             },
+           ],
+-          layoutMode: 'side-by-side',
+-          currentZIndex: 0,
+-          unmanagedFlyouts: [],
+-        },
+-        dispatch: jest.fn(),
+-        addFlyout: jest.fn(),
+-        closeFlyout: jest.fn(),
+-        closeAllFlyouts: jest.fn(),
+-        setActiveFlyout: jest.fn(),
+-        setFlyoutWidth: jest.fn(),
+-        setPushPadding: jest.fn(),
+-        setContainerElement: jest.fn(),
+-        goBack: jest.fn(),
+-        goToFlyout: jest.fn(),
+-        addUnmanagedFlyout: jest.fn(),
+-        closeUnmanagedFlyout: jest.fn(),
+-        historyItems: [],
++        }),
+       });
+ 
+       const { result } = renderHook(() => useHasChildFlyout('parent-flyout'));
+diff --git a/packages/eui/src/components/flyout/manager/store.test.ts b/packages/eui/src/components/flyout/manager/store.test.ts
+index b735ff0f86..28ea1c88bc 100644
+--- a/packages/eui/src/components/flyout/manager/store.test.ts
++++ b/packages/eui/src/components/flyout/manager/store.test.ts
+@@ -7,7 +7,7 @@
+  */
+ 
+ import { getFlyoutManagerStore, _resetFlyoutManagerStore } from './store';
+-import { LEVEL_MAIN } from './const';
++import { LEVEL_MAIN, LEVEL_CHILD } from './const';
+ 
+ describe('Flyout Manager Store', () => {
+   beforeEach(() => {
+@@ -146,6 +146,40 @@ describe('Flyout Manager Store', () => {
+       expect(store.getState().sessions).toHaveLength(1);
+       expect(store.getState().sessions[0].mainFlyoutId).toBe('flyout-1');
+     });
++
++    it('should include current session child history first, then previous main sessions (child items most recent first)', () => {
++      const store = getFlyoutManagerStore();
++
++      store.addFlyout('main-1', 'Main', LEVEL_MAIN);
++      store.addFlyout('child-1', 'Child 1', LEVEL_CHILD);
++      store.addFlyout('child-2', 'Child 2', LEVEL_CHILD);
++
++      const historyItems = store.historyItems;
++
++      expect(historyItems).toHaveLength(1); // one child in history (Child 1), no previous mains
++      expect(historyItems[0].title).toBe('Child 1');
++      expect(historyItems[0].onClick).toBeDefined();
++
++      // Add a second main: current session becomes main-2 (no child). History = previous session's child breadcrumb (current child + child history), most recent first
++      store.addFlyout('main-2', 'Main 2', LEVEL_MAIN);
++      const historyItems2 = store.historyItems;
++      expect(historyItems2).toHaveLength(2); // Child 2 (main-1's current child), then Child 1 (main-1's child history)
++      expect(historyItems2[0].title).toBe('Child 2');
++      expect(historyItems2[1].title).toBe('Child 1');
++    });
++
++    it('should have empty historyItems (zero depth) when only one main', () => {
++      const store = getFlyoutManagerStore();
++      store.addFlyout('main-1', 'Main', LEVEL_MAIN);
++      expect(store.historyItems).toHaveLength(0);
++    });
++
++    it('should have empty historyItems (zero depth) when one main and one child (no child-to-child)', () => {
++      const store = getFlyoutManagerStore();
++      store.addFlyout('main-1', 'Main', LEVEL_MAIN);
++      store.addFlyout('child-1', 'Child', LEVEL_CHILD);
++      expect(store.historyItems).toHaveLength(0);
++    });
+   });
+ 
+   describe('store subscription', () => {
+diff --git a/packages/eui/src/components/flyout/manager/store.ts b/packages/eui/src/components/flyout/manager/store.ts
+index 7c99324cb7..011cf23cd5 100644
+--- a/packages/eui/src/components/flyout/manager/store.ts
++++ b/packages/eui/src/components/flyout/manager/store.ts
+@@ -61,7 +61,7 @@ export interface FlyoutManagerStore {
+   setPushPadding: (side: 'left' | 'right', width: number) => void;
+   setContainerElement: (element: HTMLElement | null) => void;
+   goBack: () => void;
+-  goToFlyout: (flyoutId: string) => void;
++  goToFlyout: (flyoutId: string, level?: EuiFlyoutLevel) => void;
+   addUnmanagedFlyout: (flyoutId: string) => void;
+   closeUnmanagedFlyout: (flyoutId: string) => void;
+   historyItems: Array<{
+@@ -104,25 +104,79 @@ function createStore(
+   // eslint-disable-next-line prefer-const -- Forward declaration requires 'let' not 'const'
+   let store: FlyoutManagerStore;
+ 
+-  const computeHistoryItems = (): Array<{
++  const computeHistoryItems = (
++    dispatchFn: (action: Action) => void
++  ): Array<{
+     title: string;
+     iconType?: IconType;
+     onClick: () => void;
+   }> => {
+     const currentSessionIndex = currentState.sessions.length - 1;
++    const currentSession =
++      currentSessionIndex >= 0
++        ? currentState.sessions[currentSessionIndex]
++        : null;
+     const previousSessions = currentState.sessions.slice(
+       0,
+       currentSessionIndex
+     );
+-    return previousSessions
+-      .reverse()
+-      .map(({ title, iconType, mainFlyoutId }) => ({
+-        title,
+-        iconType,
+-        onClick: () => {
+-          store.dispatch(goToFlyoutAction(mainFlyoutId));
+-        },
+-      }));
++
++    const childHistory = currentSession?.childHistory ?? [];
++    const childItems = [...childHistory].reverse().map((entry) => ({
++      title: entry.title,
++      iconType: entry.iconType,
++      onClick: () => {
++        dispatchFn(goToFlyoutAction(entry.flyoutId, 'child'));
++      },
++    }));
++
++    // Previous sessions: list each session's current child then its child history (so all travelled entries appear)
++    const previousSessionItems: Array<{
++      title: string;
++      iconType?: IconType;
++      onClick: () => void;
++    }> = [];
++    for (let i = previousSessions.length - 1; i >= 0; i--) {
++      const session = previousSessions[i];
++      const mainTitle = session.title;
++      const mainFlyoutId = session.mainFlyoutId;
++      const history = session.childHistory ?? [];
++      const hasChildren =
++        (session.childFlyoutId != null && session.childTitle != null) ||
++        history.length > 0;
++
++      if (session.childFlyoutId && session.childTitle) {
++        previousSessionItems.push({
++          title: session.childTitle,
++          iconType: session.childIconType,
++          onClick: () => {
++            dispatchFn(goToFlyoutAction(mainFlyoutId, 'main'));
++          },
++        });
++      }
++      for (let h = history.length - 1; h >= 0; h--) {
++        const entry = history[h];
++        previousSessionItems.push({
++          title: entry.title,
++          iconType: entry.iconType,
++          onClick: () => {
++            dispatchFn(goToFlyoutAction(mainFlyoutId, 'main'));
++            dispatchFn(goToFlyoutAction(entry.flyoutId, 'child'));
++          },
++        });
++      }
++      if (!hasChildren) {
++        previousSessionItems.push({
++          title: mainTitle,
++          iconType: session.iconType,
++          onClick: () => {
++            dispatchFn(goToFlyoutAction(mainFlyoutId, 'main'));
++          },
++        });
++      }
++    }
++
++    return [...childItems, ...previousSessionItems];
+   };
+ 
+   const dispatch = (action: Action) => {
+@@ -134,7 +188,7 @@ function createStore(
+       // Recompute history items eagerly if sessions changed
+       // This ensures stable references and avoids stale closures
+       if (nextState.sessions !== previousSessions) {
+-        store.historyItems = computeHistoryItems();
++        store.historyItems = computeHistoryItems(dispatch);
+ 
+         // Detect removed sessions and emit CLOSE_SESSION events
+         const nextSessionIds = new Set(
+@@ -175,12 +229,13 @@ function createStore(
+     setContainerElement: (element) =>
+       dispatch(setContainerElementAction(element)),
+     goBack: () => dispatch(goBackAction()),
+-    goToFlyout: (flyoutId) => dispatch(goToFlyoutAction(flyoutId)),
++    goToFlyout: (flyoutId, level) =>
++      dispatch(goToFlyoutAction(flyoutId, level)),
+     addUnmanagedFlyout: (flyoutId) =>
+       dispatch(addUnmanagedFlyoutAction(flyoutId)),
+     closeUnmanagedFlyout: (flyoutId) =>
+       dispatch(closeUnmanagedFlyoutAction(flyoutId)),
+-    historyItems: computeHistoryItems(), // Initialize with current state
++    historyItems: computeHistoryItems(dispatch), // Initialize with current state
+   };
+ 
+   return store;
+diff --git a/packages/eui/src/components/flyout/manager/types.ts b/packages/eui/src/components/flyout/manager/types.ts
+index 2fc40775ce..37ce31e077 100644
+--- a/packages/eui/src/components/flyout/manager/types.ts
++++ b/packages/eui/src/components/flyout/manager/types.ts
+@@ -49,6 +49,13 @@ export interface EuiManagedFlyoutState {
+   activityStage?: EuiFlyoutActivityStage;
+ }
+ 
++/** Entry for a child flyout in session history. */
++export interface ChildHistoryEntry {
++  flyoutId: string;
++  title: string;
++  iconType?: IconType;
++}
++
+ export interface FlyoutSession {
+   /** ID of the main flyout for this session */
+   mainFlyoutId: string;
+@@ -60,6 +67,12 @@ export interface FlyoutSession {
+   iconType?: IconType;
+   /** z-index value to be used by the flyout session */
+   zIndex: number;
++  /** Title of the current child flyout. */
++  childTitle?: string;
++  /** Icon of the current child flyout. */
++  childIconType?: IconType;
++  /** Stack of child flyouts we navigated away from. */
++  childHistory: ChildHistoryEntry[];
+ }
+ 
+ export interface PushPaddingOffsets {
+@@ -108,7 +121,7 @@ export interface FlyoutManagerApi {
+   setPushPadding: (side: 'left' | 'right', width: number) => void;
+   setContainerElement: (element: HTMLElement | null) => void;
+   goBack: () => void;
+-  goToFlyout: (flyoutId: string) => void;
++  goToFlyout: (flyoutId: string, level?: EuiFlyoutLevel) => void;
+   addUnmanagedFlyout: (flyoutId: string) => void;
+   closeUnmanagedFlyout: (flyoutId: string) => void;
+   historyItems: Array<{

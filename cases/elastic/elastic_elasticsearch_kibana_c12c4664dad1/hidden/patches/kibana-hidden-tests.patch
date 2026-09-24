@@ -1,0 +1,76 @@
+diff --git a/src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_change_point_profile.ecosync.test.ts b/src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_change_point_profile.ecosync.test.ts
+new file mode 100644
+index 00000000000..9c89bcdde24
+--- /dev/null
++++ b/src/platform/plugins/shared/discover/public/context_awareness/profile_providers/register_change_point_profile.ecosync.test.ts
+@@ -0,0 +1,70 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the "Elastic License
++ * 2.0", the "GNU Affero General Public License v3.0 only", and the "Server Side
++ * Public License v 1"; you may not use this file except in compliance with, at
++ * your election, the "Elastic License 2.0", the "GNU Affero General Public
++ * License v3.0 only", and the "Server Side Public License, v 1".
++ */
++
++import { createEsqlDataSource } from '../../../common/data_sources';
++import { createContextAwarenessMocks, createProfileProviderSharedServicesMock } from '../__mocks__';
++import { registerProfileProviders } from './register_profile_providers';
++
++describe('Discover change point chart profile', () => {
++  it.each([
++    [
++      'without grouping',
++      'FROM logs-* | STATS value = AVG(bytes) BY bucket = BUCKET(@timestamp, 1h) | CHANGE_POINT value ON bucket',
++    ],
++    [
++      'with one grouping',
++      'FROM logs-* | STATS value = AVG(bytes) BY host, bucket = BUCKET(@timestamp, 1h) | CHANGE_POINT value ON bucket BY host',
++    ],
++    [
++      'with multiple groupings',
++      'FROM logs-* | STATS value = AVG(bytes) BY host, service, bucket = BUCKET(@timestamp, 1h) | CHANGE_POINT value ON bucket BY host, service',
++    ],
++    [
++      'with a TS source',
++      'TS metrics-* | STATS value = AVG(system.cpu.total.norm.pct) BY host.name, bucket = BUCKET(@timestamp, 1h) | CHANGE_POINT value ON bucket BY host.name',
++    ],
++  ])('provides a change point chart %s', async (_description, esql) => {
++    const profileProviderServices = createProfileProviderSharedServicesMock();
++    const { rootProfileServiceMock, dataSourceProfileServiceMock, documentProfileServiceMock } =
++      createContextAwarenessMocks({
++        shouldRegisterProviders: false,
++      });
++    registerProfileProviders({
++      rootProfileService: rootProfileServiceMock,
++      dataSourceProfileService: dataSourceProfileServiceMock,
++      documentProfileService: documentProfileServiceMock,
++      enabledExperimentalProfileIds: [],
++      sharedServices: profileProviderServices,
++      services: profileProviderServices,
++    });
++
++    const rootContext = await rootProfileServiceMock.resolve({ solutionNavId: null });
++    const dataSourceContext = await dataSourceProfileServiceMock.resolve({
++      rootContext,
++      dataSource: createEsqlDataSource(),
++      query: { esql },
++    });
++    const profile = dataSourceProfileServiceMock.getProfile({ context: dataSourceContext });
++    const getChartSectionConfiguration = profile.getChartSectionConfiguration;
++
++    expect(getChartSectionConfiguration).toEqual(expect.any(Function));
++    const configuration = getChartSectionConfiguration!(() => ({ replaceDefaultChart: false }))({
++      actions: {},
++    } as never);
++    expect(configuration).toEqual(
++      expect.objectContaining({
++        replaceDefaultChart: true,
++        renderChartSection: expect.any(Function),
++      })
++    );
++    if (configuration.replaceDefaultChart) {
++      expect(configuration.renderChartSection({} as never)).toBeTruthy();
++    }
++  });
++});

@@ -1,0 +1,69 @@
+diff --git a/packages/eas-cli/src/user/__tests__/SessionManager-test.ts b/packages/eas-cli/src/user/__tests__/SessionManager-test.ts
+index 209b9f193..8e6d11b05 100644
+--- a/packages/eas-cli/src/user/__tests__/SessionManager-test.ts
++++ b/packages/eas-cli/src/user/__tests__/SessionManager-test.ts
+@@ -1,10 +1,11 @@
+ import fs from 'fs-extra';
+ import { vol } from 'memfs';
++import nock from 'nock';
+ import path from 'path';
+ 
+ import { ApiV2Error } from '../../ApiV2Error';
+ import { AnalyticsWithOrchestration } from '../../analytics/AnalyticsManager';
+ import { ApiV2Client } from '../../api';
+ import Log from '../../log';
+ import { promptAsync, selectAsync } from '../../prompts';
+ import { getStateJsonPath } from '../../utils/paths';
+@@ -51,6 +52,8 @@ beforeEach(() => {
+ });
+ 
+ afterEach(() => {
++  nock.cleanAll();
++  jest.doMock('../../api');
+   process.env = OLD_ENV; // Restore old environment
+ });
+ 
+@@ -219,6 +222,43 @@ describe(SessionManager, () => {
+       await sessionManager.logoutAsync();
+       expect(sessionManager['getSessionSecret']()).toBe(null);
+     });
++
++    it('calls the server logout endpoint when session secret exists', async () => {
++      jest.resetModules();
++      jest.dontMock('../../api');
++      const { default: SessionManagerWithRealApi } = await import('../SessionManager');
++      const { getExpoApiBaseUrl } = await import('../../api');
++      const { default: isolatedFs } = await import('fs-extra');
++      const { getStateJsonPath: getIsolatedStateJsonPath } = await import('../../utils/paths');
++      await isolatedFs.mkdirp(path.dirname(getIsolatedStateJsonPath()));
++      await isolatedFs.writeJSON(getIsolatedStateJsonPath(), { auth: authStub });
++      const logoutScope = nock(getExpoApiBaseUrl())
++        .post('/v2/auth/logout')
++        .matchHeader('expo-session', 'SESSION_SECRET')
++        .reply(200, { data: {} });
++
++      const sessionManager = new SessionManagerWithRealApi(analytics);
++      await sessionManager.logoutAsync();
++
++      expect(logoutScope.isDone()).toBe(true);
++    });
++
++    it('clears the local session even if the server logout call fails', async () => {
++      jest.resetModules();
++      jest.dontMock('../../api');
++      const { default: SessionManagerWithRealApi } = await import('../SessionManager');
++      const { getExpoApiBaseUrl } = await import('../../api');
++      const { default: isolatedFs } = await import('fs-extra');
++      const { getStateJsonPath: getIsolatedStateJsonPath } = await import('../../utils/paths');
++      await isolatedFs.mkdirp(path.dirname(getIsolatedStateJsonPath()));
++      await isolatedFs.writeJSON(getIsolatedStateJsonPath(), { auth: authStub });
++      nock(getExpoApiBaseUrl()).post('/v2/auth/logout').reply(500, 'Internal Server Error');
++
++      const sessionManager = new SessionManagerWithRealApi(analytics);
++      await sessionManager.logoutAsync();
++
++      expect(sessionManager['getSessionSecret']()).toBe(null);
++    });
+   });
+ 
+   describe('showLoginPromptAsync', () => {

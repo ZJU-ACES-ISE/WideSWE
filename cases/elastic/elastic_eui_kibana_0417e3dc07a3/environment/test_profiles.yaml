@@ -1,0 +1,40 @@
+profiles:
+  eui-hidden:
+    repo: eui
+    workdir: repos/elastic/eui
+    command: environment/run_profile.sh eui-hidden
+    status: implemented
+    evaluator_node_modules_mode: persistent
+    evaluator_node_modules_paths:
+    - .
+    - packages/docusaurus-preset
+    - packages/docusaurus-theme
+    - packages/eui-theme-borealis
+    - packages/eui-theme-common
+    - packages/eui
+    - packages/release-cli
+    - packages/website
+    - packages/yarn-plugin-validate-env
+    test_files:
+    - packages/eui/src/components/flyout/manager/flyout_managed.test.tsx
+    - packages/eui/src/components/flyout/manager/reducer.test.ts
+    - packages/eui/src/components/flyout/manager/selectors.test.tsx
+    - packages/eui/src/components/flyout/manager/store.test.ts
+    public_smoke_command: corepack enable >/dev/null 2>&1 || true; yarn install --immutable
+      || yarn install; cd packages/eui
+      && yarn test-unit src/components/flyout/manager/reducer.test.ts --runInBand
+    patched_files:
+    - packages/eui/src/components/flyout/manager/flyout_managed.test.tsx
+    - packages/eui/src/components/flyout/manager/reducer.test.ts
+    - packages/eui/src/components/flyout/manager/selectors.test.tsx
+    - packages/eui/src/components/flyout/manager/store.test.ts
+  kibana-hidden:
+    repo: kibana
+    workdir: repos/elastic/kibana
+    command: environment/run_profile.sh kibana-hidden
+    status: implemented
+    evaluator_node_modules_mode: persistent
+    test_files:
+    - src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.test.tsx
+    patched_files:
+    - src/core/packages/overlays/browser-internal/src/flyout/system_flyout_service.test.tsx

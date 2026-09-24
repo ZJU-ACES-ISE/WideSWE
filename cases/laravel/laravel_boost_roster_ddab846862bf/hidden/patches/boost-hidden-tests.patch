@@ -1,0 +1,320 @@
+diff --git a/tests/Feature/Install/GuidelineComposerTest.php b/tests/Feature/Install/GuidelineComposerTest.php
+index 395c6d5..2f1e0c2 100644
+--- a/tests/Feature/Install/GuidelineComposerTest.php
++++ b/tests/Feature/Install/GuidelineComposerTest.php
+@@ -2,6 +2,7 @@
+ 
+ declare(strict_types=1);
+ 
++use Illuminate\Support\Facades\File;
+ use Laravel\Boost\Install\GuidelineComposer;
+ use Laravel\Boost\Install\GuidelineConfig;
+ use Laravel\Boost\Install\Herd;
+@@ -13,6 +14,38 @@
+ 
+ use function Pest\testDirectory;
+ 
++function boostGuidelineComposerRoster(string $root, string $package, string $version = '1.0.0'): Roster
++{
++    File::ensureDirectoryExists($root);
++    file_put_contents($root.'/composer.json', json_encode([
++        'require' => [$package => '^'.$version],
++    ], JSON_THROW_ON_ERROR));
++    file_put_contents($root.'/composer.lock', json_encode([
++        'packages' => [['name' => $package, 'version' => 'v'.$version]],
++        'packages-dev' => [],
++    ], JSON_THROW_ON_ERROR));
++
++    return Roster::scan($root);
++}
++
++function boostGuidelineNpmRoster(string $root, string $package, string $version = '2.1.0'): Roster
++{
++    File::ensureDirectoryExists($root);
++    $packagePath = 'node_modules/'.$package;
++    file_put_contents($root.'/package.json', json_encode([
++        'dependencies' => [$package => '^'.$version],
++    ], JSON_THROW_ON_ERROR));
++    file_put_contents($root.'/package-lock.json', json_encode([
++        'lockfileVersion' => 3,
++        'packages' => [
++            '' => ['dependencies' => [$package => '^'.$version]],
++            $packagePath => ['version' => $version],
++        ],
++    ], JSON_THROW_ON_ERROR));
++
++    return Roster::scan($root);
++}
++
+ beforeEach(function (): void {
+     $this->roster = Mockery::mock(Roster::class);
+     $this->nodePackageManager = NodePackageManager::NPM;
+@@ -200,9 +233,6 @@
+         ->with(Packages::INERTIA_VUE, '2.1.0', '>=')
+         ->andReturn(false);
+ 
+-    $this->roster->shouldReceive('usesVersion')
+-        ->with(Packages::INERTIA, '2.1.2', '>=')
+-        ->andReturn(false);
+     $this->roster->shouldReceive('usesVersion')
+         ->with(Packages::INERTIA_REACT, '2.1.2', '>=')
+         ->andReturn(false);
+@@ -939,3 +969,82 @@
+         ->toContain('## Skills Activation')
+         ->toContain('This project has domain-specific skills available');
+ });
++
++test('loads a Composer package guideline and keeps its logical key', function (): void {
++    $root = sys_get_temp_dir().'/boost_composer_guideline_'.uniqid();
++    $guidelineDir = $root.'/vendor/pestphp/pest/resources/boost/guidelines';
++    File::ensureDirectoryExists($guidelineDir);
++    file_put_contents($guidelineDir.'/core.blade.php', '# Package Pest Guideline');
++
++    try {
++        $roster = boostGuidelineComposerRoster($root, 'pestphp/pest', '3.0.0');
++        $this->app->instance(Roster::class, $roster);
++        $composer = new GuidelineComposer($roster, $this->herd);
++
++        expect($composer->compose())->toContain('Package Pest Guideline')
++            ->and($composer->used())->toContain('pest/core');
++    } finally {
++        File::deleteDirectory($root);
++    }
++});
++
++test('falls back to the built-in guideline when a package provides none', function (): void {
++    $root = sys_get_temp_dir().'/boost_composer_fallback_'.uniqid();
++    File::ensureDirectoryExists($root.'/vendor/pestphp/pest');
++
++    try {
++        $roster = boostGuidelineComposerRoster($root, 'pestphp/pest', '3.0.0');
++        $this->app->instance(Roster::class, $roster);
++        $guidelines = (new GuidelineComposer($roster, $this->herd))->compose();
++
++        expect($guidelines)->toContain('=== pest/core rules ===');
++    } finally {
++        File::deleteDirectory($root);
++    }
++});
++
++test('a user markdown guideline overrides a package guideline', function (): void {
++    $root = sys_get_temp_dir().'/boost_guideline_override_'.uniqid();
++    $guidelineDir = $root.'/vendor/pestphp/pest/resources/boost/guidelines';
++    $overrideDir = $root.'/.ai/guidelines';
++    File::ensureDirectoryExists($guidelineDir);
++    File::ensureDirectoryExists($overrideDir.'/pest');
++    file_put_contents($guidelineDir.'/core.blade.php', '# Package Pest Guideline');
++    file_put_contents($overrideDir.'/pest/core.md', '# User Pest Guideline');
++
++    try {
++        $roster = boostGuidelineComposerRoster($root, 'pestphp/pest', '3.0.0');
++        $this->app->instance(Roster::class, $roster);
++        $composer = Mockery::mock(GuidelineComposer::class, [$roster, $this->herd])->makePartial();
++        $composer->shouldReceive('customGuidelinePath')
++            ->andReturnUsing(fn ($path = ''): string => $overrideDir.'/'.ltrim((string) $path, '/'));
++
++        $pestCore = $composer->guidelines()->get('pest/core');
++        expect($pestCore)->not->toBeNull()
++            ->and($pestCore['content'])->toContain('User Pest Guideline')
++            ->and($pestCore['content'])->not->toContain('Package Pest Guideline');
++    } finally {
++        File::deleteDirectory($root);
++    }
++});
++
++test('loads guidelines from recognized npm package paths', function (string $package): void {
++    $root = sys_get_temp_dir().'/boost_npm_guideline_'.uniqid();
++    $guidelineDir = $root.'/node_modules/'.$package.'/resources/boost/guidelines';
++    File::ensureDirectoryExists($guidelineDir);
++    file_put_contents($guidelineDir.'/core.blade.php', '# Package npm Guideline '.$package);
++
++    try {
++        $roster = boostGuidelineNpmRoster($root, $package);
++        $this->app->instance(Roster::class, $roster);
++        $guidelines = (new GuidelineComposer($roster, $this->herd))->compose();
++
++        expect($guidelines)->toContain('Package npm Guideline '.$package);
++    } finally {
++        File::deleteDirectory($root);
++    }
++})->with([
++    '@inertiajs/react',
++    '@laravel/vite-plugin-wayfinder',
++    'laravel-echo',
++]);
+diff --git a/tests/Feature/Install/SkillComposerTest.php b/tests/Feature/Install/SkillComposerTest.php
+index 6ce329b..b665ed3 100644
+--- a/tests/Feature/Install/SkillComposerTest.php
++++ b/tests/Feature/Install/SkillComposerTest.php
+@@ -3,6 +3,7 @@
+ declare(strict_types=1);
+ 
+ use Illuminate\Support\Collection;
++use Illuminate\Support\Facades\File;
+ use Laravel\Boost\Install\GuidelineConfig;
+ use Laravel\Boost\Install\Skill;
+ use Laravel\Boost\Install\SkillComposer;
+@@ -12,6 +13,37 @@
+ use Laravel\Roster\PackageCollection;
+ use Laravel\Roster\Roster;
+ 
++function boostSkillComposerRoster(string $root, string $package, string $version = '3.0.0'): Roster
++{
++    File::ensureDirectoryExists($root);
++    file_put_contents($root.'/composer.json', json_encode([
++        'require' => [$package => '^'.$version],
++    ], JSON_THROW_ON_ERROR));
++    file_put_contents($root.'/composer.lock', json_encode([
++        'packages' => [['name' => $package, 'version' => 'v'.$version]],
++        'packages-dev' => [],
++    ], JSON_THROW_ON_ERROR));
++
++    return Roster::scan($root);
++}
++
++function boostSkillNpmRoster(string $root, string $package, string $version = '2.1.0'): Roster
++{
++    File::ensureDirectoryExists($root);
++    file_put_contents($root.'/package.json', json_encode([
++        'dependencies' => [$package => '^'.$version],
++    ], JSON_THROW_ON_ERROR));
++    file_put_contents($root.'/package-lock.json', json_encode([
++        'lockfileVersion' => 3,
++        'packages' => [
++            '' => ['dependencies' => [$package => '^'.$version]],
++            'node_modules/'.$package => ['version' => $version],
++        ],
++    ], JSON_THROW_ON_ERROR));
++
++    return Roster::scan($root);
++}
++
+ beforeEach(function (): void {
+     $this->roster = Mockery::mock(Roster::class);
+     $this->roster->shouldReceive('nodePackageManager')->andReturn(NodePackageManager::NPM);
+@@ -160,6 +192,90 @@
+     expect($skills->has('livewire-development'))->toBeTrue();
+ });
+ 
++test('a Composer package skill overrides the matching built-in skill', function (): void {
++    $root = sys_get_temp_dir().'/boost_composer_skill_'.uniqid();
++    $skillDir = $root.'/vendor/livewire/livewire/resources/boost/skills/livewire-development';
++    File::ensureDirectoryExists($skillDir);
++    file_put_contents($skillDir.'/SKILL.md', <<<'MARKDOWN'
++        ---
++        name: livewire-development
++        description: Package Livewire skill
++        ---
++
++        # Package Livewire Skill
++        MARKDOWN);
++
++    try {
++        $roster = boostSkillComposerRoster($root, 'livewire/livewire');
++        $skill = (new SkillComposer($roster))->skills()->get('livewire-development');
++
++        expect($skill)->not->toBeNull()
++            ->and($skill->description)->toBe('Package Livewire skill')
++            ->and($skill->path)->toStartWith($root);
++    } finally {
++        File::deleteDirectory($root);
++    }
++});
++
++test('falls back to the built-in skill when a Composer package provides none', function (): void {
++    $root = sys_get_temp_dir().'/boost_composer_skill_fallback_'.uniqid();
++    File::ensureDirectoryExists($root.'/vendor/livewire/livewire');
++
++    try {
++        $roster = boostSkillComposerRoster($root, 'livewire/livewire');
++        $skill = (new SkillComposer($roster))->skills()->get('livewire-development');
++
++        expect($skill)->not->toBeNull()
++            ->and($skill->description)->not->toBe('Package Livewire skill');
++    } finally {
++        File::deleteDirectory($root);
++    }
++});
++
++test('loads skills from recognized npm package paths', function (string $package): void {
++    $root = sys_get_temp_dir().'/boost_npm_skill_'.uniqid();
++    $skillName = 'package-skill-'.str_replace(['@', '/'], ['', '-'], $package);
++    $skillDir = $root.'/node_modules/'.$package.'/resources/boost/skills/'.$skillName;
++    File::ensureDirectoryExists($skillDir);
++    file_put_contents($skillDir.'/SKILL.md', <<<MARKDOWN
++        ---
++        name: {$skillName}
++        description: Package npm skill {$package}
++        ---
++
++        # Package npm Skill
++        MARKDOWN);
++
++    try {
++        $roster = boostSkillNpmRoster($root, $package);
++        $skill = (new SkillComposer($roster))->skills()->get($skillName);
++
++        expect($skill)->not->toBeNull()
++            ->and($skill->description)->toBe('Package npm skill '.$package)
++            ->and($skill->path)->toStartWith($root);
++    } finally {
++        File::deleteDirectory($root);
++    }
++})->with([
++    '@inertiajs/react',
++    '@laravel/vite-plugin-wayfinder',
++    'laravel-echo',
++]);
++
++test('falls back to the built-in skill when an npm package provides none', function (): void {
++    $root = sys_get_temp_dir().'/boost_npm_skill_fallback_'.uniqid();
++    File::ensureDirectoryExists($root.'/node_modules/@inertiajs/react');
++
++    try {
++        $roster = boostSkillNpmRoster($root, '@inertiajs/react');
++        $skills = (new SkillComposer($roster))->skills();
++
++        expect($skills->has('inertia-react-development'))->toBeTrue();
++    } finally {
++        File::deleteDirectory($root);
++    }
++});
++
+ test('blade skills with code before frontmatter are parsed correctly', function (): void {
+     $packages = new PackageCollection([
+         new Package(Packages::LARAVEL, 'laravel/framework', '11.0.0'),
+diff --git a/tests/Unit/Install/ThirdPartyPackageTest.php b/tests/Unit/Install/ThirdPartyPackageTest.php
+index 864cce8..d591e3e 100644
+--- a/tests/Unit/Install/ThirdPartyPackageTest.php
++++ b/tests/Unit/Install/ThirdPartyPackageTest.php
+@@ -44,3 +44,30 @@
+     'guidelines only' => [true, false, 'vendor/package (guideline)'],
+     'skills only' => [false, true, 'vendor/package (skills)'],
+ ]);
++
++it('excludes first-party packages from discover results', function (): void {
++    $packages = ThirdPartyPackage::discover();
++
++    $firstPartyNames = [
++        'laravel/framework',
++        'livewire/livewire',
++        'pestphp/pest',
++        'phpunit/phpunit',
++        'laravel/folio',
++        'laravel/mcp',
++        'laravel/pennant',
++        'laravel/pint',
++        'laravel/sail',
++        'laravel/wayfinder',
++        'livewire/flux',
++        'livewire/flux-pro',
++        'livewire/volt',
++        'inertiajs/inertia-laravel',
++    ];
++
++    foreach ($firstPartyNames as $name) {
++        expect($packages->has($name))->toBeFalse(
++            "First-party package {$name} should be excluded from discover()"
++        );
++    }
++});

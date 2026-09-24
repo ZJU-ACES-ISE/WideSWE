@@ -1,0 +1,31 @@
+task_id: elastic_elasticsearch_js_kibana_2c333c534b80
+hidden_test_patches:
+- repo: elasticsearch-js
+  patch: hidden/patches/elasticsearch-js-hidden-tests.patch
+  test_profile: elasticsearch_js-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - test/unit/api.test.ts
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from elastic/elasticsearch-js PR(s) 3211
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - src/core/packages/elasticsearch/client-server-internal/src/cps_request_handler/cps_request_handler.test.ts
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from elastic/kibana PR(s) 255958
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - elasticsearch_js-hidden
+    - kibana-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

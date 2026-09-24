@@ -1,0 +1,33 @@
+task_id: ipfs_boxo_helia_7da5d4601ae4
+hidden_test_patches:
+- repo: boxo
+  patch: hidden/patches/boxo-hidden-tests.patch
+  test_profile: boxo-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - bitswap/client/internal/messagequeue/messagequeue_test.go
+  - bitswap/server/internal/decision/engine_test.go
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from ipfs/boxo PR(s) 629
+- repo: helia
+  patch: hidden/patches/helia-hidden-tests.patch
+  test_profile: helia-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - packages/bitswap/test/peer-want-list.spec.ts
+  - packages/bitswap/test/want-list.spec.ts
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from ipfs/helia PR(s) 970
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - boxo-hidden
+    - helia-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

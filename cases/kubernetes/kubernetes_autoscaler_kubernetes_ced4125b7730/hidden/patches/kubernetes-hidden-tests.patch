@@ -1,0 +1,312 @@
+diff --git a/pkg/apis/autoscaling/validation/validation_test.go b/pkg/apis/autoscaling/validation/validation_test.go
+index c50bdb3e131..c95b63e0587 100644
+--- a/pkg/apis/autoscaling/validation/validation_test.go
++++ b/pkg/apis/autoscaling/validation/validation_test.go
+@@ -17,6 +17,7 @@ limitations under the License.
+ package validation
+ 
+ import (
++	"reflect"
+ 	"strings"
+ 	"testing"
+ 
+@@ -2000,3 +2001,130 @@ func TestValidateHorizontalPodAutoscalerUpdateInvalidHPA(t *testing.T) {
+ 		t.Error("expected error, APIVersion should be checked")
+ 	}
+ }
++
++func TestValidateHorizontalPodAutoscalerStatusUpdate(t *testing.T) {
++	baseHPA := autoscaling.HorizontalPodAutoscaler{
++		ObjectMeta: metav1.ObjectMeta{
++			Name:            "myautoscaler",
++			Namespace:       metav1.NamespaceDefault,
++			ResourceVersion: "1",
++		},
++	}
++
++	testCases := []struct {
++		name                string
++		status              autoscaling.HorizontalPodAutoscalerStatus
++		observedGenerations []*int64
++		expectError         bool
++		errContains         string
++	}{
++		{
++			name: "valid: no conditions",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 2,
++				DesiredReplicas: 3,
++			},
++		}, {
++			name: "valid: condition with nil observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingLimited, Status: autoscaling.ConditionFalse},
++				},
++			},
++		}, {
++			name: "valid: condition with zero observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingLimited, Status: autoscaling.ConditionFalse},
++				},
++			},
++			observedGenerations: []*int64{ptr.To[int64](0)},
++		}, {
++			name: "valid: condition with positive observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 2,
++				DesiredReplicas: 2,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingLimited, Status: autoscaling.ConditionFalse},
++				},
++			},
++			observedGenerations: []*int64{ptr.To[int64](5)},
++		}, {
++			name: "valid: multiple conditions all with non-negative observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingActive, Status: autoscaling.ConditionTrue},
++					{Type: autoscaling.AbleToScale, Status: autoscaling.ConditionTrue},
++				},
++			},
++			observedGenerations: []*int64{ptr.To[int64](1), ptr.To[int64](2)},
++		}, {
++			name: "invalid: condition with negative observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{
++						Type:   autoscaling.ScalingActive,
++						Status: autoscaling.ConditionTrue,
++					},
++				},
++			},
++			observedGenerations: []*int64{ptr.To[int64](-1)},
++			expectError:         true,
++			errContains:         "status.conditions[0].observedGeneration",
++		}, {
++			name: "invalid: second condition has negative observedGeneration",
++			status: autoscaling.HorizontalPodAutoscalerStatus{
++				CurrentReplicas: 1,
++				DesiredReplicas: 1,
++				Conditions: []autoscaling.HorizontalPodAutoscalerCondition{
++					{Type: autoscaling.ScalingActive, Status: autoscaling.ConditionTrue},
++					{Type: autoscaling.AbleToScale, Status: autoscaling.ConditionFalse},
++				},
++			},
++			observedGenerations: []*int64{ptr.To[int64](1), ptr.To[int64](-3)},
++			expectError:         true,
++			errContains:         "status.conditions[1].observedGeneration",
++		},
++	}
++
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			newHPA := baseHPA.DeepCopy()
++			newHPA.Status = tc.status
++			for i, observedGeneration := range tc.observedGenerations {
++				field := reflect.ValueOf(&newHPA.Status.Conditions[i]).Elem().FieldByName("ObservedGeneration")
++				if field.IsValid() {
++					field.Set(reflect.ValueOf(observedGeneration))
++				}
++			}
++
++			errs := ValidateHorizontalPodAutoscalerStatusUpdate(newHPA, &baseHPA)
++			if tc.expectError {
++				if len(errs) == 0 {
++					t.Errorf("expected error containing %q, got none", tc.errContains)
++					return
++				}
++				found := false
++				for _, err := range errs {
++					if strings.Contains(err.Field, tc.errContains) || strings.Contains(err.Error(), tc.errContains) {
++						found = true
++						break
++					}
++				}
++				if !found {
++					t.Errorf("expected error containing %q, got: %v", tc.errContains, errs)
++				}
++			} else if len(errs) != 0 {
++				t.Errorf("expected no errors, got: %v", errs)
++			}
++		})
++	}
++}
+diff --git a/pkg/controller/podautoscaler/horizontal_test.go b/pkg/controller/podautoscaler/horizontal_test.go
+index 013969e7303..53f540ad772 100644
+--- a/pkg/controller/podautoscaler/horizontal_test.go
++++ b/pkg/controller/podautoscaler/horizontal_test.go
+@@ -36,6 +36,7 @@ import (
+ 	"k8s.io/apimachinery/pkg/labels"
+ 	"k8s.io/apimachinery/pkg/runtime"
+ 	"k8s.io/apimachinery/pkg/runtime/schema"
++	"k8s.io/apimachinery/pkg/util/version"
+ 	"k8s.io/apimachinery/pkg/util/wait"
+ 	"k8s.io/apimachinery/pkg/watch"
+ 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+@@ -43,6 +44,7 @@ import (
+ 	"k8s.io/client-go/kubernetes/fake"
+ 	scalefake "k8s.io/client-go/scale/fake"
+ 	core "k8s.io/client-go/testing"
++	"k8s.io/component-base/featuregate"
+ 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+ 	metricstestutil "k8s.io/component-base/metrics/testutil"
+ 	"k8s.io/kubernetes/pkg/api/legacyscheme"
+@@ -3986,6 +3988,12 @@ func TestScaleDownRCImmediately(t *testing.T) {
+ }
+ 
+ func TestAvoidUnnecessaryUpdates(t *testing.T) {
++	hpaGeneration := featuregate.Feature("HPAGeneration")
++	if _, registered := utilfeature.DefaultMutableFeatureGate.GetAll()[hpaGeneration]; registered {
++		featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
++		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, hpaGeneration, true)
++	}
++
+ 	now := metav1.Time{Time: time.Now().Add(-time.Hour)}
+ 	tc := testCase{
+ 		minReplicas:             2,
+@@ -4034,8 +4042,9 @@ func TestAvoidUnnecessaryUpdates(t *testing.T) {
+ 			Items: []autoscalingv2.HorizontalPodAutoscaler{
+ 				{
+ 					ObjectMeta: metav1.ObjectMeta{
+-						Name:      "test-hpa",
+-						Namespace: "test-namespace",
++						Name:       "test-hpa",
++						Namespace:  "test-namespace",
++						Generation: 1,
+ 					},
+ 					Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+ 						ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+@@ -4062,9 +4071,10 @@ func TestAvoidUnnecessaryUpdates(t *testing.T) {
+ 						MaxReplicas: tc.maxReplicas,
+ 					},
+ 					Status: autoscalingv2.HorizontalPodAutoscalerStatus{
+-						CurrentReplicas: tc.specReplicas,
+-						DesiredReplicas: tc.specReplicas,
+-						LastScaleTime:   tc.lastScaleTime,
++						ObservedGeneration: ptr.To[int64](1),
++						CurrentReplicas:    tc.specReplicas,
++						DesiredReplicas:    tc.specReplicas,
++						LastScaleTime:      tc.lastScaleTime,
+ 						CurrentMetrics: []autoscalingv2.MetricStatus{
+ 							{
+ 								Type: autoscalingv2.ResourceMetricSourceType,
+diff --git a/pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go b/pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go
+index e10cb560639..b2e0dcffc93 100644
+--- a/pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go
++++ b/pkg/registry/autoscaling/horizontalpodautoscaler/strategy_test.go
+@@ -22,7 +22,9 @@ import (
+ 
+ 	"k8s.io/apimachinery/pkg/api/resource"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	"k8s.io/apimachinery/pkg/util/version"
+ 	utilfeature "k8s.io/apiserver/pkg/util/feature"
++	"k8s.io/component-base/featuregate"
+ 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+ 	"k8s.io/kubernetes/pkg/apis/autoscaling"
+ 	"k8s.io/kubernetes/pkg/apis/autoscaling/validation"
+@@ -41,6 +43,54 @@ const (
+ 	oneMinReplicas                      = false
+ )
+ 
++func TestPrepareForGeneration(t *testing.T) {
++	hpaGeneration := featuregate.Feature("HPAGeneration")
++	testCases := []struct {
++		name                       string
++		featureGateEnabled         bool
++		expectedGenerationOnCreate int64
++		expectedGenerationOnUpdate int64
++	}{
++		{
++			name:                       "With HPAGeneration enabled",
++			featureGateEnabled:         true,
++			expectedGenerationOnCreate: 1,
++			expectedGenerationOnUpdate: 2,
++		},
++		{
++			name:                       "With HPAGeneration disabled",
++			featureGateEnabled:         false,
++			expectedGenerationOnCreate: 0,
++			expectedGenerationOnUpdate: 0,
++		},
++	}
++
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			if _, registered := utilfeature.DefaultMutableFeatureGate.GetAll()[hpaGeneration]; registered {
++				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
++				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, hpaGeneration, tc.featureGateEnabled)
++			}
++
++			hpa := prepareHPA(oneMinReplicas, withTolerance)
++			Strategy.PrepareForCreate(context.Background(), &hpa)
++
++			if hpa.Generation != tc.expectedGenerationOnCreate {
++				t.Error("Expected generation to be ", tc.expectedGenerationOnCreate, ", got ", hpa.Generation)
++			}
++
++			// Create an updated HPA with a different spec
++			hpaUpdated := hpa.DeepCopy() // prepareHPA(zeroMinReplicas, withoutTolerance)
++			hpaUpdated.Spec.MaxReplicas = 100
++			Strategy.PrepareForUpdate(context.Background(), hpaUpdated, &hpa)
++
++			if hpaUpdated.Generation != tc.expectedGenerationOnUpdate {
++				t.Error("Expected generation to be ", tc.expectedGenerationOnUpdate, ", got ", hpaUpdated.Generation)
++			}
++		})
++	}
++}
++
+ func TestPrepareForCreateConfigurableToleranceEnabled(t *testing.T) {
+ 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.HPAConfigurableTolerance, true)
+ 	hpa := prepareHPA(oneMinReplicas, withTolerance)
+diff --git a/test/compatibility_lifecycle/reference/feature_list.md b/test/compatibility_lifecycle/reference/feature_list.md
+index 7fd09561790..fa64d0a973a 100644
+--- a/test/compatibility_lifecycle/reference/feature_list.md
++++ b/test/compatibility_lifecycle/reference/feature_list.md
+@@ -88,6 +88,7 @@
+ | GracefulNodeShutdown | :ballot_box_with_check:&nbsp;1.21+ |  | 1.20 | 1.21– |  |  |  | [code](https://cs.k8s.io/?q=%5CbGracefulNodeShutdown%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbGracefulNodeShutdown%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | GracefulNodeShutdownBasedOnPodPriority | :ballot_box_with_check:&nbsp;1.24+ |  | 1.23 | 1.24– |  |  | GracefulNodeShutdown | [code](https://cs.k8s.io/?q=%5CbGracefulNodeShutdownBasedOnPodPriority%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbGracefulNodeShutdownBasedOnPodPriority%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | HPAConfigurableTolerance | :ballot_box_with_check:&nbsp;1.35+ |  | 1.33–1.34 | 1.35– |  |  |  | [code](https://cs.k8s.io/?q=%5CbHPAConfigurableTolerance%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbHPAConfigurableTolerance%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
++| HPAGeneration | :ballot_box_with_check:&nbsp;1.37+ |  |  | 1.37– |  |  |  | [code](https://cs.k8s.io/?q=%5CbHPAGeneration%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbHPAGeneration%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | HPAScaleToZero |  |  | 1.16– |  |  |  |  | [code](https://cs.k8s.io/?q=%5CbHPAScaleToZero%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbHPAScaleToZero%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | HostnameOverride | :ballot_box_with_check:&nbsp;1.35+ |  | 1.34 | 1.35– |  |  |  | [code](https://cs.k8s.io/?q=%5CbHostnameOverride%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbHostnameOverride%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+ | ImageMaximumGCAge | :ballot_box_with_check:&nbsp;1.30+ | :closed_lock_with_key:&nbsp;1.35+ | 1.29 | 1.30–1.34 | 1.35– |  |  | [code](https://cs.k8s.io/?q=%5CbImageMaximumGCAge%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/kubernetes) [KEPs](https://cs.k8s.io/?q=%5CbImageMaximumGCAge%5Cb&i=nope&files=&excludeFiles=CHANGELOG&repos=kubernetes/enhancements) |
+diff --git a/test/compatibility_lifecycle/reference/versioned_feature_list.yaml b/test/compatibility_lifecycle/reference/versioned_feature_list.yaml
+index 5dc9831304a..05dad03ce2a 100644
+--- a/test/compatibility_lifecycle/reference/versioned_feature_list.yaml
++++ b/test/compatibility_lifecycle/reference/versioned_feature_list.yaml
+@@ -779,6 +779,12 @@
+     lockToDefault: false
+     preRelease: Beta
+     version: "1.35"
++- name: HPAGeneration
++  versionedSpecs:
++  - default: true
++    lockToDefault: false
++    preRelease: Beta
++    version: "1.37"
+ - name: HPAScaleToZero
+   versionedSpecs:
+   - default: false
+diff --git a/test/integration/apiserver/apidefinitions/generation_test.go b/test/integration/apiserver/apidefinitions/generation_test.go
+index 313bfd9731e..69d962b4f82 100644
+--- a/test/integration/apiserver/apidefinitions/generation_test.go
++++ b/test/integration/apiserver/apidefinitions/generation_test.go
+@@ -38,7 +38,6 @@ func TestGenerationManagement(t *testing.T) {
+ 	generationExempt := sets.New(
+ 		"apiservices.apiregistration.k8s.io",
+ 		"certificatesigningrequests.certificates.k8s.io",
+-		"horizontalpodautoscalers.autoscaling",
+ 		"namespaces",
+ 		"nodes",
+ 		"persistentvolumeclaims",

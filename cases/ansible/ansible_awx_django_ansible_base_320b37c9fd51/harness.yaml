@@ -1,0 +1,38 @@
+task_id: ansible_awx_django_ansible_base_320b37c9fd51
+hidden_test_patches:
+- repo: awx
+  patch: hidden/patches/awx-hidden-tests.patch
+  test_profile: awx-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - awx/main/tests/data/sleep_task.py
+  - awx/main/tests/functional/dab_feature_flags/test_feature_flags_api.py
+  - awx/main/tests/functional/models/test_ha.py
+  - awx/main/tests/functional/test_dispatch.py
+  - awx/main/tests/functional/test_jobs.py
+  - awx/main/tests/settings_for_test.py
+  - awx/main/tests/unit/settings/test_defaults.py
+  - awx/main/tests/unit/test_settings.py
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from ansible/awx PR(s) 16209
+- repo: django-ansible-base
+  patch: hidden/patches/django-ansible-base-hidden-tests.patch
+  test_profile: django_ansible_base-hidden
+  origin: upstream_test_diff
+  source_file: &id002
+  - test_app/tests/feature_flags/test_utils.py
+  hidden_file: *id002
+  semantic_changes: none
+  source: upstream test changes from ansible/django-ansible-base PR(s) 922
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - awx-hidden
+    - django_ansible_base-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

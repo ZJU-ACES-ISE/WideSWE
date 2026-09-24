@@ -1,0 +1,55 @@
+profiles:
+  android-hidden:
+    repo: android
+    workdir: repos/dotnet/android
+    command: environment/run_profile.sh android-hidden
+    public_smoke_command: >-
+      mkdir -p external;
+      rm -rf external/Java.Interop;
+      ln -s /workspace/repos/dotnet/java-interop external/Java.Interop;
+      dotnet test tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests.csproj
+      /p:EnableSourceControlManagerQueries=false
+      /p:PublishRepositoryUrl=false
+      /p:EmbedUntrackedSources=false
+      --filter "FullyQualifiedName~TypeMapAssemblyGeneratorTests"
+      --results-directory /workspace/.ecosyncbench/test-reports/android-public-smoke
+      --logger "trx;LogFileName=android-public-smoke.trx"
+    status: implemented
+    dependency_image: ecosyncbench/deps/dotnet-android-java-interop:8f49f22b1612
+    test_files:
+    - tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests/Generator/TypeMapAssemblyGeneratorTests.cs
+    test_project: tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests.csproj
+    test_filter: FullyQualifiedName~TypeMapAssemblyGeneratorTests
+    patched_files:
+    - tests/Microsoft.Android.Sdk.TrimmableTypeMap.Tests/Generator/TypeMapAssemblyGeneratorTests.cs
+  java_interop-hidden:
+    repo: java-interop
+    workdir: repos/dotnet/java-interop
+    command: environment/run_profile.sh java_interop-hidden
+    public_smoke_command: >-
+      mkdir -p external bin/BuildDebug;
+      if [ ! -e external/xamarin-android-tools ]; then ln -s /opt/ecosync/xamarin-android-tools-091e3a66c0cfcb4fcaaaaa7bc9c5fa85947eecb6 external/xamarin-android-tools; fi;
+      dotnet build build-tools/Java.Interop.BootstrapTasks/Java.Interop.BootstrapTasks.csproj
+      /p:Configuration=Debug
+      /p:EnableSourceControlManagerQueries=false
+      /p:PublishRepositoryUrl=false
+      /p:EmbedUntrackedSources=false;
+      dotnet test tests/Java.Interop-Tests/Java.Interop-Tests.csproj
+      /p:EnableSourceControlManagerQueries=false
+      /p:PublishRepositoryUrl=false
+      /p:EmbedUntrackedSources=false
+      --filter "FullyQualifiedName~JniTypeTest"
+      --results-directory /workspace/.ecosyncbench/test-reports/java-interop-public-smoke
+      --logger "trx;LogFileName=java-interop-public-smoke.trx"
+    status: implemented
+    dependency_image: ecosyncbench/deps/dotnet-android-java-interop:8f49f22b1612
+    test_files:
+    - tests/Java.Interop-Tests/Java.Interop-Tests.csproj
+    - tests/Java.Interop-Tests/Java.Interop/JniTypeTest.cs
+    - tests/Java.Interop-Tests/java/net/dot/jni/test/RegisterNativesTestType.java
+    test_project: tests/Java.Interop-Tests/Java.Interop-Tests.csproj
+    test_filter: FullyQualifiedName~JniTypeTest
+    patched_files:
+    - tests/Java.Interop-Tests/Java.Interop-Tests.csproj
+    - tests/Java.Interop-Tests/Java.Interop/JniTypeTest.cs
+    - tests/Java.Interop-Tests/java/net/dot/jni/test/RegisterNativesTestType.java

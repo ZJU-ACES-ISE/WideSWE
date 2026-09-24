@@ -1,0 +1,1922 @@
+diff --git a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.test.tsx b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.test.tsx
+index f0c80825b..76f7bc7c8 100644
+--- a/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.test.tsx
++++ b/x-pack/platform/plugins/shared/fleet/public/applications/fleet/sections/agent_policy/create_package_policy_page/components/steps/components/package_policy_input_stream.test.tsx
+@@ -14,13 +14,41 @@ import { useAgentless } from '../../../single_page_layout/hooks/setup_technology
+ 
+ import type {
+   PackageInfo,
++  RegistryInput,
+   RegistryStreamWithDataStream,
++  NewPackagePolicyInput,
+   NewPackagePolicyInputStream,
+   RegistryVarGroup,
+ } from '../../../../../../types';
+ 
+ import { PackagePolicyInputStreamConfig } from './package_policy_input_stream';
++import { PackagePolicyInputPanel } from './package_policy_input_panel';
++
++jest.mock('../../../../../../../../hooks', () => ({
++  ...jest.requireActual('../../../../../../../../hooks'),
++  useStartServices: () => ({
++    docLinks: {
++      links: {
++        fleet: {
++          datastreamsNamingScheme: 'https://docs.elastic.co',
++        },
++      },
++    },
++  }),
++  sendGetDataStreams: jest.fn(),
++}));
+ 
++jest.mock('../../datastream_hooks', () => ({
++  useIndexTemplateExists: () => ({
++    exists: true,
++    isLoading: false,
++  }),
++}));
++const mockUseDataStreamId = jest.fn();
++jest.mock('./hooks', () => ({
++  ...jest.requireActual('./hooks'),
++  useDataStreamId: () => mockUseDataStreamId(),
++}));
+ jest.mock('../../../single_page_layout/hooks/setup_technology', () => {
+   return {
+     useAgentless: jest.fn(),
+@@ -398,4 +426,246 @@ describe('PackagePolicyInputStreamConfig', () => {
+       });
+     });
+   });
++
++  describe('dynamic_signal_types behavior', () => {
++    const mockOtelInputStream: RegistryStreamWithDataStream = {
++      input: 'otelcol',
++      title: 'OTel Collector',
++      template_path: 'stream.yml.hbs',
++      vars: [],
++      description: 'Collect telemetry via OpenTelemetry',
++      data_stream: {
++        title: 'OTel Data',
++        release: 'ga',
++        type: 'logs',
++        package: 'otel_package',
++        dataset: 'otel_package.data',
++        path: 'otel_data',
++        elasticsearch: {},
++        ingest_pipeline: 'default',
++        streams: [],
++      },
++    };
++
++    const mockOtelPolicyInputStream: NewPackagePolicyInputStream = {
++      id: 'otel-stream-1',
++      enabled: true,
++      data_stream: {
++        type: 'logs',
++        dataset: 'otel_package.data',
++      },
++      vars: {},
++    };
++
++    it('should hide Data Stream Type for dynamic otelcol inputs', async () => {
++      mockUseDataStreamId.mockReturnValue('otel-stream-1');
++      window.HTMLElement.prototype.scrollIntoView = jest.fn();
++      const packageInput = {
++        title: 'OTel Collector',
++        vars: [],
++        type: 'otelcol',
++        description: 'Collect telemetry via OpenTelemetry',
++        dynamic_signal_types: true,
++      } as RegistryInput;
++      const packageInputStreams = [
++        {
++          ...mockOtelInputStream,
++          vars: [
++            {
++              name: 'endpoint',
++              type: 'text',
++              title: 'Endpoint',
++              required: false,
++              show_user: false,
++            },
++          ],
++        },
++      ] as RegistryStreamWithDataStream[];
++      const packageInfo = {
++        ...mockPackageInfo,
++        type: 'input',
++        policy_templates: [
++          {
++            name: 'otel_template',
++            title: 'OTel Template',
++            description: 'OpenTelemetry template',
++            input: 'otelcol',
++            type: 'logs',
++            template_path: 'input.yml.hbs',
++            dynamic_signal_types: true,
++            vars: [],
++          },
++        ],
++      } as unknown as PackageInfo;
++      const packagePolicyInput = {
++        id: 'input-otel',
++        type: 'otelcol',
++        policy_template: 'otel_template',
++        enabled: true,
++        dynamic_signal_types: true,
++        streams: [
++          {
++            ...mockOtelPolicyInputStream,
++            vars: { endpoint: { value: '' } },
++          },
++        ],
++      } as NewPackagePolicyInput;
++
++      renderResult = testRenderer.render(
++        <PackagePolicyInputPanel
++          packageInfo={packageInfo}
++          packageInput={packageInput}
++          packageInputStreams={packageInputStreams}
++          packagePolicyInput={packagePolicyInput}
++          updatePackagePolicyInput={jest.fn()}
++          inputValidationResults={{ streams: { 'otel_package.data': { vars: {} } } }}
++        />
++      );
++
++      await renderResult.findByTestId('textInput-endpoint');
++
++      await waitFor(() => {
++        expect(renderResult.queryByText('Data Stream Type')).not.toBeInTheDocument();
++        expect(renderResult.queryByTestId('packagePolicyDataStreamType')).not.toBeInTheDocument();
++      });
++    });
++
++    it('should show Data Stream Type selector when dynamic_signal_types is false', async () => {
++      const packageInfoWithoutDynamicTypes: PackageInfo = {
++        ...mockPackageInfo,
++        type: 'input',
++        policy_templates: [
++          {
++            name: 'otel_template',
++            title: 'OTel Template',
++            description: 'OpenTelemetry template',
++            input: 'otelcol',
++            type: 'logs',
++            template_path: 'input.yml.hbs',
++            dynamic_signal_types: false,
++            vars: [],
++          },
++        ],
++      } as unknown as PackageInfo;
++
++      render(mockOtelInputStream, mockOtelPolicyInputStream, packageInfoWithoutDynamicTypes);
++
++      // Click to show advanced options
++      const advancedButton = renderResult.getByText('Advanced options');
++      fireEvent.click(advancedButton);
++
++      await waitFor(() => {
++        // Data Stream Type selector SHOULD be visible
++        expect(renderResult.getByText('Data Stream Type')).toBeInTheDocument();
++        expect(renderResult.getByTestId('packagePolicyDataStreamType')).toBeInTheDocument();
++      });
++    });
++
++    it('should show Data Stream Type selector when dynamic_signal_types is not defined', async () => {
++      const packageInfoWithoutDynamicTypes: PackageInfo = {
++        ...mockPackageInfo,
++        type: 'input',
++        policy_templates: [
++          {
++            name: 'otel_template',
++            title: 'OTel Template',
++            description: 'OpenTelemetry template',
++            input: 'otelcol',
++            type: 'logs',
++            template_path: 'input.yml.hbs',
++            // dynamic_signal_types not defined
++            vars: [],
++          },
++        ],
++      } as unknown as PackageInfo;
++
++      render(mockOtelInputStream, mockOtelPolicyInputStream, packageInfoWithoutDynamicTypes);
++
++      // Click to show advanced options
++      const advancedButton = renderResult.getByText('Advanced options');
++      fireEvent.click(advancedButton);
++
++      await waitFor(() => {
++        // Data Stream Type selector SHOULD be visible (backward compatibility)
++        expect(renderResult.getByText('Data Stream Type')).toBeInTheDocument();
++        expect(renderResult.getByTestId('packagePolicyDataStreamType')).toBeInTheDocument();
++      });
++    });
++
++    it('should not affect non-otelcol input types', async () => {
++      const regularPackageInfo: PackageInfo = {
++        ...mockPackageInfo,
++        type: 'input',
++        policy_templates: [
++          {
++            name: 'regular_template',
++            title: 'Regular Template',
++            description: 'Regular template',
++            input: 'httpjson',
++            type: 'logs',
++            template_path: 'input.yml.hbs',
++            vars: [],
++          },
++        ],
++      } as unknown as PackageInfo;
++
++      const regularInputStream: RegistryStreamWithDataStream = {
++        ...mockOtelInputStream,
++        input: 'httpjson',
++      };
++
++      render(regularInputStream, mockOtelPolicyInputStream, regularPackageInfo);
++
++      // Click to show advanced options
++      const advancedButton = renderResult.getByText('Advanced options');
++      fireEvent.click(advancedButton);
++
++      await waitFor(() => {
++        // Data Stream Type selector SHOULD be visible for non-otelcol inputs
++        expect(renderResult.getByText('Data Stream Type')).toBeInTheDocument();
++        expect(renderResult.getByTestId('packagePolicyDataStreamType')).toBeInTheDocument();
++      });
++    });
++
++    it('should show all signal type options (logs, metrics, traces)', async () => {
++      const packageInfoWithDynamicTypes: PackageInfo = {
++        ...mockPackageInfo,
++        type: 'input',
++        policy_templates: [
++          {
++            name: 'otel_template',
++            title: 'OTel Template',
++            description: 'OpenTelemetry template',
++            input: 'otelcol',
++            type: 'logs',
++            template_path: 'input.yml.hbs',
++            dynamic_signal_types: false,
++            vars: [],
++          },
++        ],
++      } as unknown as PackageInfo;
++
++      render(mockOtelInputStream, mockOtelPolicyInputStream, packageInfoWithDynamicTypes);
++
++      // Click to show advanced options
++      const advancedButton = renderResult.getByText('Advanced options');
++      fireEvent.click(advancedButton);
++
++      await waitFor(() => {
++        const radioGroup = renderResult.getByTestId('packagePolicyDataStreamType');
++        expect(radioGroup).toBeInTheDocument();
++
++        // Check that all three signal types are available
++        expect(
++          Array.from(radioGroup.children).find((child) => child.textContent === 'Logs')
++        ).toBeInTheDocument();
++        expect(
++          Array.from(radioGroup.children).find((child) => child.textContent === 'Metrics')
++        ).toBeInTheDocument();
++        expect(
++          Array.from(radioGroup.children).find((child) => child.textContent === 'Traces')
++        ).toBeInTheDocument();
++      });
++    });
++  });
+ });
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/__snapshots__/full_agent_policy.test.ts.snap b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/__snapshots__/full_agent_policy.test.ts.snap
+index dca22e596..558beba83 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/__snapshots__/full_agent_policy.test.ts.snap
++++ b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/__snapshots__/full_agent_policy.test.ts.snap
+@@ -88,6 +88,14 @@ Object {
+           "monitor",
+         ],
+       },
++      "_elastic_agent_monitoring": Object {
++        "indices": Array [
++          Object {
++            "names": Array [],
++            "privileges": Array [],
++          },
++        ],
++      },
+       "package-policy-no-output": Object {
+         "indices": Array [
+           Object {
+@@ -108,14 +116,6 @@ Object {
+           "monitor",
+         ],
+       },
+-      "_elastic_agent_monitoring": Object {
+-        "indices": Array [
+-          Object {
+-            "names": Array [],
+-            "privileges": Array [],
+-          },
+-        ],
+-      },
+       "package-policy-using-output": Object {
+         "indices": Array [
+           Object {
+@@ -244,6 +244,14 @@ Object {
+           "monitor",
+         ],
+       },
++      "_elastic_agent_monitoring": Object {
++        "indices": Array [
++          Object {
++            "names": Array [],
++            "privileges": Array [],
++          },
++        ],
++      },
+       "package-policy-no-output": Object {
+         "indices": Array [
+           Object {
+@@ -258,21 +266,6 @@ Object {
+         ],
+       },
+     },
+-    "default": Object {
+-      "_elastic_agent_checks": Object {
+-        "cluster": Array [
+-          "monitor",
+-        ],
+-      },
+-      "_elastic_agent_monitoring": Object {
+-        "indices": Array [
+-          Object {
+-            "names": Array [],
+-            "privileges": Array [],
+-          },
+-        ],
+-      },
+-    },
+     "test-remote-id": Object {
+       "_elastic_agent_checks": Object {
+         "cluster": Array [
+@@ -302,13 +295,6 @@ Object {
+       "preset": "balanced",
+       "type": "elasticsearch",
+     },
+-    "default": Object {
+-      "hosts": Array [
+-        "http://127.0.0.1:9201",
+-      ],
+-      "preset": "balanced",
+-      "type": "elasticsearch",
+-    },
+     "test-remote-id": Object {
+       "hosts": Array [
+         "http://127.0.0.1:9201",
+@@ -342,7 +328,7 @@ Object {
+       "metrics": true,
+       "namespace": "default",
+       "traces": false,
+-      "use_output": "default",
++      "use_output": "data-output-id",
+     },
+     "protection": Object {
+       "enabled": false,
+@@ -364,13 +350,6 @@ Object {
+           "monitor",
+         ],
+       },
+-    },
+-    "default": Object {
+-      "_elastic_agent_checks": Object {
+-        "cluster": Array [
+-          "monitor",
+-        ],
+-      },
+       "_elastic_agent_monitoring": Object {
+         "indices": Array [
+           Object {
+@@ -391,13 +370,6 @@ Object {
+       "preset": "balanced",
+       "type": "elasticsearch",
+     },
+-    "default": Object {
+-      "hosts": Array [
+-        "http://127.0.0.1:9201",
+-      ],
+-      "preset": "balanced",
+-      "type": "elasticsearch",
+-    },
+   },
+   "revision": 1,
+   "secret_references": Array [],
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/full_agent_policy.test.ts b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/full_agent_policy.test.ts
+index 6e3826ad2..c7df82ee3 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/full_agent_policy.test.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/full_agent_policy.test.ts
+@@ -29,14 +29,24 @@ import {
+   generateFleetServerOutputSSLConfig,
+ } from './full_agent_policy';
+ import { getMonitoringPermissions } from './monitoring_permissions';
++import { generateOtelcolConfig } from './otel_collector';
++import { fetchRelatedSavedObjects } from './related_saved_objects';
+ 
+ jest.mock('../epm/packages');
+ jest.mock('../fleet_server_host');
++jest.mock('./otel_collector');
++jest.mock('./related_saved_objects');
+ 
+ const mockedGetElasticAgentMonitoringPermissions = getMonitoringPermissions as jest.Mock<
+   ReturnType<typeof getMonitoringPermissions>
+ >;
+ const mockedAgentPolicyService = agentPolicyService as jest.Mocked<typeof agentPolicyService>;
++const mockedGenerateOtelcolConfig = generateOtelcolConfig as jest.Mock<
++  ReturnType<typeof generateOtelcolConfig>
++>;
++const mockedFetchRelatedSavedObjects = fetchRelatedSavedObjects as jest.Mock<
++  ReturnType<typeof fetchRelatedSavedObjects>
++>;
+ 
+ const soClientMock = createSavedObjectClientMock();
+ const mockedGetPackageInfo = getPackageInfo as jest.Mock<ReturnType<typeof getPackageInfo>>;
+@@ -128,6 +138,8 @@ jest.mock('../agents');
+ jest.mock('../package_policy');
+ 
+ jest.mock('./monitoring_permissions');
++jest.mock('./otel_collector');
++jest.mock('./related_saved_objects');
+ 
+ jest.mock('../download_source', () => {
+   return {
+@@ -180,6 +192,9 @@ describe('getFullAgentPolicy', () => {
+   beforeEach(() => {
+     appContextService.start(createAppContextStartContractMock());
+     jest.spyOn(appContextService, 'getMessageSigningService').mockReturnValue(undefined);
++    jest.spyOn(appContextService, 'getExperimentalFeatures').mockReturnValue({
++      enableOtelIntegrations: true,
++    } as any);
+ 
+     mockedGetFleetServerHostsForAgentPolicy.mockResolvedValue({
+       name: 'default Fleet Server',
+@@ -189,9 +204,56 @@ describe('getFullAgentPolicy', () => {
+       is_preconfigured: false,
+     });
+ 
++    mockedGenerateOtelcolConfig.mockReturnValue({});
++
+     getAgentPolicyUpdateMock().mockClear();
+     mockedAgentPolicyService.get.mockReset();
+     mockedGetElasticAgentMonitoringPermissions.mockReset();
++    mockedGenerateOtelcolConfig.mockReset();
++    mockedFetchRelatedSavedObjects.mockReset();
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'test-id',
++          is_default: true,
++          is_default_monitoring: true,
++          name: 'default',
++          type: 'elasticsearch',
++          hosts: ['http://127.0.0.1:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'test-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      monitoringOutput: {
++        id: 'test-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      downloadSource: {
++        id: 'default-download-source-id',
++        is_default: true,
++        name: 'Default host',
++        host: 'http://default-registry.co',
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockedGetElasticAgentMonitoringPermissions.mockImplementation(
+       async (soClient, { logs, metrics }, namespace) => {
+         const names: string[] = [];
+@@ -409,6 +471,57 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should support a different monitoring output', async () => {
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'test-id',
++          is_default: true,
++          is_default_monitoring: true,
++          name: 'default',
++          type: 'elasticsearch',
++          hosts: ['http://127.0.0.1:9201'],
++        },
++        {
++          id: 'monitoring-output-id',
++          is_default: false,
++          is_default_monitoring: false,
++          name: 'Monitoring output',
++          type: 'elasticsearch',
++          hosts: ['http://es-monitoring.co:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'test-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      monitoringOutput: {
++        id: 'monitoring-output-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'Monitoring output',
++        type: 'elasticsearch',
++        hosts: ['http://es-monitoring.co:9201'],
++      },
++      downloadSource: {
++        id: 'default-download-source-id',
++        is_default: true,
++        name: 'Default host',
++        host: 'http://default-registry.co',
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockAgentPolicy({
+       namespace: 'default',
+       revision: 1,
+@@ -421,6 +534,49 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should support a different data output', async () => {
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'data-output-id',
++          is_default: false,
++          is_default_monitoring: false,
++          name: 'Data output',
++          type: 'elasticsearch',
++          hosts: ['http://es-data.co:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'data-output-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'Data output',
++        type: 'elasticsearch',
++        hosts: ['http://es-data.co:9201'],
++      },
++      monitoringOutput: {
++        id: 'data-output-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'Data output',
++        type: 'elasticsearch',
++        hosts: ['http://es-data.co:9201'],
++      },
++      downloadSource: {
++        id: 'default-download-source-id',
++        is_default: true,
++        name: 'Default host',
++        host: 'http://default-registry.co',
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockAgentPolicy({
+       namespace: 'default',
+       revision: 1,
+@@ -433,6 +589,57 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should support both different outputs for data and monitoring ', async () => {
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'data-output-id',
++          is_default: false,
++          is_default_monitoring: false,
++          name: 'Data output',
++          type: 'elasticsearch',
++          hosts: ['http://es-data.co:9201'],
++        },
++        {
++          id: 'monitoring-output-id',
++          is_default: false,
++          is_default_monitoring: false,
++          name: 'Monitoring output',
++          type: 'elasticsearch',
++          hosts: ['http://es-monitoring.co:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'data-output-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'Data output',
++        type: 'elasticsearch',
++        hosts: ['http://es-data.co:9201'],
++      },
++      monitoringOutput: {
++        id: 'monitoring-output-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'Monitoring output',
++        type: 'elasticsearch',
++        hosts: ['http://es-monitoring.co:9201'],
++      },
++      downloadSource: {
++        id: 'default-download-source-id',
++        is_default: true,
++        name: 'Default host',
++        host: 'http://default-registry.co',
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockAgentPolicy({
+       namespace: 'default',
+       revision: 1,
+@@ -463,6 +670,49 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should use output id as the default policy id when remote elasticsearch', async () => {
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'test-remote-id',
++          is_default: true,
++          is_default_monitoring: true,
++          name: 'default',
++          type: 'remote_elasticsearch',
++          hosts: ['http://127.0.0.1:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'test-remote-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'remote_elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      monitoringOutput: {
++        id: 'test-remote-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'remote_elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      downloadSource: {
++        id: 'default-download-source-id',
++        is_default: true,
++        name: 'Default host',
++        host: 'http://default-registry.co',
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockAgentPolicy({
+       id: 'policy',
+       status: 'active',
+@@ -480,6 +730,57 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should return the right outputs and permissions when package policies use their own outputs', async () => {
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'data-output-id',
++          is_default: false,
++          is_default_monitoring: false,
++          name: 'Data output',
++          type: 'elasticsearch',
++          hosts: ['http://es-data.co:9201'],
++        },
++        {
++          id: 'test-remote-id',
++          is_default: true,
++          is_default_monitoring: true,
++          name: 'default',
++          type: 'remote_elasticsearch',
++          hosts: ['http://127.0.0.1:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'data-output-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'Data output',
++        type: 'elasticsearch',
++        hosts: ['http://es-data.co:9201'],
++      },
++      monitoringOutput: {
++        id: 'data-output-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'Data output',
++        type: 'elasticsearch',
++        hosts: ['http://es-data.co:9201'],
++      },
++      downloadSource: {
++        id: 'default-download-source-id',
++        is_default: true,
++        name: 'Default host',
++        host: 'http://default-registry.co',
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockedGetPackageInfo.mockResolvedValue({
+       data_streams: [
+         {
+@@ -600,6 +901,57 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should return the right outputs and permissions when package policies use their own outputs (with default output)', async () => {
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'data-output-id',
++          is_default: false,
++          is_default_monitoring: false,
++          name: 'Data output',
++          type: 'elasticsearch',
++          hosts: ['http://es-data.co:9201'],
++        },
++        {
++          id: 'test-id',
++          is_default: true,
++          is_default_monitoring: true,
++          name: 'default',
++          type: 'elasticsearch',
++          hosts: ['http://127.0.0.1:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'data-output-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'Data output',
++        type: 'elasticsearch',
++        hosts: ['http://es-data.co:9201'],
++      },
++      monitoringOutput: {
++        id: 'data-output-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'Data output',
++        type: 'elasticsearch',
++        hosts: ['http://es-data.co:9201'],
++      },
++      downloadSource: {
++        id: 'default-download-source-id',
++        is_default: true,
++        name: 'Default host',
++        host: 'http://default-registry.co',
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockedGetPackageInfo.mockResolvedValue({
+       data_streams: [
+         {
+@@ -720,6 +1072,54 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should return agent binary sourceURI and ssl options from the agent policy', async () => {
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'test-id',
++          is_default: true,
++          is_default_monitoring: true,
++          name: 'default',
++          type: 'elasticsearch',
++          hosts: ['http://127.0.0.1:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'test-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      monitoringOutput: {
++        id: 'test-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      downloadSource: {
++        id: 'test-ds-1',
++        is_default: false,
++        name: 'Test',
++        host: 'http://custom-registry-test',
++        ssl: {
++          certificate: 'cert',
++          certificate_authorities: ['ca'],
++          key: 'KEY1',
++        },
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockAgentPolicy({
+       namespace: 'default',
+       revision: 1,
+@@ -763,6 +1163,54 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should return agent binary with secrets if there are any present', async () => {
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'test-id',
++          is_default: true,
++          is_default_monitoring: true,
++          name: 'default',
++          type: 'elasticsearch',
++          hosts: ['http://127.0.0.1:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'test-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      monitoringOutput: {
++        id: 'test-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      downloadSource: {
++        id: 'test-ds-1',
++        is_default: false,
++        name: 'Test',
++        host: 'http://custom-registry-test',
++        secrets: {
++          ssl: {
++            key: 'KEY1',
++          },
++        },
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockAgentPolicy({
+       namespace: 'default',
+       revision: 1,
+@@ -1098,6 +1546,52 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should return a policy with logs permissions when write_to_logs_streams is enabled', async () => {
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'test-streams-id',
++          is_default: false,
++          is_default_monitoring: false,
++          name: 'streams output',
++          type: 'elasticsearch',
++          hosts: ['http://127.0.0.1:9201'],
++          write_to_logs_streams: true,
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'test-streams-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'streams output',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++        write_to_logs_streams: true,
++      },
++      monitoringOutput: {
++        id: 'test-streams-id',
++        is_default: false,
++        is_default_monitoring: false,
++        name: 'streams output',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++        write_to_logs_streams: true,
++      },
++      downloadSource: {
++        id: 'default-download-source-id',
++        is_default: true,
++        name: 'Default host',
++        host: 'http://default-registry.co',
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: {
++        name: 'default Fleet Server',
++        id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
++        is_default: true,
++        host_urls: ['http://fleetserver:8220'],
++        is_preconfigured: false,
++      },
++    });
+     mockedGetPackageInfo.mockResolvedValue({
+       data_streams: [
+         {
+@@ -1201,7 +1695,7 @@ describe('getFullAgentPolicy', () => {
+   });
+ 
+   it('should have ssl options in outputs when fleet server host has es ssl options', async () => {
+-    mockedGetFleetServerHostsForAgentPolicy.mockResolvedValue({
++    const fleetServerHostWithSSL = {
+       name: 'default Fleet Server',
+       id: '93f74c0-e876-11ea-b7d3-8b2acec6f75c',
+       is_default: true,
+@@ -1215,6 +1709,44 @@ describe('getFullAgentPolicy', () => {
+         es_certificate: 'my-es-cert',
+         es_key: 'my-es-key',
+       },
++    };
++    mockedGetFleetServerHostsForAgentPolicy.mockResolvedValue(fleetServerHostWithSSL);
++    mockedFetchRelatedSavedObjects.mockResolvedValue({
++      outputs: [
++        {
++          id: 'test-id',
++          is_default: true,
++          is_default_monitoring: true,
++          name: 'default',
++          type: 'elasticsearch',
++          hosts: ['http://127.0.0.1:9201'],
++        },
++      ],
++      proxies: [],
++      dataOutput: {
++        id: 'test-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      monitoringOutput: {
++        id: 'test-id',
++        is_default: true,
++        is_default_monitoring: true,
++        name: 'default',
++        type: 'elasticsearch',
++        hosts: ['http://127.0.0.1:9201'],
++      },
++      downloadSource: {
++        id: 'default-download-source-id',
++        is_default: true,
++        name: 'Default host',
++        host: 'http://default-registry.co',
++      },
++      downloadSourceProxy: undefined,
++      fleetServerHost: fleetServerHostWithSSL,
+     });
+ 
+     mockAgentPolicy({});
+@@ -1235,6 +1767,202 @@ describe('getFullAgentPolicy', () => {
+       },
+     });
+   });
++
++  describe('OTel config generation', () => {
++    it('should call generateOtelcolConfig with packageInfoCache when enableOtelIntegrations is true', async () => {
++      const packageInfo: PackageInfo = {
++        name: 'otelpackage',
++        version: '1.0.0',
++        type: 'input',
++        policy_templates: [
++          {
++            name: 'template1',
++            title: 'OTel Template',
++            input: 'otelcol',
++            type: 'logs',
++            template_path: 'input.yml.hbs',
++            dynamic_signal_types: true,
++            vars: [],
++          },
++        ],
++      } as any;
++
++      mockedGetPackageInfo.mockResolvedValue(packageInfo);
++      mockedGenerateOtelcolConfig.mockReturnValue({
++        receivers: {},
++        processors: {},
++        service: {
++          pipelines: {},
++        },
++      });
++
++      mockAgentPolicy({
++        package_policies: [
++          {
++            id: 'package-policy-1',
++            name: 'otel-policy',
++            namespace: 'default',
++            enabled: true,
++            package: { name: 'otelpackage', version: '1.0.0', title: 'OTel Package' },
++            inputs: [
++              {
++                type: 'otelcol',
++                enabled: true,
++                streams: [
++                  {
++                    id: 'stream-1',
++                    enabled: true,
++                    data_stream: { type: 'logs', dataset: 'otel.dataset' },
++                    vars: {},
++                  },
++                ],
++              },
++            ],
++            created_at: '',
++            updated_at: '',
++            created_by: '',
++            updated_by: '',
++            revision: 1,
++            policy_id: '',
++            policy_ids: [''],
++          },
++        ],
++      });
++
++      await getFullAgentPolicy(createSavedObjectClientMock(), 'agent-policy');
++
++      expect(mockedGenerateOtelcolConfig).toHaveBeenCalled();
++      const callArgs = mockedGenerateOtelcolConfig.mock.calls[0];
++      expect(callArgs).toBeDefined();
++      // Third argument should be the packageInfoCache Map
++      expect(callArgs[2]).toBeInstanceOf(Map);
++      const packageInfoCache = callArgs[2] as Map<string, PackageInfo>;
++      expect(packageInfoCache.has('otelpackage-1.0.0')).toBe(true);
++      expect(packageInfoCache.get('otelpackage-1.0.0')).toEqual(packageInfo);
++    });
++
++    it('should include otelcolConfig in full agent policy when generated', async () => {
++      const mockOtelConfig = {
++        receivers: {
++          otlp: {
++            protocols: {
++              grpc: {
++                endpoint: '0.0.0.0:4317',
++              },
++            },
++          },
++        },
++        processors: {
++          'transform/test-routing': {
++            log_statements: [
++              {
++                context: 'log',
++                statements: [
++                  'set(attributes["data_stream.type"], "logs")',
++                  'set(attributes["data_stream.dataset"], "test.dataset")',
++                  'set(attributes["data_stream.namespace"], "default")',
++                ],
++              },
++            ],
++          },
++        },
++        service: {
++          pipelines: {
++            logs: {
++              receivers: ['otlp'],
++              processors: ['transform/test-routing'],
++              exporters: ['elasticsearch'],
++            },
++          },
++        },
++      };
++
++      mockedGenerateOtelcolConfig.mockReturnValue(mockOtelConfig);
++      mockedGetPackageInfo.mockResolvedValue({
++        name: 'otelpackage',
++        version: '1.0.0',
++        type: 'input',
++        policy_templates: [],
++      } as any);
++
++      mockAgentPolicy({
++        package_policies: [
++          {
++            id: 'package-policy-1',
++            name: 'otel-policy',
++            namespace: 'default',
++            enabled: true,
++            package: { name: 'otelpackage', version: '1.0.0', title: 'OTel Package' },
++            inputs: [
++              {
++                type: 'otelcol',
++                enabled: true,
++                streams: [
++                  {
++                    id: 'stream-1',
++                    enabled: true,
++                    data_stream: { type: 'logs', dataset: 'otel.dataset' },
++                    vars: {},
++                  },
++                ],
++              },
++            ],
++            created_at: '',
++            updated_at: '',
++            created_by: '',
++            updated_by: '',
++            revision: 1,
++            policy_id: '',
++            policy_ids: [''],
++          },
++        ],
++      });
++
++      const agentPolicy = await getFullAgentPolicy(createSavedObjectClientMock(), 'agent-policy');
++
++      expect(agentPolicy).toMatchObject({
++        receivers: mockOtelConfig.receivers,
++        processors: mockOtelConfig.processors,
++        service: mockOtelConfig.service,
++      });
++    });
++
++    it('should not call generateOtelcolConfig when enableOtelIntegrations is false', async () => {
++      jest.spyOn(appContextService, 'getExperimentalFeatures').mockReturnValue({
++        enableOtelIntegrations: false,
++      } as any);
++
++      mockAgentPolicy({
++        package_policies: [
++          {
++            id: 'package-policy-1',
++            name: 'otel-policy',
++            namespace: 'default',
++            enabled: true,
++            package: { name: 'otelpackage', version: '1.0.0', title: 'OTel Package' },
++            inputs: [
++              {
++                type: 'otelcol',
++                enabled: true,
++                streams: [],
++              },
++            ],
++            created_at: '',
++            updated_at: '',
++            created_by: '',
++            updated_by: '',
++            revision: 1,
++            policy_id: '',
++            policy_ids: [''],
++          },
++        ],
++      });
++
++      await getFullAgentPolicy(createSavedObjectClientMock(), 'agent-policy');
++
++      expect(mockedGenerateOtelcolConfig).not.toHaveBeenCalled();
++    });
++  });
+ });
+ 
+ describe('getFullMonitoringSettings', () => {
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/otel_collector.test.ts b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/otel_collector.test.ts
+index 1de167929..ab18763cd 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/otel_collector.test.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/services/agent_policies/otel_collector.test.ts
+@@ -6,9 +6,11 @@
+  */
+ 
+ import type { Output, FullAgentPolicyInput, TemplateAgentPolicyInput } from '../../types';
+-import { generateOtelcolConfig } from './otel_collector';
++
+ import { OTEL_COLLECTOR_INPUT_TYPE } from '../../../common/constants';
+ 
++import { generateOtelcolConfig } from './otel_collector';
++
+ describe('generateOtelcolConfig', () => {
+   const defaultOutput: Output = {
+     type: 'elasticsearch',
+@@ -561,4 +563,328 @@ describe('generateOtelcolConfig', () => {
+       },
+     });
+   });
++
++  describe('with dynamic_signal_types (multiple signal types)', () => {
++    const otelInputWithMultipleSignalTypes = {
++      type: OTEL_COLLECTOR_INPUT_TYPE,
++      dynamic_signal_types: true,
++      id: 'test-multi-signal',
++      name: 'test-multi-signal',
++      revision: 0,
++      data_stream: {
++        namespace: 'default',
++      },
++      use_output: 'default',
++      package_policy_id: 'multipolicy',
++      meta: {
++        package: {
++          name: 'otel-multi-signal',
++          version: '1.0.0',
++        },
++      },
++      streams: [
++        {
++          id: 'stream-id-1',
++          data_stream: {
++            dataset: 'multidataset',
++            type: 'logs',
++          },
++          receivers: {
++            otlp: {
++              protocols: {
++                grpc: {
++                  endpoint: '0.0.0.0:4317',
++                },
++              },
++            },
++          },
++          service: {
++            pipelines: {
++              'logs/otlp': {
++                receivers: ['otlp'],
++              },
++              'metrics/otlp': {
++                receivers: ['otlp'],
++              },
++              'traces/otlp': {
++                receivers: ['otlp'],
++              },
++            },
++          },
++        },
++      ],
++    } as FullAgentPolicyInput;
++
++    const otelInputWithMultipleSignalTypes2 = {
++      type: OTEL_COLLECTOR_INPUT_TYPE,
++      dynamic_signal_types: true,
++      id: 'test-multi-signal',
++      name: 'test-multi-signal',
++      revision: 0,
++      data_stream: {
++        namespace: 'default',
++      },
++      use_output: 'default',
++      package_policy_id: 'multipolicy',
++      meta: {
++        package: {
++          name: 'otel-multi-signal',
++          version: '1.0.0',
++        },
++      },
++      streams: [
++        {
++          id: 'stream-id-1',
++          data_stream: {
++            dataset: 'multidataset',
++            type: 'logs',
++          },
++          receivers: {
++            otlp: {
++              protocols: {
++                grpc: {
++                  endpoint: '0.0.0.0:4317',
++                },
++              },
++            },
++          },
++          service: {
++            pipelines: {
++              logs: {
++                receivers: ['otlp'],
++              },
++              metrics: {
++                receivers: ['otlp'],
++              },
++              traces: {
++                receivers: ['otlp'],
++              },
++            },
++          },
++        },
++      ],
++    } as FullAgentPolicyInput;
++
++    const packageInfoCache = new Map([
++      [
++        'otel-multi-signal-1.0.0',
++        {
++          name: 'otel-multi-signal',
++          version: '1.0.0',
++          policy_templates: [
++            {
++              name: 'template1',
++              title: 'OTel Multi Signal',
++              input: 'otelcol',
++              type: 'logs',
++              template_path: 'input.yml.hbs',
++              dynamic_signal_types: true,
++              vars: [],
++            },
++          ],
++        } as any,
++      ],
++    ]);
++
++    const expectSignalTransforms = (
++      result: ReturnType<typeof generateOtelcolConfig>,
++      signals: Array<'logs' | 'metrics' | 'traces'>
++    ) => {
++      const statementMetadata = {
++        logs: { key: 'log_statements', context: 'log' },
++        metrics: { key: 'metric_statements', context: 'datapoint' },
++        traces: { key: 'trace_statements', context: 'span' },
++      } as const;
++      const processors = result.processors ?? {};
++      const pipelines = result.service?.pipelines ?? {};
++      const transformedSignals = new Set<string>();
++
++      for (const processor of Object.values(processors)) {
++        for (const signal of ['logs', 'metrics', 'traces'] as const) {
++          if (processor?.[statementMetadata[signal].key]) {
++            transformedSignals.add(signal);
++          }
++        }
++      }
++
++      expect([...transformedSignals].sort()).toEqual([...signals].sort());
++
++      for (const signal of signals) {
++        const pipeline = Object.entries(pipelines).find(([id]) => id.split('/')[0] === signal)?.[1];
++        expect(pipeline).toBeDefined();
++
++        const linkedTransforms = (pipeline?.processors ?? [])
++          .map((id) => processors[id])
++          .filter(Boolean);
++        const { key, context } = statementMetadata[signal];
++
++        expect(linkedTransforms).toEqual(
++          expect.arrayContaining([
++            expect.objectContaining({
++              [key]: expect.arrayContaining([
++                expect.objectContaining({
++                  context,
++                  statements: expect.arrayContaining([
++                    `set(attributes["data_stream.type"], "${signal}")`,
++                    'set(attributes["data_stream.dataset"], "multidataset")',
++                    'set(attributes["data_stream.namespace"], "default")',
++                  ]),
++                }),
++              ]),
++            }),
++          ])
++        );
++      }
++    };
++
++    it('should generate transform with multiple signal type statements when dynamic_signal_types is true', () => {
++      const inputs: FullAgentPolicyInput[] = [otelInputWithMultipleSignalTypes];
++      const result = generateOtelcolConfig(inputs, defaultOutput, packageInfoCache);
++
++      expectSignalTransforms(result, ['logs', 'metrics', 'traces']);
++    });
++
++    it('should generate transform with multiple signal type statements when dynamic_signal_types is true and pipelines have simple names', () => {
++      const inputs: FullAgentPolicyInput[] = [otelInputWithMultipleSignalTypes2];
++      const result = generateOtelcolConfig(inputs, defaultOutput, packageInfoCache);
++
++      expectSignalTransforms(result, ['logs', 'metrics', 'traces']);
++    });
++
++    it('should generate transform with only specified signal types when pipelines have subset', () => {
++      const baseStream = otelInputWithMultipleSignalTypes.streams?.[0];
++      if (!baseStream) {
++        throw new Error('Test data is invalid');
++      }
++
++      const otelInputWithSubsetSignalTypes: FullAgentPolicyInput = {
++        ...otelInputWithMultipleSignalTypes,
++        streams: [
++          {
++            ...baseStream,
++            service: {
++              pipelines: {
++                'logs/otlp': {
++                  receivers: ['otlp'],
++                },
++                'metrics/otlp': {
++                  receivers: ['otlp'],
++                },
++              },
++            },
++          },
++        ],
++      };
++
++      const inputs: FullAgentPolicyInput[] = [otelInputWithSubsetSignalTypes];
++      const result = generateOtelcolConfig(inputs, defaultOutput, packageInfoCache);
++
++      expectSignalTransforms(result, ['logs', 'metrics']);
++    });
++
++    it('should fall back to single signal type when dynamic_signal_types is false', () => {
++      const packageInfoCacheNoDynamic = new Map([
++        [
++          'otel-multi-signal-1.0.0',
++          {
++            name: 'otel-multi-signal',
++            version: '1.0.0',
++            policy_templates: [
++              {
++                name: 'template1',
++                title: 'OTel Multi Signal',
++                input: 'otelcol',
++                type: 'logs',
++                template_path: 'input.yml.hbs',
++                dynamic_signal_types: false,
++                vars: [],
++              },
++            ],
++          } as any,
++        ],
++      ]);
++
++      const inputs: FullAgentPolicyInput[] = [
++        { ...otelInputWithMultipleSignalTypes, dynamic_signal_types: false } as FullAgentPolicyInput,
++      ];
++      const result = generateOtelcolConfig(inputs, defaultOutput, packageInfoCacheNoDynamic);
++
++      // Should generate single signal type transform (uses stream.data_stream.type)
++      expect(result.processors?.['transform/test-multi-signal-stream-id-1-routing']).toEqual({
++        log_statements: [
++          {
++            context: 'log',
++            statements: [
++              'set(attributes["data_stream.type"], "logs")',
++              'set(attributes["data_stream.dataset"], "multidataset")',
++              'set(attributes["data_stream.namespace"], "default")',
++            ],
++          },
++        ],
++      });
++    });
++
++    it('should use stream data_stream.type when dynamic_signal_types is not defined', () => {
++      const otelInputWithMetricsType: FullAgentPolicyInput = {
++        ...otelInputWithMultipleSignalTypes,
++        dynamic_signal_types: false,
++        streams: [
++          {
++            id: 'stream-id-1',
++            data_stream: {
++              dataset: 'multidataset',
++              type: 'metrics',
++            },
++            receivers: {
++              otlp: {
++                protocols: {
++                  grpc: {
++                    endpoint: '0.0.0.0:4317',
++                  },
++                },
++              },
++            },
++          },
++        ],
++      };
++
++      const packageInfoCacheNoDynamicVar = new Map([
++        [
++          'otel-multi-signal-1.0.0',
++          {
++            name: 'otel-multi-signal',
++            version: '1.0.0',
++            policy_templates: [
++              {
++                name: 'template1',
++                title: 'OTel Multi Signal',
++                input: 'otelcol',
++                type: 'logs',
++                // No dynamic_signal_types property
++                template_path: 'input.yml.hbs',
++                vars: [],
++              },
++            ],
++          } as any,
++        ],
++      ]);
++
++      const inputs: FullAgentPolicyInput[] = [otelInputWithMetricsType];
++      const result = generateOtelcolConfig(inputs, defaultOutput, packageInfoCacheNoDynamicVar);
++
++      // Should use the stream's data_stream.type (metrics)
++      expect(result.processors?.['transform/test-multi-signal-stream-id-1-routing']).toEqual({
++        metric_statements: [
++          {
++            context: 'datapoint',
++            statements: [
++              'set(attributes["data_stream.type"], "metrics")',
++              'set(attributes["data_stream.dataset"], "multidataset")',
++              'set(attributes["data_stream.namespace"], "default")',
++            ],
++          },
++        ],
++      });
++    });
++  });
+ });
+diff --git a/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/input_type_packages.test.ts b/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/input_type_packages.test.ts
+index a060e9021..ef54b8892 100644
+--- a/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/input_type_packages.test.ts
++++ b/x-pack/platform/plugins/shared/fleet/server/services/epm/packages/input_type_packages.test.ts
+@@ -21,6 +21,7 @@ import {
+   isInputPackageDatasetUsedByMultiplePolicies,
+ } from './input_type_packages';
+ import { cleanupAssets } from './remove';
++import { installIndexTemplatesAndPipelines } from './install_index_template_pipeline';
+ 
+ jest.mock('../../data_streams');
+ jest.mock('./get');
+@@ -156,6 +157,291 @@ describe('installAssetsForInputPackagePolicy', () => {
+       }
+     );
+   });
++
++  describe('with dynamic_signal_types', () => {
++    const OTEL_PKG_INFO_DYNAMIC_SIGNAL_TYPES = {
++      type: 'input',
++      name: 'otel',
++      version: '1.0.0',
++      policy_templates: [
++        {
++          name: 'otel',
++          type: 'logs',
++          input: 'otelcol',
++          dynamic_signal_types: true,
++        },
++      ],
++    };
++
++    const OTEL_PKG_INFO_NO_DYNAMIC_SIGNAL_TYPES = {
++      type: 'input',
++      name: 'otel',
++      version: '1.0.0',
++      policy_templates: [
++        {
++          name: 'otel',
++          type: 'logs',
++          input: 'otelcol',
++          dynamic_signal_types: false,
++        },
++      ],
++    };
++
++    const OTEL_PKG_INFO_WITHOUT_FLAG = {
++      type: 'input',
++      name: 'otel',
++      version: '1.0.0',
++      policy_templates: [
++        {
++          name: 'otel',
++          type: 'logs',
++          input: 'otelcol',
++        },
++      ],
++    };
++
++    beforeEach(() => {
++      jest.mocked(installIndexTemplatesAndPipelines).mockReset();
++      jest.mocked(dataStreamService).getMatchingDataStreams.mockResolvedValue([]);
++      jest.mocked(dataStreamService).getMatchingIndexTemplate.mockResolvedValue(null);
++    });
++
++    const installedDataStreams = () =>
++      jest
++        .mocked(installIndexTemplatesAndPipelines)
++        .mock.calls.flatMap((call) => call[0]?.onlyForDataStreams ?? []);
++
++    it('should install index templates for all signal types when dynamic_signal_types is true', async () => {
++      jest.mocked(getInstalledPackageWithAssets).mockResolvedValue({
++        installation: {
++          name: 'otel',
++          version: '1.0.0',
++        },
++        packageInfo: OTEL_PKG_INFO_DYNAMIC_SIGNAL_TYPES,
++        assetsMap: new Map(),
++        paths: [],
++      } as any);
++      const mockedLogger = jest.mocked(appContextService.getLogger());
++
++      await installAssetsForInputPackagePolicy({
++        pkgInfo: OTEL_PKG_INFO_DYNAMIC_SIGNAL_TYPES as any,
++        soClient: savedObjectsClientMock.create(),
++        esClient: {} as ElasticsearchClient,
++        force: false,
++        logger: mockedLogger,
++        packagePolicy: {
++          inputs: [
++            {
++              name: 'otel',
++              type: 'otelcol',
++              policy_template: 'otel',
++              streams: [
++                {
++                  data_stream: { type: 'logs' },
++                  vars: { 'data_stream.dataset': { value: 'otel.test' } },
++                },
++              ],
++            },
++          ],
++        } as any,
++      });
++
++      expect(installedDataStreams()).toEqual(
++        expect.arrayContaining([
++          expect.objectContaining({ type: 'logs', dataset: 'otel.test' }),
++          expect.objectContaining({ type: 'metrics', dataset: 'otel.test' }),
++          expect.objectContaining({ type: 'traces', dataset: 'otel.test' }),
++        ])
++      );
++      expect(installedDataStreams()).toHaveLength(3);
++    });
++
++    it('should install index template for single signal type when dynamic_signal_types is false', async () => {
++      jest.mocked(getInstalledPackageWithAssets).mockResolvedValue({
++        installation: {
++          name: 'otel',
++          version: '1.0.0',
++        },
++        packageInfo: OTEL_PKG_INFO_NO_DYNAMIC_SIGNAL_TYPES,
++        assetsMap: new Map(),
++        paths: [],
++      } as any);
++      const mockedLogger = jest.mocked(appContextService.getLogger());
++
++      await installAssetsForInputPackagePolicy({
++        pkgInfo: OTEL_PKG_INFO_NO_DYNAMIC_SIGNAL_TYPES as any,
++        soClient: savedObjectsClientMock.create(),
++        esClient: {} as ElasticsearchClient,
++        force: false,
++        logger: mockedLogger,
++        packagePolicy: {
++          inputs: [
++            {
++              name: 'otel',
++              type: 'otelcol',
++              policy_template: 'otel',
++              streams: [
++                {
++                  data_stream: { type: 'logs' },
++                  vars: { 'data_stream.dataset': { value: 'otel.test' } },
++                },
++              ],
++            },
++          ],
++        } as any,
++      });
++
++      expect(installedDataStreams()).toEqual([
++        expect.objectContaining({ type: 'logs', dataset: 'otel.test' }),
++      ]);
++    });
++
++    it('should install index template for single signal type when dynamic_signal_types is not defined (backward compatibility)', async () => {
++      jest.mocked(getInstalledPackageWithAssets).mockResolvedValue({
++        installation: {
++          name: 'otel',
++          version: '1.0.0',
++        },
++        packageInfo: OTEL_PKG_INFO_WITHOUT_FLAG,
++        assetsMap: new Map(),
++        paths: [],
++      } as any);
++      const mockedLogger = jest.mocked(appContextService.getLogger());
++
++      await installAssetsForInputPackagePolicy({
++        pkgInfo: OTEL_PKG_INFO_WITHOUT_FLAG as any,
++        soClient: savedObjectsClientMock.create(),
++        esClient: {} as ElasticsearchClient,
++        force: false,
++        logger: mockedLogger,
++        packagePolicy: {
++          inputs: [
++            {
++              name: 'otel',
++              type: 'otelcol',
++              policy_template: 'otel',
++              streams: [
++                {
++                  data_stream: { type: 'metrics' },
++                  vars: { 'data_stream.dataset': { value: 'otel.test' } },
++                },
++              ],
++            },
++          ],
++        } as any,
++      });
++
++      expect(installedDataStreams()).toEqual([
++        expect.objectContaining({ type: 'metrics', dataset: 'otel.test' }),
++      ]);
++    });
++
++    it('should respect data_stream.type var when dynamic_signal_types is true', async () => {
++      jest.mocked(getInstalledPackageWithAssets).mockResolvedValue({
++        installation: {
++          name: 'otel',
++          version: '1.0.0',
++        },
++        packageInfo: OTEL_PKG_INFO_DYNAMIC_SIGNAL_TYPES,
++        assetsMap: new Map(),
++        paths: [],
++      } as any);
++      const mockedLogger = jest.mocked(appContextService.getLogger());
++
++      await installAssetsForInputPackagePolicy({
++        pkgInfo: OTEL_PKG_INFO_DYNAMIC_SIGNAL_TYPES as any,
++        soClient: savedObjectsClientMock.create(),
++        esClient: {} as ElasticsearchClient,
++        force: false,
++        logger: mockedLogger,
++        packagePolicy: {
++          inputs: [
++            {
++              name: 'otel',
++              type: 'otelcol',
++              policy_template: 'otel',
++              streams: [
++                {
++                  data_stream: { type: 'logs' },
++                  vars: {
++                    'data_stream.dataset': { value: 'otel.custom' },
++                    'data_stream.type': { value: 'traces' },
++                  },
++                },
++              ],
++            },
++          ],
++        } as any,
++      });
++
++      expect(installedDataStreams()).toEqual([
++        expect.objectContaining({ type: 'logs', dataset: 'otel.custom' }),
++        expect.objectContaining({ type: 'metrics', dataset: 'otel.custom' }),
++        expect.objectContaining({ type: 'traces', dataset: 'otel.custom' }),
++      ]);
++    });
++
++    it('should skip existing data streams for each signal type', async () => {
++      jest.mocked(getInstalledPackageWithAssets).mockResolvedValue({
++        installation: {
++          name: 'otel',
++          version: '1.0.0',
++        },
++        packageInfo: OTEL_PKG_INFO_DYNAMIC_SIGNAL_TYPES,
++        assetsMap: new Map(),
++        paths: [],
++      } as any);
++
++      // Mock that logs data stream already exists (from same package)
++      jest
++        .mocked(dataStreamService)
++        .getMatchingDataStreams.mockImplementation(async (esClient, params) => {
++          if (params.type === 'logs') {
++            return [
++              {
++                name: 'logs-otel.test-default',
++                _meta: {
++                  package: {
++                    name: 'otel',
++                  },
++                },
++              },
++            ] as any;
++          }
++          return [];
++        });
++
++      const mockedLogger = jest.mocked(appContextService.getLogger());
++
++      await installAssetsForInputPackagePolicy({
++        pkgInfo: OTEL_PKG_INFO_DYNAMIC_SIGNAL_TYPES as any,
++        soClient: savedObjectsClientMock.create(),
++        esClient: {} as ElasticsearchClient,
++        force: false,
++        logger: mockedLogger,
++        packagePolicy: {
++          inputs: [
++            {
++              name: 'otel',
++              type: 'otelcol',
++              policy_template: 'otel',
++              streams: [
++                {
++                  data_stream: { type: 'logs' },
++                  vars: { 'data_stream.dataset': { value: 'otel.test' } },
++                },
++              ],
++            },
++          ],
++        } as any,
++      });
++
++      expect(installedDataStreams()).toEqual([
++        expect.objectContaining({ type: 'metrics', dataset: 'otel.test' }),
++        expect.objectContaining({ type: 'traces', dataset: 'otel.test' }),
++      ]);
++    });
++  });
+ });
+ 
+ describe('removeAssetsForInputPackagePolicy', () => {

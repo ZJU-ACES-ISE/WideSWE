@@ -1,0 +1,31 @@
+profiles:
+  ticdc-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: ticdc
+    workdir: repos/pingcap/ticdc
+    command: go test -json -count=1 -run '^(TestCreateTopic|TestCreateTopicWithDelay|TestGetPartitionNumMock|TestKafkaMaxRetryFromSinkURI)$'
+      ./downstreamadapter/sink/topicmanager ./pkg/sink/kafka
+    docker_image: ecosyncbench/base/go-pingcap:1.25.10
+    status: manual_profile_ready
+    test_files:
+    - downstreamadapter/sink/topicmanager/kafka_topic_manager_test.go
+    - pkg/sink/kafka/max_retry_hidden_test.go
+    patched_files:
+    - pkg/sink/kafka/max_retry_hidden_test.go
+  tiflow-hidden:
+    runnable_on:
+    - linux
+    required: true
+    repo: tiflow
+    workdir: repos/pingcap/tiflow
+    command: go test -json -count=1 -run '^(TestGetDLLDispatchRuleByProtocol|TestNewKafkaDDLSinkFailed|TestNewPulsarDDLSink|TestPulsarDDLSinkNewSuccess|TestPulsarWriteDDLEventToZeroPartition|TestWriteCheckpointTsToDefaultTopic|TestWriteCheckpointTsToTableTopics|TestWriteCheckpointTsWhenCanalJsonTiDBExtensionIsDisable|TestWriteDDLEventToAllPartitions|TestWriteDDLEventToZeroPartition|TestKafkaMaxRetryFromSinkURI)$'
+      ./cdc/sink/ddlsink/mq ./pkg/sink/kafka
+    docker_image: ecosyncbench/base/go-pingcap:1.25.10
+    status: manual_profile_ready
+    test_files:
+    - cdc/sink/ddlsink/mq/mq_ddl_sink_test.go
+    - pkg/sink/kafka/max_retry_hidden_test.go
+    patched_files:
+    - pkg/sink/kafka/max_retry_hidden_test.go

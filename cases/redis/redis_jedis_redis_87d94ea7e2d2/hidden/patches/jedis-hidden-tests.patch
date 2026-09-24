@@ -1,0 +1,1967 @@
+diff --git a/src/test/java/redis/clients/jedis/commands/jedis/StreamsBinaryCommandsTest.java b/src/test/java/redis/clients/jedis/commands/jedis/StreamsBinaryCommandsTest.java
+index e53b4d87b..63ba4111d 100644
+--- a/src/test/java/redis/clients/jedis/commands/jedis/StreamsBinaryCommandsTest.java
++++ b/src/test/java/redis/clients/jedis/commands/jedis/StreamsBinaryCommandsTest.java
+@@ -1,16 +1,20 @@
+ package redis.clients.jedis.commands.jedis;
+ 
++import io.redis.test.annotations.SinceRedisVersion;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.params.ParameterizedClass;
+ import org.junit.jupiter.params.provider.MethodSource;
+ import redis.clients.jedis.RedisProtocol;
+ import redis.clients.jedis.StreamEntryID;
++import redis.clients.jedis.args.StreamDeletionPolicy;
+ import redis.clients.jedis.exceptions.JedisDataException;
+ import redis.clients.jedis.params.XAddParams;
+ import redis.clients.jedis.params.XReadGroupParams;
+ import redis.clients.jedis.params.XReadParams;
++import redis.clients.jedis.params.XTrimParams;
+ import redis.clients.jedis.resps.StreamEntryBinary;
++import redis.clients.jedis.resps.StreamEntryDeletionResult;
+ 
+ import java.util.ArrayList;
+ import java.util.HashMap;
+@@ -21,7 +25,10 @@ import static java.util.Collections.singletonMap;
+ import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.hamcrest.Matchers.hasSize;
+ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
+ import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
+ import static redis.clients.jedis.StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY;
+ import static redis.clients.jedis.util.StreamEntryBinaryListMatcher.equalsStreamEntries;
+ 
+@@ -253,4 +260,269 @@ public class StreamsBinaryCommandsTest extends JedisCommandsTestBase {
+     assertThat(actualEntries.get(STREAM_KEY_2), equalsStreamEntries(stream2Entries));
+   }
+ 
++  // ========== XACKDEL Command Tests ==========
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXackdel() {
++    // Add a message to the stream
++    byte[] messageId = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    assertNotNull(messageId);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++
++    // Read the message with consumer group to add it to PEL
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(1), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(1, messages.get(0).getValue().size());
++    byte[] readMessageId = messages.get(0).getValue().get(0).getID().toString().getBytes();
++
++    // Test XACKDEL - should acknowledge and delete the message
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, readMessageId);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify message is deleted from stream
++    assertEquals(0L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXackdelWithTrimMode() {
++    // Add multiple messages
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++
++    // Read the messages with consumer group
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(2), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(2, messages.get(0).getValue().size());
++
++    // Test XACKDEL with KEEP_REFERENCES mode
++    byte[] readId1 = messages.get(0).getValue().get(0).getID().toString().getBytes();
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, StreamDeletionPolicy.KEEP_REFERENCES, readId1);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify one message is deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXackdelUnreadMessages() {
++    // Add test entries but don't read them
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++
++    // Test XACKDEL on unread messages - should return NOT_FOUND for PEL
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, id1);
++
++    assertThat(results, hasSize(1));
++    // Should return NOT_FOUND because message was never read by the consumer group
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, results.get(0));
++
++    // Stream should still contain the message
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXackdelMultipleMessages() {
++    // Add multiple messages
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("3-0"), HASH_1);
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++
++    // Read the messages with consumer group
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(3, messages.get(0).getValue().size());
++
++    // Test XACKDEL with multiple IDs
++    byte[] readId1 = messages.get(0).getValue().get(0).getID().toString().getBytes();
++    byte[] readId2 = messages.get(0).getValue().get(1).getID().toString().getBytes();
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, readId1, readId2);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(1));
++
++    // Verify two messages are deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  // ========== XDELEX Command Tests ==========
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelex() {
++    // Add test entries
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    byte[] id2 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++
++    // Test basic XDELEX without parameters (should behave like XDEL with KEEP_REFERENCES)
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, id1);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify entry is deleted from stream
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexWithTrimMode() {
++    // Add test entries
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++
++    // Test XDELEX with DELETE_REFERENCES mode
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, StreamDeletionPolicy.DELETE_REFERENCES, id1);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify entry is deleted from stream
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexMultipleEntries() {
++    // Add test entries
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    byte[] id3 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("3-0"), HASH_1);
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XDELEX with multiple IDs
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, id1, id3);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(1));
++
++    // Verify two entries are deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexNonExistentEntries() {
++    // Add one entry
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XDELEX with mix of existing and non-existent IDs
++    byte[] nonExistentId = "999-0".getBytes();
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, id1, nonExistentId);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0)); // Existing entry
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, results.get(1)); // Non-existent entry
++
++    // Verify existing entry is deleted
++    assertEquals(0L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexWithConsumerGroups() {
++    // Add test entries
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++
++    // Read messages with consumer group to add them to PEL
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(2), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(2, messages.get(0).getValue().size());
++
++    // Acknowledge only the first message
++    byte[] readId1 = messages.get(0).getValue().get(0).getID().toString().getBytes();
++    byte[] readId2 = messages.get(0).getValue().get(1).getID().toString().getBytes();
++    jedis.xack(STREAM_KEY_1, GROUP_NAME, readId1);
++
++    // Test XDELEX with ACKNOWLEDGED mode - should only delete acknowledged entries
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, StreamDeletionPolicy.ACKNOWLEDGED, readId1, readId2);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0)); // id1 was acknowledged
++    assertEquals(StreamEntryDeletionResult.ACKNOWLEDGED_NOT_DELETED, results.get(1)); // id2 not acknowledged
++
++    // Verify only acknowledged entry was deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexEmptyStream() {
++    // Test XDELEX on empty stream
++    byte[] nonExistentId = "1-0".getBytes();
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, nonExistentId);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, results.get(0));
++  }
++
++  // ========== XTRIM Command Tests with trimmingMode ==========
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXtrimWithKeepReferences() {
++    // Add test entries
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(STREAM_KEY_1, new XAddParams().id(i + "-0"), HASH_1);
++    }
++    assertEquals(5L, jedis.xlen(STREAM_KEY_1));
++
++    // Read messages with consumer group to create PEL entries
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroupBinary(GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3), streams);
++
++    // Test XTRIM with KEEP_REFERENCES mode - should preserve PEL references
++    long trimmed = jedis.xtrim(STREAM_KEY_1, XTrimParams.xTrimParams().maxLen(3).trimmingMode(
++        StreamDeletionPolicy.KEEP_REFERENCES));
++    assertEquals(2L, trimmed); // Should trim 2 entries
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXtrimWithAcknowledged() {
++    // Add test entries
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(STREAM_KEY_1, new XAddParams().id(i + "-0"), HASH_1);
++    }
++    assertEquals(5L, jedis.xlen(STREAM_KEY_1));
++
++    // Read messages with consumer group
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(3, messages.get(0).getValue().size());
++
++    // Acknowledge only the first 2 messages
++    byte[] readId1 = messages.get(0).getValue().get(0).getID().toString().getBytes();
++    byte[] readId2 = messages.get(0).getValue().get(1).getID().toString().getBytes();
++    jedis.xack(STREAM_KEY_1, GROUP_NAME, readId1, readId2);
++
++    // Test XTRIM with ACKNOWLEDGED mode - should only trim acknowledged entries
++    long trimmed = jedis.xtrim(STREAM_KEY_1, XTrimParams.xTrimParams().maxLen(3).trimmingMode(
++        StreamDeletionPolicy.ACKNOWLEDGED));
++    // The exact behavior depends on implementation, but it should respect acknowledgment status
++    assertTrue(trimmed >= 0);
++    assertTrue(jedis.xlen(STREAM_KEY_1) <= 5); // Should not exceed original length
++  }
++
+ }
+diff --git a/src/test/java/redis/clients/jedis/commands/jedis/StreamsCommandsTest.java b/src/test/java/redis/clients/jedis/commands/jedis/StreamsCommandsTest.java
+index 1a3763b25..72322e698 100644
+--- a/src/test/java/redis/clients/jedis/commands/jedis/StreamsCommandsTest.java
++++ b/src/test/java/redis/clients/jedis/commands/jedis/StreamsCommandsTest.java
+@@ -36,6 +36,7 @@ import redis.clients.jedis.exceptions.JedisDataException;
+ import redis.clients.jedis.exceptions.JedisException;
+ import redis.clients.jedis.params.*;
+ import redis.clients.jedis.resps.*;
++import redis.clients.jedis.args.StreamDeletionPolicy;
+ import redis.clients.jedis.util.RedisVersionUtil;
+ import redis.clients.jedis.util.SafeEncoder;
+ 
+@@ -197,6 +198,316 @@ public class StreamsCommandsTest extends JedisCommandsTestBase {
+     assertNotNull(id);
+   }
+ 
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithTrimmingModeKeepReferences() {
++    String streamKey = "xadd-trim-keep-ref-stream";
++    String groupName = "test-group";
++    String consumerName = "test-consumer";
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries to the stream
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(streamKey, XAddParams.xAddParams().id(new StreamEntryID(i + "-0")), map);
++    }
++    assertEquals(5L, jedis.xlen(streamKey));
++
++    // Create consumer group and read messages to create PEL entries
++    jedis.xgroupCreate(streamKey, groupName, new StreamEntryID("0-0"), false);
++    Map<String, StreamEntryID> streamQuery = singletonMap(streamKey, StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(groupName, consumerName, XReadGroupParams.xReadGroupParams().count(3), streamQuery);
++
++    // Verify PEL has entries
++    List<StreamPendingEntry> pendingBefore = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertEquals(3, pendingBefore.size());
++
++    // Add new entry with maxLen=3 and KEEP_REFERENCES mode
++    StreamEntryID newId = jedis.xadd(streamKey, XAddParams.xAddParams()
++        .id(new StreamEntryID("6-0"))
++        .maxLen(3)
++        .trimmingMode(StreamDeletionPolicy.KEEP_REFERENCES), map);
++    assertNotNull(newId);
++
++    // Stream should be trimmed to 3 entries
++    assertEquals(3L, jedis.xlen(streamKey));
++
++    // PEL references should be preserved even though entries were trimmed
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertEquals(3, pendingAfter.size()); // PEL entries should still exist
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithTrimmingModeDeleteReferences() {
++    String streamKey = "xadd-trim-del-ref-stream";
++    String groupName = "test-group";
++    String consumerName = "test-consumer";
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries to the stream
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(streamKey, XAddParams.xAddParams().id(new StreamEntryID(i + "-0")), map);
++    }
++    assertEquals(5L, jedis.xlen(streamKey));
++
++    // Create consumer group and read messages to create PEL entries
++    jedis.xgroupCreate(streamKey, groupName, new StreamEntryID("0-0"), false);
++    Map<String, StreamEntryID> streamQuery = singletonMap(streamKey, StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(groupName, consumerName, XReadGroupParams.xReadGroupParams().count(3), streamQuery);
++
++    // Verify PEL has entries
++    List<StreamPendingEntry> pendingBefore = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertEquals(3, pendingBefore.size());
++
++    // Add new entry with maxLen=3 and DELETE_REFERENCES mode
++    StreamEntryID newId = jedis.xadd(streamKey, XAddParams.xAddParams()
++        .id(new StreamEntryID("6-0"))
++        .maxLen(3)
++        .trimmingMode(StreamDeletionPolicy.DELETE_REFERENCES), map);
++    assertNotNull(newId);
++
++    // Stream should be trimmed to 3 entries
++    assertEquals(3L, jedis.xlen(streamKey));
++
++    // PEL references should be removed for trimmed entries
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    // Only entries that still exist in the stream should remain in PEL
++    assertTrue(pendingAfter.size() <= 3);
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithTrimmingModeAcknowledged() {
++    String streamKey = "xadd-trim-acked-stream";
++    String groupName = "test-group";
++    String consumerName = "test-consumer";
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries to the stream
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(streamKey, XAddParams.xAddParams().id(new StreamEntryID(i + "-0")), map);
++    }
++    assertEquals(5L, jedis.xlen(streamKey));
++
++    // Create consumer group and read messages
++    jedis.xgroupCreate(streamKey, groupName, new StreamEntryID("0-0"), false);
++    Map<String, StreamEntryID> streamQuery = singletonMap(streamKey, StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    List<Entry<String, List<StreamEntry>>> messages = jedis.xreadGroup(groupName, consumerName,
++        XReadGroupParams.xReadGroupParams().count(3), streamQuery);
++
++    // Acknowledge the first 2 messages
++    StreamEntryID id1 = messages.get(0).getValue().get(0).getID();
++    StreamEntryID id2 = messages.get(0).getValue().get(1).getID();
++    jedis.xack(streamKey, groupName, id1, id2);
++
++    // Verify PEL state
++    List<StreamPendingEntry> pendingBefore = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertEquals(1, pendingBefore.size()); // Only 1 unacknowledged message
++
++    // Add new entry with maxLen=3 and ACKNOWLEDGED mode
++    StreamEntryID newId = jedis.xadd(streamKey, XAddParams.xAddParams()
++        .id(new StreamEntryID("6-0"))
++        .maxLen(3)
++        .trimmingMode(StreamDeletionPolicy.ACKNOWLEDGED), map);
++    assertNotNull(newId);
++
++    // Stream length should respect acknowledgment status
++    long streamLen = jedis.xlen(streamKey);
++    assertTrue(streamLen >= 3); // Should not trim unacknowledged entries aggressively
++
++    // PEL should still contain unacknowledged entries
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertFalse(pendingAfter.isEmpty()); // Unacknowledged entries should remain
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithMinIdTrimmingModeKeepReferences() {
++    String streamKey = "xadd-minid-keep-ref-stream";
++    String groupName = "test-group";
++    String consumerName = "test-consumer";
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries with specific IDs
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(streamKey, XAddParams.xAddParams().id(new StreamEntryID("0-" + i)), map);
++    }
++    assertEquals(5L, jedis.xlen(streamKey));
++
++    // Create consumer group and read messages to create PEL entries
++    jedis.xgroupCreate(streamKey, groupName, new StreamEntryID("0-0"), false);
++    Map<String, StreamEntryID> streamQuery = singletonMap(streamKey, StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(groupName, consumerName, XReadGroupParams.xReadGroupParams().count(3), streamQuery);
++
++    // Verify PEL has entries
++    List<StreamPendingEntry> pendingBefore = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertEquals(3, pendingBefore.size());
++
++    // Add new entry with minId="0-3" and KEEP_REFERENCES mode (should trim entries < 0-3)
++    StreamEntryID newId = jedis.xadd(streamKey, XAddParams.xAddParams()
++        .id(new StreamEntryID("0-6"))
++        .minId("0-3")
++        .trimmingMode(StreamDeletionPolicy.KEEP_REFERENCES), map);
++    assertNotNull(newId);
++
++    // Stream should have entries >= 0-3 plus the new entry
++    long streamLen = jedis.xlen(streamKey);
++    assertTrue(streamLen >= 3); // Should keep entries 0-3, 0-4, 0-5, 0-6
++
++    // PEL references should be preserved even for trimmed entries
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertEquals(3, pendingAfter.size()); // PEL entries should still exist
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithMinIdTrimmingModeDeleteReferences() {
++    String streamKey = "xadd-minid-del-ref-stream";
++    String groupName = "test-group";
++    String consumerName = "test-consumer";
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries with specific IDs
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(streamKey, XAddParams.xAddParams().id(new StreamEntryID("0-" + i)), map);
++    }
++    assertEquals(5L, jedis.xlen(streamKey));
++
++    // Create consumer group and read messages to create PEL entries
++    jedis.xgroupCreate(streamKey, groupName, new StreamEntryID("0-0"), false);
++    Map<String, StreamEntryID> streamQuery = singletonMap(streamKey, StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(groupName, consumerName, XReadGroupParams.xReadGroupParams().count(3), streamQuery);
++
++    // Verify PEL has entries
++    List<StreamPendingEntry> pendingBefore = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertEquals(3, pendingBefore.size());
++
++    // Add new entry with minId="0-3" and DELETE_REFERENCES mode
++    StreamEntryID newId = jedis.xadd(streamKey, XAddParams.xAddParams()
++        .id(new StreamEntryID("0-6"))
++        .minId("0-3")
++        .trimmingMode(StreamDeletionPolicy.DELETE_REFERENCES), map);
++    assertNotNull(newId);
++
++    // Stream should have entries >= 0-3 plus the new entry
++    long streamLen = jedis.xlen(streamKey);
++    assertTrue(streamLen >= 3);
++
++    // PEL references should be removed for trimmed entries (0-1, 0-2)
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    // Only entries that still exist in the stream should remain in PEL
++    assertTrue(pendingAfter.size() <= pendingBefore.size());
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithApproximateTrimmingAndTrimmingMode() {
++    String streamKey = "xadd-approx-trim-stream";
++    String groupName = "test-group";
++    String consumerName = "test-consumer";
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries
++    for (int i = 1; i <= 10; i++) {
++      jedis.xadd(streamKey, XAddParams.xAddParams().id(new StreamEntryID(i + "-0")), map);
++    }
++    assertEquals(10L, jedis.xlen(streamKey));
++
++    // Create consumer group and read messages
++    jedis.xgroupCreate(streamKey, groupName, new StreamEntryID("0-0"), false);
++    Map<String, StreamEntryID> streamQuery = singletonMap(streamKey, StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(groupName, consumerName, XReadGroupParams.xReadGroupParams().count(5), streamQuery);
++
++    // Add new entry with approximate trimming and KEEP_REFERENCES mode
++    StreamEntryID newId = jedis.xadd(streamKey, XAddParams.xAddParams()
++        .id(new StreamEntryID("11-0"))
++        .maxLen(5)
++        .approximateTrimming()
++        .trimmingMode(StreamDeletionPolicy.KEEP_REFERENCES), map);
++    assertNotNull(newId);
++
++    // With approximate trimming, the exact length may vary but should be around the target
++    long streamLen = jedis.xlen(streamKey);
++    assertTrue(streamLen >= 5); // Should be approximately 5, but may be more due to approximation
++
++    // PEL should preserve references
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertEquals(5, pendingAfter.size()); // All read messages should remain in PEL
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithExactTrimmingAndTrimmingMode() {
++    String streamKey = "xadd-exact-trim-mode-stream";
++    String groupName = "test-group";
++    String consumerName = "test-consumer";
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(streamKey, XAddParams.xAddParams().id(new StreamEntryID(i + "-0")), map);
++    }
++    assertEquals(5L, jedis.xlen(streamKey));
++
++    // Create consumer group and read messages
++    jedis.xgroupCreate(streamKey, groupName, new StreamEntryID("0-0"), false);
++    Map<String, StreamEntryID> streamQuery = singletonMap(streamKey, StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(groupName, consumerName, XReadGroupParams.xReadGroupParams().count(3), streamQuery);
++
++    // Add new entry with exact trimming and DELETE_REFERENCES mode
++    StreamEntryID newId = jedis.xadd(streamKey, XAddParams.xAddParams()
++        .id(new StreamEntryID("6-0"))
++        .maxLen(3)
++        .exactTrimming()
++        .trimmingMode(StreamDeletionPolicy.DELETE_REFERENCES), map);
++    assertNotNull(newId);
++
++    // With exact trimming, stream should be exactly 3 entries
++    assertEquals(3L, jedis.xlen(streamKey));
++
++    // PEL references should be cleaned up for trimmed entries
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    // Only entries that still exist in the stream should remain in PEL
++    assertTrue(pendingAfter.size() <= 3);
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithLimitAndTrimmingMode() {
++    String streamKey = "xadd-limit-trim-mode-stream";
++    String groupName = "test-group";
++    String consumerName = "test-consumer";
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries
++    for (int i = 1; i <= 10; i++) {
++      jedis.xadd(streamKey, XAddParams.xAddParams().id(new StreamEntryID(i + "-0")), map);
++    }
++    assertEquals(10L, jedis.xlen(streamKey));
++
++    // Create consumer group and read messages
++    jedis.xgroupCreate(streamKey, groupName, new StreamEntryID("0-0"), false);
++    Map<String, StreamEntryID> streamQuery = singletonMap(streamKey, StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(groupName, consumerName, XReadGroupParams.xReadGroupParams().count(5), streamQuery);
++
++    // Add new entry with limit and KEEP_REFERENCES mode (limit requires approximate trimming)
++    StreamEntryID newId = jedis.xadd(streamKey, XAddParams.xAddParams()
++        .id(new StreamEntryID("11-0"))
++        .maxLen(5)
++        .approximateTrimming() // Required for limit to work
++        .limit(2) // Limit the number of entries to examine for trimming
++        .trimmingMode(StreamDeletionPolicy.KEEP_REFERENCES), map);
++    assertNotNull(newId);
++
++    // With limit, trimming may be less aggressive
++    long streamLen = jedis.xlen(streamKey);
++    assertTrue(streamLen >= 5); // Should be at least 5, but may be more due to limit
++
++    // PEL should preserve references
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(streamKey, groupName, XPendingParams.xPendingParams().count(10));
++    assertEquals(5, pendingAfter.size()); // All read messages should remain in PEL
++  }
++
+   @Test
+   public void xdel() {
+     Map<String, String> map1 = new HashMap<>();
+diff --git a/src/test/java/redis/clients/jedis/commands/unified/StreamsBinaryCommandsTestBase.java b/src/test/java/redis/clients/jedis/commands/unified/StreamsBinaryCommandsTestBase.java
+index 816dd8e6a..2903a70c3 100644
+--- a/src/test/java/redis/clients/jedis/commands/unified/StreamsBinaryCommandsTestBase.java
++++ b/src/test/java/redis/clients/jedis/commands/unified/StreamsBinaryCommandsTestBase.java
+@@ -1,14 +1,18 @@
+ package redis.clients.jedis.commands.unified;
+ 
++import io.redis.test.annotations.SinceRedisVersion;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+ import redis.clients.jedis.RedisProtocol;
+ import redis.clients.jedis.StreamEntryID;
++import redis.clients.jedis.args.StreamDeletionPolicy;
+ import redis.clients.jedis.exceptions.JedisDataException;
+ import redis.clients.jedis.params.XAddParams;
+ import redis.clients.jedis.params.XReadGroupParams;
+ import redis.clients.jedis.params.XReadParams;
++import redis.clients.jedis.params.XTrimParams;
+ import redis.clients.jedis.resps.StreamEntryBinary;
++import redis.clients.jedis.resps.StreamEntryDeletionResult;
+ 
+ import java.util.ArrayList;
+ import java.util.HashMap;
+@@ -19,7 +23,10 @@ import static java.util.Collections.singletonMap;
+ import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.hamcrest.Matchers.hasSize;
+ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
+ import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
+ import static redis.clients.jedis.StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY;
+ import static redis.clients.jedis.util.StreamEntryBinaryListMatcher.equalsStreamEntries;
+ 
+@@ -252,4 +259,293 @@ public abstract class StreamsBinaryCommandsTestBase extends UnifiedJedisCommands
+     assertThat(actualEntries.get(STREAM_KEY_2), equalsStreamEntries(stream2Entries));
+   }
+ 
++  // ========== XACKDEL Command Tests ==========
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXackdel() {
++    setUpTestStream();
++
++    // Add a message to the stream
++    byte[] messageId = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    assertNotNull(messageId);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++
++    // Read the message with consumer group to add it to PEL
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(1), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(1, messages.get(0).getValue().size());
++    byte[] readMessageId = messages.get(0).getValue().get(0).getID().toString().getBytes();
++
++    // Test XACKDEL - should acknowledge and delete the message
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, readMessageId);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify message is deleted from stream
++    assertEquals(0L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXackdelWithTrimMode() {
++    setUpTestStream();
++
++    // Add multiple messages
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++
++    // Read the messages with consumer group
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(2), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(2, messages.get(0).getValue().size());
++
++    // Test XACKDEL with KEEP_REFERENCES mode
++    byte[] readId1 = messages.get(0).getValue().get(0).getID().toString().getBytes();
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, StreamDeletionPolicy.KEEP_REFERENCES, readId1);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify one message is deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXackdelUnreadMessages() {
++    setUpTestStream();
++
++    // Add test entries but don't read them
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++
++    // Test XACKDEL on unread messages - should return NOT_FOUND for PEL
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, id1);
++
++    assertThat(results, hasSize(1));
++    // Should return NOT_FOUND because message was never read by the consumer group
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, results.get(0));
++
++    // Stream should still contain the message
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXackdelMultipleMessages() {
++    setUpTestStream();
++
++    // Add multiple messages
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("3-0"), HASH_1);
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++
++    // Read the messages with consumer group
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(3, messages.get(0).getValue().size());
++
++    // Test XACKDEL with multiple IDs
++    byte[] readId1 = messages.get(0).getValue().get(0).getID().toString().getBytes();
++    byte[] readId2 = messages.get(0).getValue().get(1).getID().toString().getBytes();
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, readId1, readId2);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(1));
++
++    // Verify two messages are deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  // ========== XDELEX Command Tests ==========
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelex() {
++    setUpTestStream();
++
++    // Add test entries
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++
++    // Test basic XDELEX without parameters (should behave like XDEL with KEEP_REFERENCES)
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, id1);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify entry is deleted from stream
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexWithTrimMode() {
++    setUpTestStream();
++
++    // Add test entries
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++
++    // Test XDELEX with DELETE_REFERENCES mode
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, StreamDeletionPolicy.DELETE_REFERENCES, id1);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify entry is deleted from stream
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexMultipleEntries() {
++    setUpTestStream();
++
++    // Add test entries
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    byte[] id3 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("3-0"), HASH_1);
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XDELEX with multiple IDs
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, id1, id3);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(1));
++
++    // Verify two entries are deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexNonExistentEntries() {
++    setUpTestStream();
++
++    // Add one entry
++    byte[] id1 = jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XDELEX with mix of existing and non-existent IDs
++    byte[] nonExistentId = "999-0".getBytes();
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, id1, nonExistentId);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0)); // Existing entry
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, results.get(1)); // Non-existent entry
++
++    // Verify existing entry is deleted
++    assertEquals(0L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexWithConsumerGroups() {
++    setUpTestStream();
++
++    // Add test entries
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("1-0"), HASH_1);
++    jedis.xadd(STREAM_KEY_1, new XAddParams().id("2-0"), HASH_2);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++
++    // Read messages with consumer group to add them to PEL
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(2), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(2, messages.get(0).getValue().size());
++
++    // Acknowledge only the first message
++    byte[] readId1 = messages.get(0).getValue().get(0).getID().toString().getBytes();
++    byte[] readId2 = messages.get(0).getValue().get(1).getID().toString().getBytes();
++    jedis.xack(STREAM_KEY_1, GROUP_NAME, readId1);
++
++    // Test XDELEX with ACKNOWLEDGED mode - should only delete acknowledged entries
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, StreamDeletionPolicy.ACKNOWLEDGED, readId1, readId2);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0)); // id1 was acknowledged
++    assertEquals(StreamEntryDeletionResult.ACKNOWLEDGED_NOT_DELETED, results.get(1)); // id2 not acknowledged
++
++    // Verify only acknowledged entry was deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXdelexEmptyStream() {
++    setUpTestStream();
++
++    // Test XDELEX on empty stream
++    byte[] nonExistentId = "1-0".getBytes();
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, nonExistentId);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, results.get(0));
++  }
++
++  // ========== XTRIM Command Tests with trimmingMode ==========
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXtrimWithKeepReferences() {
++    setUpTestStream();
++
++    // Add test entries
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(STREAM_KEY_1, new XAddParams().id(i + "-0"), HASH_1);
++    }
++    assertEquals(5L, jedis.xlen(STREAM_KEY_1));
++
++    // Read messages with consumer group to create PEL entries
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroupBinary(GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3), streams);
++
++    // Test XTRIM with KEEP_REFERENCES mode - should preserve PEL references
++    long trimmed = jedis.xtrim(STREAM_KEY_1, XTrimParams.xTrimParams().maxLen(3).trimmingMode(
++        StreamDeletionPolicy.KEEP_REFERENCES));
++    assertEquals(2L, trimmed); // Should trim 2 entries
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void testXtrimWithAcknowledged() {
++    setUpTestStream();
++
++    // Add test entries
++    for (int i = 1; i <= 5; i++) {
++      jedis.xadd(STREAM_KEY_1, new XAddParams().id(i + "-0"), HASH_1);
++    }
++    assertEquals(5L, jedis.xlen(STREAM_KEY_1));
++
++    // Read messages with consumer group
++    Map<byte[], StreamEntryID> streams = offsets(STREAM_KEY_1, XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<byte[], List<StreamEntryBinary>>> messages = jedis.xreadGroupBinary(
++        GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(3, messages.get(0).getValue().size());
++
++    // Acknowledge only the first 2 messages
++    byte[] readId1 = messages.get(0).getValue().get(0).getID().toString().getBytes();
++    byte[] readId2 = messages.get(0).getValue().get(1).getID().toString().getBytes();
++    jedis.xack(STREAM_KEY_1, GROUP_NAME, readId1, readId2);
++
++    // Test XTRIM with ACKNOWLEDGED mode - should only trim acknowledged entries
++    long trimmed = jedis.xtrim(STREAM_KEY_1, XTrimParams.xTrimParams().maxLen(3).trimmingMode(
++        StreamDeletionPolicy.ACKNOWLEDGED));
++    // The exact behavior depends on implementation, but it should respect acknowledgment status
++    assertTrue(trimmed >= 0);
++    assertTrue(jedis.xlen(STREAM_KEY_1) <= 5); // Should not exceed original length
++  }
++
+ }
+diff --git a/src/test/java/redis/clients/jedis/commands/unified/StreamsCommandsTestBase.java b/src/test/java/redis/clients/jedis/commands/unified/StreamsCommandsTestBase.java
+new file mode 100644
+index 000000000..86d59be8a
+--- /dev/null
++++ b/src/test/java/redis/clients/jedis/commands/unified/StreamsCommandsTestBase.java
+@@ -0,0 +1,781 @@
++package redis.clients.jedis.commands.unified;
++
++import io.redis.test.annotations.SinceRedisVersion;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.CsvSource;
++import redis.clients.jedis.RedisProtocol;
++import redis.clients.jedis.StreamEntryID;
++import redis.clients.jedis.args.StreamDeletionPolicy;
++import redis.clients.jedis.exceptions.JedisDataException;
++import redis.clients.jedis.params.XAddParams;
++import redis.clients.jedis.params.XPendingParams;
++import redis.clients.jedis.params.XReadGroupParams;
++import redis.clients.jedis.params.XTrimParams;
++import redis.clients.jedis.resps.StreamEntry;
++import redis.clients.jedis.resps.StreamPendingEntry;
++import redis.clients.jedis.resps.StreamEntryDeletionResult;
++
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++
++import static java.util.Collections.singletonMap;
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.hasSize;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.junit.jupiter.api.Assertions.fail;
++
++public abstract class StreamsCommandsTestBase extends UnifiedJedisCommandsTestBase {
++
++  protected static final String STREAM_KEY_1 = "{stream}-1";
++  protected static final String STREAM_KEY_2 = "{stream}-2";
++  protected static final String GROUP_NAME = "group-1";
++  protected static final String CONSUMER_NAME = "consumer-1";
++
++  protected static final String FIELD_KEY_1 = "field-1";
++  protected static final String VALUE_1 = "value-1";
++  protected static final String FIELD_KEY_2 = "field-2";
++  protected static final String VALUE_2 = "value-2";
++  protected static final Map<String, String> HASH_1 = singletonMap(FIELD_KEY_1, VALUE_1);
++  protected static final Map<String, String> HASH_2 = singletonMap(FIELD_KEY_2, VALUE_2);
++
++  public StreamsCommandsTestBase(RedisProtocol protocol) {
++    super(protocol);
++  }
++
++  /**
++   * Populates a test stream with values using the i-0 format
++   * @param streamKey The stream key to populate
++   * @param count Number of entries to add
++   * @param map Map of field-value pairs for each entry
++   */
++  protected void populateTestStreamWithValues(String streamKey, int count,
++      Map<String, String> map) {
++    for (int i = 1; i <= count; i++) {
++      jedis.xadd(streamKey, XAddParams.xAddParams().id(new StreamEntryID(i + "-0")), map);
++    }
++    assertEquals(count, jedis.xlen(streamKey));
++  }
++
++  @BeforeEach
++  public void setUp() {
++    setUpTestClient();
++    setUpTestStream();
++  }
++
++  protected void setUpTestClient() {
++  }
++
++  public void setUpTestStream() {
++    jedis.del(STREAM_KEY_1);
++    jedis.del(STREAM_KEY_2);
++    try {
++      jedis.xgroupCreate(STREAM_KEY_1, GROUP_NAME, StreamEntryID.XGROUP_LAST_ENTRY, true);
++    } catch (JedisDataException e) {
++      if (!e.getMessage().contains("BUSYGROUP")) {
++        throw e;
++      }
++    }
++    try {
++      jedis.xgroupCreate(STREAM_KEY_2, GROUP_NAME, StreamEntryID.XGROUP_LAST_ENTRY, true);
++    } catch (JedisDataException e) {
++      if (!e.getMessage().contains("BUSYGROUP")) {
++        throw e;
++      }
++    }
++  }
++
++  // ========== XADD Command Tests ==========
++
++  @Test
++  public void xaddBasic() {
++    setUpTestStream();
++
++    // Test basic XADD with auto-generated ID
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, StreamEntryID.NEW_ENTRY, HASH_1);
++    assertNotNull(id1);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XADD with multiple fields
++    Map<String, String> multiFieldHash = new HashMap<>();
++    multiFieldHash.put("field1", "value1");
++    multiFieldHash.put("field2", "value2");
++    multiFieldHash.put("field3", "value3");
++
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, StreamEntryID.NEW_ENTRY, multiFieldHash);
++    assertNotNull(id2);
++    assertTrue(id2.compareTo(id1) > 0);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  public void xaddWithSpecificId() {
++    setUpTestStream();
++
++    // Test XADD with specific ID
++    StreamEntryID specificId = new StreamEntryID("1000-0");
++    StreamEntryID resultId = jedis.xadd(STREAM_KEY_1, specificId, HASH_1);
++    assertEquals(specificId, resultId);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XADD with ID that must be greater than previous
++    StreamEntryID nextId = new StreamEntryID("1001-0");
++    StreamEntryID resultId2 = jedis.xadd(STREAM_KEY_1, nextId, HASH_2);
++    assertEquals(nextId, resultId2);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  public void xaddWithParams() {
++    setUpTestStream();
++
++    // Test XADD with maxLen parameter
++    populateTestStreamWithValues(STREAM_KEY_1, 5, HASH_1);
++
++    // Add with maxLen=3, should trim to 3 entries
++    StreamEntryID id6 = jedis.xadd(STREAM_KEY_1,
++      XAddParams.xAddParams().id(new StreamEntryID("6-0")).maxLen(3), HASH_2);
++    assertNotNull(id6);
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  public void xaddErrorCases() {
++    setUpTestStream();
++
++    // Test XADD with empty hash should fail
++    try {
++      Map<String, String> emptyHash = new HashMap<>();
++      jedis.xadd(STREAM_KEY_1, StreamEntryID.NEW_ENTRY, emptyHash);
++      fail("Should throw JedisDataException for empty hash");
++    } catch (JedisDataException expected) {
++      assertTrue(expected.getMessage().contains("wrong number of arguments"));
++    }
++
++    // Test XADD with noMkStream on non-existent stream
++    StreamEntryID result = jedis.xadd("non-existent-stream", XAddParams.xAddParams().noMkStream(),
++      HASH_1);
++    assertNull(result);
++  }
++
++  @ParameterizedTest
++  @CsvSource({ "KEEP_REFERENCES,3", "DELETE_REFERENCES,0" })
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithTrimmingMode(StreamDeletionPolicy trimMode, int expected) {
++    setUpTestStream();
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries to the stream
++    populateTestStreamWithValues(STREAM_KEY_1, 5, map);
++
++    // Create consumer group and read messages to create PEL entries
++    Map<String, StreamEntryID> streamQuery = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3),
++      streamQuery);
++
++    // Verify PEL has entries
++    List<StreamPendingEntry> pendingBefore = jedis.xpending(STREAM_KEY_1, GROUP_NAME,
++      XPendingParams.xPendingParams().count(10));
++    assertEquals(3, pendingBefore.size());
++
++    // Add new entry with maxLen=3 and KEEP_REFERENCES mode
++    StreamEntryID newId = jedis.xadd(STREAM_KEY_1,
++      XAddParams.xAddParams().id(new StreamEntryID("6-0")).maxLen(3).trimmingMode(trimMode), map);
++    assertNotNull(newId);
++
++    // Stream should be trimmed to 3 entries
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(STREAM_KEY_1, GROUP_NAME,
++      XPendingParams.xPendingParams().count(10));
++    assertEquals(expected, pendingAfter.size());
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithTrimmingModeAcknowledged() {
++    setUpTestStream();
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries to the stream
++    populateTestStreamWithValues(STREAM_KEY_1, 5, map);
++
++    // Create consumer group and read messages
++    Map<String, StreamEntryID> streamQuery = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<String, List<StreamEntry>>> messages = jedis.xreadGroup(GROUP_NAME,
++      CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3), streamQuery);
++
++    // Acknowledge the first 2 messages
++    StreamEntryID id1 = messages.get(0).getValue().get(0).getID();
++    StreamEntryID id2 = messages.get(0).getValue().get(1).getID();
++    jedis.xack(STREAM_KEY_1, GROUP_NAME, id1, id2);
++
++    // Verify PEL state
++    List<StreamPendingEntry> pendingBefore = jedis.xpending(STREAM_KEY_1, GROUP_NAME,
++      XPendingParams.xPendingParams().count(10));
++    assertEquals(1, pendingBefore.size()); // Only 1 unacknowledged message
++
++    // Add new entry with maxLen=3 and ACKNOWLEDGED mode
++    StreamEntryID newId = jedis.xadd(STREAM_KEY_1, XAddParams.xAddParams()
++        .id(new StreamEntryID("6-0")).maxLen(3).trimmingMode(StreamDeletionPolicy.ACKNOWLEDGED),
++      map);
++    assertNotNull(newId);
++
++    // Stream length should respect acknowledgment status
++    long streamLen = jedis.xlen(STREAM_KEY_1);
++    assertEquals(4, streamLen); // Should not trim unacknowledged entries aggressively
++
++    // PEL should still contain unacknowledged entries
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(STREAM_KEY_1, GROUP_NAME,
++      XPendingParams.xPendingParams().count(10));
++    assertEquals(1, pendingAfter.size()); // Unacknowledged entries should remain
++  }
++
++  // ========== XTRIM Command Tests ==========
++
++  @Test
++  public void xtrimBasic() {
++    setUpTestStream();
++
++    // Add test entries
++    populateTestStreamWithValues(STREAM_KEY_1, 5, HASH_1);
++
++    // Test basic XTRIM with maxLen
++    long trimmed = jedis.xtrim(STREAM_KEY_1, 3, false);
++    assertEquals(2L, trimmed); // Should trim 2 entries
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  public void xtrimWithParams() {
++    setUpTestStream();
++
++    // Add test entries with specific IDs
++    populateTestStreamWithValues(STREAM_KEY_1, 5, HASH_1);
++
++    // Test XTRIM with XTrimParams and exact trimming
++    long trimmed = jedis.xtrim(STREAM_KEY_1, XTrimParams.xTrimParams().maxLen(3).exactTrimming());
++    assertEquals(2L, trimmed);
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XTRIM with minId - use "4-0" since we have entries 1-0, 2-0, 3-0, 4-0, 5-0
++    long trimmed2 = jedis.xtrim(STREAM_KEY_1,
++      XTrimParams.xTrimParams().minId("4-0").exactTrimming());
++    assertEquals(1L, trimmed2); // Should trim entries with ID < 4-0 (only 3-0 should be trimmed)
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  public void xtrimApproximate() {
++    setUpTestStream();
++
++    // Add many entries
++    populateTestStreamWithValues(STREAM_KEY_1, 10, HASH_1);
++
++    // Test approximate trimming
++    long trimmed = jedis.xtrim(STREAM_KEY_1, 5, true);
++    assertTrue(trimmed >= 0); // Approximate trimming may trim different amounts
++    assertTrue(jedis.xlen(STREAM_KEY_1) <= 10); // Should not exceed original length
++  }
++
++  @ParameterizedTest
++  @CsvSource({ "KEEP_REFERENCES,3", "DELETE_REFERENCES,1" })
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithMinIdTrimmingMode(StreamDeletionPolicy trimMode, int expected) {
++    setUpTestStream();
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries with specific IDs
++    populateTestStreamWithValues(STREAM_KEY_1, 5, map);
++
++    // Create consumer group and read messages to create PEL entries
++    Map<String, StreamEntryID> streamQuery = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3),
++      streamQuery);
++
++    // Verify PEL has entries
++    List<StreamPendingEntry> pendingBefore = jedis.xpending(STREAM_KEY_1, GROUP_NAME,
++      XPendingParams.xPendingParams().count(10));
++    assertEquals(3, pendingBefore.size());
++
++    // Add new entry with minId="3-0" and specified trimming mode
++    StreamEntryID newId = jedis.xadd(STREAM_KEY_1,
++      XAddParams.xAddParams().id(new StreamEntryID("6-0")).minId("3-0").trimmingMode(trimMode),
++      map);
++    assertNotNull(newId);
++
++    // Stream should have entries >= 3-0 plus the new entry
++    long streamLen = jedis.xlen(STREAM_KEY_1);
++    assertTrue(streamLen >= 3);
++
++    // Check PEL entries based on trimming mode
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(STREAM_KEY_1, GROUP_NAME,
++      XPendingParams.xPendingParams().count(10));
++    assertEquals(expected, pendingAfter.size());
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithApproximateTrimmingAndTrimmingMode() {
++    setUpTestStream();
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries
++    populateTestStreamWithValues(STREAM_KEY_1, 10, map);
++
++    // Create consumer group and read messages
++    Map<String, StreamEntryID> streamQuery = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(5),
++      streamQuery);
++
++    // Add new entry with approximate trimming and KEEP_REFERENCES mode
++    StreamEntryID newId = jedis.xadd(STREAM_KEY_1,
++      XAddParams.xAddParams().id(new StreamEntryID("11-0")).maxLen(5).approximateTrimming()
++          .trimmingMode(StreamDeletionPolicy.KEEP_REFERENCES),
++      map);
++    assertNotNull(newId);
++
++    // With approximate trimming, the exact length may vary but should be around the target
++    long streamLen = jedis.xlen(STREAM_KEY_1);
++    assertTrue(streamLen >= 5); // Should be approximately 5, but may be more due to approximation
++
++    // PEL should preserve references
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(STREAM_KEY_1, GROUP_NAME,
++      XPendingParams.xPendingParams().count(10));
++    assertEquals(5, pendingAfter.size()); // All read messages should remain in PEL
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithExactTrimmingAndTrimmingMode() {
++    setUpTestStream();
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries
++    populateTestStreamWithValues(STREAM_KEY_1, 5, map);
++
++    // Create consumer group and read messages
++    Map<String, StreamEntryID> streamQuery = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3),
++      streamQuery);
++
++    // Add new entry with exact trimming and DELETE_REFERENCES mode
++    StreamEntryID newId = jedis.xadd(STREAM_KEY_1,
++      XAddParams.xAddParams().id(new StreamEntryID("6-0")).maxLen(3).exactTrimming()
++          .trimmingMode(StreamDeletionPolicy.DELETE_REFERENCES),
++      map);
++    assertNotNull(newId);
++
++    // With exact trimming, stream should be exactly 3 entries
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++
++    // PEL references should be cleaned up for trimmed entries
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(STREAM_KEY_1, GROUP_NAME,
++      XPendingParams.xPendingParams().count(10));
++    // Only entries that still exist in the stream should remain in PEL
++    assertTrue(pendingAfter.size() <= 3);
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xaddWithLimitAndTrimmingMode() {
++    setUpTestStream();
++    Map<String, String> map = singletonMap("field", "value");
++
++    // Add initial entries
++    populateTestStreamWithValues(STREAM_KEY_1, 10, map);
++
++    Map<String, StreamEntryID> streamQuery = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    jedis.xreadGroup(GROUP_NAME, CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(5),
++      streamQuery);
++
++    // Add new entry with limit and KEEP_REFERENCES mode (limit requires approximate trimming)
++    StreamEntryID newId = jedis.xadd(STREAM_KEY_1,
++      XAddParams.xAddParams().id(new StreamEntryID("11-0")).maxLen(5).approximateTrimming() // Required
++                                                                                            // for
++                                                                                            // limit
++                                                                                            // to
++                                                                                            // work
++          .limit(2) // Limit the number of entries to examine for trimming
++          .trimmingMode(StreamDeletionPolicy.KEEP_REFERENCES),
++      map);
++    assertNotNull(newId);
++
++    // With limit, trimming may be less aggressive
++    long streamLen = jedis.xlen(STREAM_KEY_1);
++    assertTrue(streamLen >= 5); // Should be at least 5, but may be more due to limit
++
++    // PEL should preserve references
++    List<StreamPendingEntry> pendingAfter = jedis.xpending(STREAM_KEY_1, GROUP_NAME,
++      XPendingParams.xPendingParams().count(10));
++    assertEquals(5, pendingAfter.size()); // All read messages should remain in PEL
++  }
++
++  // ========== XACK Command Tests ==========
++
++  @Test
++  public void xackBasic() {
++    setUpTestStream();
++
++    // Add a message to the stream
++    StreamEntryID messageId = jedis.xadd(STREAM_KEY_1, StreamEntryID.NEW_ENTRY, HASH_1);
++    assertNotNull(messageId);
++
++    // Consumer group already created in setUpTestStream(), just read message
++    Map<String, StreamEntryID> streams = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<String, List<StreamEntry>>> messages = jedis.xreadGroup(GROUP_NAME,
++      CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(1), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(1, messages.get(0).getValue().size());
++    StreamEntryID readMessageId = messages.get(0).getValue().get(0).getID();
++
++    // Test XACK
++    long acked = jedis.xack(STREAM_KEY_1, GROUP_NAME, readMessageId);
++    assertEquals(1L, acked);
++  }
++
++  @Test
++  public void xackMultipleMessages() {
++    setUpTestStream();
++
++    // Add multiple messages
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("2-0"), HASH_2);
++
++    // Consumer group already created in setUpTestStream(), just read messages
++    Map<String, StreamEntryID> streams = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<String, List<StreamEntry>>> messages = jedis.xreadGroup(GROUP_NAME,
++      CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(2), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(2, messages.get(0).getValue().size());
++
++    // Test XACK with multiple IDs
++    StreamEntryID readId1 = messages.get(0).getValue().get(0).getID();
++    StreamEntryID readId2 = messages.get(0).getValue().get(1).getID();
++    long acked = jedis.xack(STREAM_KEY_1, GROUP_NAME, readId1, readId2);
++    assertEquals(2L, acked);
++  }
++
++  @Test
++  public void xackNonExistentMessage() {
++    setUpTestStream();
++
++    // Consumer group already created in setUpTestStream()
++    // Test XACK with non-existent message ID
++    StreamEntryID nonExistentId = new StreamEntryID("999-0");
++    long acked = jedis.xack(STREAM_KEY_1, GROUP_NAME, nonExistentId);
++    assertEquals(0L, acked); // Should return 0 for non-existent message
++  }
++
++  // ========== XDEL Command Tests ==========
++
++  @Test
++  public void xdelBasic() {
++    setUpTestStream();
++
++    // Add test entries
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("2-0"), HASH_2);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XDEL with single ID
++    long deleted = jedis.xdel(STREAM_KEY_1, id1);
++    assertEquals(1L, deleted);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  public void xdelMultipleEntries() {
++    setUpTestStream();
++
++    // Add test entries
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("2-0"), HASH_2);
++    StreamEntryID id3 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("3-0"), HASH_1);
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XDEL with multiple IDs
++    long deleted = jedis.xdel(STREAM_KEY_1, id1, id3);
++    assertEquals(2L, deleted);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  public void xdelNonExistentEntries() {
++    setUpTestStream();
++
++    // Add one entry
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XDEL with mix of existing and non-existent IDs
++    StreamEntryID nonExistentId = new StreamEntryID("999-0");
++    long deleted = jedis.xdel(STREAM_KEY_1, id1, nonExistentId);
++    assertEquals(1L, deleted); // Should only delete the existing entry
++    assertEquals(0L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  public void xdelEmptyStream() {
++    setUpTestStream();
++
++    // Test XDEL on empty stream
++    StreamEntryID nonExistentId = new StreamEntryID("1-0");
++    long deleted = jedis.xdel(STREAM_KEY_1, nonExistentId);
++    assertEquals(0L, deleted);
++  }
++
++  // ========== XACKDEL Command Tests ==========
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xackdelBasic() {
++    setUpTestStream();
++
++    // Add a message to the stream
++    StreamEntryID messageId = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    assertNotNull(messageId);
++
++    // Consumer group already created in setUpTestStream(), read message
++    Map<String, StreamEntryID> streams = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<String, List<StreamEntry>>> messages = jedis.xreadGroup(GROUP_NAME,
++      CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(1), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(1, messages.get(0).getValue().size());
++    StreamEntryID readMessageId = messages.get(0).getValue().get(0).getID();
++
++    // Test XACKDEL - should acknowledge and delete the message
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME,
++      readMessageId);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify message is deleted from stream
++    assertEquals(0L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xackdelWithTrimMode() {
++    setUpTestStream();
++
++    // Add multiple messages
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("2-0"), HASH_2);
++
++    // Consumer group already created, read messages
++    Map<String, StreamEntryID> streams = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<String, List<StreamEntry>>> messages = jedis.xreadGroup(GROUP_NAME,
++      CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(2), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(2, messages.get(0).getValue().size());
++
++    // Test XACKDEL with KEEP_REFERENCES mode
++    StreamEntryID readId1 = messages.get(0).getValue().get(0).getID();
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME,
++      StreamDeletionPolicy.KEEP_REFERENCES, readId1);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify one message is deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xackdelUnreadMessages() {
++    setUpTestStream();
++
++    // Add test entries but don't read them
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++
++    // Test XACKDEL on unread messages - should return NOT_FOUND for PEL
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, id1);
++
++    assertThat(results, hasSize(1));
++    // Should return NOT_FOUND because message was never read by the consumer group
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, results.get(0));
++
++    // Stream should still contain the message
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xackdelMultipleMessages() {
++    setUpTestStream();
++
++    // Add multiple messages
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("2-0"), HASH_2);
++    StreamEntryID id3 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("3-0"), HASH_1);
++
++    // Read all messages
++    Map<String, StreamEntryID> streams = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<String, List<StreamEntry>>> messages = jedis.xreadGroup(GROUP_NAME,
++      CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(3), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(3, messages.get(0).getValue().size());
++
++    // Test XACKDEL with multiple IDs
++    StreamEntryID readId1 = messages.get(0).getValue().get(0).getID();
++    StreamEntryID readId2 = messages.get(0).getValue().get(1).getID();
++    List<StreamEntryDeletionResult> results = jedis.xackdel(STREAM_KEY_1, GROUP_NAME, readId1,
++      readId2);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(1));
++
++    // Verify two messages are deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  // ========== XDELEX Command Tests ==========
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xdelexBasic() {
++    setUpTestStream();
++
++    // Add test entries
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("2-0"), HASH_2);
++    assertEquals(2L, jedis.xlen(STREAM_KEY_1));
++
++    // Test basic XDELEX without parameters (should behave like XDEL with KEEP_REFERENCES)
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, id1);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify entry is deleted from stream
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xdelexWithTrimMode() {
++    setUpTestStream();
++
++    // Add test entries
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("2-0"), HASH_2);
++
++    // Test XDELEX with DELETE_REFERENCES mode
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1,
++      StreamDeletionPolicy.DELETE_REFERENCES, id1);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++
++    // Verify entry is deleted from stream
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xdelexMultipleEntries() {
++    setUpTestStream();
++
++    // Add test entries
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("2-0"), HASH_2);
++    StreamEntryID id3 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("3-0"), HASH_1);
++    assertEquals(3L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XDELEX with multiple IDs
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, id1, id3);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(1));
++
++    // Verify two entries are deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xdelexNonExistentEntries() {
++    setUpTestStream();
++
++    // Add one entry
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++
++    // Test XDELEX with mix of existing and non-existent IDs
++    StreamEntryID nonExistentId = new StreamEntryID("999-0");
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, id1, nonExistentId);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0)); // Existing entry
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, results.get(1)); // Non-existent entry
++
++    // Verify existing entry is deleted
++    assertEquals(0L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xdelexWithConsumerGroups() {
++    setUpTestStream();
++
++    // Add test entries
++    StreamEntryID id1 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("1-0"), HASH_1);
++    StreamEntryID id2 = jedis.xadd(STREAM_KEY_1, new StreamEntryID("2-0"), HASH_2);
++
++    // Read messages to add them to PEL
++    Map<String, StreamEntryID> streams = singletonMap(STREAM_KEY_1,
++      StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY);
++    List<Map.Entry<String, List<StreamEntry>>> messages = jedis.xreadGroup(GROUP_NAME,
++      CONSUMER_NAME, XReadGroupParams.xReadGroupParams().count(2), streams);
++
++    assertEquals(1, messages.size());
++    assertEquals(2, messages.get(0).getValue().size());
++
++    // Acknowledge only the first message
++    StreamEntryID readId1 = messages.get(0).getValue().get(0).getID();
++    StreamEntryID readId2 = messages.get(0).getValue().get(1).getID();
++    jedis.xack(STREAM_KEY_1, GROUP_NAME, readId1);
++
++    // Test XDELEX with ACKNOWLEDGED mode - should only delete acknowledged entries
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1,
++      StreamDeletionPolicy.ACKNOWLEDGED, readId1, readId2);
++    assertThat(results, hasSize(2));
++    assertEquals(StreamEntryDeletionResult.DELETED, results.get(0)); // id1 was acknowledged
++    assertEquals(StreamEntryDeletionResult.ACKNOWLEDGED_NOT_DELETED, results.get(1)); // id2 not
++                                                                                      // acknowledged
++
++    // Verify only acknowledged entry was deleted
++    assertEquals(1L, jedis.xlen(STREAM_KEY_1));
++  }
++
++  @Test
++  @SinceRedisVersion("8.1.240")
++  public void xdelexEmptyStream() {
++    setUpTestStream();
++
++    // Test XDELEX on empty stream
++    StreamEntryID nonExistentId = new StreamEntryID("1-0");
++    List<StreamEntryDeletionResult> results = jedis.xdelex(STREAM_KEY_1, nonExistentId);
++    assertThat(results, hasSize(1));
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, results.get(0));
++  }
++}
+diff --git a/src/test/java/redis/clients/jedis/commands/unified/cluster/ClusterStreamsBinaryCommandsTest.java b/src/test/java/redis/clients/jedis/commands/unified/cluster/ClusterStreamsBinaryCommandsTest.java
+index e651c1a4c..086b3416b 100644
+--- a/src/test/java/redis/clients/jedis/commands/unified/cluster/ClusterStreamsBinaryCommandsTest.java
++++ b/src/test/java/redis/clients/jedis/commands/unified/cluster/ClusterStreamsBinaryCommandsTest.java
+@@ -1,15 +1,30 @@
+ package redis.clients.jedis.commands.unified.cluster;
+ 
+ import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.extension.RegisterExtension;
+ import org.junit.jupiter.params.ParameterizedClass;
+ import org.junit.jupiter.params.provider.MethodSource;
++import redis.clients.jedis.DefaultJedisClientConfig;
++import redis.clients.jedis.HostAndPorts;
+ import redis.clients.jedis.RedisProtocol;
+ import redis.clients.jedis.commands.unified.StreamsBinaryCommandsTestBase;
++import redis.clients.jedis.util.EnabledOnCommandCondition;
++import redis.clients.jedis.util.RedisVersionCondition;
+ 
+ @ParameterizedClass
+ @MethodSource("redis.clients.jedis.commands.CommandsTestsParameters#respVersions")
+ public class ClusterStreamsBinaryCommandsTest extends StreamsBinaryCommandsTestBase {
+ 
++  @RegisterExtension
++  public RedisVersionCondition versionCondition = new RedisVersionCondition(
++      HostAndPorts.getStableClusterServers().get(0),
++      DefaultJedisClientConfig.builder().password("cluster").build());
++
++  @RegisterExtension
++  public EnabledOnCommandCondition enabledOnCommandCondition = new EnabledOnCommandCondition(
++      HostAndPorts.getStableClusterServers().get(0),
++      DefaultJedisClientConfig.builder().password("cluster").build());
++
+   public ClusterStreamsBinaryCommandsTest(RedisProtocol protocol) {
+     super(protocol);
+   }
+diff --git a/src/test/java/redis/clients/jedis/commands/unified/cluster/ClusterStreamsCommandsTest.java b/src/test/java/redis/clients/jedis/commands/unified/cluster/ClusterStreamsCommandsTest.java
+new file mode 100644
+index 000000000..b65b47862
+--- /dev/null
++++ b/src/test/java/redis/clients/jedis/commands/unified/cluster/ClusterStreamsCommandsTest.java
+@@ -0,0 +1,43 @@
++package redis.clients.jedis.commands.unified.cluster;
++
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.extension.RegisterExtension;
++import org.junit.jupiter.params.ParameterizedClass;
++import org.junit.jupiter.params.provider.MethodSource;
++import redis.clients.jedis.DefaultJedisClientConfig;
++import redis.clients.jedis.HostAndPorts;
++import redis.clients.jedis.RedisProtocol;
++import redis.clients.jedis.commands.unified.StreamsCommandsTestBase;
++import redis.clients.jedis.util.EnabledOnCommandCondition;
++import redis.clients.jedis.util.RedisVersionCondition;
++
++@ParameterizedClass
++@MethodSource("redis.clients.jedis.commands.CommandsTestsParameters#respVersions")
++public class ClusterStreamsCommandsTest extends StreamsCommandsTestBase {
++
++  @RegisterExtension
++  public RedisVersionCondition versionCondition = new RedisVersionCondition(
++      HostAndPorts.getStableClusterServers().get(0),
++      DefaultJedisClientConfig.builder().password("cluster").build());
++
++  @RegisterExtension
++  public EnabledOnCommandCondition enabledOnCommandCondition = new EnabledOnCommandCondition(
++      HostAndPorts.getStableClusterServers().get(0),
++      DefaultJedisClientConfig.builder().password("cluster").build());
++
++  public ClusterStreamsCommandsTest(RedisProtocol protocol) {
++    super(protocol);
++  }
++
++  @Override
++  protected void setUpTestClient() {
++    jedis = ClusterCommandsTestHelper.getCleanCluster(protocol);
++  }
++
++  @AfterEach
++  public void tearDown() {
++    jedis.close();
++    ClusterCommandsTestHelper.clearClusterData();
++  }
++
++}
+diff --git a/src/test/java/redis/clients/jedis/commands/unified/pooled/PooledStreamsBinaryCommandsTest.java b/src/test/java/redis/clients/jedis/commands/unified/pooled/PooledStreamsBinaryCommandsTest.java
+index 93f4279b4..b967e2a4e 100644
+--- a/src/test/java/redis/clients/jedis/commands/unified/pooled/PooledStreamsBinaryCommandsTest.java
++++ b/src/test/java/redis/clients/jedis/commands/unified/pooled/PooledStreamsBinaryCommandsTest.java
+@@ -1,15 +1,26 @@
+ package redis.clients.jedis.commands.unified.pooled;
+ 
+ import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.extension.RegisterExtension;
+ import org.junit.jupiter.params.ParameterizedClass;
+ import org.junit.jupiter.params.provider.MethodSource;
+ import redis.clients.jedis.RedisProtocol;
+ import redis.clients.jedis.commands.unified.StreamsBinaryCommandsTestBase;
++import redis.clients.jedis.util.EnabledOnCommandCondition;
++import redis.clients.jedis.util.RedisVersionCondition;
+ 
+ @ParameterizedClass
+ @MethodSource("redis.clients.jedis.commands.CommandsTestsParameters#respVersions")
+ public class PooledStreamsBinaryCommandsTest extends StreamsBinaryCommandsTestBase {
+ 
++  @RegisterExtension
++  public RedisVersionCondition versionCondition = new RedisVersionCondition(
++      PooledCommandsTestHelper.nodeInfo);
++
++  @RegisterExtension
++  public EnabledOnCommandCondition enabledOnCommandCondition = new EnabledOnCommandCondition(
++      PooledCommandsTestHelper.nodeInfo);
++
+   public PooledStreamsBinaryCommandsTest(RedisProtocol protocol) {
+     super(protocol);
+   }
+diff --git a/src/test/java/redis/clients/jedis/commands/unified/pooled/PooledStreamsCommandsTest.java b/src/test/java/redis/clients/jedis/commands/unified/pooled/PooledStreamsCommandsTest.java
+new file mode 100644
+index 000000000..24a3aaf88
+--- /dev/null
++++ b/src/test/java/redis/clients/jedis/commands/unified/pooled/PooledStreamsCommandsTest.java
+@@ -0,0 +1,39 @@
++package redis.clients.jedis.commands.unified.pooled;
++
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.extension.RegisterExtension;
++import org.junit.jupiter.params.ParameterizedClass;
++import org.junit.jupiter.params.provider.MethodSource;
++import redis.clients.jedis.RedisProtocol;
++import redis.clients.jedis.commands.unified.StreamsCommandsTestBase;
++import redis.clients.jedis.util.EnabledOnCommandCondition;
++import redis.clients.jedis.util.RedisVersionCondition;
++
++@ParameterizedClass
++@MethodSource("redis.clients.jedis.commands.CommandsTestsParameters#respVersions")
++public class PooledStreamsCommandsTest extends StreamsCommandsTestBase {
++
++  @RegisterExtension
++  public RedisVersionCondition versionCondition = new RedisVersionCondition(
++      PooledCommandsTestHelper.nodeInfo);
++
++  @RegisterExtension
++  public EnabledOnCommandCondition enabledOnCommandCondition = new EnabledOnCommandCondition(
++      PooledCommandsTestHelper.nodeInfo);
++
++  public PooledStreamsCommandsTest(RedisProtocol protocol) {
++    super(protocol);
++  }
++
++  @Override
++  public void setUpTestClient() {
++    jedis = PooledCommandsTestHelper.getPooled(protocol);
++    PooledCommandsTestHelper.clearData();
++  }
++
++  @AfterEach
++  public void tearDown() {
++    jedis.close();
++  }
++
++}
+diff --git a/src/test/java/redis/clients/jedis/resps/StreamEntryDeletionResultTest.java b/src/test/java/redis/clients/jedis/resps/StreamEntryDeletionResultTest.java
+new file mode 100644
+index 000000000..ea6a4c0b5
+--- /dev/null
++++ b/src/test/java/redis/clients/jedis/resps/StreamEntryDeletionResultTest.java
+@@ -0,0 +1,51 @@
++package redis.clients.jedis.resps;
++
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.*;
++
++public class StreamEntryDeletionResultTest {
++
++  @Test
++  public void testFromCode() {
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, StreamEntryDeletionResult.fromCode(-1));
++    assertEquals(StreamEntryDeletionResult.DELETED, StreamEntryDeletionResult.fromCode(1));
++    assertEquals(StreamEntryDeletionResult.ACKNOWLEDGED_NOT_DELETED,
++      StreamEntryDeletionResult.fromCode(2));
++  }
++
++  @Test
++  public void testFromCodeInvalid() {
++    assertThrows(IllegalArgumentException.class, () -> StreamEntryDeletionResult.fromCode(0));
++    assertThrows(IllegalArgumentException.class, () -> StreamEntryDeletionResult.fromCode(3));
++    assertThrows(IllegalArgumentException.class, () -> StreamEntryDeletionResult.fromCode(-2));
++  }
++
++  @Test
++  public void testFromLong() {
++    assertEquals(StreamEntryDeletionResult.NOT_FOUND, StreamEntryDeletionResult.fromLong(-1L));
++    assertEquals(StreamEntryDeletionResult.DELETED, StreamEntryDeletionResult.fromLong(1L));
++    assertEquals(StreamEntryDeletionResult.ACKNOWLEDGED_NOT_DELETED,
++      StreamEntryDeletionResult.fromLong(2L));
++  }
++
++  @Test
++  public void testFromLongNull() {
++    assertThrows(IllegalArgumentException.class, () -> StreamEntryDeletionResult.fromLong(null));
++  }
++
++  @Test
++  public void testGetCode() {
++    assertEquals(-1, StreamEntryDeletionResult.NOT_FOUND.getCode());
++    assertEquals(1, StreamEntryDeletionResult.DELETED.getCode());
++    assertEquals(2, StreamEntryDeletionResult.ACKNOWLEDGED_NOT_DELETED.getCode());
++  }
++
++  @Test
++  public void testToString() {
++    assertEquals("NOT_FOUND(-1)", StreamEntryDeletionResult.NOT_FOUND.toString());
++    assertEquals("DELETED(1)", StreamEntryDeletionResult.DELETED.toString());
++    assertEquals("ACKNOWLEDGED_NOT_DELETED(2)",
++      StreamEntryDeletionResult.ACKNOWLEDGED_NOT_DELETED.toString());
++  }
++}

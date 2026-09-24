@@ -1,0 +1,41 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 18c6274..6f6e912 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,6 +6,7 @@
+ * Migrate services configuration to PHP
+ * Add `console.interactive_only` flag
+ * Add `slack.exclude_fields` and `slackwebhook.exclude_fields` configuration
++* Add a processor to all loggers only when tags do not specify a channel or handler
+ 
+ ## 3.10.0 (2023-11-06)
+ 
+diff --git a/composer.json b/composer.json
+index 929cd67..c13fddb 100644
+--- a/composer.json
++++ b/composer.json
+@@ -22,7 +22,8 @@
+         "symfony/config": "^5.4 || ^6.0 || ^7.0",
+         "symfony/dependency-injection": "^5.4 || ^6.0 || ^7.0",
+         "symfony/http-kernel": "^5.4 || ^6.0 || ^7.0",
+-        "symfony/monolog-bridge": "^5.4 || ^6.0 || ^7.0"
++        "symfony/monolog-bridge": "^5.4 || ^6.0 || ^7.0",
++        "symfony/polyfill-php84": "^1.30"
+     },
+     "require-dev": {
+         "symfony/console": "^5.4 || ^6.0 || ^7.0",
+diff --git a/src/DependencyInjection/Compiler/AddProcessorsPass.php b/src/DependencyInjection/Compiler/AddProcessorsPass.php
+index cc99b67..e325ea1 100644
+--- a/src/DependencyInjection/Compiler/AddProcessorsPass.php
++++ b/src/DependencyInjection/Compiler/AddProcessorsPass.php
+@@ -32,6 +32,10 @@ class AddProcessorsPass implements CompilerPassInterface
+         }
+ 
+         foreach ($container->findTaggedServiceIds('monolog.processor') as $id => $tags) {
++            if (array_any($tags, $closure = function (array $tag) { return (bool) $tag; })) {
++                $tags = array_filter($tags, $closure);
++            }
++
+             foreach ($tags as $tag) {
+                 if (!empty($tag['channel']) && !empty($tag['handler'])) {
+                     throw new \InvalidArgumentException(\sprintf('you cannot specify both the "handler" and "channel" attributes for the "monolog.processor" tag on service "%s"', $id));

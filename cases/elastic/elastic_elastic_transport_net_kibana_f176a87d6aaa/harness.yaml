@@ -1,0 +1,34 @@
+task_id: elastic_elastic_transport_net_kibana_f176a87d6aaa
+hidden_test_patches:
+- repo: elastic-transport-net
+  patch: hidden/patches/elastic-transport-net-hidden-tests.patch
+  test_profile: elastic_transport_net-hidden
+  origin: upstream_test_diff
+  source_file: &id001
+  - tests/Elastic.Transport.Tests/Components/NodePool/CloudNodePoolTests.cs
+  hidden_file: *id001
+  semantic_changes: none
+  source: upstream test changes from elastic/elastic-transport-net PR(s) 197
+- repo: kibana
+  patch: hidden/patches/kibana-hidden-tests.patch
+  test_profile: kibana-hidden
+  origin: independent_behavior_contract
+  source_file: &id002
+  - x-pack/plugins/cloud/public/cloud_id_contract.hidden.test.ts
+  - x-pack/plugins/cloud/server/cloud_id_contract.hidden.test.ts
+  hidden_file: *id002
+  semantic_changes: replaced Gold-path and consumer-migration tests with independent
+    browser/server cloud setup behavior contracts
+  source: prompt-visible decoded Cloud ID contract derived from elastic/kibana
+    PR(s) 159442
+profile_sets:
+  linux-docker:
+    description: Candidate profiles generated from upstream test-file diffs; commands
+      require manual completion.
+    hidden_tests:
+    - elastic_transport_net-hidden
+    - kibana-hidden
+    cross_repo_contract: []
+matrix_expectations:
+  base_hidden: fail
+  gold_hidden: pass

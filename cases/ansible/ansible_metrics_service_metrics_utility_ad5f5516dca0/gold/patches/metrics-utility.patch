@@ -1,0 +1,866 @@
+diff --git a/.github/workflows/pytest.yml b/.github/workflows/pytest.yml
+index 6505aae..ec10f8f 100644
+--- a/.github/workflows/pytest.yml
++++ b/.github/workflows/pytest.yml
+@@ -36,7 +36,7 @@ jobs:
+ 
+       - name: "Import SQL dump"
+         run: |
+-          cat tools/docker/{roles,latest,functions,conf_setting,main_hostmetric,main_instance,main_jobhostsummary}.sql | sudo su - postgres -c psql
++          cat tools/docker/{roles,latest,functions,conf_setting,main_hostmetric,main_instance,main_jobhostsummary,dab_feature_flags}.sql | sudo su - postgres -c psql
+ 
+       - name: "Set up minio"
+         env:
+diff --git a/metrics_utility/anonymized_rollups/__init__.py b/metrics_utility/anonymized_rollups/__init__.py
+index d6fb8ab..b50dcbd 100644
+--- a/metrics_utility/anonymized_rollups/__init__.py
++++ b/metrics_utility/anonymized_rollups/__init__.py
+@@ -1,22 +1,21 @@
+ from .anonymized_rollups import (
+     anonymize_data,
+     anonymize_rollups,
+-    compute_anonymized_rollup_from_raw_data,
+     create_anonymized_object,
+     flatten_json_report,
+     hash,
+-    load_anonymized_rollup_data,
+ )
+ from .base_anonymized_rollup import BaseAnonymizedRollup
+-from .compute_anonymized_rollup import compute_anonymized_rollup
+ from .controller_version_anonymized_rollup import ControllerVersionAnonymizedRollup
+ from .credentials_anonymized_rollup import CredentialsAnonymizedRollup
+ from .events_modules_anonymized_rollup import EventModulesAnonymizedRollup
+ from .execution_environments_anonymized_rollup import ExecutionEnvironmentsAnonymizedRollup
++from .feature_flags_anonymized_rollup import FeatureFlagsAnonymizedRollup
+ from .helpers import sanitize_json
+ from .jobhostsummary_anonymized_rollup import JobHostSummaryAnonymizedRollup
+ from .jobs_anonymized_rollup import JobsAnonymizedRollup
+ from .table_metadata_anonymized_rollup import TableMetadataAnonymizedRollup
++from .task_executions_anonymized_rollup import TaskExecutionsAnonymizedRollup
+ 
+ 
+ __all__ = [
+@@ -25,16 +24,15 @@ __all__ = [
+     'CredentialsAnonymizedRollup',
+     'EventModulesAnonymizedRollup',
+     'ExecutionEnvironmentsAnonymizedRollup',
++    'FeatureFlagsAnonymizedRollup',
+     'JobHostSummaryAnonymizedRollup',
+     'JobsAnonymizedRollup',
+     'TableMetadataAnonymizedRollup',
++    'TaskExecutionsAnonymizedRollup',
+     'anonymize_data',
+     'anonymize_rollups',
+-    'compute_anonymized_rollup',
+-    'compute_anonymized_rollup_from_raw_data',
+     'create_anonymized_object',
+     'flatten_json_report',
+     'hash',
+-    'load_anonymized_rollup_data',
+     'sanitize_json',
+ ]
+diff --git a/metrics_utility/anonymized_rollups/anonymized_rollups.py b/metrics_utility/anonymized_rollups/anonymized_rollups.py
+index 95e8955..402172d 100644
+--- a/metrics_utility/anonymized_rollups/anonymized_rollups.py
++++ b/metrics_utility/anonymized_rollups/anonymized_rollups.py
+@@ -1,24 +1,20 @@
+ import hashlib
+ import json
+ import os
+-import shutil
+ 
+ from typing import Any, Callable, Dict, List
+ 
+ import pandas as pd
+ 
+-from metrics_utility.anonymized_rollups.base_anonymized_rollup import BaseAnonymizedRollup
+ from metrics_utility.anonymized_rollups.controller_version_anonymized_rollup import ControllerVersionAnonymizedRollup
+ from metrics_utility.anonymized_rollups.credentials_anonymized_rollup import CredentialsAnonymizedRollup
+ from metrics_utility.anonymized_rollups.events_modules_anonymized_rollup import EventModulesAnonymizedRollup
+ from metrics_utility.anonymized_rollups.execution_environments_anonymized_rollup import ExecutionEnvironmentsAnonymizedRollup
+-from metrics_utility.anonymized_rollups.helpers import sanitize_json
++from metrics_utility.anonymized_rollups.feature_flags_anonymized_rollup import FeatureFlagsAnonymizedRollup
+ from metrics_utility.anonymized_rollups.jobhostsummary_anonymized_rollup import JobHostSummaryAnonymizedRollup
+ from metrics_utility.anonymized_rollups.jobs_anonymized_rollup import JobsAnonymizedRollup
+ from metrics_utility.anonymized_rollups.table_metadata_anonymized_rollup import TableMetadataAnonymizedRollup
+-
+-
+-OUT_BATCHES_DIR = './out/batches'
++from metrics_utility.anonymized_rollups.task_executions_anonymized_rollup import TaskExecutionsAnonymizedRollup
+ 
+ 
+ def hash(value, salt):
+@@ -43,6 +39,10 @@ def create_anonymized_object(rollup_name: str):
+         return TableMetadataAnonymizedRollup()
+     elif rollup_name == 'controller_version':
+         return ControllerVersionAnonymizedRollup()
++    elif rollup_name == 'feature_flags':
++        return FeatureFlagsAnonymizedRollup()
++    elif rollup_name == 'task_executions':
++        return TaskExecutionsAnonymizedRollup()
+     else:
+         raise ValueError(f'Invalid rollup name: {rollup_name}')
+ 
+@@ -426,6 +426,11 @@ def _merge_all_jobs_groupings(
+     return jobs_by_job_type_merged, jobs_by_launch_type_merged, jobs_by_ansible_version_merged
+ 
+ 
++def _as_list(value: Any) -> List[Any]:
++    """Return *value* unchanged when it is already a list; otherwise return an empty list."""
++    return value if isinstance(value, list) else []
++
++
+ def flatten_json_report(data: Dict[str, Any]) -> Dict[str, Any]:
+     """
+     Manually flattens the given nested report into:
+@@ -450,9 +455,11 @@ def flatten_json_report(data: Dict[str, Any]) -> Dict[str, Any]:
+     credentials_root = data.get('credentials', {})
+     table_metadata_root = data.get('table_metadata', {})
+     controller_version_root = data.get('controller_version', [])
++    feature_flags_root = data.get('feature_flags', [])
++    task_executions_root = data.get('task_executions', [])
+ 
+     # Extract data structures
+-    credentials_list: List[str] = credentials_root if isinstance(credentials_root, list) else []
++    credentials_list: List[str] = _as_list(credentials_root)
+     jobs_by_job_type: List[Dict[str, Any]] = jobs.get('by_job_type', []) or []
+     job_host_summary_by_job_type: List[Dict[str, Any]] = job_host_summary_root.get('by_job_type', []) or []
+     job_host_summary_by_launch_type: List[Dict[str, Any]] = job_host_summary_root.get('by_launch_type', []) or []
+@@ -502,7 +509,7 @@ def flatten_json_report(data: Dict[str, Any]) -> Dict[str, Any]:
+ 
+     # Build jobs_by_controller_version: inject first controller_version from the controller_version collector
+     jobs_by_controller_version: List[Dict[str, Any]] = jobs.get('jobs_by_controller_version', []) or []
+-    controller_versions: List[str] = controller_version_root if isinstance(controller_version_root, list) else []
++    controller_versions: List[str] = _as_list(controller_version_root)
+     jobs_by_controller_version = _inject_controller_version(jobs_by_controller_version, controller_versions)
+ 
+     # Inject controller_version into every item of the three job groupings
+@@ -518,7 +525,7 @@ def flatten_json_report(data: Dict[str, Any]) -> Dict[str, Any]:
+     flattened: Dict[str, Any] = {
+         'statistics': statistics,
+         'rollup_period_ansible_versions': ansible_versions_merged,
+-        'rollup_period_scm_types': jobs.get('scm_types', []) if isinstance(jobs.get('scm_types'), list) else [],
++        'rollup_period_scm_types': _as_list(jobs.get('scm_types')),
+         'rollup_period_credential_types': credentials_list,
+         'jobs_by_job_type': jobs_by_job_type_merged,
+         'jobs_by_launch_type': jobs_by_launch_type_merged,
+@@ -527,6 +534,8 @@ def flatten_json_report(data: Dict[str, Any]) -> Dict[str, Any]:
+         'jobs_by_installed_collections_versions': jobs_by_installed_collections_versions,
+         'table_metadata': table_metadata_root,
+         'controller_versions': controller_versions,
++        'feature_flags': _as_list(feature_flags_root),
++        'observability_by_tasks': _as_list(task_executions_root),
+     }
+ 
+     # Only include event-related arrays if there are events
+@@ -546,7 +555,9 @@ def anonymize_rollups(
+     credentials_rollup,
+     table_metadata_rollup,
+     controller_version_rollup,
++    feature_flags_rollup,
+     salt,
++    task_executions_rollup=None,
+ ):
+     """
+     Combines rollup data, flattens it, and anonymizes sensitive fields.
+@@ -559,7 +570,9 @@ def anonymize_rollups(
+         credentials_rollup: Credentials statistics
+         table_metadata_rollup: Table metadata statistics
+         controller_version_rollup: Controller version statistics
++        feature_flags_rollup: Enabled feature flags list
+         salt: Salt string for hashing sensitive data
++        task_executions_rollup: Task execution observability statistics (optional)
+ 
+     Returns:
+         Flattened and anonymized rollup data
+@@ -572,6 +585,8 @@ def anonymize_rollups(
+         'credentials': credentials_rollup,
+         'table_metadata': table_metadata_rollup,
+         'controller_version': controller_version_rollup,
++        'feature_flags': feature_flags_rollup,
++        'task_executions': task_executions_rollup or [],
+     }
+ 
+     # First flatten the nested structure
+@@ -581,96 +596,3 @@ def anonymize_rollups(
+     anonymize_data(data, salt)
+ 
+     return data
+-
+-
+-def compute_anonymized_rollup_from_raw_data(input_data, salt):
+-
+-    # delete everything in the directory ./out/batches (including subdirectories)
+-    if os.path.exists(OUT_BATCHES_DIR):
+-        shutil.rmtree(OUT_BATCHES_DIR, ignore_errors=True)
+-
+-    jobs = load_anonymized_rollup_data(JobsAnonymizedRollup(), input_data['unified_jobs'])
+-    jobs_result = JobsAnonymizedRollup().base(jobs)
+-
+-    job_host_summary = load_anonymized_rollup_data(JobHostSummaryAnonymizedRollup(), input_data['job_host_summary'])
+-    job_host_summary_result = JobHostSummaryAnonymizedRollup().base(job_host_summary)
+-
+-    events_modules = load_anonymized_rollup_data(EventModulesAnonymizedRollup(), input_data['main_jobevent'])
+-    events_modules_result = EventModulesAnonymizedRollup().base(events_modules)
+-
+-    execution_environments = load_anonymized_rollup_data(ExecutionEnvironmentsAnonymizedRollup(), input_data['execution_environments'])
+-    execution_environments_result = ExecutionEnvironmentsAnonymizedRollup().base(execution_environments)
+-
+-    credentials = load_anonymized_rollup_data(CredentialsAnonymizedRollup(), input_data['credentials'])
+-    credentials_result = CredentialsAnonymizedRollup().base(credentials)
+-
+-    table_metadata = load_anonymized_rollup_data(TableMetadataAnonymizedRollup(), input_data.get('table_metadata', []))
+-    table_metadata_result = TableMetadataAnonymizedRollup().base(table_metadata)
+-
+-    controller_version = load_anonymized_rollup_data(ControllerVersionAnonymizedRollup(), input_data.get('controller_version', []))
+-    controller_version_result = ControllerVersionAnonymizedRollup().base(controller_version)
+-
+-    anonymized_rollup = anonymize_rollups(
+-        events_modules_result['json'],
+-        execution_environments_result['json'],
+-        jobs_result['json'],
+-        job_host_summary_result['json'],
+-        credentials_result['json'],
+-        table_metadata_result['json'],
+-        controller_version_result['json'],
+-        salt,
+-    )
+-    # Sanitize the result to replace NaN and infinity values with None (valid JSON)
+-    anonymized_rollup = sanitize_json(anonymized_rollup)
+-
+-    # save anonymized rollup to file
+-    os.makedirs(OUT_BATCHES_DIR, exist_ok=True)
+-    file_name = os.path.join(OUT_BATCHES_DIR, 'anonymized_rollup.json')
+-    with open(file_name, 'w') as f:
+-        f.write(json.dumps(anonymized_rollup, indent=2))
+-    return anonymized_rollup
+-
+-
+-# loads data from a list of dataframes
+-# then filter_function is applied to the dataframe
+-# all result dataframes are concatenated into one dataframe
+-def load_anonymized_rollup_data(rollup_object: BaseAnonymizedRollup, dataframe_list):
+-    # compat for one dataframe
+-    if isinstance(dataframe_list, pd.DataFrame):
+-        prepared_data = rollup_object.prepare(dataframe_list)
+-        return rollup_object.merge(None, prepared_data)
+-
+-    concat_data = None
+-
+-    rollup_object_name = rollup_object.rollup_name
+-
+-    counter = -1
+-    for dataframe in dataframe_list:
+-        counter += 1
+-        # compat for CSVs
+-        if isinstance(dataframe, str):
+-            dataframe = pd.read_csv(dataframe, encoding='utf-8')
+-
+-        prepared_data = rollup_object.prepare(dataframe)
+-        # serialize prepared data to json
+-        prepared_data = json.dumps(prepared_data, indent=2)
+-        # back to dict/list
+-        prepared_data = json.loads(prepared_data)
+-        concat_data = rollup_object.merge(concat_data, prepared_data)
+-        # concat data to json and then back
+-        concat_data = json.dumps(concat_data, indent=2)
+-        concat_data = json.loads(concat_data)
+-
+-        # Create a subdirectory for this rollup
+-        rollup_batch_dir = os.path.join(OUT_BATCHES_DIR, rollup_object_name)
+-        os.makedirs(rollup_batch_dir, exist_ok=True)
+-        # save prepare data and concat data to separate files (as json pretty printed)
+-        # Each rollup has its own folder
+-        file1_name = os.path.join(rollup_batch_dir, f'{counter}_prepare.json')
+-        file2_name = os.path.join(rollup_batch_dir, f'{counter}_xconcat.json')
+-        with open(file1_name, 'w') as f:
+-            f.write(json.dumps(prepared_data, indent=2))
+-        with open(file2_name, 'w') as f:
+-            f.write(json.dumps(concat_data, indent=2))
+-
+-    return concat_data
+diff --git a/metrics_utility/anonymized_rollups/compute_anonymized_rollup.py b/metrics_utility/anonymized_rollups/compute_anonymized_rollup.py
+deleted file mode 100644
+index 2a5c132..0000000
+--- a/metrics_utility/anonymized_rollups/compute_anonymized_rollup.py
++++ /dev/null
+@@ -1,75 +0,0 @@
+-from metrics_utility.anonymized_rollups.anonymized_rollups import (
+-    compute_anonymized_rollup_from_raw_data,
+-)
+-
+-# from metrics_utility.test.util import run_gather_int
+-from metrics_utility.library.collectors.controller import (
+-    controller_version_service,
+-    credentials_service,
+-    execution_environments,
+-    job_host_summary_service,
+-    main_jobevent_service,
+-    table_metadata,
+-    unified_jobs,
+-)
+-from metrics_utility.logger import logger
+-
+-
+-def compute_anonymized_rollup(db, salt, since, until):
+-    # This will contain list of files that belongs to particular collector
+-    execution_environments_data = []
+-    try:
+-        execution_environments_data = execution_environments(db=db).gather()
+-    except Exception as e:
+-        logger.error(f'Failed to gather execution_environments data: {e}')
+-
+-    unified_jobs_data = []
+-    try:
+-        unified_jobs_data = unified_jobs(db=db, since=since, until=until).gather()
+-    except Exception as e:
+-        logger.error(f'Failed to gather unified_jobs data: {e}')
+-
+-    job_host_summary_data = []
+-    try:
+-        job_host_summary_data = job_host_summary_service(db=db, since=since, until=until).gather()
+-    except Exception as e:
+-        logger.error(f'Failed to gather job_host_summary data: {e}')
+-
+-    main_jobevent_data = []
+-    try:
+-        main_jobevent_data = main_jobevent_service(db=db, since=since, until=until).gather()
+-    except Exception as e:
+-        logger.error(f'Failed to gather main_jobevent data: {e}')
+-
+-    credentials_data = []
+-    try:
+-        credentials_data = credentials_service(db=db, since=since, until=until).gather()
+-    except Exception as e:
+-        logger.error(f'Failed to gather credentials data: {e}')
+-
+-    table_metadata_data = []
+-    try:
+-        table_metadata_data = table_metadata(db=db).gather()
+-    except Exception as e:
+-        logger.error(f'Failed to gather table_metadata data: {e}')
+-
+-    controller_version_data = []
+-    try:
+-        controller_version_data = controller_version_service(db=db).gather()
+-    except Exception as e:
+-        logger.error(f'Failed to gather controller_version data: {e}')
+-
+-    input_data = {
+-        'execution_environments': execution_environments_data,
+-        'unified_jobs': unified_jobs_data,
+-        'job_host_summary': job_host_summary_data,
+-        'main_jobevent': main_jobevent_data,
+-        'credentials': credentials_data,
+-        'table_metadata': table_metadata_data,
+-        'controller_version': controller_version_data,
+-    }
+-
+-    # load data for each collector
+-    json_data = compute_anonymized_rollup_from_raw_data(input_data, salt)
+-
+-    return json_data
+diff --git a/metrics_utility/anonymized_rollups/feature_flags_anonymized_rollup.py b/metrics_utility/anonymized_rollups/feature_flags_anonymized_rollup.py
+new file mode 100644
+index 0000000..a418fc4
+--- /dev/null
++++ b/metrics_utility/anonymized_rollups/feature_flags_anonymized_rollup.py
+@@ -0,0 +1,44 @@
++import pandas as pd
++
++from metrics_utility.anonymized_rollups.base_anonymized_rollup import BaseAnonymizedRollup
++from metrics_utility.anonymized_rollups.helpers import sanitize_json
++
++
++class FeatureFlagsAnonymizedRollup(BaseAnonymizedRollup):
++    """
++    Rollup for feature_flags_service collector data.
++
++    Returns the list of enabled feature flag names (snapshot collector).
++    """
++
++    def __init__(self):
++        super().__init__('feature_flags')
++        self.collector_names = ['feature_flags']
++
++    def prepare(self, dataframe):
++        """
++        Transform dataframe to a list of enabled feature flag names.
++        """
++        if dataframe is None or dataframe.empty:
++            return sanitize_json([])
++
++        flag_names = dataframe['name'].tolist() if 'name' in dataframe.columns else []
++
++        return sanitize_json(flag_names)
++
++    def merge(self, data_all, data_new):
++        """
++        For snapshot collectors, always use the latest data (no merging needed).
++        """
++        return data_new
++
++    def base(self, data):
++        """
++        Returns the data as-is (data is already a list produced by prepare).
++        Safeguard: if data is a dataframe, call prepare on it first.
++        """
++        if data is None:
++            return {'json': []}
++        if isinstance(data, pd.DataFrame):
++            data = self.prepare(data)
++        return {'json': data}
+diff --git a/metrics_utility/anonymized_rollups/task_executions_anonymized_rollup.py b/metrics_utility/anonymized_rollups/task_executions_anonymized_rollup.py
+new file mode 100644
+index 0000000..513339f
+--- /dev/null
++++ b/metrics_utility/anonymized_rollups/task_executions_anonymized_rollup.py
+@@ -0,0 +1,128 @@
++import pandas as pd
++
++from metrics_utility.anonymized_rollups.base_anonymized_rollup import BaseAnonymizedRollup
++from metrics_utility.anonymized_rollups.helpers import sanitize_json
++
++
++# Known collector types and their expected daily execution counts.
++# Hourly collectors run once per hour → 24 expected per day.
++# Snapshot collectors run once per day → 1 expected per day.
++# Pipeline tasks run once per day → 1 expected per day.
++_HOURLY_COLLECTORS = frozenset(
++    {
++        'unified_jobs',
++        'job_host_summary_service',
++        'credentials_service',
++        'main_jobevent_service',
++    }
++)
++_SNAPSHOT_COLLECTORS = frozenset(
++    {
++        'execution_environments',
++        'table_metadata',
++        'controller_version_service',
++        'feature_flags_service',
++    }
++)
++_EXPECTED_EXECUTIONS_PER_DAY = {
++    **dict.fromkeys(_HOURLY_COLLECTORS, 24),
++    **dict.fromkeys(_SNAPSHOT_COLLECTORS, 1),
++}
++
++# Default expected count for unknown collector types (assume hourly).
++_DEFAULT_EXPECTED = 24
++
++
++class TaskExecutionsAnonymizedRollup(BaseAnonymizedRollup):
++    """
++    Rollup for task_executions_service collector data.
++
++    Produces observability statistics per collector type so that the recipient
++    of the anonymized report can see how well the collector pipeline is running.
++
++    For each collector_type the rollup reports:
++      - executions_total                       – number of recorded executions
++      - executions_missing_total               – expected - actual (≥ 0)
++      - execution_duration_total_seconds       – sum of execution_time_seconds
++      - execution_duration_minimum_seconds     – minimum execution_time_seconds
++      - execution_duration_maximum_seconds     – maximum execution_time_seconds
++
++    Execution duration is derived from started_at and completed_at timestamps.
++
++    For snapshot collectors exactly one execution is expected per day, so
++    min == max == total (unification with the hourly case is intentional).
++    """
++
++    def __init__(self):
++        super().__init__('task_executions')
++        self.collector_names = ['task_executions']
++
++    def _compute_execution_seconds(self, group):
++        """
++        Return a Series of execution durations in seconds derived from
++        started_at and completed_at columns.
++        """
++        started = pd.to_datetime(group['started_at'], utc=True, errors='coerce')
++        completed = pd.to_datetime(group['completed_at'], utc=True, errors='coerce')
++        delta = completed - started
++        return delta.dt.total_seconds()
++
++    def prepare(self, dataframe):
++        """
++        Aggregate raw collector-execution rows into per-collector-type statistics.
++        """
++        if dataframe is None or (isinstance(dataframe, pd.DataFrame) and dataframe.empty):
++            return sanitize_json([])
++
++        dataframe = dataframe.copy()
++        dataframe['collector_type'] = dataframe['collector_type'].str.strip('"')
++
++        result = []
++
++        for collector_type, group in dataframe.groupby('collector_type'):
++            executions_total = len(group)
++
++            expected = _EXPECTED_EXECUTIONS_PER_DAY.get(str(collector_type), _DEFAULT_EXPECTED)
++            executions_missing_total = max(0, expected - executions_total)
++
++            times = self._compute_execution_seconds(group).dropna()
++            if len(times) > 0:
++                duration_total = float(times.sum())
++                duration_min = float(times.min())
++                duration_max = float(times.max())
++            else:
++                duration_total = None
++                duration_min = None
++                duration_max = None
++
++            result.append(
++                {
++                    'collector_type': str(collector_type),
++                    'executions_total': executions_total,
++                    'executions_missing_total': executions_missing_total,
++                    'execution_duration_total_seconds': duration_total,
++                    'execution_duration_minimum_seconds': duration_min,
++                    'execution_duration_maximum_seconds': duration_max,
++                }
++            )
++
++        return sanitize_json(result)
++
++    def merge(self, data_all, data_new):
++        """
++        Daily collector: always replace with the latest data (no accumulation).
++        We do not need to accumulate data here, we are collecting only once per daily report
++        """
++        return data_new
++
++    def base(self, data):
++        """
++        Return the final JSON representation.
++
++        Accepts either the list produced by prepare() or a raw DataFrame.
++        """
++        if data is None:
++            return {'json': []}
++        if isinstance(data, pd.DataFrame):
++            data = self.prepare(data)
++        return {'json': data}
+diff --git a/metrics_utility/library/anonymize/__init__.py b/metrics_utility/library/anonymize/__init__.py
+deleted file mode 100644
+index db68dee..0000000
+--- a/metrics_utility/library/anonymize/__init__.py
++++ /dev/null
+@@ -1,8 +0,0 @@
+-from .anonymized_rollups_processor import anonymized_rollups_processor
+-from .compute_from_raw_data import compute_anonymized_rollup_from_raw_data
+-
+-
+-__all__ = [
+-    'anonymized_rollups_processor',
+-    'compute_anonymized_rollup_from_raw_data',
+-]
+diff --git a/metrics_utility/library/anonymize/anonymized_rollups_processor.py b/metrics_utility/library/anonymize/anonymized_rollups_processor.py
+deleted file mode 100644
+index 81f114c..0000000
+--- a/metrics_utility/library/anonymize/anonymized_rollups_processor.py
++++ /dev/null
+@@ -1,7 +0,0 @@
+-# call compute_anonymized_rollup
+-
+-from metrics_utility.anonymized_rollups.compute_anonymized_rollup import compute_anonymized_rollup
+-
+-
+-def anonymized_rollups_processor(db, salt, since, until):
+-    return compute_anonymized_rollup(db, salt, since, until)
+diff --git a/metrics_utility/library/anonymize/compute_from_raw_data.py b/metrics_utility/library/anonymize/compute_from_raw_data.py
+deleted file mode 100644
+index e2a44b8..0000000
+--- a/metrics_utility/library/anonymize/compute_from_raw_data.py
++++ /dev/null
+@@ -1,6 +0,0 @@
+-# Expose compute_anonymized_rollup_from_raw_data for library access
+-
+-from metrics_utility.anonymized_rollups.anonymized_rollups import compute_anonymized_rollup_from_raw_data
+-
+-
+-__all__ = ['compute_anonymized_rollup_from_raw_data']
+diff --git a/metrics_utility/library/collectors/controller/__init__.py b/metrics_utility/library/collectors/controller/__init__.py
+index 1c2867d..aaf719e 100644
+--- a/metrics_utility/library/collectors/controller/__init__.py
++++ b/metrics_utility/library/collectors/controller/__init__.py
+@@ -3,6 +3,7 @@ from .config_django import config_django
+ from .controller_version_service import controller_version_service
+ from .credentials_service import credentials_service
+ from .execution_environments import execution_environments
++from .feature_flags_service import feature_flags_service
+ from .job_host_summary import job_host_summary
+ from .job_host_summary_service import job_host_summary_service
+ from .main_host import main_host, main_host_daily
+@@ -19,6 +20,7 @@ __all__ = [
+     'controller_version_service',
+     'credentials_service',
+     'execution_environments',
++    'feature_flags_service',
+     'job_host_summary',
+     'job_host_summary_service',
+     'main_host',
+diff --git a/metrics_utility/library/collectors/controller/feature_flags_service.py b/metrics_utility/library/collectors/controller/feature_flags_service.py
+new file mode 100644
+index 0000000..363311b
+--- /dev/null
++++ b/metrics_utility/library/collectors/controller/feature_flags_service.py
+@@ -0,0 +1,28 @@
++from ..util import DataframeOutput, collector
++
++
++@collector
++def feature_flags_service(*, db=None, output=DataframeOutput()):
++    """
++    Collect enabled feature flags from the controller.
++
++    Returns a list of feature flags that are currently enabled, sourced from
++    the dab_feature_flags_aapflag table. A flag is considered enabled when its
++    condition is 'boolean' and its value is 'True'.
++    """
++    query = """
++        SELECT
++            name,
++            condition,
++            value,
++            description,
++            support_level,
++            toggle_type,
++            visibility
++        FROM dab_feature_flags_aapflag
++        WHERE condition = 'boolean'
++            AND value = 'True'
++        ORDER BY name ASC
++    """
++
++    return output.sql(db, query)
+diff --git a/metrics_utility/library/collectors/service/__init__.py b/metrics_utility/library/collectors/service/__init__.py
+new file mode 100644
+index 0000000..9d346b6
+--- /dev/null
++++ b/metrics_utility/library/collectors/service/__init__.py
+@@ -0,0 +1,6 @@
++from .task_executions_service import task_executions_service
++
++
++__all__ = [
++    'task_executions_service',
++]
+diff --git a/metrics_utility/library/collectors/service/task_executions_service.py b/metrics_utility/library/collectors/service/task_executions_service.py
+new file mode 100644
+index 0000000..e6d82b8
+--- /dev/null
++++ b/metrics_utility/library/collectors/service/task_executions_service.py
+@@ -0,0 +1,43 @@
++from datetime import datetime, timedelta, timezone
++
++from ..util import DataframeOutput, collector
++
++
++@collector
++def task_executions_service(*, db=None, since=None, until=None, output=DataframeOutput()):
++    """
++    Collect task execution statistics from the metrics-service database.
++
++    Gathers observability data about collector task executions from the
++    tasks_taskexecution table.
++
++    This is a snapshot-style collector (runs once per day) that provides
++    internal observability about how well the collector pipeline is running.
++
++    Args:
++        db: Database connection (metrics-service DB).
++        since: Start datetime (inclusive). Defaults to start of previous day (UTC).
++        until: End datetime (exclusive). Defaults to start of today (UTC).
++
++    Returns:
++        DataFrame with columns: started_at, completed_at, collector_type
++    """
++    if since is None or until is None:
++        now = datetime.now(timezone.utc)
++        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
++        since = since if since is not None else today_midnight - timedelta(days=1)
++        until = until if until is not None else today_midnight
++
++    query = f"""
++        SELECT
++            started_at,
++            completed_at,
++            result_data->'collector_type' AS collector_type
++        FROM tasks_taskexecution
++        WHERE result_data->'collector_type' IS NOT NULL
++          AND started_at >= '{since.isoformat()}'
++          AND started_at < '{until.isoformat()}'
++        ORDER BY collector_type
++    """
++
++    return output.sql(db, query)
+diff --git a/mock_awx/settings/__init__.py b/mock_awx/settings/__init__.py
+index f8deb00..20b47b7 100644
+--- a/mock_awx/settings/__init__.py
++++ b/mock_awx/settings/__init__.py
+@@ -9,7 +9,22 @@ DATABASES = {
+         'PASSWORD': 'mypassword',
+         'HOST': os.getenv('METRICS_UTILITY_DB_HOST', 'localhost'),
+         'PORT': '5432',
+-    }
++    },
++    # metrics-service database — same Postgres instance, different DB name/credentials.
++    # Override any of these via environment variables:
++    #   METRICS_SERVICE_DB_HOST      (defaults to METRICS_UTILITY_DB_HOST / localhost)
++    #   METRICS_SERVICE_DB_PORT      (defaults to 5432)
++    #   METRICS_SERVICE_DB_NAME      (defaults to metrics_service)
++    #   METRICS_SERVICE_DB_USER      (defaults to metrics_service)
++    #   METRICS_SERVICE_DB_PASSWORD  (defaults to metrics_service)
++    'metrics_service': {
++        'ENGINE': 'django.db.backends.postgresql',
++        'NAME': os.getenv('METRICS_SERVICE_DB_NAME', 'metrics_service'),
++        'USER': os.getenv('METRICS_SERVICE_DB_USER', 'metrics_service'),
++        'PASSWORD': os.getenv('METRICS_SERVICE_DB_PASSWORD', 'metrics_service'),
++        'HOST': os.getenv('METRICS_SERVICE_DB_HOST', os.getenv('METRICS_UTILITY_DB_HOST', 'localhost')),
++        'PORT': os.getenv('METRICS_SERVICE_DB_PORT', '5432'),
++    },
+ }
+ DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
+ INSTALLED_APPS = ['awx.conf']
+diff --git a/tools/anonymized_db_perf_data/run_perf.py b/tools/anonymized_db_perf_data/run_perf.py
+index 7c830f9..7a3202f 100755
+--- a/tools/anonymized_db_perf_data/run_perf.py
++++ b/tools/anonymized_db_perf_data/run_perf.py
+@@ -44,7 +44,7 @@ if not os.getenv('VIRTUAL_ENV') and venv_path.exists():
+         sys.path.insert(0, str(site_packages[0]))
+ 
+ from metrics_utility import prepare  # noqa: E402
+-from metrics_utility.anonymized_rollups.compute_anonymized_rollup import compute_anonymized_rollup  # noqa: E402
++from metrics_utility.test.test_anonymized_rollups.helpers import compute_anonymized_rollup  # noqa: E402
+ 
+ 
+ # Initialize Django and database connection
+diff --git a/tools/anonymized_tests/run_no_events.py b/tools/anonymized_tests/run_no_events.py
+index bc1d820..023b116 100644
+--- a/tools/anonymized_tests/run_no_events.py
++++ b/tools/anonymized_tests/run_no_events.py
+@@ -29,7 +29,7 @@ import shutil
+ import sys
+ import time
+ 
+-from datetime import datetime, timedelta
++from datetime import datetime, timedelta, timezone
+ from pathlib import Path
+ from typing import Dict, List, Tuple
+ 
+@@ -47,20 +47,24 @@ from metrics_utility import prepare  # noqa: E402
+ 
+ prepare()
+ 
+-from django.db import connection  # noqa: E402
++from django.db import connection, connections  # noqa: E402
+ 
+-from metrics_utility.anonymized_rollups.anonymized_rollups import (  # noqa: E402
+-    compute_anonymized_rollup_from_raw_data,
+-)
+ from metrics_utility.library.collectors.controller import (  # noqa: E402
+     controller_version_service,
+     credentials_service,
+     execution_environments,
++    feature_flags_service,
+     job_host_summary_service,
+     table_metadata,
+     unified_jobs,
+ )
++from metrics_utility.library.collectors.service import (  # noqa: E402
++    task_executions_service,
++)
+ from metrics_utility.library.storage.segment import StorageSegment  # noqa: E402
++from metrics_utility.test.test_anonymized_rollups.helpers import (  # noqa: E402
++    compute_anonymized_rollup_from_raw_data,
++)
+ 
+ 
+ # Collectors to run (excluding events/main_jobevent_service)
+@@ -89,20 +93,25 @@ COLLECTORS = {
+         'func': controller_version_service,
+         'needs_since_until': False,  # snapshot collector
+     },
++    'feature_flags_service': {
++        'func': feature_flags_service,
++        'needs_since_until': False,  # snapshot collector
++    },
+ }
+ 
+ # Default since-until from test_from_gather_to_json.py
+-DEFAULT_SINCE = datetime(2025, 6, 13, 0, 0, 0)
+-DEFAULT_UNTIL = datetime(2025, 6, 14, 0, 0, 0)
++DEFAULT_SINCE = datetime(2025, 6, 13, 0, 0, 0, tzinfo=timezone.utc)
++DEFAULT_UNTIL = datetime(2025, 6, 14, 0, 0, 0, tzinfo=timezone.utc)
+ 
+ 
+ def parse_datetime(dt_str: str) -> datetime:
+-    """Parse datetime string in format 'YYYY-MM-DD HH:MM:SS'."""
++    """Parse datetime string in format 'YYYY-MM-DD HH:MM:SS' and return UTC-aware datetime."""
+     try:
+-        return datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
++        dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+     except ValueError:
+         # Try just date
+-        return datetime.strptime(dt_str, '%Y-%m-%d')
++        dt = datetime.strptime(dt_str, '%Y-%m-%d')
++    return dt.replace(tzinfo=timezone.utc)
+ 
+ 
+ def split_time_range(since: datetime, until: datetime, batches: int = None) -> List[Tuple[datetime, datetime]]:
+@@ -326,6 +335,21 @@ Examples:
+         results[collector_name] = dataframes
+         print(f'  Collected {len(dataframes)} dataframe(s)')
+ 
++    # Collect task_executions_service from the metrics-service DB (different DB, same host).
++    # It receives since/until directly (covers the same window as the controller collectors).
++    print('Collecting task_executions_service (metrics-service DB)...')
++    collector_start_time = time.time()
++    try:
++        service_db = connections['metrics_service']
++        df = task_executions_service(db=service_db, since=since, until=until).gather()
++        results['task_executions_service'] = [df if df is not None else pd.DataFrame()]
++        print('  Collected 1 dataframe(s)')
++    except Exception as e:
++        print(f'  ⚠ Warning: Failed to collect task_executions_service: {e}')
++        print('  (metrics-service DB may not be available; skipping observability data)')
++        results['task_executions_service'] = [pd.DataFrame()]
++    collector_times['task_executions_service'] = time.time() - collector_start_time
++
+     print()
+     print('=' * 70)
+     print('COLLECTION RESULTS')
+@@ -336,7 +360,7 @@ Examples:
+     for collector_name, dataframes in results.items():
+         print(f'{collector_name}:')
+ 
+-        if COLLECTORS[collector_name]['needs_since_until']:
++        if COLLECTORS.get(collector_name, {}).get('needs_since_until', False):
+             # Time-series collector: show per batch
+             total_rows = 0
+             for i, df in enumerate(dataframes):
+@@ -373,6 +397,8 @@ Examples:
+         'execution_environments': 'execution_environments',
+         'table_metadata': 'table_metadata',
+         'controller_version_service': 'controller_version',
++        'feature_flags_service': 'feature_flags',
++        'task_executions_service': 'task_executions',  # from metrics-service DB
+     }
+ 
+     # Prepare input_data dict
+diff --git a/tools/docker/docker-compose.yaml b/tools/docker/docker-compose.yaml
+index 660d6e5..ff0f2d7 100644
+--- a/tools/docker/docker-compose.yaml
++++ b/tools/docker/docker-compose.yaml
+@@ -49,6 +49,7 @@ services:
+       - ./main_hostmetric.sql:/docker-entrypoint-initdb.d/init-4-main_hostmetric.sql
+       - ./main_instance.sql:/docker-entrypoint-initdb.d/init-5-main_instance.sql
+       - ./main_jobhostsummary.sql:/docker-entrypoint-initdb.d/init-6-main_jobhostsummary.sql
++      - ./dab_feature_flags.sql:/docker-entrypoint-initdb.d/init-7-dab_feature_flags.sql
+ 
+   postgres-wait:
+     image: "mirror.gcr.io/postgres"

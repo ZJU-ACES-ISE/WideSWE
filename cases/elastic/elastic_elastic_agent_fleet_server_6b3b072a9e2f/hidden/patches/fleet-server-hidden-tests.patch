@@ -1,0 +1,185 @@
+diff --git a/internal/pkg/api/checkin_gzip_contract_test.go b/internal/pkg/api/checkin_gzip_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f5c8870d186a03df8afcfd80aad6f36dd592af70
+--- /dev/null
++++ b/internal/pkg/api/checkin_gzip_contract_test.go
+@@ -0,0 +1,179 @@
++// Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++// or more contributor license agreements. Licensed under the Elastic License;
++// you may not use this file except in compliance with the Elastic License.
++
++//go:build !integration
++
++package api
++
++import (
++	"bytes"
++	"compress/gzip"
++	"encoding/json"
++	"io"
++	"net/http"
++	"os"
++	"path/filepath"
++	"regexp"
++	"runtime"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/elastic/fleet-server/v7/internal/pkg/config"
++	"github.com/elastic/fleet-server/v7/internal/pkg/model"
++	testlog "github.com/elastic/fleet-server/v7/internal/pkg/testing/log"
++	"github.com/stretchr/testify/require"
++	"gopkg.in/yaml.v3"
++)
++
++func TestCheckinGzipRequestContract(t *testing.T) {
++	body := `{"status":"online","message":"test message","local_metadata":{"elastic":{"agent":{"id":"testid"}}}}`
++
++	plain, err := validateContractCheckin(t, http.Header{}, strings.NewReader(body))
++	require.NoError(t, err)
++
++	var compressed bytes.Buffer
++	writer := gzip.NewWriter(&compressed)
++	_, err = io.WriteString(writer, body)
++	require.NoError(t, err)
++	require.NoError(t, writer.Close())
++
++	gzipped, err := validateContractCheckin(
++		t,
++		http.Header{"Content-Encoding": []string{"gzip"}},
++		bytes.NewReader(compressed.Bytes()),
++	)
++	require.NoError(t, err)
++	require.Equal(t, plain, gzipped, "gzip and plain checkins must have identical semantics")
++
++	_, err = validateContractCheckin(
++		t,
++		http.Header{"Content-Encoding": []string{"gzip"}},
++		strings.NewReader("not gzip data"),
++	)
++	require.Error(t, err)
++	require.Equal(t, http.StatusBadRequest, NewHTTPErrResp(err).StatusCode)
++}
++
++func validateContractCheckin(t *testing.T, headers http.Header, body io.Reader) (validatedCheckin, error) {
++	t.Helper()
++	checkin, err := NewCheckinT(
++		mustBuildConstraints("8.0.0"),
++		&config.Server{Limits: config.ServerLimits{CheckinLimit: config.Limit{MaxBody: 0}}},
++		nil, nil, nil, nil, nil, nil,
++	)
++	require.NoError(t, err)
++
++	request := &http.Request{Header: headers, Body: io.NopCloser(body)}
++	return checkin.validateRequest(
++		testlog.SetLogger(t),
++		nil,
++		request,
++		time.Time{},
++		&model.Agent{LocalMetadata: json.RawMessage(`{}`)},
++	)
++}
++
++func TestCheckinGzipOpenAPIContract(t *testing.T) {
++	_, sourceFile, _, ok := runtime.Caller(0)
++	require.True(t, ok)
++	specPath := filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "model", "openapi.yml")
++	contents, err := os.ReadFile(specPath)
++	require.NoError(t, err)
++
++	var spec map[string]any
++	require.NoError(t, yaml.Unmarshal(contents, &spec))
++
++	paths, ok := spec["paths"].(map[string]any)
++	require.True(t, ok)
++	checkinPath, ok := paths["/api/fleet/agents/{id}/checkin"].(map[string]any)
++	require.True(t, ok)
++	post, ok := checkinPath["post"].(map[string]any)
++	require.True(t, ok)
++
++	parameters := append(openAPIList(checkinPath["parameters"]), openAPIList(post["parameters"])...)
++	for _, rawParameter := range parameters {
++		parameter, ok := resolveOpenAPIObject(spec, rawParameter)
++		if !ok {
++			continue
++		}
++		name, _ := parameter["name"].(string)
++		location, _ := parameter["in"].(string)
++		if strings.EqualFold(name, "Content-Encoding") && strings.EqualFold(location, "header") {
++			require.True(t, openAPIValueMentionsGzip(spec, parameter, map[string]bool{}),
++				"checkin Content-Encoding contract must declare gzip support")
++			return
++		}
++	}
++	t.Fatal("checkin API contract does not declare gzip Content-Encoding")
++}
++
++func openAPIList(value any) []any {
++	list, _ := value.([]any)
++	return list
++}
++
++func resolveOpenAPIObject(root map[string]any, value any) (map[string]any, bool) {
++	object, ok := value.(map[string]any)
++	if !ok {
++		return nil, false
++	}
++	ref, _ := object["$ref"].(string)
++	if ref == "" {
++		return object, true
++	}
++	resolved, ok := resolveLocalOpenAPIRef(root, ref)
++	if !ok {
++		return nil, false
++	}
++	object, ok = resolved.(map[string]any)
++	return object, ok
++}
++
++func resolveLocalOpenAPIRef(root map[string]any, ref string) (any, bool) {
++	if !strings.HasPrefix(ref, "#/") {
++		return nil, false
++	}
++	var value any = root
++	for _, component := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
++		component = strings.ReplaceAll(strings.ReplaceAll(component, "~1", "/"), "~0", "~")
++		object, ok := value.(map[string]any)
++		if !ok {
++			return nil, false
++		}
++		value, ok = object[component]
++		if !ok {
++			return nil, false
++		}
++	}
++	return value, true
++}
++
++var gzipContractToken = regexp.MustCompile(`(?i)(^|[^a-z0-9])gzip([^a-z0-9]|$)`)
++
++func openAPIValueMentionsGzip(root map[string]any, value any, seenRefs map[string]bool) bool {
++	switch typed := value.(type) {
++	case string:
++		return gzipContractToken.MatchString(typed)
++	case []any:
++		for _, item := range typed {
++			if openAPIValueMentionsGzip(root, item, seenRefs) {
++				return true
++			}
++		}
++	case map[string]any:
++		if ref, _ := typed["$ref"].(string); ref != "" && !seenRefs[ref] {
++			seenRefs[ref] = true
++			if resolved, ok := resolveLocalOpenAPIRef(root, ref); ok && openAPIValueMentionsGzip(root, resolved, seenRefs) {
++				return true
++			}
++		}
++		for key, item := range typed {
++			if key != "$ref" && openAPIValueMentionsGzip(root, item, seenRefs) {
++				return true
++			}
++		}
++	}
++	return false
++}

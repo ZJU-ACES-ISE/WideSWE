@@ -8,19 +8,22 @@
   <meta property="og:title" content="WideSWE: Can Coding Agents Coordinate Changes Across Repositories?">
   <meta property="og:description" content="One shared request. Multiple repositories. Complete task resolution.">
   <meta property="og:type" content="website">
-  <meta property="og:image" content="https://by2003.github.io/WideSWE/assets/task_success.png">
+  <meta property="og:image" content="https://zju-aces-ise.github.io/WideSWE/assets/task_success.png">
   <title>WideSWE | Cross-Repository Coding Agents</title>
+  <link rel="preload" href="assets/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/manrope-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
   <script src="tasks.js" defer></script>
   <script src="app.js" defer></script>
+  <script src="experience.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
   <header class="site-header">
     <a class="wordmark" href="#">Wide<span>SWE</span><span class="wordmark-dot" aria-hidden="true">.</span></a>
     <nav aria-label="Main navigation">
-      <a href="#benchmark">Benchmark</a><a href="#results">Results</a><a href="#tasks">Tasks</a><a href="#citation">Cite</a>
-      <a class="nav-code" href="https://github.com/by2003/WideSWE"><img src="assets/code.svg" alt="" width="18" height="18">Code</a>
+      <a href="#benchmark">Benchmark</a><a href="#results">Results</a><a href="#cases">Cases</a><a href="#tasks">Tasks</a><a href="#citation">Cite</a>
+      <a class="nav-code" href="https://github.com/ZJU-ACES-ISE/WideSWE"><img src="assets/code.svg" alt="" width="18" height="18">Code</a>
     </nav>
   </header>
   <main id="main">
@@ -36,35 +39,60 @@
       <p class="author-notes">* Equal contribution &nbsp; &dagger; Corresponding author</p>
       <div class="resource-links">
         <a class="button primary" href="assets/wideswe.pdf"><img src="assets/file-text.svg" alt="" width="18" height="18">Read the paper</a>
-        <a class="button" href="https://github.com/by2003/WideSWE"><img src="assets/code.svg" alt="" width="18" height="18">Code &amp; data</a>
+        <a class="button" href="https://github.com/ZJU-ACES-ISE/WideSWE"><img src="assets/code.svg" alt="" width="18" height="18">Code &amp; data</a>
         <a class="button" href="#tasks"><img src="assets/folders.svg" alt="" width="18" height="18">Explore tasks</a>
       </div>
     </section>
 
     <section class="stats-band" aria-label="Benchmark at a glance">
-      <dl class="stats wrap"><div><dt>Real-world tasks</dt><dd>120</dd></div><div><dt>Software ecosystems</dt><dd>41</dd></div><div><dt>Bug fixes / features</dt><dd>60 <span>/</span> 60</dd></div><div><dt>Target repositories per task</dt><dd>2 <span>or</span> 3</dd></div></dl>
+      <dl class="stats wrap"><div><dt>Real-world tasks</dt><dd>120</dd></div><div><dt>Software ecosystems</dt><dd>41</dd></div><div><dt>Bug fixes</dt><dd>60</dd></div><div><dt>Features</dt><dd>60</dd></div></dl>
     </section>
 
     <section id="benchmark" class="section wrap">
-      <div class="section-heading"><p class="eyebrow">THE BENCHMARK</p><h2>One request, across repositories.</h2></div>
+      <div class="section-heading"><p class="eyebrow">01 / THE BENCHMARK</p><h2>One request, across repositories.</h2></div>
       <p class="lead">A shared feature or bug fix can span multiple repositories. WideSWE turns real-world coordinated changes into executable tasks, pairing a shared request with a historical workspace and hidden tests.</p>
+      <div class="task-flow" aria-label="Each task pairs one shared request with a historical workspace, repository-specific patches, and hidden evaluation">
+        <div><img src="assets/file-text.svg" width="24" height="24" alt=""><span>Shared request</span><small>One feature or bug fix</small></div>
+        <img class="flow-arrow" src="assets/arrow-right.svg" width="20" height="20" alt="">
+        <div><img src="assets/folders.svg" width="24" height="24" alt=""><span>Historical workspace</span><small>Targets + context repositories</small></div>
+        <img class="flow-arrow" src="assets/arrow-right.svg" width="20" height="20" alt="">
+        <div><img src="assets/code.svg" width="24" height="24" alt=""><span>Repository patches</span><small>Agent-generated changes</small></div>
+        <img class="flow-arrow" src="assets/arrow-right.svg" width="20" height="20" alt="">
+        <div><img src="assets/list-checks.svg" width="24" height="24" alt=""><span>Hidden evaluation</span><small>Required behavior + regressions</small></div>
+      </div>
       <div class="principles">
         <div><span class="step-number">01</span><h3>Identify the scope</h3><p>Determine which repositories need to change, with related repositories available as context.</p></div>
         <div><span class="step-number">02</span><h3>Deliver the changes</h3><p>Implement every repository-specific obligation of the shared feature or bug fix.</p></div>
         <div><span class="step-number">03</span><h3>Satisfy the request</h3><p>Pass the required behavior and regression checks in every target repository.</p></div>
       </div>
-      <figure class="paper-figure">
-        <a href="assets/coordination.png" target="_blank" rel="noopener" aria-label="Open cross-repository failure examples at full size"><img src="assets/coordination.png" alt="Three observed cross-repository failures: incomplete scope identification, recognized work without delivery, and post-edit failure." loading="lazy" width="2600" height="1000"></a>
-        <figcaption>Three observed failure categories in cross-repository task completion.</figcaption>
-      </figure>
-      <details class="construction"><summary>How WideSWE is constructed <img src="assets/chevron-down.svg" alt="" width="20" height="20"></summary><p>We mine linked development records, review candidate groups, validate per-repository fail-to-pass behavior, and balance the final set between bug fixes and features.</p><a href="assets/benchmark.png" target="_blank" rel="noopener"><img src="assets/benchmark.png" alt="WideSWE mining and case selection pipeline, prompt and test construction, and coverage of 41 ecosystems." loading="lazy"></a></details>
+    </section>
+
+    <section id="construction" class="construction-band">
+      <div class="wrap section">
+        <div class="section-heading"><p class="eyebrow">02 / CONSTRUCTION</p><h2>From linked changes to executable tasks.</h2></div>
+        <p class="lead">Real issues and pull requests establish the shared requirement. Historical snapshots and fail-to-pass checks make it executable.</p>
+        <ol class="pipeline">
+          <li><span class="pipeline-index">01</span><h3>Mine linked changes</h3><p>Collect merged PRs across <strong>103 ecosystems</strong> and group changes linked across repositories.</p></li>
+          <li><span class="pipeline-index">02</span><h3>Review the request</h3><p>Retain <strong>635 groups</strong> addressing one shared feature or bug fix with substantive cross-repository changes.</p></li>
+          <li><span class="pipeline-index">03</span><h3>Validate behavior</h3><p>Executable validation and final review yield <strong>192 eligible cases</strong>, with fail-to-pass tests for each target.</p></li>
+          <li><span class="pipeline-index">04</span><h3>Balance the release</h3><p>Select <strong>120 tasks</strong>: 60 bug fixes and 60 features, covering 41 software ecosystems.</p></li>
+        </ol>
+        <div class="construction-notes"><p><strong>Shared prompts.</strong> Requirements are consolidated from original issues and PRs, without turning reference implementations into step-by-step solutions.</p><p><strong>Reviewed hidden tests.</strong> Implementation-specific constraints and unrequested checks are removed while required behavior and regression checks are preserved.</p></div>
+        <details class="construction"><summary>Construction and ecosystem coverage <img src="assets/chevron-down.svg" alt="" width="20" height="20"></summary><a href="assets/benchmark.png" data-zoom target="_blank" rel="noopener"><img src="assets/benchmark.png" alt="WideSWE mining and case selection pipeline, prompt and test construction, and coverage of 41 ecosystems." loading="lazy"></a></details>
+      </div>
     </section>
 
     <section id="results" class="results-band">
       <div class="wrap section">
-        <div class="section-heading"><p class="eyebrow">MAIN EXPERIMENT</p><h2>Progress is not completion.</h2></div>
+        <div class="section-heading"><p class="eyebrow">03 / MAIN RESULTS</p><h2>Progress is not completion.</h2></div>
         <p class="lead">The best-performing configuration fully solves <strong>42.50%</strong> of tasks, while solving at least one target repository in <strong>83.33%</strong>. Completing the shared request remains a challenge.</p>
-        <figure class="results-figure"><a href="assets/task_success.png" target="_blank" rel="noopener" aria-label="Open task success chart at full size"><img src="assets/task_success.png" width="3200" height="1138" alt="Task success: GPT-5.6-sol with Codex CLI 42.50%; Qwen 3.8 Max 37.50%; Claude Opus 5 35.00%; GPT-5.6-sol with Claude Code 32.50%; DeepSeek V4 Pro 26.67%; GLM 5.3 20.00%; Gemini 3.8 Flash 10.83%. All configurations except the first use Claude Code." loading="lazy"></a><figcaption>Task success on the same 120 tasks. A task is solved only when every target repository passes all required checks.</figcaption></figure>
+        <div id="interactive-results" hidden>
+          <div class="chart-toolbar"><div class="segmented" role="group" aria-label="Task type for results"><button type="button" data-metric="overall" aria-pressed="true">Overall</button><button type="button" data-metric="bugfix" aria-pressed="false">Bugfix</button><button type="button" data-metric="feature" aria-pressed="false">Feature</button></div><span id="chart-sample">120 tasks</span></div>
+          <div class="chart-scroll" tabindex="0" role="region" aria-label="Task success chart"><div class="live-chart"><div class="chart-axis" aria-hidden="true"><span>50</span><span>40</span><span>30</span><span>20</span><span>10</span><span>0</span></div><div id="chart-bars" class="chart-bars"></div></div></div>
+          <p id="chart-summary" class="chart-summary" role="status" aria-live="polite"></p>
+          <p class="chart-source">Task success (%) · Paper Table 1 · Every target repository must pass all required checks.</p>
+        </div>
+        <figure id="static-results" class="results-figure"><a href="assets/task_success.png" data-zoom target="_blank" rel="noopener" aria-label="Open task success chart at full size"><img src="assets/task_success.png" width="3200" height="1138" alt="Task success: GPT-5.6-sol with Codex CLI 42.50%; Qwen 3.8 Max 37.50%; Claude Opus 5 35.00%; GPT-5.6-sol with Claude Code 32.50%; DeepSeek V4 Pro 26.67%; GLM 5.3 20.00%; Gemini 3.8 Flash 10.83%. All configurations except the first use Claude Code." loading="lazy"></a><figcaption>Task success on the same 120 tasks. A task is solved only when every target repository passes all required checks.</figcaption></figure>
         <details class="result-details"><summary>Results by task type <img src="assets/chevron-down.svg" alt="" width="20" height="20"></summary>
           <div class="table-scroll" tabindex="0" role="region" aria-label="Task success table"><table><caption>Task success (%) from Table 1 of the paper</caption><thead><tr><th scope="col">Model</th><th scope="col">Agent</th><th scope="col">Bugfix</th><th scope="col">Feature</th><th scope="col">Overall</th></tr></thead><tbody>
           <tr><th scope="row">GPT-5.6-sol</th><td>Codex CLI</td><td>41.67</td><td><strong>43.33</strong></td><td><strong>42.50</strong></td></tr>
@@ -79,8 +107,23 @@
       </div>
     </section>
 
+    <section id="cases" class="wrap section">
+      <div class="section-heading"><p class="eyebrow">04 / TRAJECTORY EVIDENCE</p><h2>Where does completion break down?</h2></div>
+      <p class="lead">Selected runs expose different gaps between understanding a shared request and delivering working changes.</p>
+      <div class="case-tabs" role="tablist" aria-label="Failure categories"><button id="scope-tab" role="tab" aria-selected="true" aria-controls="case-panel" data-case="scope" tabindex="0">Scope</button><button id="delivery-tab" role="tab" aria-selected="false" aria-controls="case-panel" data-case="delivery" tabindex="-1">Delivery</button><button id="postedit-tab" role="tab" aria-selected="false" aria-controls="case-panel" data-case="postedit" tabindex="-1">Post-edit</button></div>
+      <div id="case-panel" class="case-panel" role="tabpanel" aria-labelledby="scope-tab" tabindex="0">
+        <div class="case-header"><div><p id="case-category" class="case-category">Incomplete scope identification</p><h3 id="case-title">Sentry SDKs</h3></div><p id="case-agent">Codex CLI · GPT-5.6-sol</p></div>
+        <div class="case-narrative"><div><h4>Shared requirement</h4><p id="case-request">Implement the same strict trace-continuation policy in the Go, Python, and Ruby SDKs.</p></div><div><h4>Observed behavior</h4><p id="case-behavior">The agent treats Go as the target and reads Python code as a reference, but only Go receives a patch.</p></div></div>
+        <p class="repo-results-label">HIDDEN F2P CHECKS <span>Passed / total</span></p>
+        <div id="case-repositories" class="case-repositories"><div class="repo-result"><span>Go SDK</span><strong>14 / 14</strong><small>Required checks pass</small></div><div class="repo-result failed"><span>Python SDK</span><strong>0 / 22</strong><small>Unmodified</small></div><div class="repo-result failed"><span>Ruby SDK</span><strong>0 / 13</strong><small>Unmodified</small></div></div>
+        <p id="case-takeaway" class="case-takeaway">Reading a related repository does not ensure that its required changes are delivered.</p>
+        <p class="case-source">Source: Appendix C.1. Selected execution trajectories, not aggregate model rankings.</p>
+      </div>
+      <details class="case-figure"><summary>Failure examples from the paper <img src="assets/chevron-down.svg" alt="" width="20" height="20"></summary><a href="assets/coordination.png" data-zoom target="_blank" rel="noopener"><img src="assets/coordination.png" alt="Three observed cross-repository failures: incomplete scope identification, recognized work without delivery, and post-edit failure." loading="lazy"></a></details>
+    </section>
+
     <section id="tasks" class="wrap section">
-      <div class="section-heading"><p class="eyebrow">EXPLORE THE RELEASE</p><h2>120 tasks. Real development work.</h2></div>
+      <div class="section-heading"><p class="eyebrow">05 / EXPLORE THE RELEASE</p><h2>120 tasks. Real development work.</h2></div>
       <p class="lead">From SDKs and developer tools to cloud infrastructure and machine learning libraries.</p>
       <form class="filters" role="search" onsubmit="return false">
         <label class="search-field"><span class="sr-only">Search tasks</span><img src="assets/search.svg" alt="" width="18" height="18"><input id="search" type="search" placeholder="Search repositories or ecosystems" autocomplete="off"></label>
@@ -89,11 +132,11 @@
       </form>
       <p id="task-count" class="task-count" role="status" aria-live="polite"></p>
       <div id="task-list" class="task-list"></div>
-      <noscript><p><a href="https://github.com/by2003/WideSWE/blob/main/release120.tsv">Browse the full task index on GitHub.</a></p></noscript>
+      <noscript><p><a href="https://github.com/ZJU-ACES-ISE/WideSWE/blob/main/release120.tsv">Browse the full task index on GitHub.</a></p></noscript>
       <div class="pagination"><button id="previous" class="icon-button" type="button" aria-label="Previous page" title="Previous page"><img src="assets/arrow-left.svg" alt="" width="20" height="20"></button><span id="page-number"></span><button id="next" class="icon-button" type="button" aria-label="Next page" title="Next page"><img src="assets/arrow-right.svg" alt="" width="20" height="20"></button></div>
     </section>
 
-    <section class="start-band"><div class="wrap start-inner"><div><p class="eyebrow">RUN WIDESWE</p><h2>Evaluate your coding agent.</h2><p>Task definitions, historical revisions, container environments,<br class="desktop-break"> and evaluation harness in one open-source release.</p></div><a class="button primary" href="https://github.com/by2003/WideSWE#requirements">Get started<img src="assets/arrow-up-right.svg" alt="" width="18" height="18"></a></div></section>
+    <section class="start-band"><div class="wrap start-inner"><div><p class="eyebrow">RUN WIDESWE</p><h2>Evaluate your coding agent.</h2><p>Task definitions, historical revisions, container environments,<br class="desktop-break"> and evaluation harness in one open-source release.</p></div><a class="button primary" href="https://github.com/ZJU-ACES-ISE/WideSWE#requirements">Get started<img src="assets/arrow-up-right.svg" alt="" width="18" height="18"></a></div></section>
 
     <section id="citation" class="wrap section citation-section">
       <div class="section-heading"><p class="eyebrow">CITATION</p><h2>Cite WideSWE</h2></div>
@@ -101,10 +144,11 @@
   title  = {WideSWE: Can Coding Agents Coordinate Changes Across Repositories?},
   author = {Wang, Baoyi and Wang, Xingliang and Wu, Jinyang and Wu, Keming and Zhi, Chen and Yin, Jianwei},
   year   = {2026},
-  url    = {https://github.com/by2003/WideSWE}
+  url    = {https://github.com/ZJU-ACES-ISE/WideSWE}
 }</code></pre></div><p id="copy-status" class="copy-status" role="status" aria-live="polite"></p>
     </section>
   </main>
-  <footer class="wrap footer"><a class="wordmark" href="#">Wide<span>SWE</span>.</a><p>Zhejiang University &amp; Tsinghua University</p><a href="https://github.com/by2003/WideSWE">GitHub<img src="assets/arrow-up-right.svg" alt="" width="16" height="16"></a></footer>
+  <footer class="wrap footer"><a class="wordmark" href="#">Wide<span>SWE</span>.</a><p>Zhejiang University &amp; Tsinghua University</p><a href="https://github.com/ZJU-ACES-ISE/WideSWE">GitHub<img src="assets/arrow-up-right.svg" alt="" width="16" height="16"></a></footer>
+  <dialog id="figure-dialog" aria-label="Expanded paper figure"><div class="figure-dialog-toolbar"><p id="figure-caption"></p><button class="icon-button" id="close-figure" type="button" aria-label="Close figure" title="Close figure"><img src="assets/x.svg" alt="" width="20" height="20"></button></div><img id="expanded-figure" alt=""></dialog>
 </body>
 </html>

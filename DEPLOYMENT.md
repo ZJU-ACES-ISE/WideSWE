@@ -2,10 +2,12 @@
 
 The project page lives at the root of the `project-page` branch, separate from
 the benchmark's `main` branch. This is a static site with no build dependencies. Open `index.html` directly to
-preview it. All fonts fall back to system fonts, and figures and icons are local.
+preview it. Manrope headings and Inter body text are self-hosted, with system
+fallbacks. Figures and icons are local. Font licenses are in `assets/fonts/`.
 
-The source repository is https://github.com/by2003/WideSWE.
-The intended project URL is https://by2003.github.io/WideSWE/.
+The source repository is https://github.com/ZJU-ACES-ISE/WideSWE.
+The intended project URL is https://zju-aces-ise.github.io/WideSWE/.
+Never push or deploy this page to the anonymous `code-tmp` repository.
 
 ## Publication (not performed)
 
@@ -25,11 +27,14 @@ No personal access token is required in the website or workflow.
 - Regenerate `tasks.js` with `python3 scripts/build_project_data.py` when updating
   the canonical task index. It validates all linked task directories.
 - The result plot is `assets/task_success.png`.
+- Interactive bars use the values in the visible Table 1 breakdown. The PNG is
+  retained as a no-JavaScript fallback. The case panels summarize Appendix C.1.
 - The bundled PDF is the current author-named arXiv preparation copy, not an
   accepted conference version. When an arXiv identifier is available, update
   the paper link and BibTeX. No arXiv ID or publication venue is assumed.
 - Icons are from Lucide (ISC license in `assets/LICENSE-lucide`). Model logos
-  embedded in the result plot retain their existing attribution metadata.
+  are from Lobe Icons (`assets/model-logos/LICENSE-LobeIcons`). The interactive
+  chart uses Comic Sans MS when installed and bundled Comic Neue otherwise.
 
 Deployment reference:
 https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site

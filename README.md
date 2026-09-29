@@ -7,6 +7,7 @@
   <a href="https://github.com/ZJU-ACES-ISE/WideSWE"><img src="https://img.shields.io/badge/Code-24332F?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="Code on GitHub"></a>
   <a href="https://zju-aces-ise.github.io/WideSWE/"><img src="https://img.shields.io/badge/Website-167D8D?style=for-the-badge" alt="Project website"></a>
   <a href="https://huggingface.co/datasets/wangbaoyi/WideSWE"><img src="https://img.shields.io/badge/Dataset-C48A22?style=for-the-badge&amp;logo=huggingface&amp;logoColor=white" alt="Dataset on Hugging Face"></a>
+  <a href="https://huggingface.co/papers/2609.33382"><img src="https://img.shields.io/badge/Daily_Paper-FFD54A?style=for-the-badge&amp;logo=huggingface&amp;logoColor=black" alt="Daily Paper on Hugging Face"></a>
 </p>
 
 ## Overview
@@ -183,5 +184,6 @@ workspaces are removed by default after their durable artifacts are saved.
   <a href="https://arxiv.org/abs/2609.33382">Paper</a> &nbsp; &middot; &nbsp;
   <a href="https://github.com/ZJU-ACES-ISE/WideSWE">Code</a> &nbsp; &middot; &nbsp;
   <a href="https://zju-aces-ise.github.io/WideSWE/">Website</a> &nbsp; &middot; &nbsp;
-  <a href="https://huggingface.co/datasets/wangbaoyi/WideSWE">Dataset</a>
+  <a href="https://huggingface.co/datasets/wangbaoyi/WideSWE">Dataset</a> &nbsp; &middot; &nbsp;
+  <a href="https://huggingface.co/papers/2609.33382">Daily Paper</a>
 </p>

@@ -1,18 +1,58 @@
-# WIDESWE
+<div align="center">
 
-WIDESWE is a benchmark of 120 real-world software-engineering tasks requiring
-coordinated changes across multiple repositories in the same
-ecosystem. It contains 60 bug fixes and 60 features. Each run gives the agent
+# WideSWE
+### Can Coding Agents Coordinate Changes Across Repositories?
+
+**Baoyi Wang\*, Xingliang Wang\*, Jinyang Wu, Keming Wu, Chen Zhi, Jianwei Yin**
+
+Zhejiang University &nbsp; &middot; &nbsp; Tsinghua University<br>
+<sub>* Equal contribution &nbsp; &middot; &nbsp; Corresponding author: Chen Zhi</sub>
+
+<p>
+  <a href="https://arxiv.org/abs/2609.33382"><img src="https://img.shields.io/badge/Paper-arXiv%3A2609.33382-B34D55?style=for-the-badge&amp;logo=arxiv&amp;logoColor=white" alt="Paper on arXiv"></a>
+  <a href="https://github.com/ZJU-ACES-ISE/WideSWE"><img src="https://img.shields.io/badge/Code-GitHub-24332F?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="Code on GitHub"></a>
+  <a href="https://zju-aces-ise.github.io/WideSWE/"><img src="https://img.shields.io/badge/Website-Project_Page-167D8D?style=for-the-badge" alt="Project website"></a>
+</p>
+
+**One shared request. Multiple repositories. Complete task resolution.**
+
+</div>
+
+## Overview
+
+WideSWE is a benchmark of 120 real-world software-engineering tasks across 41
+software ecosystems, requiring coordinated changes across multiple repositories
+in the same ecosystem. It contains 60 bug fixes and 60 features. Each run gives the agent
 one shared request and a historical ecosystem workspace containing the target
 repositories and, where available, additional context repositories. Hidden
 tests evaluate the resulting changes; a task succeeds only when every target
 repository passes all required checks.
 
-![Task success on 120 WIDESWE tasks: GPT-5.6-sol with Codex CLI 42.50%; Qwen 3.8 Max with Claude Code 37.50%; Claude Opus 5 with Claude Code 35.00%; GPT-5.6-sol with Claude Code 32.50%; DeepSeek V4 Pro with Claude Code 26.67%; GLM 5.3 with Claude Code 20.00%; Gemini 3.8 Flash with Claude Code 10.83%.](assets/task_success.png)
-
 This repository contains all 120 task definitions, the evaluation harness,
 Claude Code and Codex adapters, container definitions, and the reusable portion
 of the data-construction pipeline.
+
+[Browse tasks](https://zju-aces-ise.github.io/WideSWE/#tasks) &nbsp; &middot; &nbsp;
+[Set up](#requirements) &nbsp; &middot; &nbsp;
+[Run evaluation](#run-evaluation) &nbsp; &middot; &nbsp;
+[Citation](#citation)
+
+## Main Results
+
+The strongest configuration fully solves **42.50%** of tasks. Task success requires
+every target repository to pass all required checks, not just a successful change
+in one repository.
+
+[![Task success on 120 WideSWE tasks: GPT-5.6-sol with Codex CLI 42.50%; Qwen 3.8 Max with Claude Code 37.50%; Claude Opus 5 with Claude Code 35.00%; GPT-5.6-sol with Claude Code 32.50%; DeepSeek V4 Pro with Claude Code 26.67%; GLM 5.3 with Claude Code 20.00%; Gemini 3.8 Flash with Claude Code 10.83%.](assets/task_success.png)](https://zju-aces-ise.github.io/WideSWE/#results)
+
+<p align="center"><sub>Task success (%) on the same 120 tasks. Source: Table 1 of the <a href="https://arxiv.org/abs/2609.33382">paper</a>.</sub></p>
+
+<details>
+<summary><strong>Benchmark construction and ecosystem coverage</strong></summary>
+
+![WideSWE construction: linked changes, manual review, prompt and hidden-test construction, and coverage of 41 software ecosystems.](assets/benchmark.png)
+
+</details>
 
 ## Requirements
 
@@ -133,3 +173,23 @@ workspaces are removed by default after their durable artifacts are saved.
 - `release120.tsv`: canonical task order and summary metadata.
 - `data_mining/`: reusable case-discovery and construction scripts.
 - `scripts/`: source-repository bootstrap and release utility scripts.
+
+## Citation
+
+```bibtex
+@misc{wang2026wideswe,
+  title         = {WideSWE: Can Coding Agents Coordinate Changes Across Repositories?},
+  author        = {Baoyi Wang and Xingliang Wang and Jinyang Wu and Keming Wu and Chen Zhi and Jianwei Yin},
+  year          = {2026},
+  eprint        = {2609.33382},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.SE},
+  url           = {https://arxiv.org/abs/2609.33382}
+}
+```
+
+<p align="center">
+  <a href="https://arxiv.org/abs/2609.33382">Paper</a> &nbsp; &middot; &nbsp;
+  <a href="https://github.com/ZJU-ACES-ISE/WideSWE">Code</a> &nbsp; &middot; &nbsp;
+  <a href="https://zju-aces-ise.github.io/WideSWE/">Website</a>
+</p>

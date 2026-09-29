@@ -3,10 +3,10 @@
 > A benchmark for implementing one shared feature or bug fix across multiple repositories.
 
 <p align="center">
-  <a href="https://arxiv.org/abs/2609.33382"><img src="https://img.shields.io/badge/Paper-arXiv%3A2609.33382-B34D55?style=for-the-badge&amp;logo=arxiv&amp;logoColor=white" alt="Paper on arXiv"></a>
-  <a href="https://github.com/ZJU-ACES-ISE/WideSWE"><img src="https://img.shields.io/badge/Code-GitHub-24332F?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="Code on GitHub"></a>
-  <a href="https://zju-aces-ise.github.io/WideSWE/"><img src="https://img.shields.io/badge/Website-Project_Page-167D8D?style=for-the-badge" alt="Project website"></a>
-  <a href="https://huggingface.co/datasets/wwww369/WIDESWE"><img src="https://img.shields.io/badge/Dataset-Hugging_Face-C48A22?style=for-the-badge&amp;logo=huggingface&amp;logoColor=white" alt="Dataset on Hugging Face"></a>
+  <a href="https://arxiv.org/abs/2609.33382"><img src="https://img.shields.io/badge/Paper-B34D55?style=for-the-badge&amp;logo=arxiv&amp;logoColor=white" alt="Paper on arXiv"></a>
+  <a href="https://github.com/ZJU-ACES-ISE/WideSWE"><img src="https://img.shields.io/badge/Code-24332F?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="Code on GitHub"></a>
+  <a href="https://zju-aces-ise.github.io/WideSWE/"><img src="https://img.shields.io/badge/Website-167D8D?style=for-the-badge" alt="Project website"></a>
+  <a href="https://huggingface.co/datasets/wangbaoyi/WideSWE"><img src="https://img.shields.io/badge/Dataset-C48A22?style=for-the-badge&amp;logo=huggingface&amp;logoColor=white" alt="Dataset on Hugging Face"></a>
 </p>
 
 ## Overview
@@ -168,14 +168,14 @@ workspaces are removed by default after their durable artifacts are saved.
 ## Citation
 
 ```bibtex
-@misc{wang2026wideswe,
-  title         = {WideSWE: Can Coding Agents Coordinate Changes Across Repositories?},
-  author        = {Baoyi Wang and Xingliang Wang and Jinyang Wu and Keming Wu and Chen Zhi and Jianwei Yin},
-  year          = {2026},
-  eprint        = {2609.33382},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.SE},
-  url           = {https://arxiv.org/abs/2609.33382}
+@misc{wang2026wideswecodingagentscoordinate,
+      title={WideSWE: Can Coding Agents Coordinate Changes Across Repositories?},
+      author={Baoyi Wang and Xingliang Wang and Jinyang Wu and Keming Wu and Chen Zhi and Jianwei Yin},
+      year={2026},
+      eprint={2609.33382},
+      archivePrefix={arXiv},
+      primaryClass={cs.SE},
+      url={https://arxiv.org/abs/2609.33382},
 }
 ```
 
@@ -183,5 +183,5 @@ workspaces are removed by default after their durable artifacts are saved.
   <a href="https://arxiv.org/abs/2609.33382">Paper</a> &nbsp; &middot; &nbsp;
   <a href="https://github.com/ZJU-ACES-ISE/WideSWE">Code</a> &nbsp; &middot; &nbsp;
   <a href="https://zju-aces-ise.github.io/WideSWE/">Website</a> &nbsp; &middot; &nbsp;
-  <a href="https://huggingface.co/datasets/wwww369/WIDESWE">Dataset</a>
+  <a href="https://huggingface.co/datasets/wangbaoyi/WideSWE">Dataset</a>
 </p>

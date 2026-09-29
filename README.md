@@ -1,22 +1,12 @@
-<div align="center">
+# WideSWE: Can Coding Agents Coordinate Changes<br> Across Repositories?
 
-# WideSWE
-### Can Coding Agents Coordinate Changes Across Repositories?
+> A benchmark for implementing one shared feature or bug fix across multiple repositories.
 
-**Baoyi Wang\*, Xingliang Wang\*, Jinyang Wu, Keming Wu, Chen Zhi, Jianwei Yin**
-
-Zhejiang University &nbsp; &middot; &nbsp; Tsinghua University<br>
-<sub>* Equal contribution &nbsp; &middot; &nbsp; Corresponding author: Chen Zhi</sub>
-
-<p>
+<p align="center">
   <a href="https://arxiv.org/abs/2609.33382"><img src="https://img.shields.io/badge/Paper-arXiv%3A2609.33382-B34D55?style=for-the-badge&amp;logo=arxiv&amp;logoColor=white" alt="Paper on arXiv"></a>
   <a href="https://github.com/ZJU-ACES-ISE/WideSWE"><img src="https://img.shields.io/badge/Code-GitHub-24332F?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="Code on GitHub"></a>
   <a href="https://zju-aces-ise.github.io/WideSWE/"><img src="https://img.shields.io/badge/Website-Project_Page-167D8D?style=for-the-badge" alt="Project website"></a>
 </p>
-
-**One shared request. Multiple repositories. Complete task resolution.**
-
-</div>
 
 ## Overview
 

@@ -163,21 +163,6 @@
     document.querySelectorAll('.section-heading,.task-flow,.principles,.pipeline,.construction-notes,.case-panel').forEach(el => {
       el.classList.add('reveal'); revealObserver.observe(el);
     });
-    const counters = [...document.querySelectorAll('.stats dd')];
-    const counterObserver = new IntersectionObserver(entries => entries.forEach(entry => {
-      if (!entry.isIntersecting) return;
-      counterObserver.unobserve(entry.target);
-      const number = Number(entry.target.textContent); const start = performance.now();
-      entry.target.setAttribute('aria-label', String(number));
-      function tick(now) {
-        const progress = Math.min(1, (now - start) / 900);
-        entry.target.textContent = String(Math.round(number * (1 - (1 - progress) ** 3)));
-        if (progress < 1 && !reduceMotion.matches) requestAnimationFrame(tick);
-        else entry.target.textContent = String(number);
-      }
-      requestAnimationFrame(tick);
-    }), {threshold:.5});
-    counters.forEach(counter => counterObserver.observe(counter));
     chartNodes.forEach(node => node.column.style.setProperty('--rate','0%'));
     const chartObserver = new IntersectionObserver(entries => entries.forEach(entry => {
       if (entry.isIntersecting) { updateChart(selectedMetric); chartObserver.disconnect(); }

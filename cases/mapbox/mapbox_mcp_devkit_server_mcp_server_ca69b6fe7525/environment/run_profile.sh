@@ -9,8 +9,9 @@ cache_root="${ECOSYNC_CACHE_ROOT:-/tmp/ecosyncbench-release120-runtime/cache/leg
 
 ensure_image() {
   if [[ "${ECOSYNC_DOCKER_BUILD:-0}" == "1" ]] || ! docker image inspect "$image" >/dev/null 2>&1; then
-    docker pull node:22-bookworm
-    docker tag node:22-bookworm "$image"
+    echo "The frozen image $image is required; this runner cannot rebuild it by retagging an upstream image." >&2
+    echo "Run benchmark/harness/pull_images.py --task $(basename "$task_dir") to restore the locked image." >&2
+    return 1
   fi
 }
 

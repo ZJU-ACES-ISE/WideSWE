@@ -11,8 +11,9 @@ mkdir -p "$cache_root/gomod" "$cache_root/gopath" "$cache_root/gocache" "$worksp
 
 ensure_image() {
   if [[ "${ECOSYNC_DOCKER_BUILD:-0}" == "1" ]] || ! docker image inspect "$image_go" >/dev/null 2>&1; then
-    docker pull golang:1.25-bookworm
-    docker tag golang:1.25-bookworm "$image_go"
+    echo "The frozen image $image_go is required; this runner cannot rebuild it by retagging an upstream image." >&2
+    echo "Run benchmark/harness/pull_images.py --task $(basename "$task_dir") to restore the locked image." >&2
+    return 1
   fi
 }
 

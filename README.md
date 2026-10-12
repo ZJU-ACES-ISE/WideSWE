@@ -48,7 +48,7 @@ in one repository.
 
 ## Requirements
 
-- Linux
+- Linux on x86-64 (`linux/amd64`); the frozen images are not multi-architecture
 - Python 3.11 or newer
 - Git
 - Docker Engine with the Compose plugin
@@ -88,11 +88,24 @@ metadata directory are retained as a compatibility interface for the frozen
 Release120 images. They are implementation identifiers; the benchmark and
 release name is WIDESWE.
 
-Build the frozen environment images referenced by a case:
+Pull the frozen environment images referenced by a case:
 
 ```bash
-python benchmark/harness/ecosync_harness.py build-env --task CASE_ID
+python benchmark/harness/pull_images.py --task CASE_ID
+python benchmark/harness/ecosync_harness.py check-env --task CASE_ID
 ```
+
+For all 120 cases, use `python benchmark/harness/pull_images.py --all`.
+The lock files pin registry manifest digests and restore the local image names
+used by the agent and evaluator. Both the case-base and evaluator dependency
+images are required; one must not be substituted for the other.
+
+See [Environment images](docs/environment-images.md) for the release procedure,
+custom parent images, and source-rebuild limitations. An entry marked
+`not_published` is a release blocker on a clean machine, not an instruction to
+rebuild an undocumented parent locally. Some dependency entries are still
+pending publication; do not treat the existing case-base packages alone as a
+complete clean-machine release.
 
 ## Configure An Agent
 

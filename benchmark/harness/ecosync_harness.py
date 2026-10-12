@@ -2445,7 +2445,8 @@ def evaluator_go_workspace_args(args):
     if gomodcache and not has_container_env(args, "GOMODCACHE"):
         result.extend(["-e", f"GOMODCACHE={gomodcache}"])
     if not has_container_env(args, "GOPROXY"):
-        result.extend(["-e", "GOPROXY=off"])
+        proxy = os.environ.get("ECOSYNC_EVALUATOR_GOPROXY", "off")
+        result.extend(["-e", f"GOPROXY={proxy}"])
     if not has_container_env(args, "GOSUMDB"):
         result.extend(["-e", "GOSUMDB=off"])
     return result
@@ -2672,6 +2673,7 @@ def _run_profile_unlocked(task_id: str, workspace: Path, profile: str, log_file:
     env["CI"] = "true"
     env["COMPOSE_PROJECT_NAME"] = evaluator_compose_project_name(task_id)
     env["ECOSYNC_WORKSPACE"] = str(workspace.resolve())
+    env.setdefault("ECOSYNC_REPO_ROOT", str(REPO_ROOT))
     if not env.get("ECOSYNC_CACHE_ROOT") and env.get("ECOSYNC_CACHE_BASE_ROOT"):
         env["ECOSYNC_CACHE_ROOT"] = str(
             (Path(env["ECOSYNC_CACHE_BASE_ROOT"]).expanduser() / task_id).resolve()
@@ -2767,30 +2769,46 @@ def build_env(task_id: str, services: list[str]) -> None:
 def check_env(task_id: str) -> None:
     compose_file = task_dir(task_id) / "environment" / "docker-compose.yml"
     if not compose_file.exists():
-        lock_file = task_dir(task_id) / "environment" / "deps_image_lock.yaml"
+        compose_file = compose_file.with_suffix(".yaml")
+    lock_file = task_dir(task_id) / "environment" / "deps_image_lock.yaml"
+    if lock_file.exists() or not compose_file.exists():
         lock = load_yaml(lock_file) if lock_file.exists() else {}
         case_base = lock.get("case_base_image") if isinstance(lock, dict) else None
         image = None
         if isinstance(case_base, dict):
             image = case_base.get("local_tag") or case_base.get("release_tag")
         if not image:
-            raise SystemExit(f"missing environment docker-compose.yml and case_base_image lock: {task_id}")
-        proc = subprocess.run(["docker", "image", "inspect", str(image)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        item: dict[str, Any] = {"service": "case_base_image", "image": str(image), "present": proc.returncode == 0}
-        if proc.returncode == 0:
-            info = json.loads(capture(["docker", "image", "inspect", str(image)]).stdout)[0]
-            item["id"] = info.get("Id")
-            item["repo_digests"] = info.get("RepoDigests") or []
-            item["labels"] = (info.get("Config") or {}).get("Labels") or {}
-        print(json.dumps({"task_id": task_id, "ok": item["present"], "images": [item]}, indent=2))
-        if not item["present"]:
+            raise SystemExit(f"missing case_base_image reference in environment lock: {task_id}")
+        entries = {"case_base_image": case_base, **(lock.get("images") or {})}
+        locked_refs = {spec.get("local_tag") for spec in entries.values()}
+        if compose_file.exists():
+            compose = load_yaml(compose_file) or {}
+            for service, spec in compose.get("services", {}).items():
+                ref = spec.get("image")
+                if ref and ref not in locked_refs:
+                    entries[f"compose:{service}"] = {"local_tag": ref}
+        results = []
+        for service, spec in entries.items():
+            ref = spec.get("local_tag") or spec.get("release_tag")
+            if not ref:
+                raise SystemExit(f"missing environment image reference: {task_id}:{service}")
+            proc = subprocess.run(["docker", "image", "inspect", str(ref)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            item: dict[str, Any] = {"service": service, "image": str(ref), "present": proc.returncode == 0}
+            if item["present"]:
+                info = json.loads(capture(["docker", "image", "inspect", str(ref)]).stdout)[0]
+                item["id"] = info.get("Id")
+                item["repo_digests"] = info.get("RepoDigests") or []
+                item["labels"] = (info.get("Config") or {}).get("Labels") or {}
+                item["matches_lock"] = not spec.get("local_image_id") or spec["local_image_id"] == info.get("Id")
+            results.append(item)
+        ok = all(item["present"] and item.get("matches_lock", False) for item in results)
+        print(json.dumps({"task_id": task_id, "ok": ok, "images": results}, indent=2))
+        if not ok:
             raise SystemExit(1)
         return
     compose = load_yaml(compose_file)
     results = []
     for service, spec in compose.get("services", {}).items():
-        if "build" not in spec:
-            continue
         image = spec.get("image")
         if not image:
             continue
@@ -2802,7 +2820,7 @@ def check_env(task_id: str) -> None:
             item["repo_digests"] = info.get("RepoDigests") or []
             item["labels"] = (info.get("Config") or {}).get("Labels") or {}
         results.append(item)
-    ok = all(item["present"] for item in results)
+    ok = bool(results) and all(item["present"] for item in results)
     print(json.dumps({"task_id": task_id, "ok": ok, "images": results}, indent=2))
     if not ok:
         raise SystemExit(1)

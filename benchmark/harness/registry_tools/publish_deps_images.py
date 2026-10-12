@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import subprocess
@@ -14,7 +15,7 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TASKS_DIR = REPO_ROOT / "benchmark" / "tasks"
+TASKS_DIR = Path(os.environ.get("ECOSYNC_TASKS_DIR", REPO_ROOT / "benchmark" / "tasks"))
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -67,19 +68,23 @@ def push_archive(local_tag: str, release_tag: str) -> str:
     raise SystemExit(f"push succeeded but no digest was found in output for {release_tag}")
 
 
-def publish_task(task_id: str, force: bool) -> dict[str, Any]:
+def publish_task(
+    task_id: str, force: bool, *, push: bool = False,
+    include_build_parents: bool = False, published: dict[str, tuple[str, str]] | None = None,
+) -> dict[str, Any]:
     lock_path = TASKS_DIR / task_id / "environment" / "deps_image_lock.yaml"
     if not lock_path.exists():
         raise SystemExit(f"missing deps image lock: {lock_path}")
     lock = load_yaml(lock_path)
-    lock["status"] = "publishing"
-    lock["generated_at_unix"] = int(time.time())
-    lock["publish_method"] = "benchmark/harness/registry_tools/push_docker_archive.py"
-    write_yaml(lock_path, lock)
+    if published is None:
+        published = {}
 
     results: dict[str, Any] = {}
     selected_profiles = set(os.environ.get("ECOSYNC_PUBLISH_PROFILES", "").split())
-    for profile, spec in lock.get("images", {}).items():
+    entries = dict(lock.get("images", {}))
+    if include_build_parents:
+        entries.update({f"build:{name}": spec for name, spec in lock.get("build_parent_images", {}).items()})
+    for profile, spec in entries.items():
         if selected_profiles and profile not in selected_profiles:
             results[profile] = {"skipped": True, "reason": "not selected"}
             continue
@@ -89,27 +94,50 @@ def publish_task(task_id: str, force: bool) -> dict[str, Any]:
             results[profile] = {"release_digest": spec["release_digest"], "skipped": True}
             continue
         inspect = image_inspect(local_tag)
-        digest = push_archive(local_tag, release_tag)
+        if spec.get("local_image_id") != inspect.get("Id"):
+            raise SystemExit(f"image changed since release audit: {local_tag}")
+        if not push:
+            results[profile] = {"local_tag": local_tag, "release_tag": release_tag, "dry_run": True}
+            continue
+        if release_tag in published:
+            digest, image_id = published[release_tag]
+            if image_id != inspect.get("Id"):
+                raise SystemExit(f"conflicting local images for release tag: {release_tag}")
+        else:
+            digest = push_archive(local_tag, release_tag)
+            published[release_tag] = (digest, inspect["Id"])
         spec["release_digest"] = digest
+        # Uploading does not make a package public. Anonymous verification is separate.
+        spec["release_status"] = "not_published"
         spec["local_image_id"] = inspect.get("Id")
         spec["size_bytes"] = inspect.get("Size")
         lock["generated_at_unix"] = int(time.time())
         write_yaml(lock_path, lock)
         results[profile] = {"release_digest": digest, "skipped": False}
 
-    lock["status"] = "published"
-    lock["generated_at_unix"] = int(time.time())
-    write_yaml(lock_path, lock)
     return {"task_id": task_id, "lock": str(lock_path), "images": results}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Publish reusable dependency images and update deps_image_lock.yaml.")
-    parser.add_argument("--task", action="append", required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--task", action="append")
+    selection.add_argument("--all", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--include-build-parents", action="store_true")
+    parser.add_argument("--push", action="store_true", help="Actually upload; default is a read-only plan")
     args = parser.parse_args()
 
-    output = {"tasks": [publish_task(task_id, args.force) for task_id in args.task]}
+    if args.all:
+        with (REPO_ROOT / "release120.tsv").open(encoding="utf-8", newline="") as handle:
+            tasks = [row["case_id"] for row in csv.DictReader(handle, delimiter="\t")]
+    else:
+        tasks = args.task
+    published: dict[str, tuple[str, str]] = {}
+    output = {"tasks": [publish_task(
+        task_id, args.force, push=args.push,
+        include_build_parents=args.include_build_parents, published=published,
+    ) for task_id in tasks]}
     print(json.dumps(output, indent=2))
 
 

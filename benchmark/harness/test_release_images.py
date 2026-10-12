@@ -31,6 +31,33 @@ REF = "ghcr.io/example/project/runtime:version"
 
 
 class ReleaseImagesTests(unittest.TestCase):
+    def test_native_push_extracts_digest(self):
+        proc = mock.Mock(stdout=iter(["layer: Pushed\n", f"version: digest: {DIGEST} size: 123\n"]))
+        proc.wait.return_value = 0
+        with mock.patch.object(publish_deps_images.subprocess, "run") as run, \
+             mock.patch.object(publish_deps_images.subprocess, "Popen", return_value=proc), \
+             contextlib.redirect_stdout(io.StringIO()):
+            result = publish_deps_images.push_docker("local:v1", REF)
+        self.assertEqual(result, REF.rsplit(":", 1)[0] + "@" + DIGEST)
+        self.assertEqual(run.call_args.args[0], ["docker", "tag", "local:v1", REF])
+
+    def test_native_push_failure_does_not_return_digest(self):
+        proc = mock.Mock(stdout=iter([f"version: digest: {DIGEST}\n"]))
+        proc.wait.return_value = 1
+        with mock.patch.object(publish_deps_images.subprocess, "run"), \
+             mock.patch.object(publish_deps_images.subprocess, "Popen", return_value=proc), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaises(subprocess.CalledProcessError):
+            publish_deps_images.push_docker("local:v1", REF)
+
+    def test_native_push_without_digest_fails(self):
+        proc = mock.Mock(stdout=iter(["layer: Pushed\n"]))
+        proc.wait.return_value = 0
+        with mock.patch.object(publish_deps_images.subprocess, "run"), \
+             mock.patch.object(publish_deps_images.subprocess, "Popen", return_value=proc), \
+             contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            publish_deps_images.push_docker("local:v1", REF)
+
     def test_go_dependency_preparation_is_explicit_and_preserves_offline_default(self):
         with tempfile.TemporaryDirectory() as temp:
             workspace = Path(temp)

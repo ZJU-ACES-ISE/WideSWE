@@ -103,9 +103,10 @@ images are required; one must not be substituted for the other.
 See [Environment images](docs/environment-images.md) for the release procedure,
 custom parent images, and source-rebuild limitations. An entry marked
 `not_published` is a release blocker on a clean machine, not an instruction to
-rebuild an undocumented parent locally. Some dependency entries are still
-pending publication; do not treat the existing case-base packages alone as a
-complete clean-machine release.
+rebuild an undocumented parent locally. Dependency manifests have been uploaded,
+but the new packages are still private and await public visibility and anonymous
+verification. Do not treat the existing case-base packages alone as a complete
+clean-machine release.
 
 ## Configure An Agent
 

@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -68,9 +69,32 @@ def push_archive(local_tag: str, release_tag: str) -> str:
     raise SystemExit(f"push succeeded but no digest was found in output for {release_tag}")
 
 
+def push_docker(local_tag: str, release_tag: str) -> str:
+    """Reuse daemon-side layer uploads without exporting large tar archives."""
+    subprocess.run(["docker", "tag", local_tag, release_tag], cwd=REPO_ROOT, check=True)
+    proc = subprocess.Popen(
+        ["docker", "push", release_tag], cwd=REPO_ROOT, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    digest = None
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        match = re.search(r"\bdigest: (sha256:[0-9a-f]{64})\b", line)
+        if match:
+            digest = match.group(1)
+    code = proc.wait()
+    if code:
+        raise subprocess.CalledProcessError(code, proc.args)
+    if digest is None:
+        raise SystemExit(f"push succeeded but no digest was found in output for {release_tag}")
+    return release_tag.rsplit(":", 1)[0] + "@" + digest
+
+
 def publish_task(
     task_id: str, force: bool, *, push: bool = False,
     include_build_parents: bool = False, published: dict[str, tuple[str, str]] | None = None,
+    transport: str = "archive",
 ) -> dict[str, Any]:
     lock_path = TASKS_DIR / task_id / "environment" / "deps_image_lock.yaml"
     if not lock_path.exists():
@@ -104,7 +128,8 @@ def publish_task(
             if image_id != inspect.get("Id"):
                 raise SystemExit(f"conflicting local images for release tag: {release_tag}")
         else:
-            digest = push_archive(local_tag, release_tag)
+            uploader = push_docker if transport == "docker" else push_archive
+            digest = uploader(local_tag, release_tag)
             published[release_tag] = (digest, inspect["Id"])
         spec["release_digest"] = digest
         # Uploading does not make a package public. Anonymous verification is separate.
@@ -126,6 +151,8 @@ def main() -> None:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--include-build-parents", action="store_true")
     parser.add_argument("--push", action="store_true", help="Actually upload; default is a read-only plan")
+    parser.add_argument("--transport", choices=("archive", "docker"), default="archive",
+                        help="Use docker to reuse daemon layer uploads without temporary exports")
     args = parser.parse_args()
 
     if args.all:
@@ -137,6 +164,7 @@ def main() -> None:
     output = {"tasks": [publish_task(
         task_id, args.force, push=args.push,
         include_build_parents=args.include_build_parents, published=published,
+        transport=args.transport,
     ) for task_id in tasks]}
     print(json.dumps(output, indent=2))
 

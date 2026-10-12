@@ -87,9 +87,10 @@ python benchmark/harness/pull_images.py --all
 
 Add `--dry-run` to preview commands. A `not_published` entry fails before any
 large download if the local image is absent. This is intentional: a proposed
-registry reference is not evidence that an image has been released. The local
-preparation branch currently contains pending dependency entries; those must be
-published and anonymously verified before announcing a complete release.
+registry reference is not evidence that an image has been released. The 121
+dependency and build-parent references have been uploaded across 85 packages,
+but these packages are still private. The pending entries must be made public
+and anonymously verified before announcing a complete release.
 
 ## Custom Parents And Source Builds
 
@@ -156,8 +157,9 @@ It never pushes, loads Docker credentials, or modifies prompts or hidden tests.
    ```
 
 4. Only after publication approval and completion of the privacy review, use
-   the same command with `--push`. Authenticate using an external Docker
-   credential store, never a credential in a command, file tracked by Git,
+   the same command with `--push`. Add `--transport docker` to reuse daemon-side
+   layer uploads and avoid large temporary archives. Authenticate using an
+   external Docker credential store, never a credential in a command, file tracked by Git,
    Dockerfile, or layer. Uploads are deduplicated by release reference and image
    ID. Locks remain `not_published` after upload because upload success does not
    establish public visibility.
